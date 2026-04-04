@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.example.Sharpr</id>
+  <name>Sharpr</name>
+  <summary>A modern image library and viewer</summary>
+  <description>
+    <p>
+      Sharpr is a fast, modern image library and viewer for Linux.
+      Browse large photo collections with a three-pane interface,
+      inspect detailed metadata, and upscale images using AI — all offline and locally.
+    </p>
+  </description>
+  <url type="homepage">https://example.com/sharpr</url>
+  <launchable type="desktop-id">com.example.Sharpr.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Three-pane image browser</caption>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="0.1.0" date="2026-04-04">
+      <description>
+        <p>Initial MVP release: three-pane adaptive UI, thumbnail filmstrip, image preview, metadata overlay.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1"/>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer_name>Sharpr Contributors</developer_name>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </recommends>
+</component>

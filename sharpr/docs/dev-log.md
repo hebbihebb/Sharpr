@@ -1,0 +1,225 @@
+# Development Log
+
+## 2026-04-04 Phase B Hardening: Comparison Safety
+
+### What changed
+
+- Upscale runs now write to a pending file first, then commit moves that file into `upscaled/<name>`.
+- `Discard` only deletes the pending file from the current compare session, so it no longer removes a previously committed upscale.
+- Normal navigation paths now force the viewer stack back to the standard `"view"` page and hide compare actions.
+- `BeforeAfterViewer::load()` now uses a generation counter and clears old textures before starting new decode work.
+
+### Root causes fixed
+
+- Discard previously targeted the final saved output path, so cancelling a later run could delete an already committed result.
+- Viewer navigation reused the same widget stack without explicitly exiting compare mode, which left stale compare UI visible during normal browsing.
+- Comparison decode threads had no request generation guard, so slow results from an older load could overwrite a newer comparison.
+
+### Handoff note for Claude
+
+- Commit now promotes a pending output into the final `upscaled/<name>` path; keep that temp-to-final flow intact if runner error handling is expanded.
+- Any future compare-view work should keep using generation-based invalidation, matching `ViewerPane.load_gen`.
+
+## 2026-04-04 Phase B Subsystem 1: Upscale Detector Wiring
+
+### What changed
+
+- Added an `AI Upscale` button to the viewer header and wired it to `UpscaleDetector`.
+- Detection now happens on demand from the toolbar path instead of starting any upscale job.
+- When `realesrgan-ncnn-vulkan` is missing, the viewer shows a dismissible `AdwBanner` with a clear install hint.
+- When the binary is found, its resolved path is cached in `AppState` for the next Phase B subsystem.
+
+### What this intentionally does not do yet
+
+- no subprocess launch
+- no stderr/progress parsing
+- no comparison view
+- no output-path generation
+
+### Rationale
+
+- This keeps the first Phase B increment manually testable and low-risk.
+- The UI now has a real entry point for upscale capability without coupling detection to execution.
+- Future subsystems can reuse the cached binary path instead of re-solving UI wiring first.
+
+### Handoff note for Claude
+
+- Next subsystem should consume `AppState.upscale_binary` and start the real upscale run only after an image is selected.
+- Reuse the existing toolbar button path; do not add a second upscale trigger.
+- Keep the missing-binary banner behavior intact and layer runner/progress work on top of it.
+
+## 2026-04-04 Prototype Bugfix Pass
+
+### Runtime and UX issues addressed
+
+- Sidebar folder rows now respond on normal selection instead of relying on row activation.
+  - Root cause: the sidebar used `connect_row_activated`, which is less reliable for the expected single-click navigation behavior.
+- Filmstrip thumbnail requests are now wired to the background worker from the window setup path.
+  - Root cause: the filmstrip had request logic in place, but no worker sender was ever provided, so rows could not enqueue thumbnail generation.
+- Viewer stale async image callbacks are discarded using the `load_gen` token.
+  - Root cause: late decode or metadata callbacks could update the viewer after the user had already selected a newer image.
+- Viewer zoom now scales from the current paintable's intrinsic size and keeps the picture centered.
+  - Root cause: zoom was based on a fixed width request, which caused weak scaling and visible drift.
+- Viewer page title changed from `Image Library` to `Preview`.
+
+### Files touched in stabilization so far
+
+- `src/model/library.rs`
+- `src/thumbnails/worker.rs`
+- `src/ui/filmstrip.rs`
+- `src/ui/sidebar.rs`
+- `src/ui/viewer.rs`
+- `src/ui/window.rs`
+
+### Handoff note for Claude
+
+Current prototype status after this pass:
+
+- app launches
+- folder picker path works
+- sidebar selection path should now behave like a normal single-click navigator
+- thumbnail worker is now connected to the filmstrip request path
+- async stale-load protection is in place in `viewer.rs`
+- zoom behavior is improved but still MVP-level; there is still no true anchored zoom/pan viewport
+
+Suggested next validation steps:
+
+1. Re-run manual testing on sidebar selection for `Home`, `Pictures`, and `Downloads`.
+2. Confirm thumbnails now populate for visible filmstrip rows and continue appearing while scrolling.
+3. Check whether `items_changed` notifications are sufficient for thumbnail repaint on all rows.
+4. If zoom still feels unstable, the next step is likely a proper scrolled/transform-based viewer rather than more `size_request` tuning.
+
+## 2026-04-04 Sidebar Discovery Adjustment
+
+### Sidebar folder model change
+
+- Sidebar roots are now treated as scan roots instead of directly assuming they are meaningful image folders.
+- Discovery logic is intentionally shallow for MVP:
+  - inspect each root itself for supported image files
+  - inspect immediate child folders for supported image files
+  - include only folders that directly contain images
+  - skip empty or dead container folders
+  - avoid duplicate paths across `Pictures`, `Downloads`, and `Home`
+
+### Current rule set
+
+- Root order is `Pictures`, `Downloads`, then `Home`
+- If a root itself contains images, it is shown directly
+- Child folders are labeled with context, for example `Pictures / Trip`
+- No recursive walk beyond one level in this pass
+
+### Rationale
+
+- This better matches how users actually organize photos in an MVP prototype
+- It avoids an expensive recursive scan of all of `Home`
+- It keeps the sidebar implementation simple while making the folder list much more actionable
+
+## 2026-04-04 Thumbnail Scheduling And Cache Pass
+
+### Thumbnail scheduling changes
+
+- Thumbnail generation is now scheduled from the filmstrip viewport instead of from every row bind.
+- The scheduler estimates the visible row range from the scroll adjustment and requests:
+  - currently visible rows
+  - a small nearby buffer above and below the viewport
+- Pending requests are tracked per folder so the same path is not re-queued repeatedly while scrolling.
+
+### Persistent thumbnail cache
+
+- Added a simple on-disk cache under:
+  - `$XDG_CACHE_HOME/sharpr/thumbnails`
+  - or `~/.cache/sharpr/thumbnails`
+- Cache key strategy:
+  - stable hash of the source path
+  - source file size
+  - source modified timestamp seconds + nanoseconds
+- This means a cached thumbnail is reused when the file at the same path has not changed.
+- If the source image changes, the cache key changes and the old cache entry is ignored.
+
+### Result path updates
+
+- Completed thumbnail results now use the library path-to-index lookup instead of scanning the whole store.
+- After each completed thumbnail, the filmstrip clears the pending marker for that path and schedules the next nearby rows.
+
+### Follow-up work to defer
+
+- cache cleanup / eviction for old disk thumbnails
+- more precise visible-row calculation based on actual row measurements instead of an estimated row height
+- request prioritization beyond simple viewport-plus-buffer scheduling
+- cancellation of worker tasks that are no longer near the viewport
+
+## 2026-04-04 Preview Containment Fix
+
+### Viewer architecture adjustment
+
+- The preview image now lives inside its own `gtk4::ScrolledWindow`.
+- The scrolled window is the fixed preview viewport.
+- The picture widget is the zoomed content inside that viewport.
+
+### Why this is the correct MVP containment model
+
+- zoom should change only the image content size
+- clipping and overflow should be owned by the image viewport
+- the surrounding UI layout should remain fixed
+- scrolling/panning should happen inside the preview pane, not by resizing parent layout widgets
+
+### Current ownership model
+
+- `ViewerPane` overlay remains the stable container
+- `ScrolledWindow` owns the visible preview area and clipping
+- `Picture` owns the image paintable and zoomed size request
+- metadata chip and spinner remain overlay elements above the fixed viewport
+
+### Follow-up work to defer
+
+- mouse-centered zoom anchored to pointer position
+- smoother pan behavior and drag-to-pan
+- explicit preview border / framing polish
+
+## 2026-04-04 Viewer Interaction MVP Pass
+
+### Interaction updates
+
+- Added drag-to-pan inside the contained preview viewport.
+- Panning works by updating the `ScrolledWindow` adjustments directly during a drag gesture.
+- Zoom now uses the last known pointer position in the preview viewport as its focal point.
+
+### Ownership model
+
+- `ScrolledWindow` remains the fixed viewport and owns the visible region
+- `Picture` remains the zoomed image content
+- drag and zoom only modify viewport adjustments or picture content size
+- surrounding UI remains outside the interaction path
+
+### Rationale
+
+- Drag-to-pan is the simplest useful MVP interaction once the preview is contained
+- Adjustment-based panning fits naturally with the current `ScrolledWindow` architecture
+- Pointer-biased zoom is a practical improvement over top-left anchoring without requiring a custom rendering widget
+
+### Remaining rough edges to defer
+
+- true mathematically exact mouse-anchored zoom in all centering edge cases
+- cursor changes for grab / dragging states
+- kinetic panning or touch gestures
+
+## 2026-04-04 Git Process Note
+
+### Commit hygiene
+
+- We should be more proactive about using git for meaningful checkpoints during prototype work.
+- This stabilization/prototype pass was large enough that it would have been healthier as multiple commits instead of one long-running working tree.
+
+### Suggested checkpoint pattern
+
+1. Commit crash fixes and stale async load protection
+2. Commit sidebar discovery and folder-selection behavior
+3. Commit thumbnail scheduling and disk cache
+4. Commit preview containment and viewer interaction improvements
+
+### Working rule going forward
+
+- Prefer committing after each coherent runtime milestone that:
+  - changes one subsystem
+  - is manually testable
+  - leaves the app in a runnable state

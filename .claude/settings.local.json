@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo new:*)",
+      "Read(//usr/lib/**)",
+      "Bash(pkg-config --modversion gtk4)",
+      "Bash(pkg-config --modversion libadwaita-1)",
+      "Bash(pkg-config --modversion gexiv2)",
+      "Bash(rustc --version)",
+      "Bash(cargo --version)",
+      "Bash(sudo dnf:*)",
+      "Bash(git config:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(cargo build:*)"
+    ]
+  }
+}

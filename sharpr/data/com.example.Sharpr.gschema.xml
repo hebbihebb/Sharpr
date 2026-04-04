@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="com.example.Sharpr" path="/com/example/Sharpr/">
+    <key name="last-folder" type="s">
+      <default>""</default>
+      <summary>Last opened folder</summary>
+      <description>The path of the folder last opened by the user.</description>
+    </key>
+    <key name="metadata-visible" type="b">
+      <default>true</default>
+      <summary>Metadata overlay visible</summary>
+      <description>Whether the floating metadata overlay is shown in the viewer.</description>
+    </key>
+    <key name="window-width" type="i">
+      <default>1400</default>
+      <summary>Window width</summary>
+    </key>
+    <key name="window-height" type="i">
+      <default>900</default>
+      <summary>Window height</summary>
+    </key>
+  </schema>
+</schemalist>
