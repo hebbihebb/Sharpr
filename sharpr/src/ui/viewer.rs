@@ -13,6 +13,12 @@ use crate::upscale::BeforeAfterViewer;
 // ViewerPane
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ZoomMode {
+    Fit,
+    OneToOne,
+}
+
 mod imp {
     use super::*;
 
@@ -33,7 +39,11 @@ mod imp {
         /// async upscale callbacks can show/hide them without capturing clones.
         pub commit_btn: std::cell::RefCell<Option<gtk4::Button>>,
         pub discard_btn: std::cell::RefCell<Option<gtk4::Button>>,
+        /// Zoom/Fit toggle button in the header — stored so mode changes can
+        /// update the icon without an extra signal.
+        pub zoom_btn: std::cell::RefCell<Option<gtk4::Button>>,
         pub zoom: Cell<f64>,
+        pub zoom_mode: Cell<super::ZoomMode>,
         pub metadata_visible: Cell<bool>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub pointer_pos: Cell<(f64, f64)>,
@@ -104,7 +114,9 @@ mod imp {
                 pending_output: std::cell::RefCell::new(None),
                 commit_btn: std::cell::RefCell::new(None),
                 discard_btn: std::cell::RefCell::new(None),
+                zoom_btn: std::cell::RefCell::new(None),
                 zoom: Cell::new(1.0),
+                zoom_mode: Cell::new(super::ZoomMode::Fit),
                 metadata_visible: Cell::new(true),
                 state: RefCell::new(None),
                 pointer_pos: Cell::new((0.0, 0.0)),
@@ -411,9 +423,69 @@ impl ViewerPane {
     pub fn reset_zoom(&self) {
         let imp = self.imp();
         imp.zoom.set(1.0);
+        imp.zoom_mode.set(ZoomMode::Fit);
         imp.picture.set_size_request(-1, -1);
         imp.scrolled_window.hadjustment().set_value(0.0);
         imp.scrolled_window.vadjustment().set_value(0.0);
+        self.sync_zoom_button();
+    }
+
+    /// Store the zoom/fit toggle button so mode changes can update its icon.
+    pub fn set_zoom_button(&self, btn: gtk4::Button) {
+        *self.imp().zoom_btn.borrow_mut() = Some(btn);
+    }
+
+    /// Toggle between Fit and 1:1 pixel mode. Updates the stored button icon.
+    pub fn toggle_zoom_mode(&self) {
+        let imp = self.imp();
+        let new_mode = match imp.zoom_mode.get() {
+            ZoomMode::Fit => ZoomMode::OneToOne,
+            ZoomMode::OneToOne => ZoomMode::Fit,
+        };
+        imp.zoom_mode.set(new_mode);
+        match new_mode {
+            ZoomMode::Fit => {
+                imp.zoom.set(1.0);
+                imp.picture.set_size_request(-1, -1);
+                imp.scrolled_window.hadjustment().set_value(0.0);
+                imp.scrolled_window.vadjustment().set_value(0.0);
+            }
+            ZoomMode::OneToOne => {
+                let Some(paintable) = imp.picture.paintable() else { return };
+                let w = paintable.intrinsic_width().max(1);
+                let h = paintable.intrinsic_height().max(1);
+                imp.zoom.set(1.0);
+                imp.picture.set_size_request(w, h);
+                // Centre the scroll on the image after layout.
+                let hadj = imp.scrolled_window.hadjustment();
+                let vadj = imp.scrolled_window.vadjustment();
+                glib::idle_add_local_once({
+                    let hadj = hadj.clone();
+                    let vadj = vadj.clone();
+                    move || {
+                        hadj.set_value((hadj.upper() - hadj.page_size()) / 2.0);
+                        vadj.set_value((vadj.upper() - vadj.page_size()) / 2.0);
+                    }
+                });
+            }
+        }
+        self.sync_zoom_button();
+    }
+
+    fn sync_zoom_button(&self) {
+        let imp = self.imp();
+        if let Some(ref btn) = *imp.zoom_btn.borrow() {
+            match imp.zoom_mode.get() {
+                ZoomMode::Fit => {
+                    btn.set_icon_name("zoom-fit-best-symbolic");
+                    btn.set_tooltip_text(Some("1:1 Pixels (switch to actual size)"));
+                }
+                ZoomMode::OneToOne => {
+                    btn.set_icon_name("zoom-original-symbolic");
+                    btn.set_tooltip_text(Some("Fit to Window (switch to fit)"));
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

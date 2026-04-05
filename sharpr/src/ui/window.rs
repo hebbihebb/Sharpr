@@ -184,9 +184,10 @@ impl SharprWindow {
         let (viewer_header, zoom_btn, upscale_btn, commit_btn, discard_btn) =
             self.build_viewer_header();
 
+        viewer.set_zoom_button(zoom_btn.clone());
         {
             let viewer_c = viewer.clone();
-            zoom_btn.connect_clicked(move |_| { viewer_c.reset_zoom(); });
+            zoom_btn.connect_clicked(move |_| { viewer_c.toggle_zoom_mode(); });
         }
         let upscale_banner = libadwaita::Banner::new("");
         upscale_banner.set_button_label(Some("Dismiss"));
