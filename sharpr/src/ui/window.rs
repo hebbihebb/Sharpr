@@ -399,8 +399,72 @@ impl SharprWindow {
         ));
         shortcuts.add_shortcut(gtk4::Shortcut::new(
             Some(gtk4::ShortcutTrigger::parse_string("<Alt>Right").unwrap()),
-            Some(make_action(state, filmstrip, viewer, 1)),
+            Some(make_action(state.clone(), filmstrip.clone(), viewer.clone(), 1)),
         ));
+
+        // F11 — Toggle fullscreen.
+        shortcuts.add_shortcut(gtk4::Shortcut::new(
+            Some(gtk4::ShortcutTrigger::parse_string("F11").unwrap()),
+            Some(gtk4::CallbackAction::new(move |widget, _| {
+                if let Some(win) = widget.downcast_ref::<gtk4::Window>() {
+                    if win.is_fullscreen() {
+                        win.unfullscreen();
+                    } else {
+                        win.fullscreen();
+                    }
+                }
+                glib::Propagation::Stop
+            })),
+        ));
+
+        // Del — Move selected image to trash.
+        {
+            let state_d = state.clone();
+            let filmstrip_d = filmstrip.clone();
+            let viewer_d = viewer.clone();
+            shortcuts.add_shortcut(gtk4::Shortcut::new(
+                Some(gtk4::ShortcutTrigger::parse_string("Delete").unwrap()),
+                Some(gtk4::CallbackAction::new(move |_, _| {
+                    let (path, index) = {
+                        let Ok(st) = state_d.try_borrow() else {
+                            return glib::Propagation::Proceed;
+                        };
+                        let index = match st.library.selected_index {
+                            Some(i) => i,
+                            None => return glib::Propagation::Proceed,
+                        };
+                        let path = match st.library.entry_at(index) {
+                            Some(e) => e.path(),
+                            None => return glib::Propagation::Proceed,
+                        };
+                        (path, index)
+                    };
+
+                    if gio::File::for_path(&path)
+                        .trash(None::<&gio::Cancellable>)
+                        .is_ok()
+                    {
+                        state_d.borrow_mut().library.remove_path(&path);
+                        let new_count = state_d.borrow().library.image_count();
+                        if new_count == 0 {
+                            viewer_d.clear();
+                        } else {
+                            let new_index = index.min(new_count - 1);
+                            filmstrip_d.select_index(new_index);
+                            let next_path = state_d
+                                .borrow()
+                                .library
+                                .entry_at(new_index)
+                                .map(|e: ImageEntry| e.path());
+                            if let Some(p) = next_path {
+                                viewer_d.load_image(p);
+                            }
+                        }
+                    }
+                    glib::Propagation::Stop
+                })),
+            ));
+        }
 
         self.add_controller(shortcuts);
     }
