@@ -597,6 +597,15 @@ impl ViewerPane {
         let stride = (w * 4) as usize;
         let mut rgba_bytes = vec![0_u8; stride * h as usize];
         texture.download(&mut rgba_bytes, stride);
+        for px in rgba_bytes.chunks_exact_mut(4) {
+            px.swap(0, 2); // swap R and B (BGRA → RGBA)
+            let a = px[3];
+            if a > 0 && a < 255 {
+                px[0] = ((px[0] as u16 * 255) / a as u16).min(255) as u8;
+                px[1] = ((px[1] as u16 * 255) / a as u16).min(255) as u8;
+                px[2] = ((px[2] as u16 * 255) / a as u16).min(255) as u8;
+            }
+        }
 
         let Some(buf) = image::RgbaImage::from_raw(w, h, rgba_bytes) else {
             return;
@@ -648,6 +657,15 @@ impl ViewerPane {
         let stride = (w * 4) as usize;
         let mut rgba = vec![0u8; stride * h as usize];
         texture.download(&mut rgba, stride);
+        for px in rgba.chunks_exact_mut(4) {
+            px.swap(0, 2); // swap R and B (BGRA → RGBA)
+            let a = px[3];
+            if a > 0 && a < 255 {
+                px[0] = ((px[0] as u16 * 255) / a as u16).min(255) as u8;
+                px[1] = ((px[1] as u16 * 255) / a as u16).min(255) as u8;
+                px[2] = ((px[2] as u16 * 255) / a as u16).min(255) as u8;
+            }
+        }
 
         let ext = path.extension()
             .and_then(|e| e.to_str())
@@ -787,7 +805,9 @@ impl ViewerPane {
         imp.progress_bar.set_visible(true);
 
         let widget_weak = self.downgrade();
-        let btn_weak = trigger_btn.downgrade();
+        // Keep a strong ref to trigger_btn inside the closure so we can
+        // re-enable it on completion. The weak-ref pattern caused the strong
+        // ref to drop when start_upscale() returned, leaving upgrade() returning None.
 
         glib::MainContext::default().spawn_local(async move {
             while let Ok(event) = rx.recv().await {
@@ -802,18 +822,14 @@ impl ViewerPane {
                     }
                     UpscaleEvent::Done(out_path) => {
                         vimp.progress_bar.set_visible(false);
-                        if let Some(btn) = btn_weak.upgrade() {
-                            btn.set_sensitive(true);
-                        }
+                        trigger_btn.set_sensitive(true);
                         viewer.show_comparison(path.clone(), out_path);
                         break;
                     }
                     UpscaleEvent::Failed(msg) => {
                         vimp.progress_bar.set_visible(false);
                         eprintln!("Upscale failed: {msg}");
-                        if let Some(btn) = btn_weak.upgrade() {
-                            btn.set_sensitive(true);
-                        }
+                        trigger_btn.set_sensitive(true);
                         break;
                     }
                 }
