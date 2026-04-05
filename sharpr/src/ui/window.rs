@@ -181,8 +181,13 @@ impl SharprWindow {
             .build();
         inner_split.set_sidebar(Some(&filmstrip_page));
 
-        let (viewer_header, upscale_btn, commit_btn, discard_btn) =
+        let (viewer_header, zoom_btn, upscale_btn, commit_btn, discard_btn) =
             self.build_viewer_header();
+
+        {
+            let viewer_c = viewer.clone();
+            zoom_btn.connect_clicked(move |_| { viewer_c.reset_zoom(); });
+        }
         let upscale_banner = libadwaita::Banner::new("");
         upscale_banner.set_button_label(Some("Dismiss"));
         upscale_banner.set_revealed(false);
@@ -425,11 +430,11 @@ impl SharprWindow {
     /// Build the viewer header bar.
     /// Returns `(header_bar, upscale_button)` so the caller can wire detector
     /// behavior once the rest of the viewer widgets exist.
-    /// Returns `(header, upscale_btn, commit_btn, discard_btn)`.
+    /// Returns `(header, zoom_btn, upscale_btn, commit_btn, discard_btn)`.
     /// Commit and Discard are initially hidden; the comparison view shows them.
     fn build_viewer_header(
         &self,
-    ) -> (libadwaita::HeaderBar, gtk4::Button, gtk4::Button, gtk4::Button) {
+    ) -> (libadwaita::HeaderBar, gtk4::Button, gtk4::Button, gtk4::Button, gtk4::Button) {
         let header = libadwaita::HeaderBar::new();
 
         let zoom_btn = gtk4::Button::from_icon_name("zoom-fit-best-symbolic");
@@ -454,6 +459,6 @@ impl SharprWindow {
         discard_btn.set_visible(false);
         header.pack_end(&discard_btn);
 
-        (header, upscale_btn, commit_btn, discard_btn)
+        (header, zoom_btn, upscale_btn, commit_btn, discard_btn)
     }
 }

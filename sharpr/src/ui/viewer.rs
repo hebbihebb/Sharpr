@@ -408,7 +408,7 @@ impl ViewerPane {
         );
     }
 
-    fn reset_zoom(&self) {
+    pub fn reset_zoom(&self) {
         let imp = self.imp();
         imp.zoom.set(1.0);
         imp.picture.set_size_request(-1, -1);
