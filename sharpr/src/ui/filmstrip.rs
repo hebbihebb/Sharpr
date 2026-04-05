@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gdk4::Paintable;
+use glib::prelude::*;
 use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -225,8 +226,10 @@ impl FilmstripPane {
         // lands on the same position (e.g. both at index 0).
         imp.selection_model.set_model(None::<&gio::ListStore>);
         imp.selection_model.set_model(Some(&store));
-        // Layout hasn't run yet at this point, so schedule_visible_thumbnails
-        // would see a zero page_size. Re-schedule after GTK finishes layout.
+        // Schedule immediately (uses 20-row fallback if layout not done yet),
+        // then re-schedule once after GTK finishes layout to pick up the real
+        // page_size and catch any rows the fallback missed.
+        self.schedule_visible_thumbnails();
         let w = self.downgrade();
         glib::idle_add_local_once(move || {
             if let Some(filmstrip) = w.upgrade() {
@@ -260,33 +263,81 @@ impl FilmstripPane {
 
         let adjustment = imp.scroll.vadjustment();
         let visible_start = (adjustment.value() / ESTIMATED_ROW_HEIGHT).floor().max(0.0) as u32;
-        let visible_rows = (adjustment.page_size() / ESTIMATED_ROW_HEIGHT)
-            .ceil()
-            .max(1.0) as u32;
+        // If page_size is 0 the widget hasn't been laid out yet; assume a
+        // generous default (20 rows) so thumbnails are queued on first load.
+        let page_size = adjustment.page_size();
+        let visible_rows = if page_size > 0.0 {
+            (page_size / ESTIMATED_ROW_HEIGHT).ceil() as u32
+        } else {
+            20
+        };
         let range_start = visible_start.saturating_sub(BUFFER_ROWS);
         let range_end = visible_start
             .saturating_add(visible_rows)
             .saturating_add(BUFFER_ROWS);
 
         let mut pending = imp.pending_thumbnails.borrow_mut();
-        let state = state_rc.borrow();
-        let image_count = state.library.image_count();
+        let image_count = state_rc.borrow().library.image_count();
         let capped_end = range_end.min(image_count);
 
-        for index in range_start..capped_end {
-            let Some(entry) = state.library.entry_at(index) else {
-                continue;
-            };
-            if entry.thumbnail().is_some() {
-                continue;
-            }
+        // Collect disk-cache hits and worker-needed paths separately so we
+        // can drop the state borrow before calling items_changed.
+        let mut disk_hits: Vec<(u32, std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+        let mut worker_paths: Vec<std::path::PathBuf> = Vec::new();
 
-            let path = entry.path();
-            if !pending.insert(path.clone()) {
-                continue;
+        {
+            let state = state_rc.borrow();
+            for index in range_start..capped_end {
+                let Some(entry) = state.library.entry_at(index) else {
+                    continue;
+                };
+                if entry.thumbnail().is_some() {
+                    continue;
+                }
+                let path = entry.path();
+                if !pending.insert(path.clone()) {
+                    continue;
+                }
+                // Check disk cache — avoids a worker round-trip for previously-seen images.
+                if let Some(cache_path) = crate::thumbnails::cache::thumbnail_cache_path(&path) {
+                    if cache_path.exists() {
+                        disk_hits.push((index, path, cache_path));
+                        continue;
+                    }
+                }
+                worker_paths.push(path);
             }
+        }
 
-            // Non-blocking scheduling keeps scrolling responsive.
+        // Load disk-cached thumbnails inline — a 160 px PNG decodes in ~1-2 ms.
+        for (index, path, cache_path) in disk_hits {
+            if let Ok(img) = image::open(&cache_path) {
+                let rgba = img.into_rgba8();
+                let (w, h) = (rgba.width(), rgba.height());
+                let gbytes = glib::Bytes::from_owned(rgba.into_raw());
+                let texture = gdk4::MemoryTexture::new(
+                    w as i32,
+                    h as i32,
+                    gdk4::MemoryFormat::R8g8b8a8,
+                    &gbytes,
+                    (w * 4) as usize,
+                );
+                let texture: gdk4::Texture = texture.upcast();
+                // Set on entry and warm the LRU; drop state borrow before items_changed.
+                {
+                    let state = state_rc.borrow();
+                    if let Some(entry) = state.library.entry_at(index) {
+                        entry.set_thumbnail(texture.clone());
+                    }
+                }
+                state_rc.borrow_mut().library.insert_thumbnail(path.clone(), texture);
+                state_rc.borrow().library.store.items_changed(index, 1, 1);
+                pending.remove(&path);
+            }
+        }
+
+        // Send remaining cache-miss paths to the worker pool.
+        for path in worker_paths {
             if tx.try_send(WorkerRequest::Thumbnail(path.clone())).is_err() {
                 pending.remove(&path);
                 break;
