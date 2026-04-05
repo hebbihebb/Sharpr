@@ -185,6 +185,28 @@ impl SharprWindow {
             });
         }
 
+        // Duplicates row → group detection → load_virtual.
+        {
+            let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
+            let state_c = state.clone();
+            sidebar.connect_duplicates_selected(move || {
+                let hashes = state_c.borrow().library.hashes_snapshot();
+                let groups = crate::duplicates::phash::group_duplicates(&hashes);
+                if groups.is_empty() {
+                    return;
+                }
+                let paths: Vec<_> = groups.into_iter().next().unwrap();
+                state_c.borrow_mut().library.load_virtual(&paths);
+                filmstrip_c.refresh();
+                let first = state_c.borrow().library.entry_at(0).map(|e: ImageEntry| e.path());
+                if let Some(p) = first {
+                    filmstrip_c.select_index(0);
+                    viewer_c.load_image(p);
+                }
+            });
+        }
+
         // Filmstrip selection → viewer load.
         {
             let viewer_c = viewer.clone();
@@ -229,28 +251,9 @@ impl SharprWindow {
             .build();
         inner_split.set_sidebar(Some(&filmstrip_page));
 
-        let (viewer_header, zoom_btn, upscale_btn, commit_btn, discard_btn) =
+        let (viewer_header, commit_btn, discard_btn) =
             self.build_viewer_header();
 
-        viewer.set_zoom_button(zoom_btn.clone());
-        self.setup_actions(&viewer, state.clone());
-        {
-            let win_weak = self.downgrade();
-            zoom_btn.connect_clicked(move |_| {
-                let Some(win) = win_weak.upgrade() else { return };
-                if let Some(action) = win
-                    .lookup_action("zoom-mode")
-                    .and_then(|a| a.downcast::<gio::SimpleAction>().ok())
-                {
-                    let current = action
-                        .state()
-                        .and_then(|s| s.str().map(String::from))
-                        .unwrap_or_else(|| "fit".into());
-                    let next = if current == "fit" { "1:1" } else { "fit" };
-                    action.activate(Some(&next.to_variant()));
-                }
-            });
-        }
         let upscale_banner = libadwaita::Banner::new("");
         upscale_banner.set_button_label(Some("Dismiss"));
         upscale_banner.set_revealed(false);
@@ -258,48 +261,14 @@ impl SharprWindow {
             banner.set_revealed(false);
         });
 
+        self.setup_actions(&viewer, state.clone(), &upscale_banner);
+
         let viewer_toolbar = libadwaita::ToolbarView::new();
         viewer_toolbar.add_top_bar(&viewer_header);
         viewer_toolbar.add_top_bar(&upscale_banner);
 
         viewer_toolbar.set_content(Some(&viewer));
         viewer_toolbar.set_top_bar_style(libadwaita::ToolbarStyle::Raised);
-
-        {
-            let state_c = state.clone();
-            let banner_c = upscale_banner.clone();
-            let viewer_c = viewer.clone();
-            upscale_btn.connect_clicked(move |btn| {
-                // Lazy binary detection — cached after first successful find.
-                let has_binary = {
-                    let mut st = state_c.borrow_mut();
-                    if st.upscale_binary.is_none() {
-                        st.upscale_binary = UpscaleDetector::find_realesrgan();
-                    }
-                    st.upscale_binary.is_some()
-                };
-
-                if !has_binary {
-                    banner_c.set_title(
-                        "AI upscaling requires realesrgan-ncnn-vulkan.                          Install it to ~/.local/bin or via Flatpak.",
-                    );
-                    banner_c.set_revealed(true);
-                    return;
-                }
-                banner_c.set_revealed(false);
-
-                let path = state_c
-                    .borrow()
-                    .library
-                    .selected_entry()
-                    .map(|e: ImageEntry| e.path());
-
-                if let Some(p) = path {
-                    btn.set_sensitive(false);
-                    viewer_c.start_upscale(p, btn.clone());
-                }
-            });
-        }
 
         // Give the viewer a reference to the Commit/Discard buttons so the
         // async upscale callback can show/hide them without extra clones.
@@ -614,6 +583,7 @@ impl SharprWindow {
         menu.append_section(Some("Rotate & Flip"), &transform_section);
 
         let upscale_section = gio::Menu::new();
+        upscale_section.append(Some("Run AI Upscale"), Some("win.upscale"));
         upscale_section.append(Some("Standard (Photo)"), Some("win.upscale-model::standard"));
         upscale_section.append(Some("Anime / Art"), Some("win.upscale-model::anime"));
         menu.append_section(Some("AI Upscale"), &upscale_section);
@@ -626,7 +596,7 @@ impl SharprWindow {
         menu
     }
 
-    fn setup_actions(&self, viewer: &ViewerPane, state: Rc<RefCell<AppState>>) {
+    fn setup_actions(&self, viewer: &ViewerPane, state: Rc<RefCell<AppState>>, upscale_banner: &libadwaita::Banner) {
         let zoom_initial = match viewer.zoom_mode() {
             ZoomMode::Fit => "fit",
             ZoomMode::OneToOne => "1:1",
@@ -676,6 +646,7 @@ impl SharprWindow {
             &"standard".to_variant(),
         );
         {
+            let state_m = state.clone();
             model_action.connect_activate(move |action, param| {
                 let Some(param) = param else { return };
                 let model = if param.str() == Some("anime") {
@@ -683,7 +654,7 @@ impl SharprWindow {
                 } else {
                     UpscaleModel::Standard
                 };
-                state.borrow_mut().upscale_model = model;
+                state_m.borrow_mut().upscale_model = model;
                 action.set_state(param);
             });
         }
@@ -698,10 +669,59 @@ impl SharprWindow {
         let help_action = gio::SimpleAction::new("show-help-overlay", None);
         help_action.set_enabled(false);
         self.add_action(&help_action);
+
+        let upscale_action = gio::SimpleAction::new("upscale", None);
+        {
+            let state_c = state.clone();
+            let banner_c = upscale_banner.clone();
+            let viewer_weak = viewer.downgrade();
+            let action_weak = upscale_action.downgrade();
+            upscale_action.connect_activate(move |action, _| {
+                let Some(viewer) = viewer_weak.upgrade() else { return };
+                let has_binary = {
+                    let mut st = state_c.borrow_mut();
+                    if st.upscale_binary.is_none() {
+                        st.upscale_binary = UpscaleDetector::find_realesrgan();
+                    }
+                    st.upscale_binary.is_some()
+                };
+                if !has_binary {
+                    banner_c.set_title(
+                        "AI upscaling requires realesrgan-ncnn-vulkan. Install it to ~/.local/bin or via Flatpak.",
+                    );
+                    banner_c.set_revealed(true);
+                    return;
+                }
+                banner_c.set_revealed(false);
+                let path = state_c
+                    .borrow()
+                    .library
+                    .selected_entry()
+                    .map(|e: ImageEntry| e.path());
+                if let Some(p) = path {
+                    action.set_enabled(false);
+                    // Proxy button bridges start_upscale's re-enable callback back
+                    // to the action: start insensitive so the true→false→true
+                    // transition fires the notify when the job finishes.
+                    let proxy_btn = gtk4::Button::new();
+                    let action_weak_c = action_weak.clone();
+                    proxy_btn.connect_sensitive_notify(move |btn| {
+                        if btn.is_sensitive() {
+                            if let Some(a) = action_weak_c.upgrade() {
+                                a.set_enabled(true);
+                            }
+                        }
+                    });
+                    proxy_btn.set_sensitive(false);
+                    viewer.start_upscale(p, proxy_btn);
+                }
+            });
+        }
+        self.add_action(&upscale_action);
     }
 
     /// Build the viewer header bar.
-    /// Returns `(header, zoom_btn, upscale_btn, commit_btn, discard_btn)`.
+    /// Returns `(header, commit_btn, discard_btn)`.
     /// Commit and Discard are initially hidden; the comparison view shows them.
     fn build_viewer_header(
         &self,
@@ -709,20 +729,8 @@ impl SharprWindow {
         libadwaita::HeaderBar,
         gtk4::Button,
         gtk4::Button,
-        gtk4::Button,
-        gtk4::Button,
     ) {
         let header = libadwaita::HeaderBar::new();
-
-        let zoom_btn = gtk4::Button::from_icon_name("zoom-fit-best-symbolic");
-        zoom_btn.set_tooltip_text(Some("Fit to Window (Ctrl+0)"));
-        zoom_btn.add_css_class("flat");
-        header.pack_start(&zoom_btn);
-
-        let upscale_btn = gtk4::Button::with_label("AI Upscale");
-        upscale_btn.set_tooltip_text(Some("Upscale selected image with AI"));
-        upscale_btn.add_css_class("flat");
-        header.pack_end(&upscale_btn);
 
         let commit_btn = gtk4::Button::with_label("Save");
         commit_btn.set_tooltip_text(Some("Save upscaled image"));
@@ -745,6 +753,6 @@ impl SharprWindow {
         menu_btn.add_css_class("flat");
         header.pack_end(&menu_btn);
 
-        (header, zoom_btn, upscale_btn, commit_btn, discard_btn)
+        (header, commit_btn, discard_btn)
     }
 }

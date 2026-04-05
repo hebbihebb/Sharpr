@@ -192,6 +192,21 @@ impl LibraryManager {
         self.cache_order.push(path);
     }
 
+    /// Populate the store from an arbitrary list of paths (virtual view).
+    /// Does not touch the filesystem or `current_folder`; sets it to `None`
+    /// so callers can distinguish a virtual view from a real folder scan.
+    pub fn load_virtual(&mut self, paths: &[PathBuf]) {
+        self.store.remove_all();
+        self.path_to_index.clear();
+        self.selected_index = None;
+        self.current_folder = None;
+        for (index, path) in paths.iter().enumerate() {
+            let entry = self.build_entry(path.clone());
+            self.store.append(&entry);
+            self.path_to_index.insert(path.clone(), index as u32);
+        }
+    }
+
     pub fn insert_hash(&mut self, path: PathBuf, hash: u64) {
         self.hash_store.insert(path, hash);
     }

@@ -10,6 +10,7 @@ use gtk4::subclass::prelude::*;
 use crate::ui::window::AppState;
 
 type FolderSelectedCallback = Box<dyn Fn(PathBuf) + 'static>;
+type DuplicatesSelectedCallback = Box<dyn Fn() + 'static>;
 
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
@@ -26,6 +27,7 @@ mod imp {
         pub toolbar_view: libadwaita::ToolbarView,
         pub list_box: gtk4::ListBox,
         pub folder_selected_cb: RefCell<Option<FolderSelectedCallback>>,
+        pub duplicates_selected_cb: RefCell<Option<DuplicatesSelectedCallback>>,
     }
 
     impl Default for SidebarPane {
@@ -34,6 +36,7 @@ mod imp {
                 toolbar_view: libadwaita::ToolbarView::new(),
                 list_box: gtk4::ListBox::new(),
                 folder_selected_cb: RefCell::new(None),
+                duplicates_selected_cb: RefCell::new(None),
             }
         }
     }
@@ -156,7 +159,43 @@ impl SidebarPane {
         recent_row.set_margin_bottom(4);
         recent_row.add_css_class("dim-label");
 
+        // -----------------------------------------------------------------------
+        // Smart Folders section — Duplicates row
+        // -----------------------------------------------------------------------
+        let smart_label = section_label("Smart Folders");
+
+        let dup_row = gtk4::ListBoxRow::new();
+        let dup_icon = gtk4::Image::from_icon_name("edit-find-symbolic");
+        let dup_name = gtk4::Label::new(Some("Duplicates"));
+        dup_name.set_halign(gtk4::Align::Start);
+        dup_name.set_hexpand(true);
+        let dup_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        dup_box.set_margin_start(8);
+        dup_box.set_margin_end(8);
+        dup_box.set_margin_top(6);
+        dup_box.set_margin_bottom(6);
+        dup_box.append(&dup_icon);
+        dup_box.append(&dup_name);
+        dup_row.set_child(Some(&dup_box));
+
+        let smart_list = gtk4::ListBox::new();
+        smart_list.add_css_class("navigation-sidebar");
+        smart_list.set_selection_mode(gtk4::SelectionMode::None);
+        smart_list.append(&dup_row);
+
+        // Clicking the Duplicates row emits the duplicates callback.
+        let widget_weak = self.downgrade();
+        let dup_gesture = gtk4::GestureClick::new();
+        dup_gesture.connect_released(move |_, _, _, _| {
+            if let Some(w) = widget_weak.upgrade() {
+                w.emit_duplicates_selected();
+            }
+        });
+        dup_row.add_controller(dup_gesture);
+
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        vbox.append(&smart_label);
+        vbox.append(&smart_list);
         vbox.append(&folders_label);
         vbox.append(&scroll);
         vbox.append(&tags_label);
@@ -207,6 +246,16 @@ impl SidebarPane {
     fn emit_folder_selected(&self, path: PathBuf) {
         if let Some(cb) = self.imp().folder_selected_cb.borrow().as_ref() {
             cb(path);
+        }
+    }
+
+    pub fn connect_duplicates_selected<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().duplicates_selected_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    fn emit_duplicates_selected(&self) {
+        if let Some(cb) = self.imp().duplicates_selected_cb.borrow().as_ref() {
+            cb();
         }
     }
 }
