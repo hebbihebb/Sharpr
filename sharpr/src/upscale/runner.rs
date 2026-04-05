@@ -81,6 +81,14 @@ fn run_subprocess(
         let _ = tx.send_blocking(ev);
     };
 
+    // The binary looks for model files in a `models/` directory relative to
+    // its own location (not the working directory). Pass `-m` explicitly so
+    // it works whether installed to ~/.local/bin or /app/bin inside Flatpak.
+    let models_dir = binary
+        .parent()
+        .map(|p| p.join("models"))
+        .unwrap_or_else(|| std::path::PathBuf::from("models"));
+
     let mut child = match Command::new(&binary)
         .args([
             "-i",
@@ -91,6 +99,8 @@ fn run_subprocess(
             &scale.to_string(),
             "-n",
             model.model_name(),
+            "-m",
+            &models_dir.to_string_lossy(),
         ])
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
