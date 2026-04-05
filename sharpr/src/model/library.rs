@@ -78,17 +78,44 @@ impl LibraryManager {
         });
 
         for (index, path) in paths.iter().enumerate() {
-            let entry = ImageEntry::new(path.clone());
-            if let Ok(meta) = std::fs::metadata(path) {
-                entry.set_file_size(meta.len());
-            }
-            // Pre-populate thumbnail from cache if available.
-            if let Some(texture) = self.thumbnail_cache.get(path) {
-                entry.set_thumbnail(texture.clone());
-            }
+            let entry = self.build_entry(path.clone());
             self.store.append(&entry);
             self.path_to_index.insert(path.clone(), index as u32);
         }
+    }
+
+    /// Insert `path` into the current folder's store in filename order.
+    /// Returns the inserted or existing index, or `None` if the path is outside
+    /// the active folder or isn't a supported image type.
+    pub fn insert_path(&mut self, path: PathBuf) -> Option<u32> {
+        if !Self::is_image(&path) {
+            return None;
+        }
+        let current_folder = self.current_folder.as_ref()?;
+        if path.parent() != Some(current_folder.as_path()) {
+            return None;
+        }
+        if let Some(index) = self.path_to_index.get(&path).copied() {
+            return Some(index);
+        }
+
+        let filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        let insert_at = (0..self.store.n_items())
+            .find(|&index| {
+                self.entry_at(index)
+                    .map(|entry| entry.filename().to_lowercase() > filename)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(self.store.n_items());
+
+        let entry = self.build_entry(path.clone());
+        self.store.insert(insert_at, &entry);
+        self.reindex_from(insert_at);
+        Some(insert_at)
     }
 
     /// Returns the list index for `path`, or `None` if not in the current folder.
@@ -156,6 +183,25 @@ impl LibraryManager {
                 IMAGE_EXTENSIONS.contains(&low.as_str())
             })
             .unwrap_or(false)
+    }
+
+    fn build_entry(&self, path: PathBuf) -> ImageEntry {
+        let entry = ImageEntry::new(path.clone());
+        if let Ok(meta) = std::fs::metadata(&path) {
+            entry.set_file_size(meta.len());
+        }
+        if let Some(texture) = self.thumbnail_cache.get(&path) {
+            entry.set_thumbnail(texture.clone());
+        }
+        entry
+    }
+
+    fn reindex_from(&mut self, start: u32) {
+        for index in start..self.store.n_items() {
+            if let Some(entry) = self.entry_at(index) {
+                self.path_to_index.insert(entry.path(), index);
+            }
+        }
     }
 }
 

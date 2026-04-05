@@ -192,9 +192,6 @@ fn build_exif_text(meta: &ImageMetadata) -> String {
     if let Some(ref fl) = meta.focal_length {
         parts.push(fl.clone());
     }
-    if let Some(ref gps) = meta.gps {
-        parts.push(gps.clone());
-    }
     parts.join(" · ")
 }
 

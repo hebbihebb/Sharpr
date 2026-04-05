@@ -114,10 +114,11 @@ impl BeforeAfterViewer {
 
     /// Load before/after images from disk, decoding on background threads.
     pub fn load(&self, before_path: PathBuf, after_path: PathBuf) {
-        let load_gen = self.imp().load_gen.get().wrapping_add(1);
-        self.imp().load_gen.set(load_gen);
-        *self.imp().before_texture.borrow_mut() = None;
-        *self.imp().after_texture.borrow_mut() = None;
+        let imp = self.imp();
+        let load_gen = imp.load_gen.get().wrapping_add(1);
+        imp.load_gen.set(load_gen);
+        *imp.before_texture.borrow_mut() = None;
+        *imp.after_texture.borrow_mut() = None;
         self.queue_draw();
 
         let (tx, rx) = async_channel::bounded::<(bool, Option<(Vec<u8>, i32, i32)>)>(2);
@@ -132,7 +133,8 @@ impl BeforeAfterViewer {
             let mut count = 0;
             while let Ok((is_after, pixels)) = rx.recv().await {
                 let Some(w) = widget_weak.upgrade() else { break };
-                if w.imp().load_gen.get() != load_gen {
+                let imp = w.imp();
+                if imp.load_gen.get() != load_gen {
                     break;
                 }
                 if let Some((bytes, width, height)) = pixels {
@@ -141,10 +143,13 @@ impl BeforeAfterViewer {
                         width, height, gdk4::MemoryFormat::R8g8b8a8,
                         &gbytes, (width as usize) * 4,
                     ).upcast();
+                    if imp.load_gen.get() != load_gen {
+                        break;
+                    }
                     if is_after {
-                        *w.imp().after_texture.borrow_mut() = Some(tex);
+                        *imp.after_texture.borrow_mut() = Some(tex);
                     } else {
-                        *w.imp().before_texture.borrow_mut() = Some(tex);
+                        *imp.before_texture.borrow_mut() = Some(tex);
                     }
                 }
                 count += 1;

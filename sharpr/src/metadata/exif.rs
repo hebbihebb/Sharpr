@@ -15,8 +15,6 @@ pub struct ImageMetadata {
     pub shutter_speed: Option<String>,
     /// Aperture string, e.g. "f/2.8"
     pub aperture: Option<String>,
-    /// GPS as human-readable string, e.g. "64.1°N, 21.9°W"
-    pub gps: Option<String>,
     /// Camera make + model string
     pub camera: Option<String>,
     /// Focal length string, e.g. "50 mm"
@@ -69,19 +67,6 @@ impl ImageMetadata {
 
                 // Aperture (f-number).
                 meta.aperture = exif.get_fnumber().map(|f| format!("f/{:.1}", f));
-
-                // GPS via rexiv2::GpsInfo struct.
-                meta.gps = exif.get_gps_info().map(|gps| {
-                    let lat_dir = if gps.latitude >= 0.0 { "N" } else { "S" };
-                    let lon_dir = if gps.longitude >= 0.0 { "E" } else { "W" };
-                    format!(
-                        "{:.1}°{}, {:.1}°{}",
-                        gps.latitude.abs(),
-                        lat_dir,
-                        gps.longitude.abs(),
-                        lon_dir
-                    )
-                });
 
                 // Camera make + model from EXIF tags.
                 let make = exif.get_tag_string("Exif.Image.Make").ok();

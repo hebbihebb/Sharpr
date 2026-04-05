@@ -155,6 +155,16 @@ impl ViewerPane {
         *self.imp().discard_btn.borrow_mut() = Some(discard);
     }
 
+    fn set_comparison_buttons_visible(&self, visible: bool) {
+        let imp = self.imp();
+        if let Some(ref btn) = *imp.commit_btn.borrow() {
+            btn.set_visible(visible);
+        }
+        if let Some(ref btn) = *imp.discard_btn.borrow() {
+            btn.set_visible(visible);
+        }
+    }
+
     fn build_ui(&self) {
         let imp = self.imp();
         imp.stack.set_parent(self);
@@ -475,15 +485,29 @@ impl ViewerPane {
             let name = path.file_name().unwrap_or_default();
             parent.join("upscaled").join(name)
         };
-        if let Some(dir) = final_output.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let output = pending_output_path(&final_output);
+        let rx = if let Some(dir) = final_output.parent() {
+            match std::fs::create_dir_all(dir) {
+                Ok(()) => {
+                    let output = pending_output_path(&final_output);
+                    UpscaleRunner::run(&binary, &path, &output, scale)
+                }
+                Err(err) => {
+                    let (tx, rx) = async_channel::bounded(1);
+                    let _ = tx.try_send(UpscaleEvent::Failed(format!(
+                        "Failed to create output directory {}: {err}",
+                        dir.display()
+                    )));
+                    rx
+                }
+            }
+        } else {
+            let output = pending_output_path(&final_output);
+            UpscaleRunner::run(&binary, &path, &output, scale)
+        };
 
         imp.progress_bar.set_fraction(0.0);
         imp.progress_bar.set_visible(true);
 
-        let rx = UpscaleRunner::run(&binary, &path, &output, scale);
         let widget_weak = self.downgrade();
         let btn_weak = trigger_btn.downgrade();
 
@@ -525,7 +549,7 @@ impl ViewerPane {
         let imp = self.imp();
         *imp.pending_output.borrow_mut() = Some(after_path.clone());
         imp.comparison.load(before_path, after_path);
-        self.set_compare_actions_visible(true);
+        self.set_comparison_buttons_visible(true);
         imp.stack.set_visible_child_name("compare");
     }
 
@@ -540,10 +564,12 @@ impl ViewerPane {
             let final_path = committed_output_path(&path);
             if final_path != path {
                 if std::fs::rename(&path, &final_path).is_ok() {
+                    self.insert_committed_output(&final_path);
                     self.load_image(final_path);
                     return;
                 }
             }
+            self.insert_committed_output(&path);
             self.load_image(path);
         }
     }
@@ -562,17 +588,17 @@ impl ViewerPane {
         let imp = self.imp();
         *imp.pending_output.borrow_mut() = None;
         imp.comparison.clear();
-        self.set_compare_actions_visible(false);
+        self.set_comparison_buttons_visible(false);
         imp.stack.set_visible_child_name("view");
     }
 
-    fn set_compare_actions_visible(&self, visible: bool) {
-        let imp = self.imp();
-        if let Some(ref btn) = *imp.commit_btn.borrow() {
-            btn.set_visible(visible);
-        }
-        if let Some(ref btn) = *imp.discard_btn.borrow() {
-            btn.set_visible(visible);
+    fn insert_committed_output(&self, path: &std::path::Path) {
+        let Some(state) = self.imp().state.borrow().as_ref().cloned() else {
+            return;
+        };
+        let mut state = state.borrow_mut();
+        if let Some(index) = state.library.insert_path(path.to_path_buf()) {
+            state.library.selected_index = Some(index);
         }
     }
 }
