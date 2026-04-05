@@ -39,6 +39,13 @@ mod imp {
         /// async upscale callbacks can show/hide them without capturing clones.
         pub commit_btn: std::cell::RefCell<Option<gtk4::Button>>,
         pub discard_btn: std::cell::RefCell<Option<gtk4::Button>>,
+        /// Path of the image currently displayed — set by load_image(), cleared by clear().
+        pub current_path: RefCell<Option<PathBuf>>,
+        /// True when apply_transform() has been called and the result is unsaved.
+        pub pending_edit: Cell<bool>,
+        /// "Save Edit" and "Discard Edit" buttons owned by the window header.
+        pub edit_commit_btn: RefCell<Option<gtk4::Button>>,
+        pub edit_discard_btn: RefCell<Option<gtk4::Button>>,
         /// Zoom/Fit toggle button in the header — stored so mode changes can
         /// update the icon without an extra signal.
         pub zoom_btn: std::cell::RefCell<Option<gtk4::Button>>,
@@ -114,6 +121,10 @@ mod imp {
                 pending_output: std::cell::RefCell::new(None),
                 commit_btn: std::cell::RefCell::new(None),
                 discard_btn: std::cell::RefCell::new(None),
+                current_path: RefCell::new(None),
+                pending_edit: Cell::new(false),
+                edit_commit_btn: RefCell::new(None),
+                edit_discard_btn: RefCell::new(None),
                 zoom_btn: std::cell::RefCell::new(None),
                 zoom: Cell::new(1.0),
                 zoom_mode: Cell::new(super::ZoomMode::Fit),
@@ -167,12 +178,27 @@ impl ViewerPane {
         *self.imp().discard_btn.borrow_mut() = Some(discard);
     }
 
+    /// Called once by the window after layout to store the edit Save/Discard buttons.
+    pub fn set_edit_buttons(&self, commit: gtk4::Button, discard: gtk4::Button) {
+        *self.imp().edit_commit_btn.borrow_mut() = Some(commit);
+        *self.imp().edit_discard_btn.borrow_mut() = Some(discard);
+    }
+
     fn set_comparison_buttons_visible(&self, visible: bool) {
         let imp = self.imp();
         if let Some(ref btn) = *imp.commit_btn.borrow() {
             btn.set_visible(visible);
         }
         if let Some(ref btn) = *imp.discard_btn.borrow() {
+            btn.set_visible(visible);
+        }
+    }
+
+    fn set_edit_buttons_visible_on(imp: &imp::ViewerPane, visible: bool) {
+        if let Some(ref btn) = *imp.edit_commit_btn.borrow() {
+            btn.set_visible(visible);
+        }
+        if let Some(ref btn) = *imp.edit_discard_btn.borrow() {
             btn.set_visible(visible);
         }
     }
@@ -285,6 +311,9 @@ impl ViewerPane {
         imp.spinner.stop();
         imp.spinner.set_visible(false);
         self.reset_zoom();
+        *imp.current_path.borrow_mut() = None;
+        imp.pending_edit.set(false);
+        Self::set_edit_buttons_visible_on(&imp, false);
     }
 
     /// Load and display a full-resolution image from `path`.
@@ -296,6 +325,9 @@ impl ViewerPane {
         let imp = self.imp();
         let load_gen = imp.load_gen.get().wrapping_add(1);
         imp.load_gen.set(load_gen);
+        *imp.current_path.borrow_mut() = Some(path.clone());
+        imp.pending_edit.set(false);
+        Self::set_edit_buttons_visible_on(&imp, false);
         self.restore_view_mode();
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
@@ -591,6 +623,78 @@ impl ViewerPane {
         imp.picture
             .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
         self.reset_zoom();
+        self.imp().pending_edit.set(true);
+        Self::set_edit_buttons_visible_on(&self.imp(), true);
+    }
+
+    /// Write the current in-memory texture back to the source file on disk.
+    /// JPEG is re-encoded as RGB (lossy, unavoidable). PNG is lossless RGBA.
+    /// Other extensions fall back to PNG (with .png extension).
+    pub fn save_edit(&self) {
+        use gdk4::prelude::TextureExtManual;
+
+        let imp = self.imp();
+        let path = match imp.current_path.borrow().clone() {
+            Some(p) => p,
+            None => return,
+        };
+        let Some(paintable) = imp.picture.paintable() else { return };
+        let Some(texture) = paintable.downcast_ref::<gdk4::Texture>() else { return };
+
+        let w = texture.width() as u32;
+        let h = texture.height() as u32;
+        if w == 0 || h == 0 { return; }
+
+        let stride = (w * 4) as usize;
+        let mut rgba = vec![0u8; stride * h as usize];
+        texture.download(&mut rgba, stride);
+
+        let ext = path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let result = match ext.as_str() {
+            "jpg" | "jpeg" => {
+                // JPEG has no alpha — convert RGBA → RGB before encoding.
+                let rgb: Vec<u8> = rgba.chunks_exact(4)
+                    .flat_map(|px| [px[0], px[1], px[2]])
+                    .collect();
+                image::save_buffer_with_format(
+                    &path, &rgb, w, h,
+                    image::ColorType::Rgb8,
+                    image::ImageFormat::Jpeg,
+                )
+            }
+            "png" => image::save_buffer_with_format(
+                &path, &rgba, w, h,
+                image::ColorType::Rgba8,
+                image::ImageFormat::Png,
+            ),
+            _ => {
+                let png_path = path.with_extension("png");
+                image::save_buffer_with_format(
+                    &png_path, &rgba, w, h,
+                    image::ColorType::Rgba8,
+                    image::ImageFormat::Png,
+                )
+            }
+        };
+
+        if result.is_ok() {
+            imp.pending_edit.set(false);
+            Self::set_edit_buttons_visible_on(&imp, false);
+        } else {
+            eprintln!("save_edit: failed to write {}", path.display());
+        }
+    }
+
+    /// Reload the original file from disk, discarding the in-memory transform.
+    pub fn discard_edit(&self) {
+        let path = self.imp().current_path.borrow().clone();
+        if let Some(p) = path {
+            self.load_image(p); // load_image clears pending_edit and hides buttons
+        }
     }
 
     // -----------------------------------------------------------------------

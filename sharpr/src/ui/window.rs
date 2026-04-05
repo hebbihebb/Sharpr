@@ -303,7 +303,7 @@ impl SharprWindow {
             .build();
         inner_split.set_sidebar(Some(&filmstrip_page));
 
-        let (viewer_header, commit_btn, discard_btn) =
+        let (viewer_header, commit_btn, discard_btn, edit_commit_btn, edit_discard_btn) =
             self.build_viewer_header();
 
         let upscale_banner = libadwaita::Banner::new("");
@@ -325,6 +325,7 @@ impl SharprWindow {
         // Give the viewer a reference to the Commit/Discard buttons so the
         // async upscale callback can show/hide them without extra clones.
         viewer.set_comparison_buttons(commit_btn.clone(), discard_btn.clone());
+        viewer.set_edit_buttons(edit_commit_btn.clone(), edit_discard_btn.clone());
 
         // Commit / Discard buttons for the comparison view.
         {
@@ -334,6 +335,14 @@ impl SharprWindow {
         {
             let viewer_c = viewer.clone();
             discard_btn.connect_clicked(move |_| { viewer_c.discard_upscale(); });
+        }
+        {
+            let viewer_c = viewer.clone();
+            edit_commit_btn.connect_clicked(move |_| { viewer_c.save_edit(); });
+        }
+        {
+            let viewer_c = viewer.clone();
+            edit_discard_btn.connect_clicked(move |_| { viewer_c.discard_edit(); });
         }
 
         let viewer_page = libadwaita::NavigationPage::builder()
@@ -781,12 +790,14 @@ impl SharprWindow {
     }
 
     /// Build the viewer header bar.
-    /// Returns `(header, commit_btn, discard_btn)`.
+    /// Returns `(header, commit_btn, discard_btn, edit_commit_btn, edit_discard_btn)`.
     /// Commit and Discard are initially hidden; the comparison view shows them.
     fn build_viewer_header(
         &self,
     ) -> (
         libadwaita::HeaderBar,
+        gtk4::Button,
+        gtk4::Button,
         gtk4::Button,
         gtk4::Button,
     ) {
@@ -804,6 +815,18 @@ impl SharprWindow {
         discard_btn.set_visible(false);
         header.pack_end(&discard_btn);
 
+        let edit_commit_btn = gtk4::Button::with_label("Save Edit");
+        edit_commit_btn.set_tooltip_text(Some("Save the rotated/flipped image to disk"));
+        edit_commit_btn.add_css_class("suggested-action");
+        edit_commit_btn.set_visible(false);
+        header.pack_end(&edit_commit_btn);
+
+        let edit_discard_btn = gtk4::Button::with_label("Discard Edit");
+        edit_discard_btn.set_tooltip_text(Some("Revert to the original image"));
+        edit_discard_btn.add_css_class("destructive-action");
+        edit_discard_btn.set_visible(false);
+        header.pack_end(&edit_discard_btn);
+
         let menu = Self::build_primary_menu();
         let popover = gtk4::PopoverMenu::from_model(Some(&menu));
         let menu_btn = gtk4::MenuButton::new();
@@ -813,6 +836,6 @@ impl SharprWindow {
         menu_btn.add_css_class("flat");
         header.pack_end(&menu_btn);
 
-        (header, commit_btn, discard_btn)
+        (header, commit_btn, discard_btn, edit_commit_btn, edit_discard_btn)
     }
 }
