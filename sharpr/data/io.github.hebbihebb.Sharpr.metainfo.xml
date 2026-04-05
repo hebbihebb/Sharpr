@@ -10,14 +10,14 @@
       inspect detailed metadata, and upscale images using AI — all offline and locally.
     </p>
   </description>
-  <url type="homepage">https://github.com/example/sharpr</url>
-  <url type="bugtracker">https://github.com/example/sharpr/issues</url>
-  <url type="vcs-browser">https://github.com/example/sharpr</url>
+  <url type="homepage">https://github.com/hebbihebb/Sharpr</url>
+  <url type="bugtracker">https://github.com/hebbihebb/Sharpr/issues</url>
+  <url type="vcs-browser">https://github.com/hebbihebb/Sharpr</url>
   <launchable type="desktop-id">io.github.hebbihebb.Sharpr.desktop</launchable>
   <screenshots>
     <screenshot type="default">
       <caption>Three-pane image browser showing the photo library, filmstrip, and metadata overlay.</caption>
-      <image>https://raw.githubusercontent.com/example/sharpr/main/DesignDocs/UI%20design%20draft_v2.png</image>
+      <image>https://raw.githubusercontent.com/hebbihebb/Sharpr/main/DesignDocs/UI%20design%20draft_v2.png</image>
     </screenshot>
   </screenshots>
   <releases>
