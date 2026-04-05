@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
-  <schema id="com.example.Sharpr" path="/com/example/Sharpr/">
+  <schema id="io.github.hebbihebb.Sharpr" path="/io/github/hebbihebb/Sharpr/">
     <key name="last-folder" type="s">
       <default>""</default>
       <summary>Last opened folder</summary>

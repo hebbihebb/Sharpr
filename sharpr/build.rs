@@ -1,5 +1,11 @@
 fn main() {
-    // Phase 6: glib_build_tools::compile_resources(...)
-    // For now, nothing to do. This file is a placeholder so the build system
-    // can find and run it when GResource compilation is wired in.
+    let schema = "data/io.github.hebbihebb.Sharpr.gschema.xml";
+    println!("cargo:rerun-if-changed={schema}");
+
+    let status = std::process::Command::new("glib-compile-schemas")
+        .arg("data")
+        .status()
+        .expect("glib-compile-schemas not found — install libglib2.0-dev or glib2-devel");
+
+    assert!(status.success(), "glib-compile-schemas failed");
 }

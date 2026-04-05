@@ -34,8 +34,7 @@ serde_json = "1"
 regex = "1"
 
 [build-dependencies]
-# Needed for GLib resources if we add them in Phase 6
-# glib-build-tools = "0.20"
+glib-build-tools = "0.20"
 
 [profile.release]
 opt-level = 3

@@ -13,7 +13,9 @@
       "Bash(git branch:*)",
       "Bash(git add:*)",
       "Bash(git commit -m ':*)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "Bash(find src:*)",
+      "Bash(wc -l src/**/*.rs)"
     ]
   }
 }

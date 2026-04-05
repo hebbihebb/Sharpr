@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>com.example.Sharpr</id>
+  <id>io.github.hebbihebb.Sharpr</id>
   <name>Sharpr</name>
   <summary>A modern image library and viewer</summary>
   <description>
@@ -10,11 +10,14 @@
       inspect detailed metadata, and upscale images using AI — all offline and locally.
     </p>
   </description>
-  <url type="homepage">https://example.com/sharpr</url>
-  <launchable type="desktop-id">com.example.Sharpr.desktop</launchable>
+  <url type="homepage">https://github.com/example/sharpr</url>
+  <url type="bugtracker">https://github.com/example/sharpr/issues</url>
+  <url type="vcs-browser">https://github.com/example/sharpr</url>
+  <launchable type="desktop-id">io.github.hebbihebb.Sharpr.desktop</launchable>
   <screenshots>
     <screenshot type="default">
-      <caption>Three-pane image browser</caption>
+      <caption>Three-pane image browser showing the photo library, filmstrip, and metadata overlay.</caption>
+      <image>https://raw.githubusercontent.com/example/sharpr/main/DesignDocs/UI%20design%20draft_v2.png</image>
     </screenshot>
   </screenshots>
   <releases>
@@ -28,6 +31,23 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <developer_name>Sharpr Contributors</developer_name>
+  <developer id="io.github.hebbihebb.Sharpr">
+    <name>Sharpr Contributors</name>
+  </developer>
+  <provides>
+    <binary>sharpr</binary>
+  </provides>
+  <categories>
+    <category>Graphics</category>
+    <category>Viewer</category>
+  </categories>
+  <keywords>
+    <keyword>image</keyword>
+    <keyword>viewer</keyword>
+    <keyword>photo</keyword>
+    <keyword>gallery</keyword>
+    <keyword>upscale</keyword>
+  </keywords>
   <requires>
     <display_length compare="ge">768</display_length>
   </requires>

@@ -62,7 +62,7 @@ glib::wrapper! {
 impl SharprApplication {
     pub fn new() -> Self {
         glib::Object::builder()
-            .property("application-id", "com.example.Sharpr")
+            .property("application-id", "io.github.hebbihebb.Sharpr")
             .property("flags", gio::ApplicationFlags::FLAGS_NONE)
             .build()
     }
