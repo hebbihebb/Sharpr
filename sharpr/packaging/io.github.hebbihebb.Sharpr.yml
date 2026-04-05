@@ -1,6 +1,6 @@
 app-id: io.github.hebbihebb.Sharpr
 runtime: org.gnome.Platform
-runtime-version: "47"
+runtime-version: "48"
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -11,6 +11,7 @@ finish-args:
   - --socket=wayland
   - --device=dri
   - --filesystem=xdg-pictures
+  - --filesystem=home:ro
   # File chooser portal
   - --talk-name=org.freedesktop.portal.FileChooser
 
@@ -25,10 +26,11 @@ modules:
     config-opts:
       - -DEXIV2_BUILD_SAMPLES=OFF
       - -DEXIV2_BUILD_UNIT_TESTS=OFF
+      - -DEXIV2_ENABLE_INIH=OFF
     sources:
       - type: archive
         url: https://github.com/Exiv2/exiv2/archive/refs/tags/v0.28.3.tar.gz
-        sha256: f781896798a72879555627f678ef45b3765e90538a798547477ba662ce2f0365
+        sha256: 1315e17d454bf4da3cc0edb857b1d2c143670f3485b537d0f946d9ed31d87b70
 
   - name: gexiv2
     buildsystem: meson
@@ -39,7 +41,7 @@ modules:
     sources:
       - type: archive
         url: https://download.gnome.org/sources/gexiv2/0.14/gexiv2-0.14.3.tar.xz
-        sha256: 62240b952a12902974f07a1262d04a43b2326ec5a62d85b1912448ca6a254cfc
+        sha256: 21e64d2c56e9b333d44fef3f2a4b25653d922c419acd972fa96fab695217e2c8
 
   # -------------------------------------------------------------------------
   # Optional module: realesrgan-ncnn-vulkan
@@ -51,24 +53,32 @@ modules:
     build-commands:
       - install -Dm755 realesrgan-ncnn-vulkan /app/bin/realesrgan-ncnn-vulkan
       - mkdir -p /app/bin/models/
-      - cp -r models/* /app/bin/models/
+      - find . -maxdepth 1 \( -name '*.bin' -o -name '*.param' \) -exec cp -t /app/bin/models/ {} +
     sources:
       - type: archive
         url: https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
         sha256: e5aa6eb131234b87c0c51f82b89390f5e3e642b7b70f2b9bbe95b6a285a40c96
 
   - name: sharpr
-    buildsystem: cargo
+    buildsystem: simple
     sources:
       - type: dir
-        path: ..
-      # Note: Run 'flatpak-cargo-generator.py ../Cargo.lock -o cargo-sources.json'
-      # and ensure cargo-sources.json is present here before building.
-      - type: file
-        path: cargo-sources.json
+        path: .flatpak-source
+      - cargo-sources.json
     build-commands:
+      - mkdir -p .cargo
+      - |
+        cat > .cargo/config.toml <<'EOF'
+        [source.crates-io]
+        replace-with = "vendored-sources"
+
+        [source.vendored-sources]
+        directory = "cargo/vendor"
+        EOF
+      - cargo --offline build --release --verbose
+      - install -Dm755 target/release/sharpr /app/bin/sharpr
       - install -Dm644 data/io.github.hebbihebb.Sharpr.desktop /app/share/applications/io.github.hebbihebb.Sharpr.desktop
       - install -Dm644 data/io.github.hebbihebb.Sharpr.metainfo.xml /app/share/metainfo/io.github.hebbihebb.Sharpr.metainfo.xml
+      - install -Dm644 data/io.github.hebbihebb.Sharpr.png /app/share/icons/hicolor/512x512/apps/io.github.hebbihebb.Sharpr.png
       - install -Dm644 data/io.github.hebbihebb.Sharpr.gschema.xml /app/share/glib-2.0/schemas/io.github.hebbihebb.Sharpr.gschema.xml
       - glib-compile-schemas /app/share/glib-2.0/schemas/
-      # The cargo buildsystem handles the binary compilation and installation automatically.
