@@ -221,8 +221,18 @@ impl FilmstripPane {
         };
         imp.pending_thumbnails.borrow_mut().clear();
         let store = state_rc.borrow().library.store.clone();
+        // Clear selection first so selected_notify fires even if new folder
+        // lands on the same position (e.g. both at index 0).
+        imp.selection_model.set_model(None::<&gio::ListStore>);
         imp.selection_model.set_model(Some(&store));
-        self.schedule_visible_thumbnails();
+        // Layout hasn't run yet at this point, so schedule_visible_thumbnails
+        // would see a zero page_size. Re-schedule after GTK finishes layout.
+        let w = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(filmstrip) = w.upgrade() {
+                filmstrip.schedule_visible_thumbnails();
+            }
+        });
     }
 
     /// Give the filmstrip a sender to the thumbnail worker so the factory bind

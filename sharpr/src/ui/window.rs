@@ -15,7 +15,7 @@ use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::sidebar::SidebarPane;
 use crate::ui::viewer::ViewerPane;
-use crate::upscale::UpscaleDetector;
+use crate::upscale::{UpscaleDetector, UpscaleModel};
 
 // ---------------------------------------------------------------------------
 // Shared application state (main thread only, Rc<RefCell<>>)
@@ -26,6 +26,7 @@ pub struct AppState {
     pub settings: AppSettings,
     /// Cached path to the realesrgan-ncnn-vulkan binary after successful detection.
     pub upscale_binary: Option<PathBuf>,
+    pub upscale_model: UpscaleModel,
 }
 
 impl AppState {
@@ -34,6 +35,7 @@ impl AppState {
             library: LibraryManager::new(),
             settings: AppSettings::load(),
             upscale_binary: None,
+            upscale_model: UpscaleModel::Standard,
         }
     }
 }
@@ -133,8 +135,16 @@ impl SharprWindow {
                 state_c.borrow_mut().settings.last_folder = Some(path.clone());
                 state_c.borrow().settings.save();
 
-                filmstrip_c.refresh();
                 viewer_c.clear();
+                filmstrip_c.refresh();
+
+                // Explicitly load the first image — selected_notify may not
+                // fire if the new folder also lands at position 0.
+                let first = state_c.borrow().library.entry_at(0).map(|e: ImageEntry| e.path());
+                if let Some(p) = first {
+                    filmstrip_c.select_index(0);
+                    viewer_c.load_image(p);
+                }
             });
         }
 
@@ -181,7 +191,7 @@ impl SharprWindow {
             .build();
         inner_split.set_sidebar(Some(&filmstrip_page));
 
-        let (viewer_header, zoom_btn, upscale_btn, commit_btn, discard_btn) =
+        let (viewer_header, zoom_btn, upscale_model_dd, upscale_btn, commit_btn, discard_btn) =
             self.build_viewer_header();
 
         viewer.set_zoom_button(zoom_btn.clone());
@@ -204,6 +214,17 @@ impl SharprWindow {
         viewer_toolbar.set_top_bar_style(libadwaita::ToolbarStyle::Raised);
 
         // Upscale button: lazy-detect binary on first click; run job when available.
+        {
+            let state_c = state.clone();
+            upscale_model_dd.connect_selected_notify(move |dropdown| {
+                let model = match dropdown.selected() {
+                    1 => UpscaleModel::Anime,
+                    _ => UpscaleModel::Standard,
+                };
+                state_c.borrow_mut().upscale_model = model;
+            });
+        }
+
         {
             let state_c = state.clone();
             let banner_c = upscale_banner.clone();
@@ -312,6 +333,11 @@ impl SharprWindow {
             if folder.is_dir() {
                 state.borrow_mut().library.scan_folder(&folder);
                 filmstrip.refresh();
+                let first = state.borrow().library.entry_at(0).map(|e: ImageEntry| e.path());
+                if let Some(p) = first {
+                    filmstrip.select_index(0);
+                    viewer.load_image(p);
+                }
             }
         }
     }
@@ -431,17 +457,30 @@ impl SharprWindow {
     /// Build the viewer header bar.
     /// Returns `(header_bar, upscale_button)` so the caller can wire detector
     /// behavior once the rest of the viewer widgets exist.
-    /// Returns `(header, zoom_btn, upscale_btn, commit_btn, discard_btn)`.
+    /// Returns `(header, zoom_btn, model_dropdown, upscale_btn, commit_btn, discard_btn)`.
     /// Commit and Discard are initially hidden; the comparison view shows them.
     fn build_viewer_header(
         &self,
-    ) -> (libadwaita::HeaderBar, gtk4::Button, gtk4::Button, gtk4::Button, gtk4::Button) {
+    ) -> (
+        libadwaita::HeaderBar,
+        gtk4::Button,
+        gtk4::DropDown,
+        gtk4::Button,
+        gtk4::Button,
+        gtk4::Button,
+    ) {
         let header = libadwaita::HeaderBar::new();
 
         let zoom_btn = gtk4::Button::from_icon_name("zoom-fit-best-symbolic");
         zoom_btn.set_tooltip_text(Some("Fit to Window (Ctrl+0)"));
         zoom_btn.add_css_class("flat");
         header.pack_end(&zoom_btn);
+
+        let model_options = gtk4::StringList::new(&["Standard (Photo)", "Anime / Art"]);
+        let upscale_model_dd = gtk4::DropDown::new(Some(model_options), None::<gtk4::Expression>);
+        upscale_model_dd.set_selected(0);
+        upscale_model_dd.set_tooltip_text(Some("Select the Real-ESRGAN model"));
+        header.pack_end(&upscale_model_dd);
 
         let upscale_btn = gtk4::Button::with_label("AI Upscale");
         upscale_btn.set_tooltip_text(Some("Upscale selected image with AI"));
@@ -460,6 +499,13 @@ impl SharprWindow {
         discard_btn.set_visible(false);
         header.pack_end(&discard_btn);
 
-        (header, zoom_btn, upscale_btn, commit_btn, discard_btn)
+        (
+            header,
+            zoom_btn,
+            upscale_model_dd,
+            upscale_btn,
+            commit_btn,
+            discard_btn,
+        )
     }
 }

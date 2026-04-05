@@ -256,9 +256,10 @@ impl ViewerPane {
         // -----------------------------------------------------------------------
         // Ctrl+Scroll → zoom
         // -----------------------------------------------------------------------
-        let scroll = gtk4::EventControllerScroll::new(
-            gtk4::EventControllerScrollFlags::VERTICAL | gtk4::EventControllerScrollFlags::KINETIC,
-        );
+        // Capture phase so we see Ctrl+Scroll before the ScrolledWindow
+        // consumes the event (which it does whenever there is scrollable overflow).
+        let scroll = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
+        scroll.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let w = self.downgrade();
         scroll.connect_scroll(move |ctrl, _dx, dy| {
             if ctrl
@@ -526,14 +527,14 @@ impl ViewerPane {
 
         let imp = self.imp();
 
-        let binary = {
+        let (binary, model) = {
             let st = imp.state.borrow();
             let Some(ref rc) = *st else {
                 trigger_btn.set_sensitive(true);
                 return;
             };
-            let b = rc.borrow().upscale_binary.clone();
-            b
+            let state = rc.borrow();
+            (state.upscale_binary.clone(), state.upscale_model)
         };
         let Some(binary) = binary else {
             trigger_btn.set_sensitive(true);
@@ -561,7 +562,7 @@ impl ViewerPane {
             match std::fs::create_dir_all(dir) {
                 Ok(()) => {
                     let output = pending_output_path(&final_output);
-                    UpscaleRunner::run(&binary, &path, &output, scale)
+                    UpscaleRunner::run(&binary, &path, &output, scale, model)
                 }
                 Err(err) => {
                     let (tx, rx) = async_channel::bounded(1);
@@ -574,7 +575,7 @@ impl ViewerPane {
             }
         } else {
             let output = pending_output_path(&final_output);
-            UpscaleRunner::run(&binary, &path, &output, scale)
+            UpscaleRunner::run(&binary, &path, &output, scale, model)
         };
 
         imp.progress_bar.set_fraction(0.0);
