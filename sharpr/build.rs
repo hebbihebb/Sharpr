@@ -8,4 +8,15 @@ fn main() {
         .expect("glib-compile-schemas not found — install libglib2.0-dev or glib2-devel");
 
     assert!(status.success(), "glib-compile-schemas failed");
+
+    // Compile GResource bundle (splash image + future assets).
+    let gresource = "data/io.github.hebbihebb.Sharpr.gresource.xml";
+    println!("cargo:rerun-if-changed={gresource}");
+    println!("cargo:rerun-if-changed=data/splash.png");
+
+    glib_build_tools::compile_resources(
+        &["data"],
+        gresource,
+        "sharpr.gresource",
+    );
 }

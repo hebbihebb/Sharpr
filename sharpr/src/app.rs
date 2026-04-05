@@ -35,8 +35,30 @@ mod imp {
                 return;
             }
 
+            // Show splash, then present the main window after 1.8 s.
+            // The delay gives warm-cache thumbnail workers time to populate
+            // visible rows before the UI appears.
+            let splash = gtk4::Window::builder()
+                .decorated(false)
+                .resizable(false)
+                .default_width(600)
+                .default_height(400)
+                .build();
+            let splash_pic = gtk4::Picture::for_resource(
+                "/io/github/hebbihebb/Sharpr/splash.png",
+            );
+            splash_pic.set_content_fit(gtk4::ContentFit::Fill);
+            splash.set_child(Some(&splash_pic));
+            splash.present();
+
             let window = SharprWindow::new(app.upcast_ref::<libadwaita::Application>());
-            window.present();
+            glib::timeout_add_local_once(
+                std::time::Duration::from_millis(1800),
+                move || {
+                    splash.close();
+                    window.present();
+                },
+            );
         }
 
         fn startup(&self) {
