@@ -61,6 +61,10 @@ mod imp {
             let divider_x = (self.divider.get() as f32 * w).clamp(0.0, w);
             let full = gtk4::graphene::Rect::new(0.0, 0.0, w, h);
 
+            // Opaque dark background so RGBA images with transparency don't
+            // show a GTK checkerboard pattern.
+            snapshot.append_color(&gdk4::RGBA::new(0.12, 0.12, 0.12, 1.0), &full);
+
             // Before — left of divider.
             if let Some(ref tex) = *self.before_texture.borrow() {
                 snapshot.push_clip(&gtk4::graphene::Rect::new(0.0, 0.0, divider_x, h));
