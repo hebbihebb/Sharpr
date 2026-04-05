@@ -501,6 +501,59 @@ impl ViewerPane {
         self.toggle_zoom_mode();
     }
 
+    /// Apply an in-memory transform to the currently displayed image.
+    /// `op` is one of: `"rotate-cw"`, `"rotate-ccw"`, `"flip-h"`, `"flip-v"`.
+    /// If no paintable is set, does nothing.
+    pub fn apply_transform(&self, op: &str) {
+        use gdk4::prelude::TextureExtManual;
+        use gdk4::{MemoryFormat, MemoryTexture, Texture};
+        use image::imageops;
+
+        let imp = self.imp();
+        let Some(paintable) = imp.picture.paintable() else {
+            return;
+        };
+        let Some(texture) = paintable.downcast_ref::<Texture>() else {
+            return;
+        };
+
+        let w = texture.width() as u32;
+        let h = texture.height() as u32;
+        if w == 0 || h == 0 {
+            return;
+        }
+
+        let stride = (w * 4) as usize;
+        let mut rgba_bytes = vec![0_u8; stride * h as usize];
+        texture.download(&mut rgba_bytes, stride);
+
+        let Some(buf) = image::RgbaImage::from_raw(w, h, rgba_bytes) else {
+            return;
+        };
+
+        let transformed = match op {
+            "rotate-cw" => image::DynamicImage::ImageRgba8(imageops::rotate90(&buf)),
+            "rotate-ccw" => image::DynamicImage::ImageRgba8(imageops::rotate270(&buf)),
+            "flip-h" => image::DynamicImage::ImageRgba8(imageops::flip_horizontal(&buf)),
+            "flip-v" => image::DynamicImage::ImageRgba8(imageops::flip_vertical(&buf)),
+            _ => return,
+        };
+
+        let rgba = transformed.into_rgba8();
+        let (nw, nh) = (rgba.width(), rgba.height());
+        let gbytes = glib::Bytes::from_owned(rgba.into_raw());
+        let texture = MemoryTexture::new(
+            nw as i32,
+            nh as i32,
+            MemoryFormat::R8g8b8a8,
+            &gbytes,
+            (nw * 4) as usize,
+        );
+        imp.picture
+            .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
+        self.reset_zoom();
+    }
+
     // -----------------------------------------------------------------------
     // Metadata overlay
     // -----------------------------------------------------------------------

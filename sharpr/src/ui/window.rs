@@ -660,9 +660,15 @@ impl SharprWindow {
         }
         self.add_action(&model_action);
 
-        for name in &["rotate-cw", "rotate-ccw", "flip-h", "flip-v"] {
+        for name in ["rotate-cw", "rotate-ccw", "flip-h", "flip-v"] {
             let a = gio::SimpleAction::new(name, None);
-            a.set_enabled(false);
+            let viewer_weak = viewer.downgrade();
+            let op = name.to_owned();
+            a.connect_activate(move |_, _| {
+                if let Some(v) = viewer_weak.upgrade() {
+                    v.apply_transform(&op);
+                }
+            });
             self.add_action(&a);
         }
 
