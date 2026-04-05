@@ -12,9 +12,10 @@ use std::path::PathBuf;
 use crate::config::AppSettings;
 use crate::model::{ImageEntry, LibraryManager};
 use crate::thumbnails::ThumbnailWorker;
+use crate::thumbnails::worker::WorkerRequest;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::sidebar::SidebarPane;
-use crate::ui::viewer::ViewerPane;
+use crate::ui::viewer::{ViewerPane, ZoomMode};
 use crate::upscale::{UpscaleDetector, UpscaleModel};
 
 // ---------------------------------------------------------------------------
@@ -46,7 +47,7 @@ impl AppState {
 
 mod imp {
     use super::*;
-    use crate::thumbnails::worker::ThumbnailResult;
+    use crate::thumbnails::worker::{HashResult, ThumbnailResult};
     use async_channel::Receiver;
 
     pub struct SharprWindow {
@@ -54,6 +55,7 @@ mod imp {
         pub thumbnail_worker: RefCell<Option<ThumbnailWorker>>,
         // Cloned receiver so the async task can hold it.
         pub result_rx: RefCell<Option<Receiver<ThumbnailResult>>>,
+        pub hash_result_rx: RefCell<Option<Receiver<HashResult>>>,
     }
 
     impl Default for SharprWindow {
@@ -62,6 +64,7 @@ mod imp {
                 state: Rc::new(RefCell::new(AppState::new())),
                 thumbnail_worker: RefCell::new(None),
                 result_rx: RefCell::new(None),
+                hash_result_rx: RefCell::new(None),
             }
         }
     }
@@ -107,9 +110,10 @@ impl SharprWindow {
         // -----------------------------------------------------------------------
         // Thumbnail worker pool
         // -----------------------------------------------------------------------
-        let (worker, result_rx) = ThumbnailWorker::spawn(4);
+        let (worker, result_rx, hash_result_rx) = ThumbnailWorker::spawn(4);
         *self.imp().thumbnail_worker.borrow_mut() = Some(worker);
         *self.imp().result_rx.borrow_mut() = Some(result_rx);
+        *self.imp().hash_result_rx.borrow_mut() = Some(hash_result_rx);
 
         let state = self.imp().state.clone();
 
@@ -139,6 +143,31 @@ impl SharprWindow {
                     }
                 }
                 state_c.borrow_mut().library.scan_folder(&path);
+                if let Some(win) = window_weak.upgrade() {
+                    let gen = win
+                        .imp()
+                        .thumbnail_worker
+                        .borrow()
+                        .as_ref()
+                        .map_or(0, |w| w.current_generation());
+                    let tx = win
+                        .imp()
+                        .thumbnail_worker
+                        .borrow()
+                        .as_ref()
+                        .map(|w| w.sender());
+                    if let Some(tx) = tx {
+                        let count = state_c.borrow().library.image_count();
+                        for i in 0..count {
+                            if let Some(entry) = state_c.borrow().library.entry_at(i) {
+                                let _ = tx.try_send(WorkerRequest::Hash {
+                                    path: entry.path(),
+                                    gen,
+                                });
+                            }
+                        }
+                    }
+                }
                 // Persist last folder.
                 state_c.borrow_mut().settings.last_folder = Some(path.clone());
                 state_c.borrow().settings.save();
@@ -183,6 +212,7 @@ impl SharprWindow {
 
         // Start draining thumbnail results.
         self.start_thumbnail_poll(state.clone(), filmstrip.clone());
+        self.start_hash_poll(state.clone());
 
         // -----------------------------------------------------------------------
         // Layout: AdwNavigationSplitView (outer) → AdwOverlaySplitView (inner)
@@ -199,13 +229,27 @@ impl SharprWindow {
             .build();
         inner_split.set_sidebar(Some(&filmstrip_page));
 
-        let (viewer_header, zoom_btn, upscale_model_dd, upscale_btn, commit_btn, discard_btn) =
+        let (viewer_header, zoom_btn, upscale_btn, commit_btn, discard_btn) =
             self.build_viewer_header();
 
         viewer.set_zoom_button(zoom_btn.clone());
+        self.setup_actions(&viewer, state.clone());
         {
-            let viewer_c = viewer.clone();
-            zoom_btn.connect_clicked(move |_| { viewer_c.toggle_zoom_mode(); });
+            let win_weak = self.downgrade();
+            zoom_btn.connect_clicked(move |_| {
+                let Some(win) = win_weak.upgrade() else { return };
+                if let Some(action) = win
+                    .lookup_action("zoom-mode")
+                    .and_then(|a| a.downcast::<gio::SimpleAction>().ok())
+                {
+                    let current = action
+                        .state()
+                        .and_then(|s| s.str().map(String::from))
+                        .unwrap_or_else(|| "fit".into());
+                    let next = if current == "fit" { "1:1" } else { "fit" };
+                    action.activate(Some(&next.to_variant()));
+                }
+            });
         }
         let upscale_banner = libadwaita::Banner::new("");
         upscale_banner.set_button_label(Some("Dismiss"));
@@ -220,18 +264,6 @@ impl SharprWindow {
 
         viewer_toolbar.set_content(Some(&viewer));
         viewer_toolbar.set_top_bar_style(libadwaita::ToolbarStyle::Raised);
-
-        // Upscale button: lazy-detect binary on first click; run job when available.
-        {
-            let state_c = state.clone();
-            upscale_model_dd.connect_selected_notify(move |dropdown| {
-                let model = match dropdown.selected() {
-                    1 => UpscaleModel::Anime,
-                    _ => UpscaleModel::Standard,
-                };
-                state_c.borrow_mut().upscale_model = model;
-            });
-        }
 
         {
             let state_c = state.clone();
@@ -340,6 +372,29 @@ impl SharprWindow {
         if let Some(folder) = last_folder {
             if folder.is_dir() {
                 state.borrow_mut().library.scan_folder(&folder);
+                let gen = self
+                    .imp()
+                    .thumbnail_worker
+                    .borrow()
+                    .as_ref()
+                    .map_or(0, |w| w.current_generation());
+                let tx = self
+                    .imp()
+                    .thumbnail_worker
+                    .borrow()
+                    .as_ref()
+                    .map(|w| w.sender());
+                if let Some(tx) = tx {
+                    let count = state.borrow().library.image_count();
+                    for i in 0..count {
+                        if let Some(entry) = state.borrow().library.entry_at(i) {
+                            let _ = tx.try_send(WorkerRequest::Hash {
+                                path: entry.path(),
+                                gen,
+                            });
+                        }
+                    }
+                }
                 filmstrip.refresh();
                 let first = state.borrow().library.entry_at(0).map(|e: ImageEntry| e.path());
                 if let Some(p) = first {
@@ -526,17 +581,133 @@ impl SharprWindow {
         });
     }
 
+    fn start_hash_poll(&self, state: Rc<RefCell<AppState>>) {
+        let hash_rx = self.imp().hash_result_rx.borrow().clone();
+        let Some(rx) = hash_rx else { return };
+
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(result) = rx.recv().await {
+                state
+                    .borrow_mut()
+                    .library
+                    .insert_hash(result.path, result.hash);
+            }
+        });
+    }
+
+    fn build_primary_menu() -> gio::Menu {
+        let menu = gio::Menu::new();
+
+        let view_section = gio::Menu::new();
+        let zoom_subsection = gio::Menu::new();
+        zoom_subsection.append(Some("Fit to Window"), Some("win.zoom-mode::fit"));
+        zoom_subsection.append(Some("1:1 Pixels"), Some("win.zoom-mode::1:1"));
+        view_section.append_section(None, &zoom_subsection);
+        view_section.append(Some("Show Metadata"), Some("win.show-metadata"));
+        menu.append_section(Some("View"), &view_section);
+
+        let transform_section = gio::Menu::new();
+        transform_section.append(Some("Rotate 90° Clockwise"), Some("win.rotate-cw"));
+        transform_section.append(Some("Rotate 90° Counter-Clockwise"), Some("win.rotate-ccw"));
+        transform_section.append(Some("Flip Horizontal"), Some("win.flip-h"));
+        transform_section.append(Some("Flip Vertical"), Some("win.flip-v"));
+        menu.append_section(Some("Rotate & Flip"), &transform_section);
+
+        let upscale_section = gio::Menu::new();
+        upscale_section.append(Some("Standard (Photo)"), Some("win.upscale-model::standard"));
+        upscale_section.append(Some("Anime / Art"), Some("win.upscale-model::anime"));
+        menu.append_section(Some("AI Upscale"), &upscale_section);
+
+        let app_section = gio::Menu::new();
+        app_section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));
+        app_section.append(Some("About Sharpr"), Some("app.about"));
+        menu.append_section(Some("App"), &app_section);
+
+        menu
+    }
+
+    fn setup_actions(&self, viewer: &ViewerPane, state: Rc<RefCell<AppState>>) {
+        let zoom_initial = match viewer.zoom_mode() {
+            ZoomMode::Fit => "fit",
+            ZoomMode::OneToOne => "1:1",
+        };
+        let zoom_action = gio::SimpleAction::new_stateful(
+            "zoom-mode",
+            Some(glib::VariantTy::STRING),
+            &zoom_initial.to_variant(),
+        );
+        {
+            let viewer_weak = viewer.downgrade();
+            zoom_action.connect_activate(move |action, param| {
+                let (Some(viewer), Some(param)) = (viewer_weak.upgrade(), param) else { return };
+                let mode = if param.str() == Some("1:1") {
+                    ZoomMode::OneToOne
+                } else {
+                    ZoomMode::Fit
+                };
+                viewer.set_zoom_mode(mode);
+                action.set_state(param);
+            });
+        }
+        self.add_action(&zoom_action);
+
+        let meta_action = gio::SimpleAction::new_stateful(
+            "show-metadata",
+            None,
+            &viewer.metadata_visible().to_variant(),
+        );
+        {
+            let viewer_weak = viewer.downgrade();
+            meta_action.connect_activate(move |action, _| {
+                let Some(viewer) = viewer_weak.upgrade() else { return };
+                let new_val = !action
+                    .state()
+                    .and_then(|s| s.get::<bool>())
+                    .unwrap_or(true);
+                viewer.set_metadata_visible(new_val);
+                action.set_state(&new_val.to_variant());
+            });
+        }
+        self.add_action(&meta_action);
+
+        let model_action = gio::SimpleAction::new_stateful(
+            "upscale-model",
+            Some(glib::VariantTy::STRING),
+            &"standard".to_variant(),
+        );
+        {
+            model_action.connect_activate(move |action, param| {
+                let Some(param) = param else { return };
+                let model = if param.str() == Some("anime") {
+                    UpscaleModel::Anime
+                } else {
+                    UpscaleModel::Standard
+                };
+                state.borrow_mut().upscale_model = model;
+                action.set_state(param);
+            });
+        }
+        self.add_action(&model_action);
+
+        for name in &["rotate-cw", "rotate-ccw", "flip-h", "flip-v"] {
+            let a = gio::SimpleAction::new(name, None);
+            a.set_enabled(false);
+            self.add_action(&a);
+        }
+
+        let help_action = gio::SimpleAction::new("show-help-overlay", None);
+        help_action.set_enabled(false);
+        self.add_action(&help_action);
+    }
+
     /// Build the viewer header bar.
-    /// Returns `(header_bar, upscale_button)` so the caller can wire detector
-    /// behavior once the rest of the viewer widgets exist.
-    /// Returns `(header, zoom_btn, model_dropdown, upscale_btn, commit_btn, discard_btn)`.
+    /// Returns `(header, zoom_btn, upscale_btn, commit_btn, discard_btn)`.
     /// Commit and Discard are initially hidden; the comparison view shows them.
     fn build_viewer_header(
         &self,
     ) -> (
         libadwaita::HeaderBar,
         gtk4::Button,
-        gtk4::DropDown,
         gtk4::Button,
         gtk4::Button,
         gtk4::Button,
@@ -546,13 +717,7 @@ impl SharprWindow {
         let zoom_btn = gtk4::Button::from_icon_name("zoom-fit-best-symbolic");
         zoom_btn.set_tooltip_text(Some("Fit to Window (Ctrl+0)"));
         zoom_btn.add_css_class("flat");
-        header.pack_end(&zoom_btn);
-
-        let model_options = gtk4::StringList::new(&["Standard (Photo)", "Anime / Art"]);
-        let upscale_model_dd = gtk4::DropDown::new(Some(model_options), None::<gtk4::Expression>);
-        upscale_model_dd.set_selected(0);
-        upscale_model_dd.set_tooltip_text(Some("Select the Real-ESRGAN model"));
-        header.pack_end(&upscale_model_dd);
+        header.pack_start(&zoom_btn);
 
         let upscale_btn = gtk4::Button::with_label("AI Upscale");
         upscale_btn.set_tooltip_text(Some("Upscale selected image with AI"));
@@ -571,13 +736,15 @@ impl SharprWindow {
         discard_btn.set_visible(false);
         header.pack_end(&discard_btn);
 
-        (
-            header,
-            zoom_btn,
-            upscale_model_dd,
-            upscale_btn,
-            commit_btn,
-            discard_btn,
-        )
+        let menu = Self::build_primary_menu();
+        let popover = gtk4::PopoverMenu::from_model(Some(&menu));
+        let menu_btn = gtk4::MenuButton::new();
+        menu_btn.set_icon_name("open-menu-symbolic");
+        menu_btn.set_tooltip_text(Some("Main Menu"));
+        menu_btn.set_popover(Some(&popover));
+        menu_btn.add_css_class("flat");
+        header.pack_end(&menu_btn);
+
+        (header, zoom_btn, upscale_btn, commit_btn, discard_btn)
     }
 }

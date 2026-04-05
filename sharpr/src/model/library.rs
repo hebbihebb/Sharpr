@@ -25,6 +25,7 @@ pub struct LibraryManager {
     pub selected_index: Option<u32>,
     /// O(1) path → list index lookup, kept in sync with `store`.
     path_to_index: HashMap<PathBuf, u32>,
+    hash_store: HashMap<PathBuf, u64>,
     thumbnail_cache: HashMap<PathBuf, Texture>,
     /// Insertion order for LRU eviction.
     cache_order: Vec<PathBuf>,
@@ -39,6 +40,7 @@ impl LibraryManager {
             current_folder: None,
             selected_index: None,
             path_to_index: HashMap::new(),
+            hash_store: HashMap::new(),
             thumbnail_cache: HashMap::new(),
             cache_order: Vec::new(),
         }
@@ -49,6 +51,7 @@ impl LibraryManager {
     pub fn scan_folder(&mut self, folder: &Path) {
         self.store.remove_all();
         self.path_to_index.clear();
+        self.hash_store.clear();
         self.selected_index = None;
         self.current_folder = Some(folder.to_path_buf());
 
@@ -187,6 +190,21 @@ impl LibraryManager {
         }
         self.thumbnail_cache.insert(path.clone(), texture);
         self.cache_order.push(path);
+    }
+
+    pub fn insert_hash(&mut self, path: PathBuf, hash: u64) {
+        self.hash_store.insert(path, hash);
+    }
+
+    /// Returns all (path, hash) pairs for the current folder, in store order.
+    pub fn hashes_snapshot(&self) -> Vec<(PathBuf, u64)> {
+        (0..self.store.n_items())
+            .filter_map(|i| self.entry_at(i))
+            .filter_map(|e| {
+                let p = e.path();
+                self.hash_store.get(&p).map(|&h| (p, h))
+            })
+            .collect()
     }
 
     // -----------------------------------------------------------------------
