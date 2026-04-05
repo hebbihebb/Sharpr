@@ -54,8 +54,8 @@ modules:
       - cp -r models/* /app/bin/models/
     sources:
       - type: archive
-        url: https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan/releases/download/v0.2.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
-        sha256: 7d6438f615f3ec52857e466657924403197287383a18a51372d67d745499252a
+        url: https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
+        sha256: e5aa6eb131234b87c0c51f82b89390f5e3e642b7b70f2b9bbe95b6a285a40c96
 
   - name: sharpr
     buildsystem: cargo
