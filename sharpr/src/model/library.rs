@@ -151,6 +151,23 @@ impl LibraryManager {
         self.store.n_items()
     }
 
+    /// Remove the entry for `path` from the store and all internal maps.
+    /// Reindexes entries that shifted down. Does nothing if not present.
+    pub fn remove_path(&mut self, path: &Path) {
+        let Some(index) = self.path_to_index.remove(path) else {
+            return;
+        };
+        self.store.remove(index);
+        self.thumbnail_cache.remove(path);
+        if let Some(pos) = self.cache_order.iter().position(|p| p == path) {
+            self.cache_order.remove(pos);
+        }
+        if self.selected_index == Some(index) {
+            self.selected_index = None;
+        }
+        self.reindex_from(index);
+    }
+
     // -----------------------------------------------------------------------
     // Thumbnail cache
     // -----------------------------------------------------------------------
