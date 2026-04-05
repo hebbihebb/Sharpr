@@ -1,14 +1,20 @@
 # Sharpr
 
-A fast, keyboard-friendly image viewer for GNOME — built with GTK4, Libadwaita, and Rust.
+<p align="center">
+  <img src="DesignDocs/Sharpr-splash.png" alt="Sharpr — Refining your perspective" width="480">
+</p>
 
-![Sharpr screenshot](https://raw.githubusercontent.com/hebbihebb/Sharpr/main/DesignDocs/Sharpr-splash.png)
+<p align="center">
+  A fast, keyboard-friendly image viewer for GNOME — built with GTK4, Libadwaita, and Rust.
+</p>
+
+---
 
 ## Features
 
 - **Filmstrip sidebar** — browse a folder's images with thumbnail previews
 - **Smooth zoom & pan** — scroll to zoom, drag to pan; Fit and 1:1 toggle
-- **Rotate & flip** — lossless in-memory transforms with save-to-disk (Edit menu)
+- **Rotate & flip** — in-memory transforms with save-to-disk (Edit menu)
 - **AI upscaling** — one-click upscale via Real-ESRGAN (Standard or Anime/Art model); before/after comparison slider
 - **Duplicate detection** — dHash-based near-duplicate grouping; Smart Folders sidebar
 - **Metadata overlay** — EXIF data via gexiv2
@@ -25,7 +31,7 @@ A fast, keyboard-friendly image viewer for GNOME — built with GTK4, Libadwaita
 ### Flatpak (recommended)
 
 ```bash
-cd packaging
+cd sharpr/packaging
 flatpak-builder --force-clean --user --install build-dir io.github.hebbihebb.Sharpr.yml
 flatpak run io.github.hebbihebb.Sharpr
 ```
@@ -38,14 +44,15 @@ flatpak run io.github.hebbihebb.Sharpr
 ### Native (development)
 
 ```bash
+cd sharpr
+
 # Install dependencies (Fedora example)
 sudo dnf install gtk4-devel libadwaita-devel gexiv2-devel
 
 cargo build
-cargo run
 ```
 
-GSettings schemas must be compiled before running:
+GSettings schemas must be compiled before running natively:
 ```bash
 glib-compile-schemas data/
 GSETTINGS_SCHEMA_DIR=data cargo run
