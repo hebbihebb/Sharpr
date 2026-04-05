@@ -1,6 +1,8 @@
 use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
+use libadwaita as adw;
+use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
 
 use crate::ui::window::SharprWindow;
@@ -63,7 +65,25 @@ mod imp {
 
         fn startup(&self) {
             self.parent_startup();
-            // Set up application-level actions here in later phases (e.g. quit, about).
+            let app = self.obj();
+            let about = gio::SimpleAction::new("about", None);
+            {
+                let app_weak = app.downgrade();
+                about.connect_activate(move |_, _| {
+                    let Some(app) = app_weak.upgrade() else { return };
+                    let dialog = adw::AboutDialog::new();
+                    dialog.set_application_name("Sharpr");
+                    dialog.set_application_icon("io.github.hebbihebb.Sharpr");
+                    dialog.set_developer_name("Sharpr Contributors");
+                    dialog.set_version("0.1.0");
+                    dialog.set_license_type(gtk4::License::Gpl30Only);
+                    dialog.set_copyright("© 2026 Sharpr Contributors");
+                    if let Some(win) = app.active_window() {
+                        dialog.present(Some(&win));
+                    }
+                });
+            }
+            app.add_action(&about);
         }
     }
 

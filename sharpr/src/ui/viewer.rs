@@ -228,27 +228,18 @@ impl ViewerPane {
         shortcuts.set_scope(gtk4::ShortcutScope::Managed);
 
         // Ctrl+0 — reset zoom
-        let w = self.downgrade();
         shortcuts.add_shortcut(gtk4::Shortcut::new(
             Some(gtk4::ShortcutTrigger::parse_string("<Control>0").unwrap()),
-            Some(gtk4::CallbackAction::new(move |_, _| {
-                if let Some(viewer) = w.upgrade() {
-                    viewer.reset_zoom();
-                }
+            Some(gtk4::CallbackAction::new(move |widget, _| {
+                let _ = widget.activate_action("win.zoom-mode", Some(&"fit".to_variant()));
                 glib::Propagation::Stop
             })),
         ));
 
         // Alt+Return — toggle metadata overlay
-        let w = self.downgrade();
         shortcuts.add_shortcut(gtk4::Shortcut::new(
             Some(gtk4::ShortcutTrigger::parse_string("<Alt>Return").unwrap()),
-            Some(gtk4::CallbackAction::new(move |_, _| {
-                if let Some(viewer) = w.upgrade() {
-                    viewer.toggle_metadata();
-                }
-                glib::Propagation::Stop
-            })),
+            Some(gtk4::NamedAction::new("win.show-metadata")),
         ));
 
         self.add_controller(shortcuts);
@@ -489,15 +480,33 @@ impl ViewerPane {
         }
     }
 
+    pub fn metadata_visible(&self) -> bool {
+        self.imp().metadata_visible.get()
+    }
+
+    pub fn set_metadata_visible(&self, visible: bool) {
+        let imp = self.imp();
+        imp.metadata_visible.set(visible);
+        imp.metadata_chip.set_visible(visible);
+    }
+
+    pub fn zoom_mode(&self) -> ZoomMode {
+        self.imp().zoom_mode.get()
+    }
+
+    pub fn set_zoom_mode(&self, mode: ZoomMode) {
+        if self.imp().zoom_mode.get() == mode {
+            return;
+        }
+        self.toggle_zoom_mode();
+    }
+
     // -----------------------------------------------------------------------
     // Metadata overlay
     // -----------------------------------------------------------------------
 
-    fn toggle_metadata(&self) {
-        let imp = self.imp();
-        let visible = !imp.metadata_visible.get();
-        imp.metadata_visible.set(visible);
-        imp.metadata_chip.set_visible(visible);
+    pub fn toggle_metadata(&self) {
+        self.set_metadata_visible(!self.metadata_visible());
     }
 
     fn pan_drag(&self, offset_x: f64, offset_y: f64) {
