@@ -2,6 +2,8 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use gdk4::Paintable;
 use glib::prelude::*;
@@ -32,6 +34,9 @@ mod imp {
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         /// Sender to the background thumbnail worker. Set by the window after spawn.
         pub thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
+        /// Shared generation counter — bumped on every folder switch so workers
+        /// skip stale requests from the previous folder immediately.
+        pub thumbnail_gen: RefCell<Option<Arc<std::sync::atomic::AtomicU64>>>,
         /// Paths already queued or being generated for the current folder.
         pub pending_thumbnails: RefCell<HashSet<PathBuf>>,
     }
@@ -57,6 +62,7 @@ mod imp {
                 image_selected_cb: RefCell::new(None),
                 state: RefCell::new(None),
                 thumbnail_tx: RefCell::new(None),
+                thumbnail_gen: RefCell::new(None),
                 pending_thumbnails: RefCell::new(HashSet::new()),
             }
         }
@@ -238,10 +244,15 @@ impl FilmstripPane {
         });
     }
 
-    /// Give the filmstrip a sender to the thumbnail worker so the factory bind
-    /// callback can enqueue requests for unthumb'd entries.
-    pub fn set_thumbnail_sender(&self, tx: async_channel::Sender<WorkerRequest>) {
+    /// Give the filmstrip a sender to the thumbnail worker and the shared
+    /// generation counter. Call once after the worker is spawned.
+    pub fn set_thumbnail_sender(
+        &self,
+        tx: async_channel::Sender<WorkerRequest>,
+        gen: Arc<std::sync::atomic::AtomicU64>,
+    ) {
         *self.imp().thumbnail_tx.borrow_mut() = Some(tx);
+        *self.imp().thumbnail_gen.borrow_mut() = Some(gen);
         self.schedule_visible_thumbnails();
     }
 
@@ -257,6 +268,11 @@ impl FilmstripPane {
         let Some(tx) = imp.thumbnail_tx.borrow().as_ref().cloned() else {
             return;
         };
+        let gen = imp
+            .thumbnail_gen
+            .borrow()
+            .as_ref()
+            .map_or(0, |a| a.load(Ordering::Relaxed));
         let Some(state_rc) = imp.state.borrow().as_ref().cloned() else {
             return;
         };
@@ -338,7 +354,7 @@ impl FilmstripPane {
 
         // Send remaining cache-miss paths to the worker pool.
         for path in worker_paths {
-            if tx.try_send(WorkerRequest::Thumbnail(path.clone())).is_err() {
+            if tx.try_send(WorkerRequest::Thumbnail { path: path.clone(), gen }).is_err() {
                 pending.remove(&path);
                 break;
             }

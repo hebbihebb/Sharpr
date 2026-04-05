@@ -121,7 +121,7 @@ impl SharprWindow {
         let viewer = ViewerPane::new(state.clone());
 
         if let Some(worker) = self.imp().thumbnail_worker.borrow().as_ref() {
-            filmstrip.set_thumbnail_sender(worker.sender());
+            filmstrip.set_thumbnail_sender(worker.sender(), worker.generation_arc());
         }
 
         // Sidebar folder selection → scan library → refresh filmstrip.
@@ -129,7 +129,15 @@ impl SharprWindow {
             let filmstrip_c = filmstrip.clone();
             let viewer_c = viewer.clone();
             let state_c = state.clone();
+            let window_weak = self.downgrade();
             sidebar.connect_folder_selected(move |path| {
+                // Bump generation so workers drop stale requests from the
+                // previous folder immediately rather than blocking the queue.
+                if let Some(win) = window_weak.upgrade() {
+                    if let Some(worker) = win.imp().thumbnail_worker.borrow().as_ref() {
+                        worker.bump_generation();
+                    }
+                }
                 state_c.borrow_mut().library.scan_folder(&path);
                 // Persist last folder.
                 state_c.borrow_mut().settings.last_folder = Some(path.clone());
