@@ -203,6 +203,13 @@ impl FilmstripPane {
             }
         });
 
+        let widget_weak = self.downgrade();
+        self.connect_map(move |_| {
+            if let Some(widget) = widget_weak.upgrade() {
+                widget.schedule_visible_thumbnails();
+            }
+        });
+
         // Connect selection change. Guard against INVALID_LIST_POSITION (u32::MAX),
         // which GTK emits when the model is empty or no item is selected.
         let widget_weak = self.downgrade();
@@ -263,6 +270,7 @@ impl FilmstripPane {
     pub fn schedule_visible_thumbnails(&self) {
         const ESTIMATED_ROW_HEIGHT: f64 = 120.0;
         const BUFFER_ROWS: u32 = 6;
+        const FALLBACK_VISIBLE_ROWS: u32 = 20;
 
         let imp = self.imp();
         let Some(tx) = imp.thumbnail_tx.borrow().as_ref().cloned() else {
@@ -279,22 +287,25 @@ impl FilmstripPane {
 
         let adjustment = imp.scroll.vadjustment();
         let visible_start = (adjustment.value() / ESTIMATED_ROW_HEIGHT).floor().max(0.0) as u32;
-        // If page_size is 0 the widget hasn't been laid out yet; assume a
-        // generous default (20 rows) so thumbnails are queued on first load.
         let page_size = adjustment.page_size();
         let visible_rows = if page_size > 0.0 {
             (page_size / ESTIMATED_ROW_HEIGHT).ceil() as u32
         } else {
-            20
+            0
         };
-        let range_start = visible_start.saturating_sub(BUFFER_ROWS);
-        let range_end = visible_start
+        let mut range_start = visible_start.saturating_sub(BUFFER_ROWS);
+        let mut range_end = visible_start
             .saturating_add(visible_rows)
             .saturating_add(BUFFER_ROWS);
 
         let mut pending = imp.pending_thumbnails.borrow_mut();
         let image_count = state_rc.borrow().library.image_count();
-        let capped_end = range_end.min(image_count);
+        let mut capped_end = range_end.min(image_count);
+        if visible_rows == 0 || capped_end <= range_start {
+            range_start = 0;
+            range_end = FALLBACK_VISIBLE_ROWS;
+            capped_end = range_end.min(image_count);
+        }
 
         // Collect disk-cache hits and worker-needed paths separately so we
         // can drop the state borrow before calling items_changed.
@@ -346,7 +357,10 @@ impl FilmstripPane {
                         entry.set_thumbnail(texture.clone());
                     }
                 }
-                state_rc.borrow_mut().library.insert_thumbnail(path.clone(), texture);
+                state_rc
+                    .borrow_mut()
+                    .library
+                    .insert_thumbnail(path.clone(), texture);
                 state_rc.borrow().library.store.items_changed(index, 1, 1);
                 pending.remove(&path);
             }
@@ -354,7 +368,13 @@ impl FilmstripPane {
 
         // Send remaining cache-miss paths to the worker pool.
         for path in worker_paths {
-            if tx.try_send(WorkerRequest::Thumbnail { path: path.clone(), gen }).is_err() {
+            if tx
+                .try_send(WorkerRequest::Thumbnail {
+                    path: path.clone(),
+                    gen,
+                })
+                .is_err()
+            {
                 pending.remove(&path);
                 break;
             }

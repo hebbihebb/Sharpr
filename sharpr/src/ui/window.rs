@@ -11,8 +11,8 @@ use std::path::PathBuf;
 
 use crate::config::AppSettings;
 use crate::model::{ImageEntry, LibraryManager};
-use crate::thumbnails::ThumbnailWorker;
 use crate::thumbnails::worker::WorkerRequest;
+use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::sidebar::SidebarPane;
 use crate::ui::viewer::{ViewerPane, ZoomMode};
@@ -30,45 +30,109 @@ pub struct AppState {
     pub upscale_model: UpscaleModel,
 }
 
+#[derive(Clone)]
+struct PrefetchRequest {
+    path: PathBuf,
+    index: u32,
+    direction: i32,
+    distance: u32,
+}
+
+struct PrefetchResult {
+    request: PrefetchRequest,
+    bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
 fn trigger_prefetch(state: &Rc<RefCell<AppState>>, index: u32) {
     let count = state.borrow().library.image_count();
     // Create a channel to receive decoded bytes back on the main thread.
-    let (tx, rx) = async_channel::unbounded::<(PathBuf, Vec<u8>, u32, u32)>();
+    let (tx, rx) = async_channel::unbounded::<PrefetchResult>();
 
     for delta in [-1i32, 1i32] {
-        let adj = index as i32 + delta;
-        if adj < 0 || adj >= count as i32 {
-            continue;
-        }
-        let adj_path = state
-            .borrow()
-            .library
-            .entry_at(adj as u32)
-            .map(|e: ImageEntry| e.path());
-        let Some(p) = adj_path else { continue };
-
-        // Skip if already cached or a decode is already in flight.
-        if state.borrow().library.prefetch_pending(&p) {
-            continue;
-        }
-        state.borrow_mut().library.mark_prefetch_in_flight(p.clone());
-
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            if let Some((bytes, w, h)) = prefetch_decode(&p) {
-                let _ = tx.send_blocking((p, bytes, w, h));
-            }
-        });
+        queue_prefetch(state, &tx, count, index as i32 + delta, delta, 1);
     }
 
     // Drain results onto the main thread (channel closes when both senders drop).
     let state_drain = state.clone();
+    let tx_drain = tx.clone();
     glib::MainContext::default().spawn_local(async move {
-        while let Ok((path, bytes, w, h)) = rx.recv().await {
-            state_drain
-                .borrow_mut()
-                .library
-                .insert_prefetch(path, bytes, w, h);
+        while let Ok(result) = rx.recv().await {
+            let PrefetchResult {
+                request,
+                bytes,
+                width,
+                height,
+            } = result;
+            {
+                state_drain.borrow_mut().library.insert_prefetch(
+                    request.path.clone(),
+                    bytes,
+                    width,
+                    height,
+                );
+            }
+
+            if request.distance < 3 {
+                let next_index = request.index as i32 + request.direction;
+                queue_prefetch(
+                    &state_drain,
+                    &tx_drain,
+                    count,
+                    next_index,
+                    request.direction,
+                    request.distance + 1,
+                );
+            }
+        }
+    });
+}
+
+fn queue_prefetch(
+    state: &Rc<RefCell<AppState>>,
+    tx: &async_channel::Sender<PrefetchResult>,
+    count: u32,
+    index: i32,
+    direction: i32,
+    distance: u32,
+) {
+    if index < 0 || index >= count as i32 {
+        return;
+    }
+
+    let path = {
+        let state_ref = state.borrow();
+        state_ref
+            .library
+            .entry_at(index as u32)
+            .map(|e: ImageEntry| e.path())
+    };
+    let Some(path) = path else { return };
+
+    {
+        let mut state_ref = state.borrow_mut();
+        if state_ref.library.prefetch_pending(&path) {
+            return;
+        }
+        state_ref.library.mark_prefetch_in_flight(path.clone());
+    }
+
+    let request = PrefetchRequest {
+        path,
+        index: index as u32,
+        direction,
+        distance,
+    };
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        if let Some((bytes, width, height)) = prefetch_decode(&request.path) {
+            let _ = tx.send_blocking(PrefetchResult {
+                request,
+                bytes,
+                width,
+                height,
+            });
         }
     });
 }
@@ -235,7 +299,11 @@ impl SharprWindow {
 
                 // Explicitly load the first image — selected_notify may not
                 // fire if the new folder also lands at position 0.
-                let first = state_c.borrow().library.entry_at(0).map(|e: ImageEntry| e.path());
+                let first = state_c
+                    .borrow()
+                    .library
+                    .entry_at(0)
+                    .map(|e: ImageEntry| e.path());
                 if let Some(p) = first {
                     filmstrip_c.select_index(0);
                     viewer_c.load_image(p);
@@ -257,7 +325,11 @@ impl SharprWindow {
                 let paths: Vec<_> = groups.into_iter().next().unwrap();
                 state_c.borrow_mut().library.load_virtual(&paths);
                 filmstrip_c.refresh();
-                let first = state_c.borrow().library.entry_at(0).map(|e: ImageEntry| e.path());
+                let first = state_c
+                    .borrow()
+                    .library
+                    .entry_at(0)
+                    .map(|e: ImageEntry| e.path());
                 if let Some(p) = first {
                     filmstrip_c.select_index(0);
                     viewer_c.load_image(p);
@@ -271,9 +343,14 @@ impl SharprWindow {
             let state_c = state.clone();
             filmstrip.connect_image_selected(move |index| {
                 let path = {
-                    let Ok(mut state) = state_c.try_borrow_mut() else { return };
+                    let Ok(mut state) = state_c.try_borrow_mut() else {
+                        return;
+                    };
                     state.library.selected_index = Some(index);
-                    state.library.entry_at(index).map(|entry: ImageEntry| entry.path())
+                    state
+                        .library
+                        .entry_at(index)
+                        .map(|entry: ImageEntry| entry.path())
                 };
                 if let Some(path) = path {
                     viewer_c.load_image(path);
@@ -330,19 +407,27 @@ impl SharprWindow {
         // Commit / Discard buttons for the comparison view.
         {
             let viewer_c = viewer.clone();
-            commit_btn.connect_clicked(move |_| { viewer_c.commit_upscale(); });
+            commit_btn.connect_clicked(move |_| {
+                viewer_c.commit_upscale();
+            });
         }
         {
             let viewer_c = viewer.clone();
-            discard_btn.connect_clicked(move |_| { viewer_c.discard_upscale(); });
+            discard_btn.connect_clicked(move |_| {
+                viewer_c.discard_upscale();
+            });
         }
         {
             let viewer_c = viewer.clone();
-            edit_commit_btn.connect_clicked(move |_| { viewer_c.save_edit(); });
+            edit_commit_btn.connect_clicked(move |_| {
+                viewer_c.save_edit();
+            });
         }
         {
             let viewer_c = viewer.clone();
-            edit_discard_btn.connect_clicked(move |_| { viewer_c.discard_edit(); });
+            edit_discard_btn.connect_clicked(move |_| {
+                viewer_c.discard_edit();
+            });
         }
 
         let viewer_page = libadwaita::NavigationPage::builder()
@@ -428,7 +513,11 @@ impl SharprWindow {
                         }
                     }
                 }
-                let first = state.borrow().library.entry_at(0).map(|e: ImageEntry| e.path());
+                let first = state
+                    .borrow()
+                    .library
+                    .entry_at(0)
+                    .map(|e: ImageEntry| e.path());
                 if let Some(p) = first {
                     filmstrip.select_index(0);
                     viewer.load_image(p);
@@ -486,7 +575,12 @@ impl SharprWindow {
         ));
         shortcuts.add_shortcut(gtk4::Shortcut::new(
             Some(gtk4::ShortcutTrigger::parse_string("<Alt>Right").unwrap()),
-            Some(make_action(state.clone(), filmstrip.clone(), viewer.clone(), 1)),
+            Some(make_action(
+                state.clone(),
+                filmstrip.clone(),
+                viewer.clone(),
+                1,
+            )),
         ));
 
         // F11 — Toggle fullscreen.
@@ -647,7 +741,10 @@ impl SharprWindow {
 
         let upscale_section = gio::Menu::new();
         upscale_section.append(Some("Run AI Upscale"), Some("win.upscale"));
-        upscale_section.append(Some("Standard (Photo)"), Some("win.upscale-model::standard"));
+        upscale_section.append(
+            Some("Standard (Photo)"),
+            Some("win.upscale-model::standard"),
+        );
         upscale_section.append(Some("Anime / Art"), Some("win.upscale-model::anime"));
         menu.append_section(Some("AI Upscale"), &upscale_section);
 
@@ -659,7 +756,12 @@ impl SharprWindow {
         menu
     }
 
-    fn setup_actions(&self, viewer: &ViewerPane, state: Rc<RefCell<AppState>>, upscale_banner: &libadwaita::Banner) {
+    fn setup_actions(
+        &self,
+        viewer: &ViewerPane,
+        state: Rc<RefCell<AppState>>,
+        upscale_banner: &libadwaita::Banner,
+    ) {
         let zoom_initial = match viewer.zoom_mode() {
             ZoomMode::Fit => "fit",
             ZoomMode::OneToOne => "1:1",
@@ -672,7 +774,9 @@ impl SharprWindow {
         {
             let viewer_weak = viewer.downgrade();
             zoom_action.connect_activate(move |action, param| {
-                let (Some(viewer), Some(param)) = (viewer_weak.upgrade(), param) else { return };
+                let (Some(viewer), Some(param)) = (viewer_weak.upgrade(), param) else {
+                    return;
+                };
                 let mode = if param.str() == Some("1:1") {
                     ZoomMode::OneToOne
                 } else {
@@ -692,11 +796,10 @@ impl SharprWindow {
         {
             let viewer_weak = viewer.downgrade();
             meta_action.connect_activate(move |action, _| {
-                let Some(viewer) = viewer_weak.upgrade() else { return };
-                let new_val = !action
-                    .state()
-                    .and_then(|s| s.get::<bool>())
-                    .unwrap_or(true);
+                let Some(viewer) = viewer_weak.upgrade() else {
+                    return;
+                };
+                let new_val = !action.state().and_then(|s| s.get::<bool>()).unwrap_or(true);
                 viewer.set_metadata_visible(new_val);
                 action.set_state(&new_val.to_variant());
             });
@@ -836,6 +939,12 @@ impl SharprWindow {
         menu_btn.add_css_class("flat");
         header.pack_end(&menu_btn);
 
-        (header, commit_btn, discard_btn, edit_commit_btn, edit_discard_btn)
+        (
+            header,
+            commit_btn,
+            discard_btn,
+            edit_commit_btn,
+            edit_discard_btn,
+        )
     }
 }

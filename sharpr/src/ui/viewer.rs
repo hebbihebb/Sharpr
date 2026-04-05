@@ -353,8 +353,7 @@ impl ViewerPane {
             self.reset_zoom();
             // Metadata still loads async (fast, doesn't affect display).
             let path_meta = path.clone();
-            let (meta_tx, meta_rx) =
-                async_channel::bounded::<crate::metadata::ImageMetadata>(1);
+            let (meta_tx, meta_rx) = async_channel::bounded::<crate::metadata::ImageMetadata>(1);
             std::thread::spawn(move || {
                 let _ = meta_tx.send_blocking(crate::metadata::ImageMetadata::load(&path_meta));
             });
@@ -473,14 +472,8 @@ impl ViewerPane {
         imp.picture.set_size_request(scaled_width, scaled_height);
 
         let scale_ratio = new_zoom / old_zoom;
-        self.set_adjustment_value(
-            &hadj,
-            content_focus_x * scale_ratio - focus_x,
-        );
-        self.set_adjustment_value(
-            &vadj,
-            content_focus_y * scale_ratio - focus_y,
-        );
+        self.set_adjustment_value(&hadj, content_focus_x * scale_ratio - focus_x);
+        self.set_adjustment_value(&vadj, content_focus_y * scale_ratio - focus_y);
     }
 
     pub fn reset_zoom(&self) {
@@ -514,7 +507,9 @@ impl ViewerPane {
                 imp.scrolled_window.vadjustment().set_value(0.0);
             }
             ZoomMode::OneToOne => {
-                let Some(paintable) = imp.picture.paintable() else { return };
+                let Some(paintable) = imp.picture.paintable() else {
+                    return;
+                };
                 let w = paintable.intrinsic_width().max(1);
                 let h = paintable.intrinsic_height().max(1);
                 imp.zoom.set(1.0);
@@ -647,12 +642,18 @@ impl ViewerPane {
             Some(p) => p,
             None => return,
         };
-        let Some(paintable) = imp.picture.paintable() else { return };
-        let Some(texture) = paintable.downcast_ref::<gdk4::Texture>() else { return };
+        let Some(paintable) = imp.picture.paintable() else {
+            return;
+        };
+        let Some(texture) = paintable.downcast_ref::<gdk4::Texture>() else {
+            return;
+        };
 
         let w = texture.width() as u32;
         let h = texture.height() as u32;
-        if w == 0 || h == 0 { return; }
+        if w == 0 || h == 0 {
+            return;
+        }
 
         let stride = (w * 4) as usize;
         let mut rgba = vec![0u8; stride * h as usize];
@@ -667,7 +668,8 @@ impl ViewerPane {
             }
         }
 
-        let ext = path.extension()
+        let ext = path
+            .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
@@ -675,24 +677,34 @@ impl ViewerPane {
         let result = match ext.as_str() {
             "jpg" | "jpeg" => {
                 // JPEG has no alpha — convert RGBA → RGB before encoding.
-                let rgb: Vec<u8> = rgba.chunks_exact(4)
+                let rgb: Vec<u8> = rgba
+                    .chunks_exact(4)
                     .flat_map(|px| [px[0], px[1], px[2]])
                     .collect();
                 image::save_buffer_with_format(
-                    &path, &rgb, w, h,
+                    &path,
+                    &rgb,
+                    w,
+                    h,
                     image::ColorType::Rgb8,
                     image::ImageFormat::Jpeg,
                 )
             }
             "png" => image::save_buffer_with_format(
-                &path, &rgba, w, h,
+                &path,
+                &rgba,
+                w,
+                h,
                 image::ColorType::Rgba8,
                 image::ImageFormat::Png,
             ),
             _ => {
                 let png_path = path.with_extension("png");
                 image::save_buffer_with_format(
-                    &png_path, &rgba, w, h,
+                    &png_path,
+                    &rgba,
+                    w,
+                    h,
                     image::ColorType::Rgba8,
                     image::ImageFormat::Png,
                 )
@@ -811,7 +823,9 @@ impl ViewerPane {
 
         glib::MainContext::default().spawn_local(async move {
             while let Ok(event) = rx.recv().await {
-                let Some(viewer) = widget_weak.upgrade() else { break };
+                let Some(viewer) = widget_weak.upgrade() else {
+                    break;
+                };
                 let vimp = viewer.imp();
                 match event {
                     UpscaleEvent::Progress(Some(f)) => {
@@ -906,6 +920,33 @@ fn decode_image_rgba(path: &PathBuf) -> Option<(Vec<u8>, u32, u32)> {
     use std::fs::File;
     use std::io::BufReader;
 
+    const MIN_PREVIEW_LONG_EDGE: u32 = 1024;
+
+    if let Ok(metadata) = rexiv2::Metadata::new_from_path(path) {
+        let mut previews = metadata.get_preview_images().unwrap_or_default();
+        previews.sort_by_key(|preview| preview.get_width().max(preview.get_height()));
+
+        if let Some(preview) = previews.into_iter().rev().find(|preview| {
+            preview.get_width().max(preview.get_height()) >= MIN_PREVIEW_LONG_EDGE
+                && matches!(preview.get_media_type(), Ok(rexiv2::MediaType::Jpeg))
+        }) {
+            if let Ok(img) = image::load_from_memory_with_format(
+                &preview.get_data().ok()?,
+                image::ImageFormat::Jpeg,
+            ) {
+                let rgba = img.into_rgba8();
+                let (w, h) = (rgba.width(), rgba.height());
+                return Some((rgba.into_raw(), w, h));
+            }
+        }
+    }
+
+    if is_jpeg_path(path) {
+        if let Some(decoded) = decode_jpeg_rgba_scaled(path) {
+            return Some(decoded);
+        }
+    }
+
     let file = File::open(path).ok()?;
     let reader = ImageReader::new(BufReader::new(file))
         .with_guessed_format()
@@ -916,12 +957,82 @@ fn decode_image_rgba(path: &PathBuf) -> Option<(Vec<u8>, u32, u32)> {
     Some((rgba.into_raw(), w, h))
 }
 
+fn is_jpeg_path(path: &std::path::Path) -> bool {
+    let by_extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "jpg" | "jpeg"))
+        .unwrap_or(false);
+    if by_extension {
+        return true;
+    }
+
+    let mut file = std::fs::File::open(path).ok();
+    let Some(file) = file.as_mut() else {
+        return false;
+    };
+    let mut magic = [0u8; 2];
+    std::io::Read::read_exact(file, &mut magic).is_ok() && magic == [0xFF, 0xD8]
+}
+
+fn decode_jpeg_rgba_scaled(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)> {
+    const MIN_VIEWER_LONG_EDGE: usize = 1280;
+
+    let jpeg_data = std::fs::read(path).ok()?;
+    let mut decompressor = turbojpeg::Decompressor::new().ok()?;
+    let header = decompressor.read_header(&jpeg_data).ok()?;
+    let scale = choose_jpeg_scale_factor(&header, MIN_VIEWER_LONG_EDGE);
+    let scaled = header.scaled(scale);
+    let pitch = scaled.width * turbojpeg::PixelFormat::RGBA.size();
+    let mut image = turbojpeg::Image {
+        pixels: vec![0; pitch * scaled.height],
+        width: scaled.width,
+        pitch,
+        height: scaled.height,
+        format: turbojpeg::PixelFormat::RGBA,
+    };
+
+    decompressor.set_scaling_factor(scale).ok()?;
+    decompressor
+        .decompress(&jpeg_data, image.as_deref_mut())
+        .ok()?;
+
+    Some((image.pixels, scaled.width as u32, scaled.height as u32))
+}
+
+fn choose_jpeg_scale_factor(
+    header: &turbojpeg::DecompressHeader,
+    min_long_edge: usize,
+) -> turbojpeg::ScalingFactor {
+    if header.is_lossless {
+        return turbojpeg::ScalingFactor::ONE;
+    }
+
+    let candidates = [
+        turbojpeg::ScalingFactor::ONE_EIGHTH,
+        turbojpeg::ScalingFactor::ONE_QUARTER,
+        turbojpeg::ScalingFactor::ONE_HALF,
+    ];
+
+    for factor in candidates {
+        let scaled = header.scaled(factor);
+        if scaled.width.max(scaled.height) >= min_long_edge {
+            return factor;
+        }
+    }
+
+    turbojpeg::ScalingFactor::ONE
+}
+
 fn pending_output_path(final_output: &std::path::Path) -> PathBuf {
     let stem = final_output
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("upscaled");
-    let ext = final_output.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = final_output
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
     let suffix = format!("{}.pending-{}", stem, std::process::id());
     let file_name = if ext.is_empty() {
         suffix
