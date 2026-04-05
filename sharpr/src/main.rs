@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod duplicates;
 mod metadata;
 mod model;
 mod thumbnails;

@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::upscale::UpscaleModel;
+
 /// Result sent back to the main thread after an upscale job completes.
 pub enum UpscaleEvent {
     /// Fraction complete in [0.0, 1.0]; `None` means pulse (indeterminate).
@@ -31,6 +33,7 @@ impl UpscaleRunner {
         input: &Path,
         output: &Path,
         scale: u32,
+        model: UpscaleModel,
     ) -> async_channel::Receiver<UpscaleEvent> {
         let (tx, rx) = async_channel::bounded::<UpscaleEvent>(64);
 
@@ -41,7 +44,7 @@ impl UpscaleRunner {
         // The subprocess is launched on a background thread so we don't need
         // an async GIO runtime. Progress lines are sent through the channel.
         std::thread::spawn(move || {
-            run_subprocess(binary, input, output, scale, tx);
+            run_subprocess(binary, input, output, scale, model, tx);
         });
 
         rx
@@ -67,6 +70,7 @@ fn run_subprocess(
     input: PathBuf,
     output: PathBuf,
     scale: u32,
+    model: UpscaleModel,
     tx: async_channel::Sender<UpscaleEvent>,
 ) {
     use std::io::{BufRead, BufReader};
@@ -86,7 +90,7 @@ fn run_subprocess(
             "-s",
             &scale.to_string(),
             "-n",
-            "realesrgan-x4plus",
+            model.model_name(),
         ])
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
