@@ -30,6 +30,60 @@ pub struct AppState {
     pub upscale_model: UpscaleModel,
 }
 
+fn trigger_prefetch(state: &Rc<RefCell<AppState>>, index: u32) {
+    let count = state.borrow().library.image_count();
+    // Create a channel to receive decoded bytes back on the main thread.
+    let (tx, rx) = async_channel::unbounded::<(PathBuf, Vec<u8>, u32, u32)>();
+
+    for delta in [-1i32, 1i32] {
+        let adj = index as i32 + delta;
+        if adj < 0 || adj >= count as i32 {
+            continue;
+        }
+        let adj_path = state
+            .borrow()
+            .library
+            .entry_at(adj as u32)
+            .map(|e: ImageEntry| e.path());
+        let Some(p) = adj_path else { continue };
+
+        // Skip if already cached or a decode is already in flight.
+        if state.borrow().library.prefetch_pending(&p) {
+            continue;
+        }
+        state.borrow_mut().library.mark_prefetch_in_flight(p.clone());
+
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            if let Some((bytes, w, h)) = prefetch_decode(&p) {
+                let _ = tx.send_blocking((p, bytes, w, h));
+            }
+        });
+    }
+
+    // Drain results onto the main thread (channel closes when both senders drop).
+    let state_drain = state.clone();
+    glib::MainContext::default().spawn_local(async move {
+        while let Ok((path, bytes, w, h)) = rx.recv().await {
+            state_drain
+                .borrow_mut()
+                .library
+                .insert_prefetch(path, bytes, w, h);
+        }
+    });
+}
+
+fn prefetch_decode(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = image::ImageReader::new(std::io::BufReader::new(file))
+        .with_guessed_format()
+        .ok()?;
+    let img = reader.decode().ok()?;
+    let rgba = img.into_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    Some((rgba.into_raw(), w, h))
+}
+
 impl AppState {
     fn new() -> Self {
         Self {
@@ -143,6 +197,16 @@ impl SharprWindow {
                     }
                 }
                 state_c.borrow_mut().library.scan_folder(&path);
+                // Persist last folder.
+                state_c.borrow_mut().settings.last_folder = Some(path.clone());
+                state_c.borrow().settings.save();
+
+                viewer_c.clear();
+                // Refresh first so Thumbnail requests enter the worker queue
+                // before Hash requests — disk-cached thumbnails load inline,
+                // uncached ones start decoding before the slower hash jobs.
+                filmstrip_c.refresh();
+
                 if let Some(win) = window_weak.upgrade() {
                     let gen = win
                         .imp()
@@ -168,12 +232,6 @@ impl SharprWindow {
                         }
                     }
                 }
-                // Persist last folder.
-                state_c.borrow_mut().settings.last_folder = Some(path.clone());
-                state_c.borrow().settings.save();
-
-                viewer_c.clear();
-                filmstrip_c.refresh();
 
                 // Explicitly load the first image — selected_notify may not
                 // fire if the new folder also lands at position 0.
@@ -213,22 +271,16 @@ impl SharprWindow {
             let state_c = state.clone();
             filmstrip.connect_image_selected(move |index| {
                 let path = {
-                    let Ok(mut state) = state_c.try_borrow_mut() else {
-                        // GTK can emit selection notifications re-entrantly while the
-                        // library store is being rebuilt; ignore those transient events.
-                        return;
-                    };
-
+                    let Ok(mut state) = state_c.try_borrow_mut() else { return };
                     state.library.selected_index = Some(index);
-                    state
-                        .library
-                        .entry_at(index)
-                        .map(|entry: ImageEntry| entry.path())
+                    state.library.entry_at(index).map(|entry: ImageEntry| entry.path())
                 };
-
                 if let Some(path) = path {
                     viewer_c.load_image(path);
                 }
+
+                // Queue prefetch for the images immediately before and after this one.
+                trigger_prefetch(&state_c, index);
             });
         }
 
@@ -341,6 +393,9 @@ impl SharprWindow {
         if let Some(folder) = last_folder {
             if folder.is_dir() {
                 state.borrow_mut().library.scan_folder(&folder);
+                // Refresh before hashing so Thumbnail requests are queued
+                // first — disk-cached thumbnails load inline immediately.
+                filmstrip.refresh();
                 let gen = self
                     .imp()
                     .thumbnail_worker
@@ -364,7 +419,6 @@ impl SharprWindow {
                         }
                     }
                 }
-                filmstrip.refresh();
                 let first = state.borrow().library.entry_at(0).map(|e: ImageEntry| e.path());
                 if let Some(p) = first {
                     filmstrip.select_index(0);

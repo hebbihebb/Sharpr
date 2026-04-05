@@ -297,10 +297,51 @@ impl ViewerPane {
         let load_gen = imp.load_gen.get().wrapping_add(1);
         imp.load_gen.set(load_gen);
         self.restore_view_mode();
-        imp.spinner.start();
-        imp.spinner.set_visible(true);
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
+
+        // ── Fast path: use pre-decoded bytes from prefetch cache. ──────────────
+        let prefetched = imp
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|rc| rc.borrow_mut().library.take_prefetch(&path));
+
+        if let Some((bytes, w, h)) = prefetched {
+            let gbytes = glib::Bytes::from_owned(bytes);
+            let texture = gdk4::MemoryTexture::new(
+                w as i32,
+                h as i32,
+                gdk4::MemoryFormat::R8g8b8a8,
+                &gbytes,
+                (w * 4) as usize,
+            );
+            imp.picture
+                .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
+            self.reset_zoom();
+            // Metadata still loads async (fast, doesn't affect display).
+            let path_meta = path.clone();
+            let (meta_tx, meta_rx) =
+                async_channel::bounded::<crate::metadata::ImageMetadata>(1);
+            std::thread::spawn(move || {
+                let _ = meta_tx.send_blocking(crate::metadata::ImageMetadata::load(&path_meta));
+            });
+            let widget_weak = self.downgrade();
+            glib::MainContext::default().spawn_local(async move {
+                if let Ok(meta) = meta_rx.recv().await {
+                    if let Some(v) = widget_weak.upgrade() {
+                        if v.imp().load_gen.get() == load_gen {
+                            v.imp().metadata_chip.update(&meta);
+                        }
+                    }
+                }
+            });
+            return;
+        }
+
+        // ── Slow path: show spinner and decode in background (unchanged). ───────
+        imp.spinner.start();
+        imp.spinner.set_visible(true);
 
         // Channel for decoded pixel data: (rgba_bytes, width, height)
         let (pixel_tx, pixel_rx) = async_channel::bounded::<Option<(Vec<u8>, u32, u32)>>(1);
@@ -308,8 +349,7 @@ impl ViewerPane {
         // Spawn background decode thread.
         let path_decode = path.clone();
         std::thread::spawn(move || {
-            let result = decode_image_rgba(&path_decode);
-            let _ = pixel_tx.send_blocking(result);
+            let _ = pixel_tx.send_blocking(decode_image_rgba(&path_decode));
         });
 
         // Spawn background metadata thread.
@@ -318,8 +358,7 @@ impl ViewerPane {
         let path_meta = path.clone();
         let (meta_tx, meta_rx) = async_channel::bounded::<crate::metadata::ImageMetadata>(1);
         std::thread::spawn(move || {
-            let metadata = crate::metadata::ImageMetadata::load(&path_meta);
-            let _ = meta_tx.send_blocking(metadata);
+            let _ = meta_tx.send_blocking(crate::metadata::ImageMetadata::load(&path_meta));
         });
         let widget_weak_meta = self.downgrade();
         glib::MainContext::default().spawn_local(async move {

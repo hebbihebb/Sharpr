@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use gdk4::Texture;
@@ -29,6 +29,9 @@ pub struct LibraryManager {
     thumbnail_cache: HashMap<PathBuf, Texture>,
     /// Insertion order for LRU eviction.
     cache_order: Vec<PathBuf>,
+    prefetch_cache: HashMap<PathBuf, (Vec<u8>, u32, u32)>,
+    prefetch_order: Vec<PathBuf>,
+    prefetch_in_flight: HashSet<PathBuf>,
 }
 
 impl LibraryManager {
@@ -43,6 +46,9 @@ impl LibraryManager {
             hash_store: HashMap::new(),
             thumbnail_cache: HashMap::new(),
             cache_order: Vec::new(),
+            prefetch_cache: HashMap::new(),
+            prefetch_order: Vec::new(),
+            prefetch_in_flight: HashSet::new(),
         }
     }
 
@@ -52,6 +58,9 @@ impl LibraryManager {
         self.store.remove_all();
         self.path_to_index.clear();
         self.hash_store.clear();
+        self.prefetch_cache.clear();
+        self.prefetch_order.clear();
+        self.prefetch_in_flight.clear();
         self.selected_index = None;
         self.current_folder = Some(folder.to_path_buf());
 
@@ -190,6 +199,39 @@ impl LibraryManager {
         }
         self.thumbnail_cache.insert(path.clone(), texture);
         self.cache_order.push(path);
+    }
+
+    /// Returns true if `path` is in the cache or currently being decoded.
+    pub fn prefetch_pending(&self, path: &Path) -> bool {
+        self.prefetch_cache.contains_key(path) || self.prefetch_in_flight.contains(path)
+    }
+
+    /// Mark a path as having a prefetch decode in flight.
+    pub fn mark_prefetch_in_flight(&mut self, path: PathBuf) {
+        self.prefetch_in_flight.insert(path);
+    }
+
+    /// Store completed prefetch bytes. Evicts oldest if cache exceeds 4 entries.
+    pub fn insert_prefetch(&mut self, path: PathBuf, bytes: Vec<u8>, width: u32, height: u32) {
+        self.prefetch_in_flight.remove(&path);
+        if self.prefetch_cache.contains_key(&path) {
+            return;
+        }
+        if self.prefetch_order.len() >= 4 {
+            let oldest = self.prefetch_order.remove(0);
+            self.prefetch_cache.remove(&oldest);
+        }
+        self.prefetch_cache.insert(path.clone(), (bytes, width, height));
+        self.prefetch_order.push(path);
+    }
+
+    /// Consume pre-decoded bytes for `path`, removing from cache.
+    /// Returns `None` if not cached.
+    pub fn take_prefetch(&mut self, path: &Path) -> Option<(Vec<u8>, u32, u32)> {
+        if let Some(pos) = self.prefetch_order.iter().position(|p| p == path) {
+            self.prefetch_order.remove(pos);
+        }
+        self.prefetch_cache.remove(path)
     }
 
     /// Populate the store from an arbitrary list of paths (virtual view).
