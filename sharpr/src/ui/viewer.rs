@@ -337,6 +337,45 @@ impl ViewerPane {
         imp.metadata_chip.clear();
         *imp.current_rgba.borrow_mut() = None;
 
+        // ── Fastest path: use decoded bytes from the preview LRU cache. ────────
+        let cached_preview = imp
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|rc| rc.borrow().library.cached_preview(&path));
+
+        if let Some((bytes, w, h)) = cached_preview {
+            *imp.current_rgba.borrow_mut() = Some((bytes.clone(), w, h));
+            let gbytes = glib::Bytes::from_owned(bytes);
+            let texture = gdk4::MemoryTexture::new(
+                w as i32,
+                h as i32,
+                gdk4::MemoryFormat::R8g8b8a8,
+                &gbytes,
+                (w * 4) as usize,
+            );
+            imp.picture
+                .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
+            self.reset_zoom();
+            // Metadata still loads async (fast, doesn't affect display).
+            let path_meta = path.clone();
+            let (meta_tx, meta_rx) = async_channel::bounded::<crate::metadata::ImageMetadata>(1);
+            std::thread::spawn(move || {
+                let _ = meta_tx.send_blocking(crate::metadata::ImageMetadata::load(&path_meta));
+            });
+            let widget_weak = self.downgrade();
+            glib::MainContext::default().spawn_local(async move {
+                if let Ok(meta) = meta_rx.recv().await {
+                    if let Some(v) = widget_weak.upgrade() {
+                        if v.imp().load_gen.get() == load_gen {
+                            v.imp().metadata_chip.update(&meta);
+                        }
+                    }
+                }
+            });
+            return;
+        }
+
         // ── Fast path: use pre-decoded bytes from prefetch cache. ──────────────
         let prefetched = imp
             .state
@@ -356,6 +395,11 @@ impl ViewerPane {
             );
             imp.picture
                 .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
+            if let Some(ref rc) = *imp.state.borrow() {
+                rc.borrow_mut()
+                    .library
+                    .insert_preview(path.clone(), bytes.clone(), w, h);
+            }
             self.reset_zoom();
             // Metadata still loads async (fast, doesn't affect display).
             let path_meta = path.clone();
@@ -428,6 +472,11 @@ impl ViewerPane {
             match maybe_pixels {
                 Some((bytes, w, h)) => {
                     *imp.current_rgba.borrow_mut() = Some((bytes.clone(), w, h));
+                    if let Some(ref rc) = *imp.state.borrow() {
+                        rc.borrow_mut()
+                            .library
+                            .insert_preview(path.clone(), bytes.clone(), w, h);
+                    }
                     let gbytes = glib::Bytes::from_owned(bytes);
                     let texture = gdk4::MemoryTexture::new(
                         w as i32,

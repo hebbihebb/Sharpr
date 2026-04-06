@@ -32,10 +32,13 @@ pub struct LibraryManager {
     prefetch_cache: HashMap<PathBuf, (Vec<u8>, u32, u32)>,
     prefetch_order: Vec<PathBuf>,
     prefetch_in_flight: HashSet<PathBuf>,
+    preview_cache: HashMap<PathBuf, (Vec<u8>, u32, u32)>,
+    preview_order: Vec<PathBuf>,
 }
 
 impl LibraryManager {
     const MAX_CACHE: usize = 500;
+    const MAX_PREVIEW_CACHE: usize = 12;
 
     pub fn new() -> Self {
         Self {
@@ -49,6 +52,8 @@ impl LibraryManager {
             prefetch_cache: HashMap::new(),
             prefetch_order: Vec::new(),
             prefetch_in_flight: HashSet::new(),
+            preview_cache: HashMap::new(),
+            preview_order: Vec::new(),
         }
     }
 
@@ -61,6 +66,8 @@ impl LibraryManager {
         self.prefetch_cache.clear();
         self.prefetch_order.clear();
         self.prefetch_in_flight.clear();
+        self.preview_cache.clear();
+        self.preview_order.clear();
         self.selected_index = None;
         self.current_folder = Some(folder.to_path_buf());
 
@@ -174,6 +181,10 @@ impl LibraryManager {
         if let Some(pos) = self.cache_order.iter().position(|p| p == path) {
             self.cache_order.remove(pos);
         }
+        self.preview_cache.remove(path);
+        if let Some(pos) = self.preview_order.iter().position(|p| p == path) {
+            self.preview_order.remove(pos);
+        }
         if self.selected_index == Some(index) {
             self.selected_index = None;
         }
@@ -235,12 +246,39 @@ impl LibraryManager {
         self.prefetch_cache.remove(path)
     }
 
+    /// Return a cloned decoded preview buffer, if present.
+    pub fn cached_preview(&self, path: &Path) -> Option<(Vec<u8>, u32, u32)> {
+        self.preview_cache.get(path).cloned()
+    }
+
+    /// Insert decoded preview bytes into the preview LRU cache.
+    pub fn insert_preview(&mut self, path: PathBuf, bytes: Vec<u8>, width: u32, height: u32) {
+        if self.preview_cache.contains_key(&path) {
+            if let Some(pos) = self.preview_order.iter().position(|p| p == &path) {
+                self.preview_order.remove(pos);
+            }
+        } else if self.preview_order.len() >= Self::MAX_PREVIEW_CACHE {
+            let oldest = self.preview_order.remove(0);
+            self.preview_cache.remove(&oldest);
+        }
+
+        self.preview_cache
+            .insert(path.clone(), (bytes, width, height));
+        self.preview_order.push(path);
+    }
+
     /// Populate the store from an arbitrary list of paths (virtual view).
     /// Does not touch the filesystem or `current_folder`; sets it to `None`
     /// so callers can distinguish a virtual view from a real folder scan.
     pub fn load_virtual(&mut self, paths: &[PathBuf]) {
         self.store.remove_all();
         self.path_to_index.clear();
+        self.hash_store.clear();
+        self.prefetch_cache.clear();
+        self.prefetch_order.clear();
+        self.prefetch_in_flight.clear();
+        self.preview_cache.clear();
+        self.preview_order.clear();
         self.selected_index = None;
         self.current_folder = None;
         for (index, path) in paths.iter().enumerate() {
