@@ -167,6 +167,23 @@ impl FilmstripPane {
                     Some(ref texture) => pic.set_paintable(Some(texture.upcast_ref::<Paintable>())),
                     None => pic.set_paintable(None::<&Paintable>),
                 }
+
+                let picture_weak = pic.downgrade();
+                let entry_clone = entry.clone();
+                let handler_id = entry.connect_notify_local(Some("thumbnail"), move |_, _| {
+                    if let Some(pic) = picture_weak.upgrade() {
+                        match entry_clone.thumbnail() {
+                            Some(ref texture) => {
+                                pic.set_paintable(Some(texture.upcast_ref::<Paintable>()))
+                            }
+                            None => pic.set_paintable(None::<&Paintable>),
+                        }
+                    }
+                });
+
+                unsafe {
+                    list_item.set_data("thumbnail-notify-id", handler_id);
+                }
             }
         });
 
@@ -175,6 +192,13 @@ impl FilmstripPane {
             let list_item = obj
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("factory object must be ListItem");
+            if let Some(entry) = list_item.item().and_downcast::<ImageEntry>() {
+                let handler_id =
+                    unsafe { list_item.steal_data::<glib::SignalHandlerId>("thumbnail-notify-id") };
+                if let Some(handler_id) = handler_id {
+                    entry.disconnect(handler_id);
+                }
+            }
             if let Some(item_box) = list_item.child().and_downcast::<gtk4::Box>() {
                 if let Some(pic) = item_box.first_child().and_downcast::<gtk4::Picture>() {
                     pic.set_paintable(None::<&Paintable>);
@@ -244,9 +268,16 @@ impl FilmstripPane {
         // page_size and catch any rows the fallback missed.
         self.schedule_visible_thumbnails();
         let w = self.downgrade();
-        glib::idle_add_local_once(move || {
-            if let Some(filmstrip) = w.upgrade() {
-                filmstrip.schedule_visible_thumbnails();
+        glib::idle_add_local(move || {
+            let Some(filmstrip) = w.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let page_size = filmstrip.imp().scroll.vadjustment().page_size();
+            filmstrip.schedule_visible_thumbnails();
+            if page_size > 0.0 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
             }
         });
     }
@@ -307,9 +338,7 @@ impl FilmstripPane {
             capped_end = range_end.min(image_count);
         }
 
-        // Collect disk-cache hits and worker-needed paths separately so we
-        // can drop the state borrow before calling items_changed.
-        let mut disk_hits: Vec<(u32, std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+        let mut disk_hits: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
         let mut worker_paths: Vec<std::path::PathBuf> = Vec::new();
 
         {
@@ -328,7 +357,7 @@ impl FilmstripPane {
                 // Check disk cache — avoids a worker round-trip for previously-seen images.
                 if let Some(cache_path) = crate::thumbnails::cache::thumbnail_cache_path(&path) {
                     if cache_path.exists() {
-                        disk_hits.push((index, path, cache_path));
+                        disk_hits.push((path, cache_path));
                         continue;
                     }
                 }
@@ -337,7 +366,7 @@ impl FilmstripPane {
         }
 
         // Load disk-cached thumbnails inline — a 160 px PNG decodes in ~1-2 ms.
-        for (index, path, cache_path) in disk_hits {
+        for (path, cache_path) in disk_hits {
             if let Ok(img) = image::open(&cache_path) {
                 let rgba = img.into_rgba8();
                 let (w, h) = (rgba.width(), rgba.height());
@@ -350,18 +379,18 @@ impl FilmstripPane {
                     (w * 4) as usize,
                 );
                 let texture: gdk4::Texture = texture.upcast();
-                // Set on entry and warm the LRU; drop state borrow before items_changed.
                 {
                     let state = state_rc.borrow();
-                    if let Some(entry) = state.library.entry_at(index) {
-                        entry.set_thumbnail(texture.clone());
+                    if let Some(index) = state.library.index_of_path(&path) {
+                        if let Some(entry) = state.library.entry_at(index) {
+                            entry.set_thumbnail(Some(texture.clone()));
+                        }
                     }
                 }
                 state_rc
                     .borrow_mut()
                     .library
                     .insert_thumbnail(path.clone(), texture);
-                state_rc.borrow().library.store.items_changed(index, 1, 1);
                 pending.remove(&path);
             }
         }

@@ -674,19 +674,14 @@ impl SharprWindow {
 
                 // Use the path→index lookup built by LibraryManager to avoid a
                 // linear scan for every completed thumbnail.
-                let found = {
+                {
                     let st = state.borrow();
                     if let Some(idx) = st.library.index_of_path(&result_path) {
                         if let Some(entry) = st.library.entry_at(idx) {
-                            entry.set_thumbnail(texture.clone().upcast());
-                            Some(idx)
-                        } else {
-                            None
+                            entry.set_thumbnail(Some(texture.clone().upcast::<gdk4::Texture>()));
                         }
-                    } else {
-                        None
                     }
-                };
+                }
 
                 // Cache the texture in LibraryManager (needs mut borrow).
                 {
@@ -694,11 +689,6 @@ impl SharprWindow {
                         .borrow_mut()
                         .library
                         .insert_thumbnail(result_path.clone(), texture.upcast());
-                }
-
-                // Notify GtkListView that item `i` changed (triggers re-bind).
-                if let Some(idx) = found {
-                    state.borrow().library.store.items_changed(idx, 1, 1);
                 }
 
                 filmstrip.mark_thumbnail_ready(&result_path);

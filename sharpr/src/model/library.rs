@@ -221,7 +221,8 @@ impl LibraryManager {
             let oldest = self.prefetch_order.remove(0);
             self.prefetch_cache.remove(&oldest);
         }
-        self.prefetch_cache.insert(path.clone(), (bytes, width, height));
+        self.prefetch_cache
+            .insert(path.clone(), (bytes, width, height));
         self.prefetch_order.push(path);
     }
 
@@ -283,7 +284,7 @@ impl LibraryManager {
             entry.set_file_size(meta.len());
         }
         if let Some(texture) = self.thumbnail_cache.get(&path) {
-            entry.set_thumbnail(texture.clone());
+            entry.set_thumbnail(Some(texture.clone()));
         }
         entry
     }

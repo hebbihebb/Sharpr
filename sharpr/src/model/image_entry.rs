@@ -2,6 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
 use gdk4::Texture;
+use glib::prelude::*;
+use glib::Properties;
 use gtk4::subclass::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -11,10 +13,12 @@ use gtk4::subclass::prelude::*;
 mod imp {
     use super::*;
 
-    #[derive(Default)]
+    #[derive(Properties, Default)]
+    #[properties(wrapper_type = super::ImageEntry)]
     pub struct ImageEntry {
         pub path: RefCell<PathBuf>,
         pub filename: RefCell<String>,
+        #[property(get, set, nullable)]
         pub thumbnail: RefCell<Option<Texture>>,
         /// Width × height in pixels, populated lazily.
         pub width: Cell<u32>,
@@ -30,6 +34,7 @@ mod imp {
         type ParentType = glib::Object;
     }
 
+    #[glib::derived_properties]
     impl ObjectImpl for ImageEntry {}
 }
 
@@ -63,18 +68,6 @@ impl ImageEntry {
 
     pub fn filename(&self) -> String {
         self.imp().filename.borrow().clone()
-    }
-
-    pub fn thumbnail(&self) -> Option<Texture> {
-        self.imp().thumbnail.borrow().clone()
-    }
-
-    pub fn set_thumbnail(&self, texture: Texture) {
-        *self.imp().thumbnail.borrow_mut() = Some(texture);
-    }
-
-    pub fn clear_thumbnail(&self) {
-        *self.imp().thumbnail.borrow_mut() = None;
     }
 
     pub fn dimensions(&self) -> Option<(u32, u32)> {
