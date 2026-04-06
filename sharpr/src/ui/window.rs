@@ -243,7 +243,11 @@ impl SharprWindow {
         let viewer = ViewerPane::new(state.clone());
 
         if let Some(worker) = self.imp().thumbnail_worker.borrow().as_ref() {
-            filmstrip.set_thumbnail_sender(worker.sender(), worker.generation_arc());
+            filmstrip.set_thumbnail_sender(
+                worker.sender(),
+                worker.generation_arc(),
+                worker.pending_set(),
+            );
         }
 
         // Sidebar folder selection → scan library → refresh filmstrip.

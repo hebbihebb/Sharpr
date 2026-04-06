@@ -1,6 +1,7 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_channel::{Receiver, Sender};
 
@@ -40,6 +41,8 @@ pub struct ThumbnailWorker {
     /// Bump this (via `bump_generation`) when the folder changes; workers skip
     /// any pending requests whose `gen` no longer matches.
     generation: Arc<AtomicU64>,
+    /// Paths currently queued or running for thumbnail generation.
+    pending_paths: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 /// Target height for generated thumbnails (in pixels).
@@ -53,22 +56,30 @@ impl ThumbnailWorker {
         let (result_tx, result_rx) = async_channel::unbounded::<ThumbnailResult>();
         let (hash_result_tx, hash_result_rx) = async_channel::unbounded::<HashResult>();
         let generation = Arc::new(AtomicU64::new(0));
+        let pending_paths = Arc::new(Mutex::new(HashSet::new()));
 
         for _ in 0..thread_count {
             let request_rx = request_rx.clone();
             let result_tx = result_tx.clone();
             let hash_result_tx = hash_result_tx.clone();
             let gen_arc = generation.clone();
+            let pending_paths = pending_paths.clone();
             std::thread::spawn(move || {
                 loop {
                     match request_rx.recv_blocking() {
                         Ok(WorkerRequest::Thumbnail { path, gen }) => {
                             // Skip stale requests immediately — no decode needed.
                             if gen != gen_arc.load(Ordering::Relaxed) {
+                                if let Ok(mut pending) = pending_paths.lock() {
+                                    pending.remove(&path);
+                                }
                                 continue;
                             }
                             if let Some(result) = generate_thumbnail(&path) {
                                 let _ = result_tx.send_blocking(result);
+                            }
+                            if let Ok(mut pending) = pending_paths.lock() {
+                                pending.remove(&path);
                             }
                         }
                         Ok(WorkerRequest::Hash { path, gen }) => {
@@ -89,6 +100,7 @@ impl ThumbnailWorker {
             Self {
                 request_tx,
                 generation,
+                pending_paths,
             },
             result_rx,
             hash_result_rx,
@@ -98,6 +110,9 @@ impl ThumbnailWorker {
     /// Increment the generation counter (call on every folder switch).
     /// Returns the new generation value.
     pub fn bump_generation(&self) -> u64 {
+        if let Ok(mut pending) = self.pending_paths.lock() {
+            pending.clear();
+        }
         self.generation.fetch_add(1, Ordering::Relaxed) + 1
     }
 
@@ -109,6 +124,11 @@ impl ThumbnailWorker {
     /// Return a cloned sender so other components can submit requests directly.
     pub fn sender(&self) -> Sender<WorkerRequest> {
         self.request_tx.clone()
+    }
+
+    /// Shared in-flight thumbnail path set for enqueue deduplication.
+    pub fn pending_set(&self) -> Arc<Mutex<HashSet<PathBuf>>> {
+        self.pending_paths.clone()
     }
 
     /// Return a clone of the generation Arc for use in the filmstrip.
