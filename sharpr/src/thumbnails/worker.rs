@@ -131,11 +131,22 @@ impl Drop for ThumbnailWorker {
 // ---------------------------------------------------------------------------
 
 fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
-    use image::imageops::{self, FilterType};
-
     // Fast path: return cached PNG if it exists and is fresh.
     if let Some(cached) = load_cached_thumbnail(path) {
         return Some(cached);
+    }
+
+    // Try rexiv2 embedded preview before full decode.
+    if let Ok(meta) = rexiv2::Metadata::new_from_path(path) {
+        if let Ok(previews) = meta.get_preview_images() {
+            for preview in previews {
+                if let Ok(data) = preview.get_data() {
+                    if let Ok(img) = image::load_from_memory(&data) {
+                        return build_thumbnail_and_cache(path, img);
+                    }
+                }
+            }
+        }
     }
 
     let file = std::fs::File::open(path).ok()?;
@@ -143,20 +154,22 @@ fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
         .with_guessed_format()
         .ok()?;
     let img = reader.decode().ok()?;
-
     let img = apply_exif_orientation(img, path);
+    build_thumbnail_and_cache(path, img)
+}
+
+fn build_thumbnail_and_cache(path: &Path, img: image::DynamicImage) -> Option<ThumbnailResult> {
+    use image::imageops::{self, FilterType};
 
     let orig_w = img.width();
     let orig_h = img.height();
-    let (thumb_w, thumb_h) = if orig_h > orig_w {
-        let h = THUMB_HEIGHT;
-        let w = ((orig_w as f64 / orig_h as f64) * h as f64).round() as u32;
-        (w.max(1), h)
-    } else {
-        let h = THUMB_HEIGHT;
-        let w = ((orig_w as f64 / orig_h as f64) * h as f64).round() as u32;
-        (w.max(1), h)
-    };
+    if orig_h == 0 {
+        return None;
+    }
+
+    let thumb_h = THUMB_HEIGHT;
+    let thumb_w = ((orig_w as f64 / orig_h as f64) * thumb_h as f64).round() as u32;
+    let thumb_w = thumb_w.max(1);
 
     let resized = imageops::resize(&img.into_rgba8(), thumb_w, thumb_h, FilterType::Lanczos3);
     let rgba_bytes = resized.into_raw();
