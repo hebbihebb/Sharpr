@@ -31,35 +31,45 @@ pub struct HashResult {
     pub hash: u64,
 }
 
-/// Manages a pool of background threads that decode and resize images.
+/// Manages two pools of background threads: a high-priority visible pool and a
+/// low-priority preload pool. Both share the same result receivers.
 ///
 /// The caller owns the `result_rx` receiver and polls it via
 /// `glib::MainContext::spawn_local`.
 pub struct ThumbnailWorker {
-    request_tx: Sender<WorkerRequest>,
+    visible_tx: Sender<WorkerRequest>,
+    preload_tx: Sender<WorkerRequest>,
     /// Monotonically increasing folder-switch counter shared with all workers.
     /// Bump this (via `bump_generation`) when the folder changes; workers skip
     /// any pending requests whose `gen` no longer matches.
     generation: Arc<AtomicU64>,
     /// Paths currently queued or running for thumbnail generation.
     pending_paths: Arc<Mutex<HashSet<PathBuf>>>,
+    /// Number of visible-channel workers, used for clean shutdown.
+    visible_worker_count: usize,
 }
 
 /// Target height for generated thumbnails (in pixels).
 const THUMB_HEIGHT: u32 = 160;
 
 impl ThumbnailWorker {
-    /// Spawn `thread_count` background workers.
+    /// Spawn background workers split into a visible pool (`thread_count - 1`
+    /// threads) and a preload pool (1 thread).
     /// Returns the worker handle and the receivers for thumbnail and hash results.
     pub fn spawn(thread_count: usize) -> (Self, Receiver<ThumbnailResult>, Receiver<HashResult>) {
-        let (request_tx, request_rx) = async_channel::unbounded::<WorkerRequest>();
+        let visible_workers = thread_count.saturating_sub(1).max(1);
+        let preload_workers = 1usize;
+
+        let (visible_tx, visible_rx) = async_channel::unbounded::<WorkerRequest>();
+        let (preload_tx, preload_rx) = async_channel::unbounded::<WorkerRequest>();
         let (result_tx, result_rx) = async_channel::unbounded::<ThumbnailResult>();
         let (hash_result_tx, hash_result_rx) = async_channel::unbounded::<HashResult>();
         let generation = Arc::new(AtomicU64::new(0));
         let pending_paths = Arc::new(Mutex::new(HashSet::new()));
 
-        for _ in 0..thread_count {
-            let request_rx = request_rx.clone();
+        // Visible workers — service in-viewport tile requests at normal priority.
+        for _ in 0..visible_workers {
+            let request_rx = visible_rx.clone();
             let result_tx = result_tx.clone();
             let hash_result_tx = hash_result_tx.clone();
             let gen_arc = generation.clone();
@@ -96,11 +106,51 @@ impl ThumbnailWorker {
             });
         }
 
+        // Preload workers — generate off-screen thumbnails at background priority.
+        for _ in 0..preload_workers {
+            let request_rx = preload_rx.clone();
+            let result_tx = result_tx.clone();
+            let hash_result_tx = hash_result_tx.clone();
+            let gen_arc = generation.clone();
+            let pending_paths = pending_paths.clone();
+            std::thread::spawn(move || {
+                loop {
+                    match request_rx.recv_blocking() {
+                        Ok(WorkerRequest::Thumbnail { path, gen }) => {
+                            if gen != gen_arc.load(Ordering::Relaxed) {
+                                if let Ok(mut pending) = pending_paths.lock() {
+                                    pending.remove(&path);
+                                }
+                                continue;
+                            }
+                            if let Some(result) = generate_thumbnail(&path) {
+                                let _ = result_tx.send_blocking(result);
+                            }
+                            if let Ok(mut pending) = pending_paths.lock() {
+                                pending.remove(&path);
+                            }
+                        }
+                        Ok(WorkerRequest::Hash { path, gen }) => {
+                            if gen != gen_arc.load(Ordering::Relaxed) {
+                                continue;
+                            }
+                            if let Some(hash) = compute_hash(&path) {
+                                let _ = hash_result_tx.send_blocking(HashResult { path, hash });
+                            }
+                        }
+                        Ok(WorkerRequest::Shutdown) | Err(_) => break,
+                    }
+                }
+            });
+        }
+
         (
             Self {
-                request_tx,
+                visible_tx,
+                preload_tx,
                 generation,
                 pending_paths,
+                visible_worker_count: visible_workers,
             },
             result_rx,
             hash_result_rx,
@@ -108,7 +158,7 @@ impl ThumbnailWorker {
     }
 
     /// Increment the generation counter (call on every folder switch).
-    /// Returns the new generation value.
+    /// Clears the in-flight dedup set and returns the new generation value.
     pub fn bump_generation(&self) -> u64 {
         if let Ok(mut pending) = self.pending_paths.lock() {
             pending.clear();
@@ -121,9 +171,14 @@ impl ThumbnailWorker {
         self.generation.load(Ordering::Relaxed)
     }
 
-    /// Return a cloned sender so other components can submit requests directly.
-    pub fn sender(&self) -> Sender<WorkerRequest> {
-        self.request_tx.clone()
+    /// Sender for in-viewport (high-priority) thumbnail requests.
+    pub fn visible_sender(&self) -> Sender<WorkerRequest> {
+        self.visible_tx.clone()
+    }
+
+    /// Sender for off-screen pre-generation (low-priority) requests.
+    pub fn preload_sender(&self) -> Sender<WorkerRequest> {
+        self.preload_tx.clone()
     }
 
     /// Shared in-flight thumbnail path set for enqueue deduplication.
@@ -139,10 +194,11 @@ impl ThumbnailWorker {
 
 impl Drop for ThumbnailWorker {
     fn drop(&mut self) {
-        // Signal all threads to stop.
-        for _ in 0..4 {
-            let _ = self.request_tx.try_send(WorkerRequest::Shutdown);
+        // Signal all threads to stop — one Shutdown per spawned thread.
+        for _ in 0..self.visible_worker_count {
+            let _ = self.visible_tx.try_send(WorkerRequest::Shutdown);
         }
+        let _ = self.preload_tx.try_send(WorkerRequest::Shutdown);
     }
 }
 

@@ -31,8 +31,10 @@ mod imp {
         pub selection_model: gtk4::SingleSelection,
         pub image_selected_cb: RefCell<Option<ImageSelectedCallback>>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
-        /// Sender to the background thumbnail worker. Set by the window after spawn.
-        pub thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
+        /// Sender for in-viewport thumbnail requests (high-priority workers).
+        pub visible_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
+        /// Sender for off-screen thumbnail pre-generation (low-priority worker).
+        pub preload_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
         /// Shared generation counter — bumped on every folder switch so workers
         /// skip stale requests from the previous folder immediately.
         pub thumbnail_gen: RefCell<Option<Arc<std::sync::atomic::AtomicU64>>>,
@@ -43,7 +45,7 @@ mod imp {
     impl Default for FilmstripPane {
         fn default() -> Self {
             // Factory is set up in build_ui so the bind closure can capture a
-            // weak reference to the widget (needed to reach thumbnail_tx).
+            // weak reference to the widget (needed to reach thumbnail senders).
             let selection_model = gtk4::SingleSelection::new(None::<gio::ListStore>);
             selection_model.set_can_unselect(false);
 
@@ -60,7 +62,8 @@ mod imp {
                 selection_model,
                 image_selected_cb: RefCell::new(None),
                 state: RefCell::new(None),
-                thumbnail_tx: RefCell::new(None),
+                visible_thumbnail_tx: RefCell::new(None),
+                preload_thumbnail_tx: RefCell::new(None),
                 thumbnail_gen: RefCell::new(None),
                 pending_thumbnails: RefCell::new(None),
             }
@@ -280,15 +283,17 @@ impl FilmstripPane {
         });
     }
 
-    /// Give the filmstrip a sender to the thumbnail worker and the shared
-    /// generation counter. Call once after the worker is spawned.
+    /// Give the filmstrip both worker senders, the shared generation counter,
+    /// and the shared dedup set. Call once after the worker is spawned.
     pub fn set_thumbnail_sender(
         &self,
-        tx: async_channel::Sender<WorkerRequest>,
+        visible_tx: async_channel::Sender<WorkerRequest>,
+        preload_tx: async_channel::Sender<WorkerRequest>,
         gen: Arc<std::sync::atomic::AtomicU64>,
         pending_set: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
     ) {
-        *self.imp().thumbnail_tx.borrow_mut() = Some(tx);
+        *self.imp().visible_thumbnail_tx.borrow_mut() = Some(visible_tx);
+        *self.imp().preload_thumbnail_tx.borrow_mut() = Some(preload_tx);
         *self.imp().thumbnail_gen.borrow_mut() = Some(gen);
         *self.imp().pending_thumbnails.borrow_mut() = Some(pending_set);
         self.schedule_visible_thumbnails();
@@ -308,7 +313,13 @@ impl FilmstripPane {
         const FALLBACK_VISIBLE_ROWS: u32 = 20;
 
         let imp = self.imp();
-        let Some(tx) = imp.thumbnail_tx.borrow().as_ref().cloned() else {
+        let Some(visible_tx) = imp.visible_thumbnail_tx.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(preload_tx) = imp.preload_thumbnail_tx.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(pending_set) = imp.pending_thumbnails.borrow().as_ref().cloned() else {
             return;
         };
         let gen = imp
@@ -328,28 +339,36 @@ impl FilmstripPane {
         } else {
             0
         };
-        let mut range_start = visible_start.saturating_sub(BUFFER_ROWS);
-        let mut range_end = visible_start
+
+        // Visible range — tiles currently on screen.
+        let mut visible_range_start = visible_start;
+        let mut visible_range_end = visible_start.saturating_add(visible_rows);
+        // Preload range — visible range plus off-screen buffer on both sides.
+        let mut preload_range_start = visible_start.saturating_sub(BUFFER_ROWS);
+        let mut preload_range_end = visible_start
             .saturating_add(visible_rows)
             .saturating_add(BUFFER_ROWS);
 
-        let Some(pending_set) = imp.pending_thumbnails.borrow().as_ref().cloned() else {
-            return;
-        };
         let image_count = state_rc.borrow().library.image_count();
-        let mut capped_end = range_end.min(image_count);
-        if visible_rows == 0 || capped_end <= range_start {
-            range_start = 0;
-            range_end = FALLBACK_VISIBLE_ROWS;
-            capped_end = range_end.min(image_count);
+        let mut visible_capped_end = visible_range_end.min(image_count);
+        let mut preload_capped_end = preload_range_end.min(image_count);
+
+        if visible_rows == 0 || visible_capped_end <= visible_range_start {
+            visible_range_start = 0;
+            visible_range_end = FALLBACK_VISIBLE_ROWS;
+            preload_range_start = 0;
+            preload_range_end = FALLBACK_VISIBLE_ROWS.saturating_add(BUFFER_ROWS);
+            visible_capped_end = visible_range_end.min(image_count);
+            preload_capped_end = preload_range_end.min(image_count);
         }
 
         let mut disk_hits: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
-        let mut worker_paths: Vec<std::path::PathBuf> = Vec::new();
+        let mut visible_worker_paths: Vec<std::path::PathBuf> = Vec::new();
+        let mut preload_worker_paths: Vec<std::path::PathBuf> = Vec::new();
 
         {
             let state = state_rc.borrow();
-            for index in range_start..capped_end {
+            for index in preload_range_start..preload_capped_end {
                 let Some(entry) = state.library.entry_at(index) else {
                     continue;
                 };
@@ -364,7 +383,14 @@ impl FilmstripPane {
                         continue;
                     }
                 }
-                worker_paths.push(path);
+                let is_visible = index >= visible_range_start
+                    && index < visible_capped_end
+                    && visible_rows > 0;
+                if is_visible {
+                    visible_worker_paths.push(path);
+                } else {
+                    preload_worker_paths.push(path);
+                }
             }
         }
 
@@ -397,8 +423,8 @@ impl FilmstripPane {
             }
         }
 
-        // Send remaining cache-miss paths to the worker pool.
-        for path in worker_paths {
+        // Send visible cache-miss paths to the high-priority worker pool.
+        for path in visible_worker_paths {
             let should_enqueue = {
                 let Ok(mut pending) = pending_set.lock() else {
                     continue;
@@ -408,7 +434,32 @@ impl FilmstripPane {
             if !should_enqueue {
                 continue;
             }
-            if tx
+            if visible_tx
+                .try_send(WorkerRequest::Thumbnail {
+                    path: path.clone(),
+                    gen,
+                })
+                .is_err()
+            {
+                if let Ok(mut pending) = pending_set.lock() {
+                    pending.remove(&path);
+                }
+                break;
+            }
+        }
+
+        // Send off-screen cache-miss paths to the low-priority preload worker.
+        for path in preload_worker_paths {
+            let should_enqueue = {
+                let Ok(mut pending) = pending_set.lock() else {
+                    continue;
+                };
+                pending.insert(path.clone())
+            };
+            if !should_enqueue {
+                continue;
+            }
+            if preload_tx
                 .try_send(WorkerRequest::Thumbnail {
                     path: path.clone(),
                     gen,
