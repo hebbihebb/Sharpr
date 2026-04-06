@@ -1,10 +1,6 @@
 # Sharpr
 
 <p align="center">
-  <img src="DesignDocs/Sharpr-splash.png" alt="Sharpr — Refining your perspective" width="480">
-</p>
-
-<p align="center">
   A fast, keyboard-friendly image viewer for GNOME — built with GTK4, Libadwaita, and Rust.
 </p>
 
