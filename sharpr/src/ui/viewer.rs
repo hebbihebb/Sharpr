@@ -41,6 +41,8 @@ mod imp {
         pub discard_btn: std::cell::RefCell<Option<gtk4::Button>>,
         /// Path of the image currently displayed — set by load_image(), cleared by clear().
         pub current_path: RefCell<Option<PathBuf>>,
+        /// Canonical decoded RGBA pixels for the currently displayed image.
+        pub current_rgba: RefCell<Option<(Vec<u8>, u32, u32)>>,
         /// True when apply_transform() has been called and the result is unsaved.
         pub pending_edit: Cell<bool>,
         /// "Save Edit" and "Discard Edit" buttons owned by the window header.
@@ -122,6 +124,7 @@ mod imp {
                 commit_btn: std::cell::RefCell::new(None),
                 discard_btn: std::cell::RefCell::new(None),
                 current_path: RefCell::new(None),
+                current_rgba: RefCell::new(None),
                 pending_edit: Cell::new(false),
                 edit_commit_btn: RefCell::new(None),
                 edit_discard_btn: RefCell::new(None),
@@ -312,6 +315,7 @@ impl ViewerPane {
         imp.spinner.set_visible(false);
         self.reset_zoom();
         *imp.current_path.borrow_mut() = None;
+        *imp.current_rgba.borrow_mut() = None;
         imp.pending_edit.set(false);
         Self::set_edit_buttons_visible_on(&imp, false);
     }
@@ -331,6 +335,7 @@ impl ViewerPane {
         self.restore_view_mode();
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
+        *imp.current_rgba.borrow_mut() = None;
 
         // ── Fast path: use pre-decoded bytes from prefetch cache. ──────────────
         let prefetched = imp
@@ -340,6 +345,7 @@ impl ViewerPane {
             .and_then(|rc| rc.borrow_mut().library.take_prefetch(&path));
 
         if let Some((bytes, w, h)) = prefetched {
+            *imp.current_rgba.borrow_mut() = Some((bytes.clone(), w, h));
             let gbytes = glib::Bytes::from_owned(bytes);
             let texture = gdk4::MemoryTexture::new(
                 w as i32,
@@ -421,6 +427,7 @@ impl ViewerPane {
 
             match maybe_pixels {
                 Some((bytes, w, h)) => {
+                    *imp.current_rgba.borrow_mut() = Some((bytes.clone(), w, h));
                     let gbytes = glib::Bytes::from_owned(bytes);
                     let texture = gdk4::MemoryTexture::new(
                         w as i32,
@@ -435,6 +442,7 @@ impl ViewerPane {
                 }
                 None => {
                     // Decode failed — clear to blank.
+                    *imp.current_rgba.borrow_mut() = None;
                     imp.picture.set_paintable(None::<&gdk4::Paintable>);
                 }
             }
@@ -569,37 +577,17 @@ impl ViewerPane {
 
     /// Apply an in-memory transform to the currently displayed image.
     /// `op` is one of: `"rotate-cw"`, `"rotate-ccw"`, `"flip-h"`, `"flip-v"`.
-    /// If no paintable is set, does nothing.
+    /// If no current RGBA buffer is set, does nothing.
     pub fn apply_transform(&self, op: &str) {
-        use gdk4::prelude::TextureExtManual;
-        use gdk4::{MemoryFormat, MemoryTexture, Texture};
+        use gdk4::{MemoryFormat, MemoryTexture};
         use image::imageops;
 
         let imp = self.imp();
-        let Some(paintable) = imp.picture.paintable() else {
+        let Some((rgba_bytes, w, h)) = imp.current_rgba.borrow().clone() else {
             return;
         };
-        let Some(texture) = paintable.downcast_ref::<Texture>() else {
-            return;
-        };
-
-        let w = texture.width() as u32;
-        let h = texture.height() as u32;
         if w == 0 || h == 0 {
             return;
-        }
-
-        let stride = (w * 4) as usize;
-        let mut rgba_bytes = vec![0_u8; stride * h as usize];
-        texture.download(&mut rgba_bytes, stride);
-        for px in rgba_bytes.chunks_exact_mut(4) {
-            px.swap(0, 2); // swap R and B (BGRA → RGBA)
-            let a = px[3];
-            if a > 0 && a < 255 {
-                px[0] = ((px[0] as u16 * 255) / a as u16).min(255) as u8;
-                px[1] = ((px[1] as u16 * 255) / a as u16).min(255) as u8;
-                px[2] = ((px[2] as u16 * 255) / a as u16).min(255) as u8;
-            }
         }
 
         let Some(buf) = image::RgbaImage::from_raw(w, h, rgba_bytes) else {
@@ -616,7 +604,9 @@ impl ViewerPane {
 
         let rgba = transformed.into_rgba8();
         let (nw, nh) = (rgba.width(), rgba.height());
-        let gbytes = glib::Bytes::from_owned(rgba.into_raw());
+        let rgba_bytes = rgba.into_raw();
+        *imp.current_rgba.borrow_mut() = Some((rgba_bytes.clone(), nw, nh));
+        let gbytes = glib::Bytes::from_owned(rgba_bytes);
         let texture = MemoryTexture::new(
             nw as i32,
             nh as i32,
@@ -635,37 +625,16 @@ impl ViewerPane {
     /// JPEG is re-encoded as RGB (lossy, unavoidable). PNG is lossless RGBA.
     /// Other extensions fall back to PNG (with .png extension).
     pub fn save_edit(&self) {
-        use gdk4::prelude::TextureExtManual;
-
         let imp = self.imp();
         let path = match imp.current_path.borrow().clone() {
             Some(p) => p,
             None => return,
         };
-        let Some(paintable) = imp.picture.paintable() else {
+        let Some((rgba, w, h)) = imp.current_rgba.borrow().clone() else {
             return;
         };
-        let Some(texture) = paintable.downcast_ref::<gdk4::Texture>() else {
-            return;
-        };
-
-        let w = texture.width() as u32;
-        let h = texture.height() as u32;
         if w == 0 || h == 0 {
             return;
-        }
-
-        let stride = (w * 4) as usize;
-        let mut rgba = vec![0u8; stride * h as usize];
-        texture.download(&mut rgba, stride);
-        for px in rgba.chunks_exact_mut(4) {
-            px.swap(0, 2); // swap R and B (BGRA → RGBA)
-            let a = px[3];
-            if a > 0 && a < 255 {
-                px[0] = ((px[0] as u16 * 255) / a as u16).min(255) as u8;
-                px[1] = ((px[1] as u16 * 255) / a as u16).min(255) as u8;
-                px[2] = ((px[2] as u16 * 255) / a as u16).min(255) as u8;
-            }
         }
 
         let ext = path
