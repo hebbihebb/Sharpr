@@ -244,7 +244,8 @@ impl SharprWindow {
 
         if let Some(worker) = self.imp().thumbnail_worker.borrow().as_ref() {
             filmstrip.set_thumbnail_sender(
-                worker.sender(),
+                worker.visible_sender(),
+                worker.preload_sender(),
                 worker.generation_arc(),
                 worker.pending_set(),
             );
@@ -287,7 +288,7 @@ impl SharprWindow {
                         .thumbnail_worker
                         .borrow()
                         .as_ref()
-                        .map(|w| w.sender());
+                        .map(|w| w.preload_sender());
                     if let Some(tx) = tx {
                         let count = state_c.borrow().library.image_count();
                         for i in 0..count {
