@@ -108,7 +108,9 @@ fn run_subprocess(
     {
         Ok(c) => c,
         Err(e) => {
-            send(UpscaleEvent::Failed(format!("Failed to start upscaler: {e}")));
+            send(UpscaleEvent::Failed(format!(
+                "Failed to start upscaler: {e}"
+            )));
             return;
         }
     };

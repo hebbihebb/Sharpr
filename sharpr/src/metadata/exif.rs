@@ -79,7 +79,9 @@ impl ImageMetadata {
                 };
 
                 // Focal length — rexiv2 returns f64 millimetres.
-                meta.focal_length = exif.get_focal_length().map(|mm| format!("{} mm", mm as u32));
+                meta.focal_length = exif
+                    .get_focal_length()
+                    .map(|mm| format!("{} mm", mm as u32));
 
                 // Lens model — prefer EXIF 2.3 tag, fall back to Makernote variants.
                 meta.lens = exif
@@ -91,14 +93,14 @@ impl ImageMetadata {
                     .map(|s| s.trim().to_owned());
 
                 // Colour space: tag value 1 = sRGB, 65535 = uncalibrated / Adobe RGB.
-                meta.color_space = exif
-                    .get_tag_string("Exif.Photo.ColorSpace")
-                    .ok()
-                    .and_then(|s| match s.trim() {
-                        "1" => Some("sRGB".to_owned()),
-                        "65535" => Some("Adobe RGB".to_owned()),
-                        _ => None,
-                    });
+                meta.color_space =
+                    exif.get_tag_string("Exif.Photo.ColorSpace")
+                        .ok()
+                        .and_then(|s| match s.trim() {
+                            "1" => Some("sRGB".to_owned()),
+                            "65535" => Some("Adobe RGB".to_owned()),
+                            _ => None,
+                        });
             }
             Err(_) => {
                 // Non-EXIF files (PNG, GIF, …) — get dimensions from the image crate.

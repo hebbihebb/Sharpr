@@ -25,7 +25,11 @@ pub fn thumbnail_cache_path(source_path: &Path) -> Option<PathBuf> {
 
 pub fn thumbnail_cache_dir() -> Option<PathBuf> {
     if let Some(cache_home) = std::env::var_os("XDG_CACHE_HOME") {
-        return Some(PathBuf::from(cache_home).join("sharpr").join("thumbnails-r1"));
+        return Some(
+            PathBuf::from(cache_home)
+                .join("sharpr")
+                .join("thumbnails-r1"),
+        );
     }
     let home = std::env::var_os("HOME")?;
     Some(

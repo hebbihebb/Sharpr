@@ -74,9 +74,7 @@ mod imp {
 
             // After — right of divider.
             if let Some(ref tex) = *self.after_texture.borrow() {
-                snapshot.push_clip(&gtk4::graphene::Rect::new(
-                    divider_x, 0.0, w - divider_x, h,
-                ));
+                snapshot.push_clip(&gtk4::graphene::Rect::new(divider_x, 0.0, w - divider_x, h));
                 snapshot.append_texture(tex, &full);
                 snapshot.pop();
             }
@@ -91,12 +89,7 @@ mod imp {
             let nub = 20.0_f32;
             snapshot.append_color(
                 &gdk4::RGBA::new(1.0, 1.0, 1.0, 0.9),
-                &gtk4::graphene::Rect::new(
-                    divider_x - nub / 2.0,
-                    h / 2.0 - nub / 2.0,
-                    nub,
-                    nub,
-                ),
+                &gtk4::graphene::Rect::new(divider_x - nub / 2.0, h / 2.0 - nub / 2.0, nub, nub),
             );
         }
     }
@@ -129,14 +122,20 @@ impl BeforeAfterViewer {
 
         let tx1 = tx.clone();
         let b = before_path.clone();
-        std::thread::spawn(move || { let _ = tx1.send_blocking((false, decode_rgba(&b))); });
-        std::thread::spawn(move || { let _ = tx.send_blocking((true, decode_rgba(&after_path))); });
+        std::thread::spawn(move || {
+            let _ = tx1.send_blocking((false, decode_rgba(&b)));
+        });
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking((true, decode_rgba(&after_path)));
+        });
 
         let widget_weak = self.downgrade();
         glib::MainContext::default().spawn_local(async move {
             let mut count = 0;
             while let Ok((is_after, pixels)) = rx.recv().await {
-                let Some(w) = widget_weak.upgrade() else { break };
+                let Some(w) = widget_weak.upgrade() else {
+                    break;
+                };
                 let imp = w.imp();
                 if imp.load_gen.get() != load_gen {
                     break;
@@ -144,9 +143,13 @@ impl BeforeAfterViewer {
                 if let Some((bytes, width, height)) = pixels {
                     let gbytes = glib::Bytes::from_owned(bytes);
                     let tex: gdk4::Texture = gdk4::MemoryTexture::new(
-                        width, height, gdk4::MemoryFormat::R8g8b8a8,
-                        &gbytes, (width as usize) * 4,
-                    ).upcast();
+                        width,
+                        height,
+                        gdk4::MemoryFormat::R8g8b8a8,
+                        &gbytes,
+                        (width as usize) * 4,
+                    )
+                    .upcast();
                     if imp.load_gen.get() != load_gen {
                         break;
                     }
@@ -192,11 +195,16 @@ impl BeforeAfterViewer {
         drag.connect_drag_update(move |gesture, offset_x, _| {
             let Some(viewer) = w.upgrade() else { return };
             let imp = viewer.imp();
-            if !imp.dragging.get() { return; }
+            if !imp.dragging.get() {
+                return;
+            }
             let width = viewer.width() as f64;
-            if width <= 0.0 { return; }
+            if width <= 0.0 {
+                return;
+            }
             let (start_x, _) = gesture.start_point().unwrap_or((0.0, 0.0));
-            imp.divider.set(((start_x + offset_x) / width).clamp(0.0, 1.0));
+            imp.divider
+                .set(((start_x + offset_x) / width).clamp(0.0, 1.0));
             viewer.queue_draw();
         });
 
@@ -212,7 +220,9 @@ impl BeforeAfterViewer {
 }
 
 impl Default for BeforeAfterViewer {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn decode_rgba(path: &PathBuf) -> Option<(Vec<u8>, i32, i32)> {
@@ -220,7 +230,10 @@ fn decode_rgba(path: &PathBuf) -> Option<(Vec<u8>, i32, i32)> {
     use std::io::BufReader;
     let file = std::fs::File::open(path).ok()?;
     let img = ImageReader::new(BufReader::new(file))
-        .with_guessed_format().ok()?.decode().ok()?;
+        .with_guessed_format()
+        .ok()?
+        .decode()
+        .ok()?;
     let rgba = img.into_rgba8();
     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
     Some((rgba.into_raw(), w, h))

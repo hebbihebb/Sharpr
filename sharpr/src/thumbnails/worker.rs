@@ -85,7 +85,14 @@ impl ThumbnailWorker {
             });
         }
 
-        (Self { request_tx, generation }, result_rx, hash_result_rx)
+        (
+            Self {
+                request_tx,
+                generation,
+            },
+            result_rx,
+            hash_result_rx,
+        )
     }
 
     /// Increment the generation counter (call on every folder switch).
@@ -202,8 +209,8 @@ fn thumbnail_cache_path(source_path: &Path) -> Option<PathBuf> {
 }
 
 fn apply_exif_orientation(img: image::DynamicImage, path: &Path) -> image::DynamicImage {
-    use image::DynamicImage;
     use image::imageops;
+    use image::DynamicImage;
 
     let orientation: u32 = rexiv2::Metadata::new_from_path(path)
         .ok()
@@ -216,13 +223,13 @@ fn apply_exif_orientation(img: image::DynamicImage, path: &Path) -> image::Dynam
         2 => DynamicImage::ImageRgba8(imageops::flip_horizontal(&img.into_rgba8())),
         3 => DynamicImage::ImageRgba8(imageops::rotate180(&img.into_rgba8())),
         4 => DynamicImage::ImageRgba8(imageops::flip_vertical(&img.into_rgba8())),
-        5 => DynamicImage::ImageRgba8(imageops::flip_horizontal(
-            &imageops::rotate90(&img.into_rgba8()),
-        )),
+        5 => DynamicImage::ImageRgba8(imageops::flip_horizontal(&imageops::rotate90(
+            &img.into_rgba8(),
+        ))),
         6 => DynamicImage::ImageRgba8(imageops::rotate90(&img.into_rgba8())),
-        7 => DynamicImage::ImageRgba8(imageops::flip_horizontal(
-            &imageops::rotate270(&img.into_rgba8()),
-        )),
+        7 => DynamicImage::ImageRgba8(imageops::flip_horizontal(&imageops::rotate270(
+            &img.into_rgba8(),
+        ))),
         8 => DynamicImage::ImageRgba8(imageops::rotate270(&img.into_rgba8())),
         _ => img,
     }

@@ -111,6 +111,9 @@ mod tests {
         ];
 
         let groups = group_duplicates(&hashes);
-        assert_eq!(groups, vec![vec![PathBuf::from("a.jpg"), PathBuf::from("b.jpg")]]);
+        assert_eq!(
+            groups,
+            vec![vec![PathBuf::from("a.jpg"), PathBuf::from("b.jpg")]]
+        );
     }
 }

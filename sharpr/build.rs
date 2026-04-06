@@ -14,9 +14,5 @@ fn main() {
     println!("cargo:rerun-if-changed={gresource}");
     println!("cargo:rerun-if-changed=data/splash.png");
 
-    glib_build_tools::compile_resources(
-        &["data"],
-        gresource,
-        "sharpr.gresource",
-    );
+    glib_build_tools::compile_resources(&["data"], gresource, "sharpr.gresource");
 }

@@ -46,21 +46,16 @@ mod imp {
                 .default_width(600)
                 .default_height(400)
                 .build();
-            let splash_pic = gtk4::Picture::for_resource(
-                "/io/github/hebbihebb/Sharpr/splash.png",
-            );
+            let splash_pic = gtk4::Picture::for_resource("/io/github/hebbihebb/Sharpr/splash.png");
             splash_pic.set_content_fit(gtk4::ContentFit::Fill);
             splash.set_child(Some(&splash_pic));
             splash.present();
 
             let window = SharprWindow::new(app.upcast_ref::<libadwaita::Application>());
-            glib::timeout_add_local_once(
-                std::time::Duration::from_millis(1800),
-                move || {
-                    splash.close();
-                    window.present();
-                },
-            );
+            glib::timeout_add_local_once(std::time::Duration::from_millis(1800), move || {
+                splash.close();
+                window.present();
+            });
         }
 
         fn startup(&self) {
@@ -70,7 +65,9 @@ mod imp {
             {
                 let app_weak = app.downgrade();
                 about.connect_activate(move |_, _| {
-                    let Some(app) = app_weak.upgrade() else { return };
+                    let Some(app) = app_weak.upgrade() else {
+                        return;
+                    };
                     let dialog = adw::AboutDialog::new();
                     dialog.set_application_name("Sharpr");
                     dialog.set_application_icon("io.github.hebbihebb.Sharpr");
