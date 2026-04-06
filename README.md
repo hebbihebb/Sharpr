@@ -10,6 +10,12 @@
 
 ---
 
+<p align="center">
+  <img src="DesignDocs/film strip hamburger.png" alt="Sharpr with filmstrip and menu open" width="800">
+</p>
+
+---
+
 ## Features
 
 - **Filmstrip sidebar** — browse a folder's images with thumbnail previews
