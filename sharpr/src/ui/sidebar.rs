@@ -1,6 +1,6 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gtk4::gio;
@@ -11,14 +11,18 @@ use crate::ui::window::AppState;
 
 type FolderSelectedCallback = Box<dyn Fn(PathBuf) + 'static>;
 type DuplicatesSelectedCallback = Box<dyn Fn() + 'static>;
+type SearchActivatedCallback = Box<dyn Fn() + 'static>;
 
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
 ];
 
-// ---------------------------------------------------------------------------
-// SidebarPane
-// ---------------------------------------------------------------------------
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SmartFolderSelection {
+    None,
+    Duplicates,
+    Search,
+}
 
 mod imp {
     use super::*;
@@ -26,8 +30,14 @@ mod imp {
     pub struct SidebarPane {
         pub toolbar_view: libadwaita::ToolbarView,
         pub list_box: gtk4::ListBox,
+        pub smart_list: gtk4::ListBox,
+        pub duplicates_row: gtk4::ListBoxRow,
+        pub search_row: gtk4::ListBoxRow,
         pub folder_selected_cb: RefCell<Option<FolderSelectedCallback>>,
         pub duplicates_selected_cb: RefCell<Option<DuplicatesSelectedCallback>>,
+        pub search_activated_cb: RefCell<Option<SearchActivatedCallback>>,
+        pub suppress_folder_signal: Cell<bool>,
+        pub suppress_smart_signal: Cell<bool>,
     }
 
     impl Default for SidebarPane {
@@ -35,8 +45,14 @@ mod imp {
             Self {
                 toolbar_view: libadwaita::ToolbarView::new(),
                 list_box: gtk4::ListBox::new(),
+                smart_list: gtk4::ListBox::new(),
+                duplicates_row: gtk4::ListBoxRow::new(),
+                search_row: gtk4::ListBoxRow::new(),
                 folder_selected_cb: RefCell::new(None),
                 duplicates_selected_cb: RefCell::new(None),
+                search_activated_cb: RefCell::new(None),
+                suppress_folder_signal: Cell::new(false),
+                suppress_smart_signal: Cell::new(false),
             }
         }
     }
@@ -76,13 +92,9 @@ impl SidebarPane {
     fn build_ui(&self, _state: Rc<RefCell<AppState>>) {
         let imp = self.imp();
 
-        // -----------------------------------------------------------------------
-        // Header bar
-        // -----------------------------------------------------------------------
         let header = libadwaita::HeaderBar::new();
         header.set_show_end_title_buttons(false);
 
-        // "Open Folder" button — uses GtkFileDialog (GTK 4.10+, portal-friendly).
         let open_btn = gtk4::Button::from_icon_name("folder-open-symbolic");
         open_btn.set_tooltip_text(Some("Open Folder"));
         header.pack_start(&open_btn);
@@ -92,7 +104,6 @@ impl SidebarPane {
             let Some(widget) = widget_weak.upgrade() else {
                 return;
             };
-            // Walk up the widget tree to find the window.
             let Some(root) = btn.root() else { return };
             let Some(window) = root.downcast_ref::<gtk4::Window>() else {
                 return;
@@ -109,8 +120,9 @@ impl SidebarPane {
                 move |result| {
                     if let Ok(file) = result {
                         if let Some(path) = file.path() {
-                            if let Some(w) = widget_weak2.upgrade() {
-                                w.emit_folder_selected(path);
+                            if let Some(widget) = widget_weak2.upgrade() {
+                                widget.select_folder(&path);
+                                widget.emit_folder_selected(path);
                             }
                         }
                     }
@@ -120,28 +132,26 @@ impl SidebarPane {
 
         imp.toolbar_view.add_top_bar(&header);
 
-        // -----------------------------------------------------------------------
-        // Folder list
-        // -----------------------------------------------------------------------
-        let list_box = &imp.list_box;
-        list_box.add_css_class("navigation-sidebar");
-        list_box.set_selection_mode(gtk4::SelectionMode::Single);
-
+        imp.list_box.add_css_class("navigation-sidebar");
+        imp.list_box.set_selection_mode(gtk4::SelectionMode::Single);
         self.populate_default_folders();
 
-        // Single-click folder selection should behave the same way as the
-        // explicit folder picker in the header.
         let widget_weak = self.downgrade();
-        list_box.connect_selected_rows_changed(move |list_box| {
+        imp.list_box.connect_selected_rows_changed(move |list_box| {
+            let Some(widget) = widget_weak.upgrade() else {
+                return;
+            };
+            if widget.imp().suppress_folder_signal.get() {
+                return;
+            }
             let Some(row) = list_box.selected_row() else {
                 return;
             };
-            // `row` is a `&gtk4::ListBoxRow` but is actually our `FolderRow` subclass.
-            if let Some(folder_row) = row.downcast_ref::<FolderRow>() {
-                if let Some(w) = widget_weak.upgrade() {
-                    w.emit_folder_selected(folder_row.path());
-                }
-            }
+            let Some(folder_row) = row.downcast_ref::<FolderRow>() else {
+                return;
+            };
+            widget.set_smart_selection(SmartFolderSelection::None);
+            widget.emit_folder_selected(folder_row.path());
         });
 
         let scroll = gtk4::ScrolledWindow::new();
@@ -149,57 +159,43 @@ impl SidebarPane {
         scroll.set_vexpand(true);
         scroll.set_child(Some(&imp.list_box));
 
-        // Section headers.
-        let folders_label = section_label("Folders");
-        let tags_label = section_label("Tags");
-
-        let recent_row = gtk4::Label::new(Some("Recent"));
-        recent_row.set_halign(gtk4::Align::Start);
-        recent_row.set_margin_start(24);
-        recent_row.set_margin_bottom(4);
-        recent_row.add_css_class("dim-label");
-
-        // -----------------------------------------------------------------------
-        // Smart Folders section — Duplicates row
-        // -----------------------------------------------------------------------
         let smart_label = section_label("Smart Folders");
+        let folders_label = section_label("Folders");
 
-        let dup_row = gtk4::ListBoxRow::new();
-        let dup_icon = gtk4::Image::from_icon_name("edit-find-symbolic");
-        let dup_name = gtk4::Label::new(Some("Duplicates"));
-        dup_name.set_halign(gtk4::Align::Start);
-        dup_name.set_hexpand(true);
-        let dup_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-        dup_box.set_margin_start(8);
-        dup_box.set_margin_end(8);
-        dup_box.set_margin_top(6);
-        dup_box.set_margin_bottom(6);
-        dup_box.append(&dup_icon);
-        dup_box.append(&dup_name);
-        dup_row.set_child(Some(&dup_box));
+        imp.smart_list.add_css_class("navigation-sidebar");
+        imp.smart_list
+            .set_selection_mode(gtk4::SelectionMode::Single);
 
-        let smart_list = gtk4::ListBox::new();
-        smart_list.add_css_class("navigation-sidebar");
-        smart_list.set_selection_mode(gtk4::SelectionMode::None);
-        smart_list.append(&dup_row);
+        configure_smart_row(&imp.duplicates_row, "edit-find-symbolic", "Duplicates");
+        configure_smart_row(&imp.search_row, "system-search-symbolic", "Search");
 
-        // Clicking the Duplicates row emits the duplicates callback.
+        imp.smart_list.append(&imp.duplicates_row);
+        imp.smart_list.append(&imp.search_row);
+
         let widget_weak = self.downgrade();
-        let dup_gesture = gtk4::GestureClick::new();
-        dup_gesture.connect_released(move |_, _, _, _| {
-            if let Some(w) = widget_weak.upgrade() {
-                w.emit_duplicates_selected();
+        imp.smart_list.connect_selected_rows_changed(move |list| {
+            let Some(widget) = widget_weak.upgrade() else {
+                return;
+            };
+            if widget.imp().suppress_smart_signal.get() {
+                return;
+            }
+            let Some(row) = list.selected_row() else {
+                return;
+            };
+            widget.clear_folder_selection();
+            if row == widget.imp().duplicates_row {
+                widget.emit_duplicates_selected();
+            } else if row == widget.imp().search_row {
+                widget.emit_search_activated();
             }
         });
-        dup_row.add_controller(dup_gesture);
 
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         vbox.append(&smart_label);
-        vbox.append(&smart_list);
+        vbox.append(&imp.smart_list);
         vbox.append(&folders_label);
         vbox.append(&scroll);
-        vbox.append(&tags_label);
-        vbox.append(&recent_row);
 
         imp.toolbar_view.set_content(Some(&vbox));
         imp.toolbar_view.set_parent(self);
@@ -243,14 +239,93 @@ impl SidebarPane {
         *self.imp().folder_selected_cb.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_duplicates_selected<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().duplicates_selected_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_search_activated<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().search_activated_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn set_duplicates_selected(&self, selected: bool) {
+        if selected {
+            self.set_smart_selection(SmartFolderSelection::Duplicates);
+        } else if self.current_smart_selection() == SmartFolderSelection::Duplicates {
+            self.set_smart_selection(SmartFolderSelection::None);
+        }
+    }
+
+    pub fn set_search_selected(&self, selected: bool) {
+        if selected {
+            self.set_smart_selection(SmartFolderSelection::Search);
+        } else if self.current_smart_selection() == SmartFolderSelection::Search {
+            self.set_smart_selection(SmartFolderSelection::None);
+        }
+    }
+
+    pub fn select_folder(&self, path: &Path) {
+        self.clear_smart_selection();
+
+        let mut child = self.imp().list_box.first_child();
+        while let Some(widget) = child {
+            let next = widget.next_sibling();
+            if let Ok(row) = widget.downcast::<FolderRow>() {
+                if row.path() == path {
+                    self.imp().suppress_folder_signal.set(true);
+                    self.imp().list_box.select_row(Some(&row));
+                    self.imp().suppress_folder_signal.set(false);
+                    break;
+                }
+            }
+            child = next;
+        }
+    }
+
+    fn clear_folder_selection(&self) {
+        self.imp().suppress_folder_signal.set(true);
+        self.imp().list_box.unselect_all();
+        self.imp().suppress_folder_signal.set(false);
+    }
+
+    fn clear_smart_selection(&self) {
+        self.set_smart_selection(SmartFolderSelection::None);
+    }
+
+    fn set_smart_selection(&self, selection: SmartFolderSelection) {
+        self.imp().suppress_smart_signal.set(true);
+        match selection {
+            SmartFolderSelection::None => self.imp().smart_list.unselect_all(),
+            SmartFolderSelection::Duplicates => {
+                self.imp()
+                    .smart_list
+                    .select_row(Some(&self.imp().duplicates_row));
+            }
+            SmartFolderSelection::Search => {
+                self.imp()
+                    .smart_list
+                    .select_row(Some(&self.imp().search_row));
+            }
+        }
+        self.imp().suppress_smart_signal.set(false);
+    }
+
+    fn current_smart_selection(&self) -> SmartFolderSelection {
+        let Some(row) = self.imp().smart_list.selected_row() else {
+            return SmartFolderSelection::None;
+        };
+        if row == self.imp().duplicates_row {
+            SmartFolderSelection::Duplicates
+        } else if row == self.imp().search_row {
+            SmartFolderSelection::Search
+        } else {
+            SmartFolderSelection::None
+        }
+    }
+
     fn emit_folder_selected(&self, path: PathBuf) {
         if let Some(cb) = self.imp().folder_selected_cb.borrow().as_ref() {
             cb(path);
         }
-    }
-
-    pub fn connect_duplicates_selected<F: Fn() + 'static>(&self, f: F) {
-        *self.imp().duplicates_selected_cb.borrow_mut() = Some(Box::new(f));
     }
 
     fn emit_duplicates_selected(&self) {
@@ -258,6 +333,28 @@ impl SidebarPane {
             cb();
         }
     }
+
+    fn emit_search_activated(&self) {
+        if let Some(cb) = self.imp().search_activated_cb.borrow().as_ref() {
+            cb();
+        }
+    }
+}
+
+fn configure_smart_row(row: &gtk4::ListBoxRow, icon_name: &str, label_text: &str) {
+    let icon = gtk4::Image::from_icon_name(icon_name);
+    let label = gtk4::Label::new(Some(label_text));
+    label.set_halign(gtk4::Align::Start);
+    label.set_hexpand(true);
+
+    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    hbox.set_margin_start(8);
+    hbox.set_margin_end(8);
+    hbox.set_margin_top(6);
+    hbox.set_margin_bottom(6);
+    hbox.append(&icon);
+    hbox.append(&label);
+    row.set_child(Some(&hbox));
 }
 
 fn section_label(text: &str) -> gtk4::Label {
@@ -270,7 +367,7 @@ fn section_label(text: &str) -> gtk4::Label {
     lbl
 }
 
-fn discover_image_child_folders(root: &std::path::Path, root_name: &str) -> Vec<(PathBuf, String)> {
+fn discover_image_child_folders(root: &Path, root_name: &str) -> Vec<(PathBuf, String)> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
@@ -297,7 +394,7 @@ fn discover_image_child_folders(root: &std::path::Path, root_name: &str) -> Vec<
     folders
 }
 
-fn directory_contains_images(dir: &std::path::Path) -> bool {
+fn directory_contains_images(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
@@ -307,7 +404,7 @@ fn directory_contains_images(dir: &std::path::Path) -> bool {
     })
 }
 
-fn is_image_file(path: &std::path::Path) -> bool {
+fn is_image_file(path: &Path) -> bool {
     path.extension()
         .map(|ext| {
             let ext = ext.to_string_lossy().to_lowercase();
@@ -315,10 +412,6 @@ fn is_image_file(path: &std::path::Path) -> bool {
         })
         .unwrap_or(false)
 }
-
-// ---------------------------------------------------------------------------
-// FolderRow — ListBoxRow subclass that carries a PathBuf
-// ---------------------------------------------------------------------------
 
 mod folder_row_imp {
     use super::*;
@@ -350,7 +443,6 @@ impl FolderRow {
         let row: Self = glib::Object::new();
         *row.imp().path.borrow_mut() = path;
 
-        // Build widget content inline (managed by ListBoxRow::set_child).
         let icon = gtk4::Image::from_icon_name("folder-symbolic");
         let name_label = gtk4::Label::new(Some(label));
         name_label.set_halign(gtk4::Align::Start);

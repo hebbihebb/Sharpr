@@ -113,33 +113,31 @@ impl ThumbnailWorker {
             let hash_result_tx = hash_result_tx.clone();
             let gen_arc = generation.clone();
             let pending_paths = pending_paths.clone();
-            std::thread::spawn(move || {
-                loop {
-                    match request_rx.recv_blocking() {
-                        Ok(WorkerRequest::Thumbnail { path, gen }) => {
-                            if gen != gen_arc.load(Ordering::Relaxed) {
-                                if let Ok(mut pending) = pending_paths.lock() {
-                                    pending.remove(&path);
-                                }
-                                continue;
-                            }
-                            if let Some(result) = generate_thumbnail(&path) {
-                                let _ = result_tx.send_blocking(result);
-                            }
+            std::thread::spawn(move || loop {
+                match request_rx.recv_blocking() {
+                    Ok(WorkerRequest::Thumbnail { path, gen }) => {
+                        if gen != gen_arc.load(Ordering::Relaxed) {
                             if let Ok(mut pending) = pending_paths.lock() {
                                 pending.remove(&path);
                             }
+                            continue;
                         }
-                        Ok(WorkerRequest::Hash { path, gen }) => {
-                            if gen != gen_arc.load(Ordering::Relaxed) {
-                                continue;
-                            }
-                            if let Some(hash) = compute_hash(&path) {
-                                let _ = hash_result_tx.send_blocking(HashResult { path, hash });
-                            }
+                        if let Some(result) = generate_thumbnail(&path) {
+                            let _ = result_tx.send_blocking(result);
                         }
-                        Ok(WorkerRequest::Shutdown) | Err(_) => break,
+                        if let Ok(mut pending) = pending_paths.lock() {
+                            pending.remove(&path);
+                        }
                     }
+                    Ok(WorkerRequest::Hash { path, gen }) => {
+                        if gen != gen_arc.load(Ordering::Relaxed) {
+                            continue;
+                        }
+                        if let Some(hash) = compute_hash(&path) {
+                            let _ = hash_result_tx.send_blocking(HashResult { path, hash });
+                        }
+                    }
+                    Ok(WorkerRequest::Shutdown) | Err(_) => break,
                 }
             });
         }
@@ -210,19 +208,6 @@ fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
     // Fast path: return cached PNG if it exists and is fresh.
     if let Some(cached) = load_cached_thumbnail(path) {
         return Some(cached);
-    }
-
-    // Try rexiv2 embedded preview before full decode.
-    if let Ok(meta) = rexiv2::Metadata::new_from_path(path) {
-        if let Some(previews) = meta.get_preview_images() {
-            for preview in &previews {
-                if let Some(data) = preview.get_data().ok() {
-                    if let Ok(img) = image::load_from_memory(&data) {
-                        return build_thumbnail_and_cache(path, img);
-                    }
-                }
-            }
-        }
     }
 
     let file = std::fs::File::open(path).ok()?;

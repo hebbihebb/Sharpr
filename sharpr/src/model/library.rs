@@ -23,6 +23,7 @@ pub struct LibraryManager {
     pub store: gio::ListStore,
     pub current_folder: Option<PathBuf>,
     pub selected_index: Option<u32>,
+    folder_history: HashMap<PathBuf, u32>,
     /// O(1) path → list index lookup, kept in sync with `store`.
     path_to_index: HashMap<PathBuf, u32>,
     hash_store: HashMap<PathBuf, u64>,
@@ -45,6 +46,7 @@ impl LibraryManager {
             store: gio::ListStore::new::<ImageEntry>(),
             current_folder: None,
             selected_index: None,
+            folder_history: HashMap::new(),
             path_to_index: HashMap::new(),
             hash_store: HashMap::new(),
             thumbnail_cache: HashMap::new(),
@@ -68,6 +70,9 @@ impl LibraryManager {
         self.prefetch_in_flight.clear();
         self.preview_cache.clear();
         self.preview_order.clear();
+        if let (Some(folder), Some(idx)) = (self.current_folder.as_ref(), self.selected_index) {
+            self.folder_history.insert(folder.clone(), idx);
+        }
         self.selected_index = None;
         self.current_folder = Some(folder.to_path_buf());
 
@@ -150,6 +155,10 @@ impl LibraryManager {
     /// Returns the currently selected `ImageEntry`.
     pub fn selected_entry(&self) -> Option<ImageEntry> {
         self.selected_index.and_then(|i| self.entry_at(i))
+    }
+
+    pub fn restore_index_for(&self, folder: &Path) -> Option<u32> {
+        self.folder_history.get(folder).copied()
     }
 
     /// Advance the selection by `delta` steps, wrapping at folder boundaries.
