@@ -322,7 +322,10 @@ impl SharprWindow {
                     state_c.borrow_mut().library.selected_index = Some(index);
                     filmstrip_c.select_index(index);
                     filmstrip_c.scroll_to_index(index);
-                    if let Some(path) = state_c.borrow().library.entry_at(index).map(|e| e.path()) {
+                    // Extract path in a separate statement so the immutable borrow
+                    // is dropped before load_image calls borrow_mut() on the same RefCell.
+                    let path = state_c.borrow().library.entry_at(index).map(|e: ImageEntry| e.path());
+                    if let Some(path) = path {
                         viewer_c.load_image(path);
                     }
                 }
@@ -584,11 +587,12 @@ impl SharprWindow {
                         sidebar_rx.set_duplicates_selected(false);
                         viewer_rx.clear();
                         filmstrip_rx.refresh_virtual();
-                        if let Some(entry) = state_rx.borrow().library.entry_at(0) {
+                        let first_path = state_rx.borrow().library.entry_at(0).map(|e: ImageEntry| e.path());
+                        if let Some(path) = first_path {
                             state_rx.borrow_mut().library.selected_index = Some(0);
                             filmstrip_rx.select_index(0);
                             filmstrip_rx.scroll_to_index(0);
-                            viewer_rx.load_image(entry.path());
+                            viewer_rx.load_image(path);
                         }
                     }
                 });
