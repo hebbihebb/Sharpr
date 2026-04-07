@@ -214,9 +214,9 @@ fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
 
     // Try rexiv2 embedded preview before full decode.
     if let Ok(meta) = rexiv2::Metadata::new_from_path(path) {
-        if let Ok(previews) = meta.get_preview_images() {
-            for preview in previews {
-                if let Ok(data) = preview.get_data() {
+        if let Some(previews) = meta.get_preview_images() {
+            for preview in &previews {
+                if let Some(data) = preview.get_data().ok() {
                     if let Ok(img) = image::load_from_memory(&data) {
                         return build_thumbnail_and_cache(path, img);
                     }

@@ -506,7 +506,7 @@ impl SharprWindow {
                     .thumbnail_worker
                     .borrow()
                     .as_ref()
-                    .map(|w| w.sender());
+                    .map(|w| w.preload_sender());
                 if let Some(tx) = tx {
                     let count = state.borrow().library.image_count();
                     for i in 0..count {
