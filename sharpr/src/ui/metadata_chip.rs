@@ -20,6 +20,9 @@ mod imp {
         pub quality_score_label: gtk4::Label,
         pub quality_class_label: gtk4::Label,
         pub quality_segments: [gtk4::Box; 5],
+        pub enabled: std::cell::Cell<bool>,
+        pub has_metadata: std::cell::Cell<bool>,
+        pub has_quality: std::cell::Cell<bool>,
     }
 
     impl Default for MetadataChip {
@@ -85,6 +88,9 @@ mod imp {
                 quality_score_label,
                 quality_class_label,
                 quality_segments,
+                enabled: std::cell::Cell::new(true),
+                has_metadata: std::cell::Cell::new(false),
+                has_quality: std::cell::Cell::new(false),
             }
         }
     }
@@ -138,13 +144,21 @@ impl MetadataChip {
 
         let metadata_text = parts.join(" · ");
         imp.metadata_label.set_text(&metadata_text);
-        imp.metadata_label.set_visible(!metadata_text.is_empty());
+        let has_metadata = !metadata_text.is_empty();
+        imp.has_metadata.set(has_metadata);
+        imp.metadata_label.set_visible(has_metadata);
+        self.sync_visibility();
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        self.imp().enabled.set(enabled);
         self.sync_visibility();
     }
 
     pub fn update_quality(&self, quality: Option<&QualityScore>) {
         let imp = self.imp();
         let Some(quality) = quality else {
+            imp.has_quality.set(false);
             imp.quality_score_label.set_text("IQ --");
             imp.quality_class_label.set_text("");
             imp.quality_row.set_visible(false);
@@ -158,6 +172,7 @@ impl MetadataChip {
             return;
         };
 
+        imp.has_quality.set(true);
         imp.quality_score_label
             .set_text(&format!("IQ {}%", quality.score));
         imp.quality_class_label.set_text(quality.class.label());
@@ -195,10 +210,12 @@ impl MetadataChip {
     pub fn clear(&self) {
         let imp = self.imp();
         imp.metadata_label.set_text("");
+        imp.has_metadata.set(false);
         imp.metadata_label.set_visible(false);
         imp.quality_score_label.set_text("IQ --");
         imp.quality_class_label.set_text("");
         imp.quality_class_label.set_tooltip_text(None);
+        imp.has_quality.set(false);
         imp.quality_row.set_visible(false);
         for class_name in ["success", "warning", "error"] {
             imp.quality_class_label.remove_css_class(class_name);
@@ -211,8 +228,9 @@ impl MetadataChip {
 
     fn sync_visibility(&self) {
         let imp = self.imp();
-        imp.card
-            .set_visible(imp.metadata_label.is_visible() || imp.quality_row.is_visible());
+        let has_content = imp.has_metadata.get() || imp.has_quality.get();
+        let visible = imp.enabled.get() && has_content;
+        imp.card.set_visible(visible);
     }
 }
 

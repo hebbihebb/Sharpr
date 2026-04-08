@@ -660,7 +660,7 @@ impl ViewerPane {
     pub fn set_metadata_visible(&self, visible: bool) {
         let imp = self.imp();
         imp.metadata_visible.set(visible);
-        imp.metadata_chip.set_visible(visible);
+        imp.metadata_chip.set_enabled(visible);
     }
 
     fn update_quality_indicator(&self, metadata: &crate::metadata::ImageMetadata) {
