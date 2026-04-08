@@ -79,12 +79,15 @@ impl TagBrowser {
             imp.content_box.remove(&child);
         }
 
-        let tags = imp
+        let tags: Vec<_> = imp
             .tags
             .borrow()
             .as_ref()
             .map(|db| db.all_tags())
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, count)| *count >= 2)
+            .collect();
 
         if tags.is_empty() {
             imp.content_box.set_valign(gtk4::Align::Center);
@@ -126,25 +129,25 @@ impl TagBrowser {
             heading.set_margin_bottom(4);
             imp.content_box.append(&heading);
 
-            let list = gtk4::ListBox::new();
-            list.add_css_class("navigation-sidebar");
-            list.set_selection_mode(gtk4::SelectionMode::None);
+            let flow = gtk4::FlowBox::new();
+            flow.set_selection_mode(gtk4::SelectionMode::None);
+            flow.set_homogeneous(false);
+            flow.set_row_spacing(4);
+            flow.set_column_spacing(4);
+            flow.set_margin_start(12);
+            flow.set_margin_end(12);
+            flow.set_margin_bottom(8);
 
             for (tag, count) in entries {
-                let row = gtk4::ListBoxRow::new();
-                let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-                hbox.set_margin_start(8);
-                hbox.set_margin_end(8);
-                hbox.set_margin_top(6);
-                hbox.set_margin_bottom(6);
+                let child = gtk4::FlowBoxChild::new();
+                let chip = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+                chip.add_css_class("card");
 
-                let name_button = gtk4::Button::with_label(&tag);
+                let name_button = gtk4::Button::with_label(&format!("{tag}  {count}"));
                 name_button.add_css_class("flat");
-                name_button.set_hexpand(true);
-                name_button.set_halign(gtk4::Align::Start);
                 name_button.set_tooltip_text(Some(&format!("{count} image(s)")));
 
-                let delete_button = gtk4::Button::from_icon_name("edit-delete-symbolic");
+                let delete_button = gtk4::Button::from_icon_name("window-close-symbolic");
                 delete_button.add_css_class("flat");
                 delete_button.add_css_class("destructive-action");
 
@@ -170,13 +173,13 @@ impl TagBrowser {
                     widget.refresh();
                 });
 
-                hbox.append(&name_button);
-                hbox.append(&delete_button);
-                row.set_child(Some(&hbox));
-                list.append(&row);
+                chip.append(&name_button);
+                chip.append(&delete_button);
+                child.set_child(Some(&chip));
+                flow.insert(&child, -1);
             }
 
-            imp.content_box.append(&list);
+            imp.content_box.append(&flow);
         }
     }
 
