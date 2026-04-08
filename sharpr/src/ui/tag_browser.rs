@@ -13,7 +13,7 @@ mod imp {
     use super::*;
 
     pub struct TagBrowser {
-        pub toolbar_view: libadwaita::ToolbarView,
+        pub scroll: gtk4::ScrolledWindow,
         pub content_box: gtk4::Box,
         pub tags: RefCell<Option<Arc<TagDatabase>>>,
         pub tag_activated_cb: RefCell<Option<TagActivatedCallback>>,
@@ -21,8 +21,11 @@ mod imp {
 
     impl Default for TagBrowser {
         fn default() -> Self {
+            let scroll = gtk4::ScrolledWindow::new();
+            scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+            scroll.set_vexpand(true);
             Self {
-                toolbar_view: libadwaita::ToolbarView::new(),
+                scroll,
                 content_box: gtk4::Box::new(gtk4::Orientation::Vertical, 0),
                 tags: RefCell::new(None),
                 tag_activated_cb: RefCell::new(None),
@@ -43,7 +46,7 @@ mod imp {
 
     impl ObjectImpl for TagBrowser {
         fn dispose(&self) {
-            self.toolbar_view.unparent();
+            self.scroll.unparent();
         }
     }
 
@@ -66,21 +69,8 @@ impl TagBrowser {
 
     fn build_ui(&self) {
         let imp = self.imp();
-
-        let header = libadwaita::HeaderBar::new();
-        header.set_show_end_title_buttons(false);
-
-        let title = libadwaita::WindowTitle::new("Tags", "");
-        header.set_title_widget(Some(&title));
-        imp.toolbar_view.add_top_bar(&header);
-
-        let scroll = gtk4::ScrolledWindow::new();
-        scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-        scroll.set_vexpand(true);
-        scroll.set_child(Some(&imp.content_box));
-
-        imp.toolbar_view.set_content(Some(&scroll));
-        imp.toolbar_view.set_parent(self);
+        imp.scroll.set_child(Some(&imp.content_box));
+        imp.scroll.set_parent(self);
     }
 
     pub fn refresh(&self) {

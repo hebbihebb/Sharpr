@@ -481,15 +481,17 @@ impl SharprWindow {
         viewer_toolbar.add_top_bar(&viewer_header);
         viewer_toolbar.add_top_bar(&upscale_banner);
 
-        viewer_toolbar.set_content(Some(&viewer));
-        viewer_toolbar.set_top_bar_style(libadwaita::ToolbarStyle::Raised);
-
-        content_stack.add_named(&viewer_toolbar, Some("viewer"));
+        // content_stack lives inside viewer_toolbar so the header bar (hamburger,
+        // window controls) is always visible regardless of which page is shown.
+        content_stack.add_named(&viewer, Some("viewer"));
 
         if let Some(tag_browser) = tag_browser.as_ref() {
             content_stack.add_named(tag_browser, Some("tags"));
         }
         content_stack.set_visible_child_name("viewer");
+
+        viewer_toolbar.set_content(Some(&content_stack));
+        viewer_toolbar.set_top_bar_style(libadwaita::ToolbarStyle::Raised);
 
         // Give the viewer a reference to the Commit/Discard buttons so the
         // async upscale callback can show/hide them without extra clones.
@@ -525,9 +527,18 @@ impl SharprWindow {
         let viewer_page = libadwaita::NavigationPage::builder()
             .title("Preview")
             .tag("viewer")
-            .child(&content_stack)
+            .child(&viewer_toolbar)
             .build();
         inner_split.set_content(Some(&viewer_page));
+
+        // Update the NavigationPage title to reflect which panel is active.
+        {
+            let viewer_page_c = viewer_page.clone();
+            content_stack.connect_visible_child_notify(move |stack| {
+                let name = stack.visible_child_name().unwrap_or_default();
+                viewer_page_c.set_title(if name == "tags" { "Tags" } else { "Preview" });
+            });
+        }
 
         // Outer split: explorer sidebar | inner_split.
         let outer_split = libadwaita::NavigationSplitView::new();
@@ -774,8 +785,13 @@ impl SharprWindow {
             .filter(|p| p.is_dir())
             .or_else(|| sidebar.first_folder_path());
 
+        // Defer by one idle cycle so widgets are realized before we call
+        // open_folder(). Without this, smart_list.unselect_all() fires before
+        // realization and the Duplicates row stays visually highlighted.
         if let Some(folder) = start_folder {
-            open_folder(folder);
+            glib::idle_add_local_once(move || {
+                open_folder(folder);
+            });
         }
     }
 
