@@ -12,10 +12,10 @@ use std::path::PathBuf;
 
 use crate::config::AppSettings;
 use crate::model::{ImageEntry, LibraryManager};
-use crate::thumbnails::worker::WorkerRequest;
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::sidebar::SidebarPane;
+use crate::ui::tag_browser::TagBrowser;
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 use crate::upscale::{UpscaleDetector, UpscaleModel};
 
@@ -231,7 +231,12 @@ impl SharprWindow {
         // -----------------------------------------------------------------------
         // Thumbnail worker pool
         // -----------------------------------------------------------------------
-        let (worker, result_rx, hash_result_rx) = ThumbnailWorker::spawn(4);
+        let cpu_count = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        // Double the thread count for I/O bound thumbnail loading, cap at 16.
+        let thread_count = (cpu_count * 2).clamp(4, 16);
+        let (worker, result_rx, hash_result_rx) = ThumbnailWorker::spawn(thread_count);
         *self.imp().thumbnail_worker.borrow_mut() = Some(worker);
         *self.imp().result_rx.borrow_mut() = Some(result_rx);
         *self.imp().hash_result_rx.borrow_mut() = Some(hash_result_rx);
@@ -255,6 +260,8 @@ impl SharprWindow {
         }
 
         let suppress_search_restore = Rc::new(Cell::new(false));
+        let content_stack = gtk4::Stack::new();
+        let tag_browser = state.borrow().tags.clone().map(TagBrowser::new);
 
         let open_folder: Rc<dyn Fn(PathBuf)> = {
             let filmstrip_c = filmstrip.clone();
@@ -263,7 +270,9 @@ impl SharprWindow {
             let state_c = state.clone();
             let window_weak = self.downgrade();
             let suppress_search_restore_c = suppress_search_restore.clone();
+            let content_stack = content_stack.clone();
             Rc::new(move |path: PathBuf| {
+                content_stack.set_visible_child_name("viewer");
                 if let Some(win) = window_weak.upgrade() {
                     if let Some(worker) = win.imp().thumbnail_worker.borrow().as_ref() {
                         worker.bump_generation();
@@ -280,35 +289,10 @@ impl SharprWindow {
                 sidebar_c.select_folder(&path);
                 sidebar_c.set_search_selected(false);
                 sidebar_c.set_duplicates_selected(false);
+                sidebar_c.set_tags_selected(false);
 
                 viewer_c.clear();
                 filmstrip_c.refresh();
-
-                if let Some(win) = window_weak.upgrade() {
-                    let gen = win
-                        .imp()
-                        .thumbnail_worker
-                        .borrow()
-                        .as_ref()
-                        .map_or(0, |w| w.current_generation());
-                    let tx = win
-                        .imp()
-                        .thumbnail_worker
-                        .borrow()
-                        .as_ref()
-                        .map(|w| w.preload_sender());
-                    if let Some(tx) = tx {
-                        let count = state_c.borrow().library.image_count();
-                        for i in 0..count {
-                            if let Some(entry) = state_c.borrow().library.entry_at(i) {
-                                let _ = tx.try_send(WorkerRequest::Hash {
-                                    path: entry.path(),
-                                    gen,
-                                });
-                            }
-                        }
-                    }
-                }
 
                 let target_index = {
                     let st = state_c.borrow();
@@ -320,11 +304,14 @@ impl SharprWindow {
 
                 if let Some(index) = target_index {
                     state_c.borrow_mut().library.selected_index = Some(index);
-                    filmstrip_c.select_index(index);
-                    filmstrip_c.scroll_to_index(index);
+                    filmstrip_c.navigate_to(index);
                     // Extract path in a separate statement so the immutable borrow
                     // is dropped before load_image calls borrow_mut() on the same RefCell.
-                    let path = state_c.borrow().library.entry_at(index).map(|e: ImageEntry| e.path());
+                    let path = state_c
+                        .borrow()
+                        .library
+                        .entry_at(index)
+                        .map(|e: ImageEntry| e.path());
                     if let Some(path) = path {
                         viewer_c.load_image(path);
                     }
@@ -352,16 +339,17 @@ impl SharprWindow {
             let sidebar_c = sidebar.clone();
             let state_c = state.clone();
             let suppress_search_restore_c = suppress_search_restore.clone();
+            let content_stack = content_stack.clone();
             sidebar.connect_duplicates_selected(move || {
-                let hashes = state_c.borrow().library.hashes_snapshot();
-                let groups = crate::duplicates::phash::group_duplicates(&hashes);
-                if groups.is_empty() {
+                content_stack.set_visible_child_name("viewer");
+                let paths = state_c.borrow().library.find_duplicate_filenames();
+                if paths.is_empty() {
                     return;
                 }
-                let paths: Vec<_> = groups.into_iter().next().unwrap();
                 state_c.borrow_mut().library.load_virtual(&paths);
                 sidebar_c.set_duplicates_selected(true);
                 sidebar_c.set_search_selected(false);
+                sidebar_c.set_tags_selected(false);
                 filmstrip_c.refresh_virtual();
                 let first = state_c
                     .borrow()
@@ -369,8 +357,7 @@ impl SharprWindow {
                     .entry_at(0)
                     .map(|e: ImageEntry| e.path());
                 if let Some(p) = first {
-                    filmstrip_c.select_index(0);
-                    filmstrip_c.scroll_to_index(0);
+                    filmstrip_c.navigate_to(0);
                     viewer_c.load_image(p);
                 } else {
                     viewer_c.clear();
@@ -384,11 +371,46 @@ impl SharprWindow {
 
         {
             let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
             let sidebar_c = sidebar.clone();
+            let state_c = state.clone();
+            let content_stack = content_stack.clone();
             sidebar.connect_search_activated(move || {
+                content_stack.set_visible_child_name("viewer");
                 sidebar_c.set_search_selected(true);
                 sidebar_c.set_duplicates_selected(false);
+                sidebar_c.set_tags_selected(false);
+                // Show an empty filmstrip immediately so the user knows to type.
+                state_c.borrow_mut().library.load_virtual(&[]);
+                viewer_c.clear();
+                filmstrip_c.refresh_virtual();
                 filmstrip_c.activate_search();
+            });
+        }
+
+        if let Some(tag_browser) = tag_browser.clone() {
+            let sidebar_c = sidebar.clone();
+            let content_stack_c = content_stack.clone();
+            sidebar.connect_tags_selected(move || {
+                content_stack_c.set_visible_child_name("tags");
+                tag_browser.refresh();
+                sidebar_c.set_tags_selected(true);
+            });
+        }
+
+        // Double-click on filmstrip item → open in default viewer.
+        {
+            let state_c = state.clone();
+            filmstrip.connect_item_activated(move |position| {
+                let path = state_c
+                    .borrow()
+                    .library
+                    .entry_at(position)
+                    .map(|e: ImageEntry| e.path());
+                if let Some(path) = path {
+                    let uri = gio::File::for_path(&path).uri();
+                    let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                }
             });
         }
 
@@ -454,6 +476,13 @@ impl SharprWindow {
         viewer_toolbar.set_content(Some(&viewer));
         viewer_toolbar.set_top_bar_style(libadwaita::ToolbarStyle::Raised);
 
+        content_stack.add_named(&viewer_toolbar, Some("viewer"));
+
+        if let Some(tag_browser) = tag_browser.as_ref() {
+            content_stack.add_named(tag_browser, Some("tags"));
+        }
+        content_stack.set_visible_child_name("viewer");
+
         // Give the viewer a reference to the Commit/Discard buttons so the
         // async upscale callback can show/hide them without extra clones.
         viewer.set_comparison_buttons(commit_btn.clone(), discard_btn.clone());
@@ -488,7 +517,7 @@ impl SharprWindow {
         let viewer_page = libadwaita::NavigationPage::builder()
             .title("Preview")
             .tag("viewer")
-            .child(&viewer_toolbar)
+            .child(&content_stack)
             .build();
         inner_split.set_content(Some(&viewer_page));
 
@@ -532,29 +561,107 @@ impl SharprWindow {
 
         {
             let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
             let state_c = state.clone();
             let sidebar_c = sidebar.clone();
+            let content_stack = content_stack.clone();
+            let pending_search = Rc::new(Cell::new(None::<glib::SourceId>));
             filmstrip.connect_search_changed(move |text| {
-                sidebar_c.set_search_selected(!text.is_empty());
-                if text.len() < 2 {
-                    filmstrip_c.show_autocomplete(vec![]);
+                content_stack.set_visible_child_name("viewer");
+                sidebar_c.set_search_selected(!text.trim().is_empty());
+                sidebar_c.set_tags_selected(false);
+                filmstrip_c.show_autocomplete(vec![]);
+
+                if let Some(source_id) = pending_search.take() {
+                    source_id.remove();
+                }
+
+                let text = text.trim().to_string();
+                if text.is_empty() {
+                    state_c.borrow_mut().library.load_virtual(&[]);
+                    viewer_c.clear();
+                    filmstrip_c.refresh_virtual();
                     return;
                 }
-                let Some(tags) = state_c.borrow().tags.clone() else {
-                    filmstrip_c.show_autocomplete(vec![]);
+
+                if text.len() < 2 {
                     return;
-                };
-                let query = text.to_string();
-                let (tx, rx) = async_channel::bounded::<Vec<String>>(1);
-                std::thread::spawn(move || {
-                    let _ = tx.send_blocking(tags.autocomplete(&query, 10));
-                });
-                let filmstrip_rx = filmstrip_c.clone();
-                glib::MainContext::default().spawn_local(async move {
-                    if let Ok(suggestions) = rx.recv().await {
-                        filmstrip_rx.show_autocomplete(suggestions);
-                    }
-                });
+                }
+
+                let filmstrip_timeout = filmstrip_c.clone();
+                let viewer_timeout = viewer_c.clone();
+                let state_timeout = state_c.clone();
+                let sidebar_timeout = sidebar_c.clone();
+                let pending_search_timeout = pending_search.clone();
+                let content_stack_timeout = content_stack.clone();
+                let source_id =
+                    glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+                        pending_search_timeout.set(None);
+
+                        let Some(tags) = state_timeout.borrow().tags.clone() else {
+                            return glib::ControlFlow::Break;
+                        };
+
+                        let query = text.clone();
+                        let db_query = query.clone();
+                        let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
+                        std::thread::spawn(move || {
+                            let _ = tx.send_blocking(tags.search_paths(&db_query));
+                        });
+
+                        let filmstrip_rx = filmstrip_timeout.clone();
+                        let viewer_rx = viewer_timeout.clone();
+                        let state_rx = state_timeout.clone();
+                        let sidebar_rx = sidebar_timeout.clone();
+                        let content_stack_rx = content_stack_timeout.clone();
+                        glib::MainContext::default().spawn_local(async move {
+                            if let Ok(db_paths) = rx.recv().await {
+                                let q = query.to_lowercase();
+                                let library_paths: Vec<PathBuf> = {
+                                    let state = state_rx.borrow();
+                                    (0..state.library.image_count())
+                                        .filter_map(|i| state.library.entry_at(i))
+                                        .map(|e| e.path())
+                                        .filter(|p| {
+                                            p.file_name()
+                                                .and_then(|n| n.to_str())
+                                                .map(|n| n.to_lowercase().contains(&q))
+                                                .unwrap_or(false)
+                                        })
+                                        .collect()
+                                };
+
+                                let mut seen = std::collections::HashSet::new();
+                                let merged: Vec<PathBuf> = db_paths
+                                    .iter()
+                                    .chain(library_paths.iter())
+                                    .filter(|p| seen.insert((*p).clone()))
+                                    .cloned()
+                                    .collect();
+
+                                state_rx.borrow_mut().library.load_virtual(&merged);
+                                content_stack_rx.set_visible_child_name("viewer");
+                                sidebar_rx.set_search_selected(true);
+                                sidebar_rx.set_duplicates_selected(false);
+                                sidebar_rx.set_tags_selected(false);
+                                viewer_rx.clear();
+                                filmstrip_rx.refresh_virtual();
+                                let first_path = state_rx
+                                    .borrow()
+                                    .library
+                                    .entry_at(0)
+                                    .map(|e: ImageEntry| e.path());
+                                if let Some(path) = first_path {
+                                    state_rx.borrow_mut().library.selected_index = Some(0);
+                                    filmstrip_rx.navigate_to(0);
+                                    viewer_rx.load_image(path);
+                                }
+                            }
+                        });
+
+                        glib::ControlFlow::Break
+                    });
+                pending_search.set(Some(source_id));
             });
         }
 
@@ -563,6 +670,7 @@ impl SharprWindow {
             let viewer_c = viewer.clone();
             let state_c = state.clone();
             let sidebar_c = sidebar.clone();
+            let content_stack = content_stack.clone();
             filmstrip.connect_search_activate(move |tag| {
                 let tag = tag.trim();
                 if tag.is_empty() {
@@ -574,24 +682,30 @@ impl SharprWindow {
                 let tag = tag.to_string();
                 let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
                 std::thread::spawn(move || {
-                    let _ = tx.send_blocking(tags.paths_for_tag(&tag));
+                    let _ = tx.send_blocking(tags.search_paths(&tag));
                 });
                 let filmstrip_rx = filmstrip_c.clone();
                 let viewer_rx = viewer_c.clone();
                 let state_rx = state_c.clone();
                 let sidebar_rx = sidebar_c.clone();
+                let content_stack_rx = content_stack.clone();
                 glib::MainContext::default().spawn_local(async move {
                     if let Ok(paths) = rx.recv().await {
                         state_rx.borrow_mut().library.load_virtual(&paths);
+                        content_stack_rx.set_visible_child_name("viewer");
                         sidebar_rx.set_search_selected(true);
                         sidebar_rx.set_duplicates_selected(false);
+                        sidebar_rx.set_tags_selected(false);
                         viewer_rx.clear();
                         filmstrip_rx.refresh_virtual();
-                        let first_path = state_rx.borrow().library.entry_at(0).map(|e: ImageEntry| e.path());
+                        let first_path = state_rx
+                            .borrow()
+                            .library
+                            .entry_at(0)
+                            .map(|e: ImageEntry| e.path());
                         if let Some(path) = first_path {
                             state_rx.borrow_mut().library.selected_index = Some(0);
-                            filmstrip_rx.select_index(0);
-                            filmstrip_rx.scroll_to_index(0);
+                            filmstrip_rx.navigate_to(0);
                             viewer_rx.load_image(path);
                         }
                     }
@@ -609,13 +723,29 @@ impl SharprWindow {
                     return;
                 }
                 sidebar_c.set_search_selected(false);
+                sidebar_c.set_tags_selected(false);
                 if state_c.borrow().library.current_folder.is_none() {
-                    if let Some(folder) = state_c.borrow().settings.last_folder.clone() {
+                    // Extract last_folder in a separate let so the Ref<AppState> temporary
+                    // is dropped at the semicolon — not held alive through the if let body
+                    // where open_folder_c calls borrow_mut() and would panic.
+                    let last_folder = state_c.borrow().settings.last_folder.clone();
+                    if let Some(folder) = last_folder {
                         if folder.is_dir() {
                             open_folder_c(folder);
                         }
                     }
                 }
+            });
+        }
+
+        if let Some(tag_browser) = tag_browser {
+            let content_stack_c = content_stack.clone();
+            let sidebar_c = sidebar.clone();
+            let filmstrip_c = filmstrip.clone();
+            tag_browser.connect_tag_activated(move |tag| {
+                content_stack_c.set_visible_child_name("viewer");
+                sidebar_c.set_tags_selected(false);
+                filmstrip_c.emit_search_activate(tag);
             });
         }
 
@@ -660,8 +790,7 @@ impl SharprWindow {
                     st.library.navigate(delta)
                 };
                 if let Some(index) = new_index {
-                    filmstrip.select_index(index);
-                    filmstrip.scroll_to_index(index);
+                    filmstrip.navigate_to(index);
                     let path = state
                         .borrow()
                         .library
@@ -745,8 +874,7 @@ impl SharprWindow {
                             viewer_d.clear();
                         } else {
                             let new_index = index.min(new_count - 1);
-                            filmstrip_d.select_index(new_index);
-                            filmstrip_d.scroll_to_index(new_index);
+                            filmstrip_d.navigate_to(new_index);
                             let next_path = state_d
                                 .borrow()
                                 .library
@@ -757,6 +885,36 @@ impl SharprWindow {
                             }
                         }
                     }
+                    glib::Propagation::Stop
+                })),
+            ));
+        }
+
+        // T — open the tag editor for the selected image.
+        {
+            let state_t = state.clone();
+            let viewer_t = viewer.clone();
+            shortcuts.add_shortcut(gtk4::Shortcut::new(
+                Some(gtk4::ShortcutTrigger::parse_string("T").unwrap()),
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if let Some(window) = widget.downcast_ref::<gtk4::Window>() {
+                        if let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) {
+                            if focus.is::<gtk4::Text>() || focus.is::<gtk4::SearchEntry>() {
+                                return glib::Propagation::Proceed;
+                            }
+                        }
+                    }
+
+                    let has_selection = state_t
+                        .try_borrow()
+                        .ok()
+                        .and_then(|state| state.library.selected_index)
+                        .is_some();
+                    if !has_selection {
+                        return glib::Propagation::Stop;
+                    }
+
+                    viewer_t.open_tag_popover();
                     glib::Propagation::Stop
                 })),
             ));
@@ -807,7 +965,6 @@ impl SharprWindow {
                 }
 
                 filmstrip.mark_thumbnail_ready(&result_path);
-                filmstrip.schedule_visible_thumbnails();
             }
         });
     }

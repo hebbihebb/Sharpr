@@ -1,5 +1,70 @@
 # Development Log
 
+## 2026-04-08 Substring Search Across Tags And Filenames
+
+### What changed
+
+- Added `TagDatabase::search_paths` so search can match tags by substring instead of exact tag equality.
+- Updated tag autocomplete to use substring matching, so mid-word matches now appear in existing suggestions without changing the popover wiring.
+- Changed the filmstrip search debounce from 200ms to 120ms and kept the per-keystroke search path intact.
+- Search results now merge two sources: tag DB substring matches across indexed images, plus current-folder filename substring matches on the main thread so fresh unindexed files still appear instantly.
+- Updated the main search activation path in [`src/ui/window.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/ui/window.rs) to use the same substring tag query for consistency.
+
+### Manual test focus
+
+- Open `Clean Wallz`, type `wall`, and confirm results appear without pressing `Enter`.
+- Type `aurora` and confirm files with `auroraborealis` in the filename appear even if they are not yet indexed.
+- Type `jpg` or `2024` and confirm substring tag matches populate the filmstrip.
+- Open a fresh folder that has not been indexed yet and confirm partial filename matches still appear from the current library scan.
+
+### Handoff note for Claude
+
+- The worker thread only queries `TagDatabase`; the filename fallback still runs on the main thread because it borrows `AppState.library` directly in [`src/ui/window.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/ui/window.rs).
+- Keep `paths_for_tag` exact-match behavior for the tag browser and any explicit exact-tag flows; `search_paths` is the substring search entry point.
+
+## 2026-04-08 Tags Smart Folder
+
+### What changed
+
+- Added a `Tags` smart-folder entry to the sidebar, alongside `Duplicates` and `Search`.
+- Added `TagBrowser`, a dedicated viewer-area replacement that lists tags alphabetically in letter groups and supports click-to-search plus global delete.
+- Wrapped the viewer toolbar and tag browser in a shared `GtkStack`, so entering and leaving the tag browser swaps cleanly without changing the surrounding split-view layout.
+- Added `TagDatabase::all_tags` and `delete_tag_globally` to support browser refresh and tag removal across the full library.
+
+### Manual test focus
+
+- Click `Tags` in the sidebar and confirm the preview area switches to the tag browser.
+- Confirm tags appear grouped under alphabetical headings and clicking a tag loads matching images into the filmstrip.
+- Delete a tag from the browser and confirm it disappears immediately and does not return after reopening `Tags`.
+- Remove all tags and confirm the empty-state placeholder appears.
+- Click a folder, `Duplicates`, or `Search` after opening `Tags` and confirm the normal viewer returns.
+
+### Handoff note for Claude
+
+- `TagBrowser::refresh()` currently rebuilds the full grouped layout on each entry or delete; keep that simple path unless tag volume proves large enough to justify a model-backed list.
+- The browser intentionally reuses the existing `FilmstripPane` tag-search activation path from [`src/ui/window.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/ui/window.rs); keep that single search-loading flow rather than duplicating tag-search logic in multiple widgets.
+
+## 2026-04-08 Tag Editor MVP
+
+### What changed
+
+- Added per-path tag DB helpers for read, incremental add, and incremental remove operations without full replacement writes.
+- Added a viewer-owned tag editor popover anchored in the preview pane, showing current tags as removable chips with immediate entry focus.
+- Wired `T` as a managed window shortcut, with focus guards so typing in the search field or other text inputs does not open the popover.
+
+### Manual test focus
+
+- Select an image, press `T`, confirm existing tags appear as chips and the entry is focused.
+- Press `Enter` after typing a tag, confirm the chip appears and persists after reopening.
+- Remove a chip with `x`, confirm it disappears immediately and stays removed after reopening.
+- Press `Escape`, confirm the popover closes.
+- Focus the filmstrip search bar and type `t`, confirm the popover does not open.
+
+### Handoff note for Claude
+
+- The popover is intentionally viewer-local and anchored inside [`src/ui/viewer.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/ui/viewer.rs); keep future tag UI work on that side rather than moving it into the window header.
+- `TagDatabase::add_tag` and `remove_tag` are the intended incremental mutation path for this editor; do not regress to `insert_tags` for single-tag edits.
+
 ## 2026-04-04 Phase B Hardening: Comparison Safety
 
 ### What changed
