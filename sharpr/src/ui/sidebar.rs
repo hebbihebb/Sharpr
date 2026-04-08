@@ -11,6 +11,7 @@ use crate::ui::window::AppState;
 
 type FolderSelectedCallback = Box<dyn Fn(PathBuf) + 'static>;
 type DuplicatesSelectedCallback = Box<dyn Fn() + 'static>;
+type TagsSelectedCallback = Box<dyn Fn() + 'static>;
 type SearchActivatedCallback = Box<dyn Fn() + 'static>;
 
 const IMAGE_EXTENSIONS: &[&str] = &[
@@ -21,6 +22,7 @@ const IMAGE_EXTENSIONS: &[&str] = &[
 enum SmartFolderSelection {
     None,
     Duplicates,
+    Tags,
     Search,
 }
 
@@ -32,9 +34,11 @@ mod imp {
         pub list_box: gtk4::ListBox,
         pub smart_list: gtk4::ListBox,
         pub duplicates_row: gtk4::ListBoxRow,
+        pub tags_row: gtk4::ListBoxRow,
         pub search_row: gtk4::ListBoxRow,
         pub folder_selected_cb: RefCell<Option<FolderSelectedCallback>>,
         pub duplicates_selected_cb: RefCell<Option<DuplicatesSelectedCallback>>,
+        pub tags_selected_cb: RefCell<Option<TagsSelectedCallback>>,
         pub search_activated_cb: RefCell<Option<SearchActivatedCallback>>,
         pub suppress_folder_signal: Cell<bool>,
         pub suppress_smart_signal: Cell<bool>,
@@ -47,9 +51,11 @@ mod imp {
                 list_box: gtk4::ListBox::new(),
                 smart_list: gtk4::ListBox::new(),
                 duplicates_row: gtk4::ListBoxRow::new(),
+                tags_row: gtk4::ListBoxRow::new(),
                 search_row: gtk4::ListBoxRow::new(),
                 folder_selected_cb: RefCell::new(None),
                 duplicates_selected_cb: RefCell::new(None),
+                tags_selected_cb: RefCell::new(None),
                 search_activated_cb: RefCell::new(None),
                 suppress_folder_signal: Cell::new(false),
                 suppress_smart_signal: Cell::new(false),
@@ -167,9 +173,11 @@ impl SidebarPane {
             .set_selection_mode(gtk4::SelectionMode::Single);
 
         configure_smart_row(&imp.duplicates_row, "edit-find-symbolic", "Duplicates");
+        configure_smart_row(&imp.tags_row, "tag-symbolic", "Tags");
         configure_smart_row(&imp.search_row, "system-search-symbolic", "Search");
 
         imp.smart_list.append(&imp.duplicates_row);
+        imp.smart_list.append(&imp.tags_row);
         imp.smart_list.append(&imp.search_row);
 
         let widget_weak = self.downgrade();
@@ -186,6 +194,8 @@ impl SidebarPane {
             widget.clear_folder_selection();
             if row == widget.imp().duplicates_row {
                 widget.emit_duplicates_selected();
+            } else if row == widget.imp().tags_row {
+                widget.emit_tags_selected();
             } else if row == widget.imp().search_row {
                 widget.emit_search_activated();
             }
@@ -243,6 +253,10 @@ impl SidebarPane {
         *self.imp().duplicates_selected_cb.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_tags_selected<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().tags_selected_cb.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn connect_search_activated<F: Fn() + 'static>(&self, f: F) {
         *self.imp().search_activated_cb.borrow_mut() = Some(Box::new(f));
     }
@@ -259,6 +273,14 @@ impl SidebarPane {
         if selected {
             self.set_smart_selection(SmartFolderSelection::Search);
         } else if self.current_smart_selection() == SmartFolderSelection::Search {
+            self.set_smart_selection(SmartFolderSelection::None);
+        }
+    }
+
+    pub fn set_tags_selected(&self, selected: bool) {
+        if selected {
+            self.set_smart_selection(SmartFolderSelection::Tags);
+        } else if self.current_smart_selection() == SmartFolderSelection::Tags {
             self.set_smart_selection(SmartFolderSelection::None);
         }
     }
@@ -300,6 +322,9 @@ impl SidebarPane {
                     .smart_list
                     .select_row(Some(&self.imp().duplicates_row));
             }
+            SmartFolderSelection::Tags => {
+                self.imp().smart_list.select_row(Some(&self.imp().tags_row));
+            }
             SmartFolderSelection::Search => {
                 self.imp()
                     .smart_list
@@ -315,6 +340,8 @@ impl SidebarPane {
         };
         if row == self.imp().duplicates_row {
             SmartFolderSelection::Duplicates
+        } else if row == self.imp().tags_row {
+            SmartFolderSelection::Tags
         } else if row == self.imp().search_row {
             SmartFolderSelection::Search
         } else {
@@ -330,6 +357,12 @@ impl SidebarPane {
 
     fn emit_duplicates_selected(&self) {
         if let Some(cb) = self.imp().duplicates_selected_cb.borrow().as_ref() {
+            cb();
+        }
+    }
+
+    fn emit_tags_selected(&self) {
+        if let Some(cb) = self.imp().tags_selected_cb.borrow().as_ref() {
             cb();
         }
     }

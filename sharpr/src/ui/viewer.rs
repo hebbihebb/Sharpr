@@ -1,10 +1,12 @@
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
+use crate::tags::TagDatabase;
 use crate::ui::metadata_chip::MetadataChip;
 use crate::ui::window::AppState;
 use crate::upscale::BeforeAfterViewer;
@@ -17,6 +19,12 @@ use crate::upscale::BeforeAfterViewer;
 pub enum ZoomMode {
     Fit,
     OneToOne,
+}
+
+#[derive(Default)]
+struct TagPopoverState {
+    db: Option<Arc<TagDatabase>>,
+    path: Option<PathBuf>,
 }
 
 mod imp {
@@ -32,6 +40,11 @@ mod imp {
         pub spinner: gtk4::Spinner,
         /// OSD progress bar — shown during an upscale job, hidden otherwise.
         pub progress_bar: gtk4::ProgressBar,
+        pub tag_anchor: gtk4::Box,
+        pub tag_popover: gtk4::Popover,
+        pub tag_entry: gtk4::Entry,
+        pub tag_flowbox: gtk4::FlowBox,
+        pub(super) tag_state: Rc<RefCell<TagPopoverState>>,
         pub comparison: BeforeAfterViewer,
         /// Temp output path while the compare view is active.
         pub pending_output: std::cell::RefCell<Option<std::path::PathBuf>>,
@@ -97,8 +110,25 @@ mod imp {
             progress_bar.set_valign(gtk4::Align::End);
             progress_bar.set_visible(false);
 
+            let tag_anchor = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            tag_anchor.set_halign(gtk4::Align::End);
+            tag_anchor.set_valign(gtk4::Align::Start);
+            tag_anchor.set_margin_top(12);
+            tag_anchor.set_margin_end(12);
+            tag_anchor.set_size_request(1, 1);
+
+            let tag_popover = gtk4::Popover::new();
+            tag_popover.set_has_arrow(true);
+            tag_popover.set_autohide(true);
+            tag_popover.set_position(gtk4::PositionType::Bottom);
+
+            let tag_entry = gtk4::Entry::new();
+            let tag_flowbox = gtk4::FlowBox::new();
+            let tag_state = Rc::new(RefCell::new(TagPopoverState::default()));
+
             let overlay = gtk4::Overlay::new();
             overlay.set_child(Some(&scrolled_window));
+            overlay.add_overlay(&tag_anchor);
             overlay.add_overlay(&metadata_chip);
             overlay.add_overlay(&spinner);
             overlay.add_overlay(&progress_bar);
@@ -119,6 +149,11 @@ mod imp {
                 metadata_chip,
                 spinner,
                 progress_bar,
+                tag_anchor,
+                tag_popover,
+                tag_entry,
+                tag_flowbox,
+                tag_state,
                 comparison,
                 pending_output: std::cell::RefCell::new(None),
                 commit_btn: std::cell::RefCell::new(None),
@@ -209,6 +244,7 @@ impl ViewerPane {
     fn build_ui(&self) {
         let imp = self.imp();
         imp.stack.set_parent(self);
+        self.build_tag_popover();
 
         let motion = gtk4::EventControllerMotion::new();
         let w = self.downgrade();
@@ -308,6 +344,7 @@ impl ViewerPane {
     pub fn clear(&self) {
         let imp = self.imp();
         imp.load_gen.set(imp.load_gen.get().wrapping_add(1));
+        imp.tag_popover.popdown();
         self.restore_view_mode();
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
@@ -317,7 +354,7 @@ impl ViewerPane {
         *imp.current_path.borrow_mut() = None;
         *imp.current_rgba.borrow_mut() = None;
         imp.pending_edit.set(false);
-        Self::set_edit_buttons_visible_on(&imp, false);
+        Self::set_edit_buttons_visible_on(imp, false);
     }
 
     /// Load and display a full-resolution image from `path`.
@@ -329,9 +366,10 @@ impl ViewerPane {
         let imp = self.imp();
         let load_gen = imp.load_gen.get().wrapping_add(1);
         imp.load_gen.set(load_gen);
+        imp.tag_popover.popdown();
         *imp.current_path.borrow_mut() = Some(path.clone());
         imp.pending_edit.set(false);
-        Self::set_edit_buttons_visible_on(&imp, false);
+        Self::set_edit_buttons_visible_on(imp, false);
         self.restore_view_mode();
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
@@ -667,7 +705,7 @@ impl ViewerPane {
             .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
         self.reset_zoom();
         self.imp().pending_edit.set(true);
-        Self::set_edit_buttons_visible_on(&self.imp(), true);
+        Self::set_edit_buttons_visible_on(self.imp(), true);
     }
 
     /// Write the current in-memory texture back to the source file on disk.
@@ -731,7 +769,7 @@ impl ViewerPane {
 
         if result.is_ok() {
             imp.pending_edit.set(false);
-            Self::set_edit_buttons_visible_on(&imp, false);
+            Self::set_edit_buttons_visible_on(imp, false);
         } else {
             eprintln!("save_edit: failed to write {}", path.display());
         }
@@ -751,6 +789,152 @@ impl ViewerPane {
 
     pub fn toggle_metadata(&self) {
         self.set_metadata_visible(!self.metadata_visible());
+    }
+
+    pub fn open_tag_popover(&self) {
+        let imp = self.imp();
+        let path = match imp.current_path.borrow().clone() {
+            Some(path) => path,
+            None => return,
+        };
+        let db = imp
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|state| state.borrow().tags.clone());
+        if db.is_none() {
+            return;
+        }
+
+        {
+            let mut tag_state = imp.tag_state.borrow_mut();
+            tag_state.db = db;
+            tag_state.path = Some(path);
+        }
+
+        imp.tag_entry.set_text("");
+        self.refresh_tag_chips();
+        imp.tag_popover.popup();
+    }
+
+    fn build_tag_popover(&self) {
+        let imp = self.imp();
+
+        imp.tag_entry.set_placeholder_text(Some("Add tag"));
+        imp.tag_entry.set_hexpand(true);
+
+        imp.tag_flowbox
+            .set_selection_mode(gtk4::SelectionMode::None);
+        imp.tag_flowbox.set_row_spacing(6);
+        imp.tag_flowbox.set_column_spacing(6);
+        imp.tag_flowbox.set_max_children_per_line(8);
+        imp.tag_flowbox.set_homogeneous(false);
+        imp.tag_flowbox.set_valign(gtk4::Align::Start);
+
+        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+        content.set_margin_top(12);
+        content.set_margin_bottom(12);
+        content.set_margin_start(12);
+        content.set_margin_end(12);
+        content.set_size_request(320, -1);
+
+        let title = gtk4::Label::new(Some("Tags"));
+        title.set_halign(gtk4::Align::Start);
+        title.add_css_class("heading");
+
+        let chips_scroll = gtk4::ScrolledWindow::new();
+        chips_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        chips_scroll.set_min_content_height(72);
+        chips_scroll.set_max_content_height(180);
+        chips_scroll.set_child(Some(&imp.tag_flowbox));
+
+        content.append(&title);
+        content.append(&imp.tag_entry);
+        content.append(&chips_scroll);
+
+        imp.tag_popover.set_child(Some(&content));
+        imp.tag_popover.set_parent(&imp.tag_anchor);
+
+        let entry = imp.tag_entry.clone();
+        imp.tag_popover.connect_show(move |_| {
+            entry.grab_focus();
+        });
+
+        let key = gtk4::EventControllerKey::new();
+        let popover = imp.tag_popover.clone();
+        key.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk4::Key::Escape {
+                popover.popdown();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        imp.tag_entry.add_controller(key);
+
+        let viewer_weak = self.downgrade();
+        imp.tag_entry.connect_activate(move |entry| {
+            let Some(viewer) = viewer_weak.upgrade() else {
+                return;
+            };
+            let text = entry.text();
+            let tag = text.trim();
+            if tag.is_empty() {
+                return;
+            }
+            let state = viewer.imp().tag_state.borrow();
+            let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) else {
+                return;
+            };
+            db.add_tag(&path, tag);
+            entry.set_text("");
+            drop(state);
+            viewer.refresh_tag_chips();
+        });
+    }
+
+    fn refresh_tag_chips(&self) {
+        let imp = self.imp();
+        while let Some(child) = imp.tag_flowbox.first_child() {
+            imp.tag_flowbox.remove(&child);
+        }
+
+        let state = imp.tag_state.borrow();
+        let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) else {
+            return;
+        };
+        drop(state);
+
+        for tag in db.tags_for_path(&path) {
+            let chip = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+            chip.add_css_class("pill");
+
+            let label = gtk4::Label::new(Some(&tag));
+            label.set_halign(gtk4::Align::Start);
+
+            let remove = gtk4::Button::from_icon_name("window-close-symbolic");
+            remove.add_css_class("flat");
+            remove.set_focus_on_click(false);
+            remove.set_tooltip_text(Some("Remove tag"));
+
+            chip.append(&label);
+            chip.append(&remove);
+            imp.tag_flowbox.insert(&chip, -1);
+
+            let viewer_weak = self.downgrade();
+            let tag_name = tag.clone();
+            remove.connect_clicked(move |_| {
+                let Some(viewer) = viewer_weak.upgrade() else {
+                    return;
+                };
+                let state = viewer.imp().tag_state.borrow();
+                let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) else {
+                    return;
+                };
+                db.remove_tag(&path, &tag_name);
+                drop(state);
+                viewer.refresh_tag_chips();
+            });
+        }
     }
 
     fn pan_drag(&self, offset_x: f64, offset_y: f64) {
@@ -888,12 +1072,10 @@ impl ViewerPane {
         self.restore_view_mode();
         if let Some(path) = pending_path {
             let final_path = committed_output_path(&path);
-            if final_path != path {
-                if std::fs::rename(&path, &final_path).is_ok() {
-                    self.insert_committed_output(&final_path);
-                    self.load_image(final_path);
-                    return;
-                }
+            if final_path != path && std::fs::rename(&path, &final_path).is_ok() {
+                self.insert_committed_output(&final_path);
+                self.load_image(final_path);
+                return;
             }
             self.insert_committed_output(&path);
             self.load_image(path);

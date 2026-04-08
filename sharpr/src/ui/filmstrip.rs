@@ -19,9 +19,9 @@ type SearchChangedCallback = Box<dyn Fn(&str) + 'static>;
 type SearchActivateCallback = Box<dyn Fn(&str) + 'static>;
 type SearchDismissedCallback = Box<dyn Fn() + 'static>;
 
-const ESTIMATED_ROW_HEIGHT: f64 = 160.0;
-const BUFFER_ROWS: u32 = 6;
-const FALLBACK_VISIBLE_ROWS: u32 = 20;
+const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
+const BUFFER_ROWS: u32 = 2000;
+const FALLBACK_VISIBLE_ROWS: u32 = 40;
 
 mod imp {
     use super::*;
@@ -46,6 +46,7 @@ mod imp {
         pub preload_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
         pub thumbnail_gen: RefCell<Option<Arc<std::sync::atomic::AtomicU64>>>,
         pub pending_thumbnails: RefCell<Option<Arc<Mutex<std::collections::HashSet<PathBuf>>>>>,
+        pub pending_notify_count: std::sync::atomic::AtomicU32,
     }
 
     impl Default for FilmstripPane {
@@ -82,6 +83,7 @@ mod imp {
                 preload_thumbnail_tx: RefCell::new(None),
                 thumbnail_gen: RefCell::new(None),
                 pending_thumbnails: RefCell::new(None),
+                pending_notify_count: std::sync::atomic::AtomicU32::new(0),
             }
         }
     }
@@ -178,11 +180,24 @@ impl FilmstripPane {
             filename_label.set_max_width_chars(18);
             filename_label.add_css_class("caption");
 
+            // Append content children before parenting the popover — in GTK4,
+            // set_parent() inserts at the front of the child list so doing it
+            // first would make the popover the first_child(), breaking traversal.
+            item_box.append(&overlay);
+            item_box.append(&filename_label);
+
             let popover = gtk4::Popover::new();
             popover.set_has_arrow(true);
             popover.set_autohide(true);
             popover.set_position(gtk4::PositionType::Bottom);
             popover.set_parent(&item_box);
+
+            // Store widget refs by key so bind/unbind don't rely on child ordering.
+            unsafe {
+                list_item.set_data("fs-picture", picture.clone());
+                list_item.set_data("fs-index-label", index_label.clone());
+                list_item.set_data("fs-filename-label", filename_label.clone());
+            }
 
             let popover_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
             popover_box.set_margin_top(6);
@@ -202,10 +217,7 @@ impl FilmstripPane {
             gesture_right.set_button(3);
             item_box.add_controller(gesture_right.clone());
 
-            let gesture_left = gtk4::GestureClick::new();
-            gesture_left.set_button(1);
-            gesture_left.set_exclusive(false);
-            item_box.add_controller(gesture_left.clone());
+            // Double-click is handled by ListView::activate at the pane level.
 
             let list_item_weak = list_item.downgrade();
             open_button.connect_clicked(move |_| {
@@ -241,21 +253,6 @@ impl FilmstripPane {
                 }
             });
 
-            let list_item_weak = list_item.downgrade();
-            gesture_left.connect_released(move |_, n_press, _, _| {
-                if n_press != 2 {
-                    return;
-                }
-                let Some(list_item) = list_item_weak.upgrade() else {
-                    return;
-                };
-                if let Some(path) = list_item_path(&list_item) {
-                    launch_default_for_path(&path);
-                }
-            });
-
-            item_box.append(&overlay);
-            item_box.append(&filename_label);
             list_item.set_child(Some(&item_box));
         });
 
@@ -268,25 +265,20 @@ impl FilmstripPane {
                 Some(entry) => entry,
                 None => return,
             };
-            let item_box: gtk4::Box = match list_item.child().and_downcast::<gtk4::Box>() {
-                Some(item_box) => item_box,
-                None => return,
-            };
-            let overlay = match item_box.first_child().and_downcast::<gtk4::Overlay>() {
-                Some(overlay) => overlay,
-                None => return,
-            };
-            let picture = match overlay.child().and_downcast::<gtk4::Picture>() {
-                Some(picture) => picture,
-                None => return,
-            };
-            let index_label = match overlay.last_child().and_downcast::<gtk4::Label>() {
-                Some(label) => label,
-                None => return,
-            };
-            let filename_label = match item_box.last_child().and_downcast::<gtk4::Label>() {
-                Some(label) => label,
-                None => return,
+            let (picture, index_label, filename_label) = unsafe {
+                let picture = list_item
+                    .data::<gtk4::Picture>("fs-picture")
+                    .map(|p| p.as_ref().clone());
+                let index_label = list_item
+                    .data::<gtk4::Label>("fs-index-label")
+                    .map(|p| p.as_ref().clone());
+                let filename_label = list_item
+                    .data::<gtk4::Label>("fs-filename-label")
+                    .map(|p| p.as_ref().clone());
+                match (picture, index_label, filename_label) {
+                    (Some(p), Some(i), Some(f)) => (p, i, f),
+                    _ => return,
+                }
             };
 
             filename_label.set_text(&entry.filename());
@@ -326,22 +318,33 @@ impl FilmstripPane {
                     entry.disconnect(handler_id);
                 }
             }
-            if let Some(item_box) = list_item.child().and_downcast::<gtk4::Box>() {
-                if let Some(overlay) = item_box.first_child().and_downcast::<gtk4::Overlay>() {
-                    if let Some(picture) = overlay.child().and_downcast::<gtk4::Picture>() {
-                        picture.set_paintable(None::<&Paintable>);
-                    }
-                    if let Some(label) = overlay.last_child().and_downcast::<gtk4::Label>() {
-                        label.set_text("");
-                    }
+            unsafe {
+                if let Some(picture) = list_item
+                    .data::<gtk4::Picture>("fs-picture")
+                    .map(|p| p.as_ref().clone())
+                {
+                    picture.set_paintable(None::<&Paintable>);
                 }
-                if let Some(label) = item_box.last_child().and_downcast::<gtk4::Label>() {
+                if let Some(label) = list_item
+                    .data::<gtk4::Label>("fs-index-label")
+                    .map(|p| p.as_ref().clone())
+                {
+                    label.set_text("");
+                }
+                if let Some(label) = list_item
+                    .data::<gtk4::Label>("fs-filename-label")
+                    .map(|p| p.as_ref().clone())
+                {
                     label.set_text("");
                 }
             }
         });
 
         imp.list_view.set_factory(Some(&factory));
+        // ListView::activate fires on double-click or Enter — use it for open-in-viewer.
+        // Single-click still changes selection via SingleSelection; this is double-click only.
+        imp.list_view.set_single_click_activate(false);
+
         imp.scroll
             .set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
         imp.scroll.set_vexpand(true);
@@ -352,11 +355,24 @@ impl FilmstripPane {
         imp.toolbar_view.set_content(Some(&imp.root_box));
         imp.toolbar_view.set_parent(self);
 
+        // Throttle scroll-driven scheduling: fire at most once per 80 ms to
+        // avoid saturating the main thread during fast scrolls.
+        let scroll_pending = std::rc::Rc::new(std::cell::Cell::new(false));
         let widget_weak = self.downgrade();
         imp.scroll.vadjustment().connect_value_changed(move |_| {
-            if let Some(widget) = widget_weak.upgrade() {
-                widget.schedule_visible_thumbnails();
+            if scroll_pending.get() {
+                return;
             }
+            scroll_pending.set(true);
+            let pending_c = scroll_pending.clone();
+            let widget_weak_c = widget_weak.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(80), move || {
+                pending_c.set(false);
+                if let Some(widget) = widget_weak_c.upgrade() {
+                    widget.schedule_visible_thumbnails();
+                }
+                glib::ControlFlow::Break
+            });
         });
 
         let widget_weak = self.downgrade();
@@ -480,10 +496,27 @@ impl FilmstripPane {
     }
 
     pub fn mark_thumbnail_ready(&self, path: &Path) {
-        if let Some(pending) = self.imp().pending_thumbnails.borrow().as_ref() {
+        let imp = self.imp();
+        if let Some(pending) = imp.pending_thumbnails.borrow().as_ref() {
             if let Ok(mut pending) = pending.lock() {
                 pending.remove(path);
             }
+        }
+
+        // Throttle UI updates: increment counter and only spawn the idle
+        // task if it's the first pending notification.
+        if imp.pending_notify_count.fetch_add(1, Ordering::Relaxed) == 0 {
+            let widget_weak = self.downgrade();
+            glib::idle_add_local(move || {
+                if let Some(widget) = widget_weak.upgrade() {
+                    widget
+                        .imp()
+                        .pending_notify_count
+                        .store(0, Ordering::Relaxed);
+                    widget.schedule_visible_thumbnails();
+                }
+                glib::ControlFlow::Break
+            });
         }
     }
 
@@ -536,7 +569,6 @@ impl FilmstripPane {
             preload_capped_end = preload_range_end.min(image_count);
         }
 
-        let mut disk_hits: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut visible_worker_paths: Vec<PathBuf> = Vec::new();
         let mut preload_worker_paths: Vec<PathBuf> = Vec::new();
 
@@ -550,12 +582,8 @@ impl FilmstripPane {
                     continue;
                 }
                 let path = entry.path();
-                if let Some(cache_path) = crate::thumbnails::cache::thumbnail_cache_path(&path) {
-                    if cache_path.exists() {
-                        disk_hits.push((path, cache_path));
-                        continue;
-                    }
-                }
+                // Workers check the disk cache first (fast path in generate_thumbnail),
+                // so we just enqueue and let them handle it off the main thread.
                 let is_visible =
                     index >= visible_range_start && index < visible_capped_end && visible_rows > 0;
                 if is_visible {
@@ -563,34 +591,6 @@ impl FilmstripPane {
                 } else {
                     preload_worker_paths.push(path);
                 }
-            }
-        }
-
-        for (path, cache_path) in disk_hits {
-            if let Ok(img) = image::open(&cache_path) {
-                let rgba = img.into_rgba8();
-                let (w, h) = (rgba.width(), rgba.height());
-                let bytes = glib::Bytes::from_owned(rgba.into_raw());
-                let texture = gdk4::MemoryTexture::new(
-                    w as i32,
-                    h as i32,
-                    gdk4::MemoryFormat::R8g8b8a8,
-                    &bytes,
-                    (w * 4) as usize,
-                );
-                let texture: gdk4::Texture = texture.upcast();
-                {
-                    let state = state_rc.borrow();
-                    if let Some(index) = state.library.index_of_path(&path) {
-                        if let Some(entry) = state.library.entry_at(index) {
-                            entry.set_thumbnail(Some(texture.clone()));
-                        }
-                    }
-                }
-                state_rc
-                    .borrow_mut()
-                    .library
-                    .insert_thumbnail(path.clone(), texture);
             }
         }
 
@@ -643,9 +643,41 @@ impl FilmstripPane {
         }
     }
 
+    pub fn connect_item_activated<F: Fn(u32) + 'static>(&self, f: F) {
+        self.imp()
+            .list_view
+            .connect_activate(move |_, position| f(position));
+    }
+
+    pub fn navigate_to(&self, index: u32) {
+        self.imp().list_view.scroll_to(
+            index,
+            gtk4::ListScrollFlags::SELECT | gtk4::ListScrollFlags::FOCUS,
+            None,
+        );
+    }
+
     pub fn scroll_to_index(&self, index: u32) {
-        let imp = self.imp();
-        let adjustment = imp.scroll.vadjustment();
+        let adjustment = self.imp().scroll.vadjustment();
+        // If the layout hasn't happened yet (upper not yet computed), defer until
+        // the scroll window knows its content size.
+        if adjustment.upper() <= adjustment.page_size() + 1.0 {
+            let widget_weak = self.downgrade();
+            glib::idle_add_local(move || {
+                let Some(widget) = widget_weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                let adj = widget.imp().scroll.vadjustment();
+                if adj.upper() <= adj.page_size() + 1.0 {
+                    return glib::ControlFlow::Continue;
+                }
+                let upper_bound = (adj.upper() - adj.page_size()).max(0.0);
+                let offset = (index as f64 * ESTIMATED_ROW_HEIGHT).min(upper_bound);
+                adj.set_value(offset);
+                glib::ControlFlow::Break
+            });
+            return;
+        }
         let upper_bound = (adjustment.upper() - adjustment.page_size()).max(0.0);
         let offset = (index as f64 * ESTIMATED_ROW_HEIGHT).min(upper_bound);
         adjustment.set_value(offset);
@@ -730,7 +762,7 @@ impl FilmstripPane {
         }
     }
 
-    fn emit_search_activate(&self, text: &str) {
+    pub fn emit_search_activate(&self, text: &str) {
         if let Some(cb) = self.imp().search_activate_cb.borrow().as_ref() {
             cb(text);
         }
@@ -756,7 +788,30 @@ fn launch_default_for_path(path: &Path) {
 }
 
 fn reveal_in_file_manager(path: &Path) {
-    let parent = path.parent().unwrap_or(path);
-    let uri = gio::File::for_path(parent).uri();
-    let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+    // Use org.freedesktop.FileManager1.ShowItems to highlight the specific file.
+    // Nautilus, Thunar, Dolphin, and most GNOME/KDE file managers implement this.
+    let uri = gio::File::for_path(path).uri().to_string();
+    let parent = path.parent().map(|p| p.to_path_buf());
+    std::thread::spawn(move || {
+        let ok = std::process::Command::new("dbus-send")
+            .args([
+                "--session",
+                "--dest=org.freedesktop.FileManager1",
+                "--type=method_call",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+                &format!("array:string:{}", uri),
+                "string:",
+            ])
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            // Fallback: open the parent directory.
+            if let Some(parent_path) = parent {
+                let _ = std::process::Command::new("xdg-open")
+                    .arg(&parent_path)
+                    .spawn();
+            }
+        }
+    });
 }
