@@ -152,12 +152,17 @@ fn prefetch_decode(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)> {
 
 impl AppState {
     fn new() -> Self {
+        let settings = AppSettings::load();
+        let mut library = LibraryManager::new();
+        library.set_thumbnail_cache_max(settings.thumbnail_cache_max as usize);
+        let upscale_binary = settings.upscaler_binary_path.clone();
+        let upscale_model = UpscaleModel::from_settings(&settings.upscaler_default_model);
         Self {
-            library: LibraryManager::new(),
-            settings: AppSettings::load(),
+            library,
+            settings,
             tags: crate::tags::TagDatabase::open().ok().map(Arc::new),
-            upscale_binary: None,
-            upscale_model: UpscaleModel::Standard,
+            upscale_binary,
+            upscale_model,
         }
     }
 }
@@ -557,8 +562,7 @@ impl SharprWindow {
         self.add_breakpoint(bp_filmstrip);
 
         self.set_content(Some(&outer_split));
-        let builder =
-            gtk4::Builder::from_resource("/io/github/hebbihebb/Sharpr/help-overlay.ui");
+        let builder = gtk4::Builder::from_resource("/io/github/hebbihebb/Sharpr/help-overlay.ui");
         let help_overlay: gtk4::ShortcutsWindow = builder.object("help_overlay").unwrap();
         self.set_help_overlay(Some(&help_overlay));
         filmstrip.set_search_capture_widget(self.upcast_ref::<gtk4::Widget>());
@@ -1085,18 +1089,20 @@ impl SharprWindow {
         let model_action = gio::SimpleAction::new_stateful(
             "upscale-model",
             Some(glib::VariantTy::STRING),
-            &"standard".to_variant(),
+            &state.borrow().upscale_model.settings_key().to_variant(),
         );
         {
             let state_m = state.clone();
             model_action.connect_activate(move |action, param| {
                 let Some(param) = param else { return };
-                let model = if param.str() == Some("anime") {
-                    UpscaleModel::Anime
-                } else {
-                    UpscaleModel::Standard
-                };
-                state_m.borrow_mut().upscale_model = model;
+                let model = UpscaleModel::from_settings(param.str().unwrap_or("standard"));
+                {
+                    let mut state = state_m.borrow_mut();
+                    state.upscale_model = model;
+                    state
+                        .settings
+                        .set_upscaler_default_model(model.settings_key());
+                }
                 action.set_state(param);
             });
         }

@@ -37,10 +37,10 @@ pub struct LibraryManager {
     prefetch_in_flight: HashSet<PathBuf>,
     preview_cache: HashMap<PathBuf, (Vec<u8>, u32, u32)>,
     preview_order: Vec<PathBuf>,
+    thumbnail_cache_max: usize,
 }
 
 impl LibraryManager {
-    const MAX_CACHE: usize = 500;
     const MAX_PREVIEW_CACHE: usize = 30;
 
     pub fn new() -> Self {
@@ -59,6 +59,7 @@ impl LibraryManager {
             prefetch_in_flight: HashSet::new(),
             preview_cache: HashMap::new(),
             preview_order: Vec::new(),
+            thumbnail_cache_max: 500,
         }
     }
 
@@ -218,12 +219,20 @@ impl LibraryManager {
         if self.thumbnail_cache.contains_key(&path) {
             return;
         }
-        if self.cache_order.len() >= Self::MAX_CACHE {
+        while self.cache_order.len() >= self.thumbnail_cache_max {
             let oldest = self.cache_order.remove(0);
             self.thumbnail_cache.remove(&oldest);
         }
         self.thumbnail_cache.insert(path.clone(), texture);
         self.cache_order.push(path);
+    }
+
+    pub fn set_thumbnail_cache_max(&mut self, max_entries: usize) {
+        self.thumbnail_cache_max = max_entries.max(100);
+        while self.cache_order.len() > self.thumbnail_cache_max {
+            let oldest = self.cache_order.remove(0);
+            self.thumbnail_cache.remove(&oldest);
+        }
     }
 
     /// Returns true if `path` is in the cache or currently being decoded.
