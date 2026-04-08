@@ -26,6 +26,8 @@ pub struct LibraryManager {
     folder_history: HashMap<PathBuf, u32>,
     /// O(1) path → list index lookup, kept in sync with `store`.
     path_to_index: HashMap<PathBuf, u32>,
+    /// Set of all image paths encountered during the session, for cross-folder duplicates.
+    all_known_paths: HashSet<PathBuf>,
     hash_store: HashMap<PathBuf, u64>,
     thumbnail_cache: HashMap<PathBuf, Texture>,
     /// Insertion order for LRU eviction.
@@ -39,7 +41,7 @@ pub struct LibraryManager {
 
 impl LibraryManager {
     const MAX_CACHE: usize = 500;
-    const MAX_PREVIEW_CACHE: usize = 12;
+    const MAX_PREVIEW_CACHE: usize = 30;
 
     pub fn new() -> Self {
         Self {
@@ -48,6 +50,7 @@ impl LibraryManager {
             selected_index: None,
             folder_history: HashMap::new(),
             path_to_index: HashMap::new(),
+            all_known_paths: HashSet::new(),
             hash_store: HashMap::new(),
             thumbnail_cache: HashMap::new(),
             cache_order: Vec::new(),
@@ -105,6 +108,7 @@ impl LibraryManager {
             let entry = self.build_entry(path.clone());
             self.store.append(&entry);
             self.path_to_index.insert(path.clone(), index as u32);
+            self.all_known_paths.insert(path.clone());
         }
     }
 
@@ -139,6 +143,7 @@ impl LibraryManager {
         let entry = self.build_entry(path.clone());
         self.store.insert(insert_at, &entry);
         self.reindex_from(insert_at);
+        self.all_known_paths.insert(path.clone());
         Some(insert_at)
     }
 
@@ -231,13 +236,13 @@ impl LibraryManager {
         self.prefetch_in_flight.insert(path);
     }
 
-    /// Store completed prefetch bytes. Evicts oldest if cache exceeds 4 entries.
+    /// Store completed prefetch bytes. Evicts oldest if cache exceeds 8 entries.
     pub fn insert_prefetch(&mut self, path: PathBuf, bytes: Vec<u8>, width: u32, height: u32) {
         self.prefetch_in_flight.remove(&path);
         if self.prefetch_cache.contains_key(&path) {
             return;
         }
-        if self.prefetch_order.len() >= 4 {
+        if self.prefetch_order.len() >= 8 {
             let oldest = self.prefetch_order.remove(0);
             self.prefetch_cache.remove(&oldest);
         }
@@ -312,9 +317,36 @@ impl LibraryManager {
             .collect()
     }
 
+    /// Returns ALL accumulated (path, hash) pairs regardless of the current view.
+    /// Use this for whole-library duplicate detection.
+    pub fn all_hashes_snapshot(&self) -> Vec<(PathBuf, u64)> {
+        self.hash_store
+            .iter()
+            .map(|(path, &hash)| (path.clone(), hash))
+            .collect()
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+
+    pub fn find_duplicate_filenames(&self) -> Vec<PathBuf> {
+        let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        for path in &self.all_known_paths {
+            if let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_lowercase()) {
+                groups.entry(name).or_default().push(path.clone());
+            }
+        }
+
+        let mut duplicates = Vec::new();
+        for mut paths in groups.into_values() {
+            if paths.len() > 1 {
+                paths.sort();
+                duplicates.extend(paths);
+            }
+        }
+        duplicates
+    }
 
     fn is_image(path: &Path) -> bool {
         path.extension()

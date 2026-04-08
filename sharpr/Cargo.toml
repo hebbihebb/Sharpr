@@ -20,6 +20,7 @@ gdk4 = "0.9"
 # Image decoding and thumbnail generation (pure Rust, thread-safe)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp", "ico"] }
 turbojpeg = "1.0"
+memmap2 = "0.9"
 
 # Metadata (EXIF / XMP / IPTC) via gexiv2 C library
 rexiv2 = "0.10"
