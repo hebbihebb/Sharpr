@@ -3,3 +3,5 @@ data/gschemas.compiled
 packaging/.flatpak-source/
 packaging/build-dir/
 packaging/.flatpak-builder/
+packaging/repo/
+packaging/*.flatpak
