@@ -95,7 +95,7 @@ impl TagBrowser {
             imp.content_box.set_vexpand(true);
 
             let label = gtk4::Label::new(Some(
-                "No tags yet.\nSelect an image and press T to add tags.",
+                "No tags yet.\nSelect an image and press Ctrl+T to add tags.",
             ));
             label.set_justify(gtk4::Justification::Center);
             label.set_wrap(true);

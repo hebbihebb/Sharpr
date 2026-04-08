@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -39,6 +39,10 @@ mod imp {
         pub scrolled_window: gtk4::ScrolledWindow,
         pub picture: gtk4::Picture,
         pub metadata_chip: MetadataChip,
+        pub tag_osd: gtk4::Box,
+        pub tag_label: gtk4::Label,
+        pub tag_button: gtk4::Button,
+        pub tag_add_button: gtk4::Button,
         pub spinner: gtk4::Spinner,
         /// OSD progress bar — shown during an upscale job, hidden otherwise.
         pub progress_bar: gtk4::ProgressBar,
@@ -108,6 +112,36 @@ mod imp {
             metadata_chip.set_margin_end(16);
             metadata_chip.set_margin_bottom(16);
 
+            let tag_osd = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            tag_osd.add_css_class("osd");
+            tag_osd.add_css_class("tag-osd");
+            tag_osd.set_halign(gtk4::Align::Start);
+            tag_osd.set_valign(gtk4::Align::End);
+            tag_osd.set_margin_start(16);
+            tag_osd.set_margin_bottom(16);
+            tag_osd.set_visible(false);
+
+            let tag_button = gtk4::Button::new();
+            tag_button.add_css_class("flat");
+            tag_button.add_css_class("tag-osd-pill");
+            tag_button.set_focus_on_click(false);
+            tag_button.set_tooltip_text(Some("Edit tags"));
+
+            let tag_label = gtk4::Label::new(Some("Tags"));
+            tag_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            tag_label.set_max_width_chars(18);
+            tag_label.set_xalign(0.0);
+            tag_button.set_child(Some(&tag_label));
+
+            let tag_add_button = gtk4::Button::from_icon_name("list-add-symbolic");
+            tag_add_button.add_css_class("flat");
+            tag_add_button.add_css_class("tag-osd-add");
+            tag_add_button.set_focus_on_click(false);
+            tag_add_button.set_tooltip_text(Some("Add or edit tags"));
+
+            tag_osd.append(&tag_button);
+            tag_osd.append(&tag_add_button);
+
             let progress_bar = gtk4::ProgressBar::new();
             progress_bar.add_css_class("osd");
             progress_bar.set_halign(gtk4::Align::Fill);
@@ -133,6 +167,7 @@ mod imp {
             let overlay = gtk4::Overlay::new();
             overlay.set_child(Some(&scrolled_window));
             overlay.add_overlay(&tag_anchor);
+            overlay.add_overlay(&tag_osd);
             overlay.add_overlay(&metadata_chip);
             overlay.add_overlay(&spinner);
             overlay.add_overlay(&progress_bar);
@@ -154,6 +189,10 @@ mod imp {
                 scrolled_window,
                 picture,
                 metadata_chip,
+                tag_osd,
+                tag_label,
+                tag_button,
+                tag_add_button,
                 spinner,
                 progress_bar,
                 tag_anchor,
@@ -251,6 +290,7 @@ impl ViewerPane {
     fn build_ui(&self) {
         let imp = self.imp();
         imp.content_box.set_parent(self);
+        install_viewer_osd_css();
         self.build_tag_popover();
 
         let motion = gtk4::EventControllerMotion::new();
@@ -341,6 +381,20 @@ impl ViewerPane {
             glib::Propagation::Proceed
         });
         self.add_controller(scroll);
+
+        let viewer_weak = self.downgrade();
+        imp.tag_button.connect_clicked(move |_| {
+            if let Some(viewer) = viewer_weak.upgrade() {
+                viewer.open_tag_popover();
+            }
+        });
+
+        let viewer_weak = self.downgrade();
+        imp.tag_add_button.connect_clicked(move |_| {
+            if let Some(viewer) = viewer_weak.upgrade() {
+                viewer.open_tag_popover();
+            }
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -355,6 +409,7 @@ impl ViewerPane {
         self.restore_view_mode();
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
+        imp.tag_osd.set_visible(false);
         self.set_quality_score(None);
         imp.spinner.stop();
         imp.spinner.set_visible(false);
@@ -381,8 +436,10 @@ impl ViewerPane {
         self.restore_view_mode();
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
+        imp.tag_osd.set_visible(false);
         self.set_quality_score(None);
         *imp.current_rgba.borrow_mut() = None;
+        self.refresh_tag_summary();
 
         // ── Fastest path: use decoded bytes from the preview LRU cache. ────────
         let cached_preview = imp
@@ -417,6 +474,7 @@ impl ViewerPane {
                         if v.imp().load_gen.get() == load_gen {
                             v.imp().metadata_chip.update_metadata(&meta);
                             v.update_quality_indicator(&meta);
+                            v.refresh_tag_summary();
                         }
                     }
                 }
@@ -462,6 +520,7 @@ impl ViewerPane {
                         if v.imp().load_gen.get() == load_gen {
                             v.imp().metadata_chip.update_metadata(&meta);
                             v.update_quality_indicator(&meta);
+                            v.refresh_tag_summary();
                         }
                     }
                 }
@@ -499,6 +558,7 @@ impl ViewerPane {
                     }
                     viewer.imp().metadata_chip.update_metadata(&metadata);
                     viewer.update_quality_indicator(&metadata);
+                    viewer.refresh_tag_summary();
                 }
             }
         });
@@ -840,6 +900,7 @@ impl ViewerPane {
 
         imp.tag_entry.set_text("");
         self.refresh_tag_chips();
+        self.refresh_tag_summary();
         imp.tag_popover.popup();
     }
 
@@ -915,6 +976,7 @@ impl ViewerPane {
             entry.set_text("");
             drop(state);
             viewer.refresh_tag_chips();
+            viewer.refresh_tag_summary();
         });
     }
 
@@ -959,8 +1021,46 @@ impl ViewerPane {
                 db.remove_tag(&path, &tag_name);
                 drop(state);
                 viewer.refresh_tag_chips();
+                viewer.refresh_tag_summary();
             });
         }
+    }
+
+    fn refresh_tag_summary(&self) {
+        let imp = self.imp();
+        let path = match imp.current_path.borrow().clone() {
+            Some(path) => path,
+            None => {
+                imp.tag_osd.set_visible(false);
+                return;
+            }
+        };
+
+        let db = imp
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|state| state.borrow().tags.clone());
+        let Some(db) = db else {
+            imp.tag_osd.set_visible(false);
+            return;
+        };
+
+        let tags = db.tags_for_path(&path);
+        let summary = match tags.len() {
+            0 => "Add tag".to_string(),
+            1..=3 => tags.join(" · "),
+            _ => format!("{} +{}", tags[..3].join(" · "), tags.len() - 3),
+        };
+        let tooltip = if tags.is_empty() {
+            "Add tags".to_string()
+        } else {
+            format!("Tags: {}", tags.join(", "))
+        };
+
+        imp.tag_label.set_text(&summary);
+        imp.tag_button.set_tooltip_text(Some(&tooltip));
+        imp.tag_osd.set_visible(true);
     }
 
     fn pan_drag(&self, offset_x: f64, offset_y: f64) {
@@ -1291,4 +1391,46 @@ fn committed_output_path(pending_output: &std::path::Path) -> PathBuf {
         None => name.to_owned(),
     };
     pending_output.with_file_name(trimmed)
+}
+
+fn install_viewer_osd_css() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let provider = gtk4::CssProvider::new();
+        provider.load_from_string(
+            "
+            .tag-osd {
+                padding: 8px 10px;
+                border-radius: 16px;
+                background-color: rgba(28, 28, 30, 0.72);
+                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+            }
+            .tag-osd-pill,
+            .tag-osd-add {
+                border-radius: 999px;
+                min-height: 28px;
+                background-color: rgba(255, 255, 255, 0.08);
+                color: white;
+            }
+            .tag-osd-pill {
+                padding: 0 10px;
+            }
+            .tag-osd-pill:hover,
+            .tag-osd-add:hover {
+                background-color: rgba(255, 255, 255, 0.14);
+            }
+            .tag-osd-add {
+                min-width: 28px;
+                padding: 0;
+            }
+            ",
+        );
+        if let Some(display) = gdk4::Display::default() {
+            gtk4::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+    });
 }

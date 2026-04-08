@@ -21,6 +21,27 @@
 - The viewer still computes IQ from [`src/quality/scorer.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/quality/scorer.rs); this pass intentionally moved only the presentation into [`src/ui/metadata_chip.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/ui/metadata_chip.rs).
 - The OSD chip uses a small application CSS provider installed once from the widget module; keep future polish localized there rather than adding broad app-wide styling.
 
+## 2026-04-08 Viewer Tag OSD Entry Point
+
+### What changed
+
+- Added a bottom-left viewer tag OSD in [`src/ui/viewer.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/ui/viewer.rs) that surfaces the current image tags as a compact pill plus an adjacent `+` button.
+- Reused the existing viewer tag popover instead of introducing a second tag-editing flow; clicking either the tag pill or the `+` button opens the same editor.
+- Changed the tag-editor keyboard shortcut from bare `T` to `Ctrl+T` in [`src/ui/window.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/ui/window.rs) so tagging no longer conflicts with the global search capture behavior.
+- Updated the keyboard shortcut help text in [`data/help-overlay.ui`](/home/hebbi/Projects/Sharpr/sharpr/data/help-overlay.ui) and the empty-state guidance in [`src/ui/tag_browser.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/ui/tag_browser.rs) to match the new shortcut.
+
+### Manual test focus
+
+- Select an image and confirm a bottom-left tag pill appears in the viewer alongside a `+` button styled consistently with the metadata OSD.
+- Click the tag pill and the `+` button and confirm both open the existing tag popover.
+- Add and remove tags, then confirm the bottom-left summary updates immediately.
+- Press `Ctrl+T` and confirm the tag editor opens without activating search.
+
+### Handoff note for Claude
+
+- The bottom-left OSD intentionally reuses `TagDatabase::tags_for_path` and the existing `open_tag_popover()` / `refresh_tag_chips()` path in [`src/ui/viewer.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/ui/viewer.rs); keep that single mutation flow intact.
+- The tag summary is intentionally simple for now (`first tag`, or `first tag +N`, or `Add tag`); if users need richer always-on tag display later, expand the summary without replacing the popover-backed editor.
+
 ## 2026-04-08 MVP Image Quality Scoring
 
 ### What changed

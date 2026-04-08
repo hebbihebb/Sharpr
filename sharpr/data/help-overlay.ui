@@ -41,7 +41,7 @@
             <child>
               <object class="GtkShortcutsShortcut">
                 <property name="title">Open tag editor for selected image</property>
-                <property name="accelerator">t</property>
+                <property name="accelerator">&lt;Control&gt;t</property>
               </object>
             </child>
           </object>
