@@ -99,7 +99,7 @@ impl ThumbnailWorker {
                                 path: path.clone(),
                                 gen,
                             });
-                            
+
                             if let Ok(mut pending) = pending_paths.lock() {
                                 pending.remove(&path);
                             }
@@ -138,7 +138,7 @@ impl ThumbnailWorker {
                         if let Some(result) = generate_thumbnail(&path) {
                             let _ = result_tx.send_blocking(result);
                         }
-                            
+
                         // Hashing is low priority, so we chain it here.
                         let _ = request_tx.send_blocking(WorkerRequest::Hash {
                             path: path.clone(),
@@ -353,12 +353,14 @@ fn load_system_thumbnail(path: &Path) -> Option<ThumbnailResult> {
         std::env::current_dir().ok()?.join(path)
     };
     let file = gio::File::for_path(&abs_path);
-    
-    let info = file.query_info(
-        "thumbnail::path,thumbnail::is-valid",
-        gio::FileQueryInfoFlags::NONE,
-        None::<&gio::Cancellable>
-    ).ok()?;
+
+    let info = file
+        .query_info(
+            "thumbnail::path,thumbnail::is-valid",
+            gio::FileQueryInfoFlags::NONE,
+            None::<&gio::Cancellable>,
+        )
+        .ok()?;
 
     // Treat absent `thumbnail::is-valid` as "not explicitly invalid": some GIO
     // backends omit the attribute even for fresh thumbnails.  Only skip if it is
@@ -543,7 +545,9 @@ fn read_exif_orientation(path: &Path) -> Option<u32> {
     let entry_count = read_u16(tiff, ifd0_offset)? as usize;
 
     for i in 0..entry_count {
-        let entry_offset = ifd0_offset.checked_add(2)?.checked_add(i.checked_mul(12)?)?;
+        let entry_offset = ifd0_offset
+            .checked_add(2)?
+            .checked_add(i.checked_mul(12)?)?;
         let tag = read_u16(tiff, entry_offset)?;
         if tag == 0x0112 {
             // Orientation tag: value is a SHORT stored at offset+8.
@@ -617,7 +621,8 @@ fn compute_hash(path: &Path) -> Option<u64> {
     // Optimization: if we have a thumbnail (from our cache or system cache),
     // use it for hashing instead of decoding the full source image.
     if let Some(thumb) = load_cached_thumbnail(path).or_else(|| load_system_thumbnail(path)) {
-        if let Some(rgba) = image::RgbaImage::from_raw(thumb.width, thumb.height, thumb.rgba_bytes) {
+        if let Some(rgba) = image::RgbaImage::from_raw(thumb.width, thumb.height, thumb.rgba_bytes)
+        {
             let img = image::DynamicImage::ImageRgba8(rgba);
             return Some(crate::duplicates::phash::dhash(&img));
         }
