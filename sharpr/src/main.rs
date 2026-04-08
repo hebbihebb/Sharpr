@@ -3,6 +3,7 @@ mod config;
 mod duplicates;
 mod metadata;
 mod model;
+mod quality;
 mod tags;
 mod thumbnails;
 mod ui;

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
+use crate::quality::{scorer, QualityClass, QualityScore};
 use crate::tags::TagDatabase;
 use crate::ui::metadata_chip::MetadataChip;
 use crate::ui::window::AppState;
@@ -31,6 +32,12 @@ mod imp {
     use super::*;
 
     pub struct ViewerPane {
+        pub content_box: gtk4::Box,
+        pub quality_box: gtk4::Box,
+        pub quality_bar: gtk4::LevelBar,
+        pub quality_score_label: gtk4::Label,
+        pub quality_class_label: gtk4::Label,
+        pub quality_reason_label: gtk4::Label,
         /// Root stack: "view" = normal viewer, "compare" = before/after widget.
         pub stack: gtk4::Stack,
         pub overlay: gtk4::Overlay,
@@ -79,6 +86,49 @@ mod imp {
 
     impl Default for ViewerPane {
         fn default() -> Self {
+            let content_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+
+            let quality_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+            quality_box.set_margin_top(8);
+            quality_box.set_margin_start(16);
+            quality_box.set_margin_end(16);
+            quality_box.set_margin_bottom(8);
+            quality_box.set_visible(false);
+
+            let quality_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+
+            let quality_score_label = gtk4::Label::new(Some("IQ: --"));
+            quality_score_label.add_css_class("heading");
+            quality_score_label.set_halign(gtk4::Align::Start);
+
+            let quality_class_label = gtk4::Label::new(None);
+            quality_class_label.add_css_class("caption");
+            quality_class_label.add_css_class("dim-label");
+            quality_class_label.set_halign(gtk4::Align::Start);
+
+            quality_header.append(&quality_score_label);
+            quality_header.append(&quality_class_label);
+
+            let quality_bar = gtk4::LevelBar::new();
+            quality_bar.set_min_value(0.0);
+            quality_bar.set_max_value(10.0);
+            quality_bar.set_mode(gtk4::LevelBarMode::Discrete);
+            quality_bar.add_offset_value("low", 3.0);
+            quality_bar.add_offset_value("high", 7.0);
+            quality_bar.add_offset_value("full", 8.5);
+            quality_bar.set_hexpand(true);
+            quality_bar.set_value(0.0);
+
+            let quality_reason_label = gtk4::Label::new(None);
+            quality_reason_label.add_css_class("caption");
+            quality_reason_label.add_css_class("dim-label");
+            quality_reason_label.set_halign(gtk4::Align::Start);
+            quality_reason_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+
+            quality_box.append(&quality_header);
+            quality_box.append(&quality_bar);
+            quality_box.append(&quality_reason_label);
+
             let picture = gtk4::Picture::new();
             picture.set_content_fit(gtk4::ContentFit::Contain);
             picture.set_can_shrink(true);
@@ -141,7 +191,16 @@ mod imp {
             stack.add_named(&overlay, Some("view"));
             stack.add_named(&comparison, Some("compare"));
 
+            content_box.append(&quality_box);
+            content_box.append(&stack);
+
             Self {
+                content_box,
+                quality_box,
+                quality_bar,
+                quality_score_label,
+                quality_class_label,
+                quality_reason_label,
                 stack,
                 overlay,
                 scrolled_window,
@@ -189,7 +248,7 @@ mod imp {
 
     impl ObjectImpl for ViewerPane {
         fn dispose(&self) {
-            self.stack.unparent();
+            self.content_box.unparent();
         }
     }
 
@@ -243,7 +302,7 @@ impl ViewerPane {
 
     fn build_ui(&self) {
         let imp = self.imp();
-        imp.stack.set_parent(self);
+        imp.content_box.set_parent(self);
         self.build_tag_popover();
 
         let motion = gtk4::EventControllerMotion::new();
@@ -348,6 +407,7 @@ impl ViewerPane {
         self.restore_view_mode();
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
+        self.set_quality_score(None);
         imp.spinner.stop();
         imp.spinner.set_visible(false);
         self.reset_zoom();
@@ -373,6 +433,7 @@ impl ViewerPane {
         self.restore_view_mode();
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
+        self.set_quality_score(None);
         *imp.current_rgba.borrow_mut() = None;
 
         // ── Fastest path: use decoded bytes from the preview LRU cache. ────────
@@ -407,6 +468,7 @@ impl ViewerPane {
                     if let Some(v) = widget_weak.upgrade() {
                         if v.imp().load_gen.get() == load_gen {
                             v.imp().metadata_chip.update(&meta);
+                            v.update_quality_indicator(&meta);
                         }
                     }
                 }
@@ -451,6 +513,7 @@ impl ViewerPane {
                     if let Some(v) = widget_weak.upgrade() {
                         if v.imp().load_gen.get() == load_gen {
                             v.imp().metadata_chip.update(&meta);
+                            v.update_quality_indicator(&meta);
                         }
                     }
                 }
@@ -487,6 +550,7 @@ impl ViewerPane {
                         return;
                     }
                     viewer.imp().metadata_chip.update(&metadata);
+                    viewer.update_quality_indicator(&metadata);
                 }
             }
         });
@@ -649,6 +713,50 @@ impl ViewerPane {
         let imp = self.imp();
         imp.metadata_visible.set(visible);
         imp.metadata_chip.set_visible(visible);
+    }
+
+    fn update_quality_indicator(&self, metadata: &crate::metadata::ImageMetadata) {
+        self.set_quality_score(Some(&scorer::score_metadata(metadata)));
+    }
+
+    fn set_quality_score(&self, quality: Option<&QualityScore>) {
+        let imp = self.imp();
+        let Some(quality) = quality else {
+            imp.quality_box.set_visible(false);
+            imp.quality_bar.set_value(0.0);
+            imp.quality_bar.set_tooltip_text(None);
+            imp.quality_score_label.set_text("IQ: --");
+            imp.quality_class_label.set_text("");
+            imp.quality_reason_label.set_text("");
+            for class_name in ["success", "warning", "error"] {
+                imp.quality_class_label.remove_css_class(class_name);
+            }
+            return;
+        };
+
+        imp.quality_box.set_visible(true);
+        imp.quality_bar
+            .set_value(((quality.score as f64) / 10.0).clamp(0.0, 10.0));
+        imp.quality_bar.set_tooltip_text(Some(&quality.tooltip()));
+        imp.quality_score_label
+            .set_text(&format!("IQ: {}%", quality.score));
+        imp.quality_class_label.set_text(quality.class.label());
+        imp.quality_reason_label.set_text(&quality.reason);
+
+        for class_name in ["success", "warning", "error"] {
+            imp.quality_class_label.remove_css_class(class_name);
+        }
+        match quality.class {
+            QualityClass::Excellent | QualityClass::Good => {
+                imp.quality_class_label.add_css_class("success");
+            }
+            QualityClass::Fair => {
+                imp.quality_class_label.add_css_class("warning");
+            }
+            QualityClass::Poor | QualityClass::NeedsUpscale => {
+                imp.quality_class_label.add_css_class("error");
+            }
+        }
     }
 
     pub fn zoom_mode(&self) -> ZoomMode {

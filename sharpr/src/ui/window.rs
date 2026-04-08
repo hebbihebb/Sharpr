@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use crate::config::AppSettings;
 use crate::model::{ImageEntry, LibraryManager};
+use crate::quality::scorer;
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::preferences::build_preferences_window;
@@ -298,6 +299,7 @@ impl SharprWindow {
                 sidebar_c.set_search_selected(false);
                 sidebar_c.set_duplicates_selected(false);
                 sidebar_c.set_tags_selected(false);
+                sidebar_c.set_quality_selected(None);
 
                 viewer_c.clear();
                 filmstrip_c.refresh();
@@ -358,6 +360,7 @@ impl SharprWindow {
                 sidebar_c.set_duplicates_selected(true);
                 sidebar_c.set_search_selected(false);
                 sidebar_c.set_tags_selected(false);
+                sidebar_c.set_quality_selected(None);
                 filmstrip_c.refresh_virtual();
                 let first = state_c
                     .borrow()
@@ -388,6 +391,7 @@ impl SharprWindow {
                 sidebar_c.set_search_selected(true);
                 sidebar_c.set_duplicates_selected(false);
                 sidebar_c.set_tags_selected(false);
+                sidebar_c.set_quality_selected(None);
                 // Show an empty filmstrip immediately so the user knows to type.
                 state_c.borrow_mut().library.load_virtual(&[]);
                 viewer_c.clear();
@@ -403,6 +407,49 @@ impl SharprWindow {
                 content_stack_c.set_visible_child_name("tags");
                 tag_browser.refresh();
                 sidebar_c.set_tags_selected(true);
+                sidebar_c.set_quality_selected(None);
+            });
+        }
+
+        {
+            let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
+            let sidebar_c = sidebar.clone();
+            let state_c = state.clone();
+            let suppress_search_restore_c = suppress_search_restore.clone();
+            let content_stack = content_stack.clone();
+            sidebar.connect_quality_selected(move |class| {
+                content_stack.set_visible_child_name("viewer");
+                let paths: Vec<PathBuf> = {
+                    let state = state_c.borrow();
+                    (0..state.library.image_count())
+                        .filter_map(|index| state.library.entry_at(index))
+                        .filter(|entry| scorer::score_entry(entry).class == class)
+                        .map(|entry| entry.path())
+                        .collect()
+                };
+
+                state_c.borrow_mut().library.load_virtual(&paths);
+                sidebar_c.set_quality_selected(Some(class));
+                sidebar_c.set_search_selected(false);
+                sidebar_c.set_duplicates_selected(false);
+                sidebar_c.set_tags_selected(false);
+                viewer_c.clear();
+                filmstrip_c.refresh_virtual();
+                let first = state_c
+                    .borrow()
+                    .library
+                    .entry_at(0)
+                    .map(|e: ImageEntry| e.path());
+                if let Some(path) = first {
+                    state_c.borrow_mut().library.selected_index = Some(0);
+                    filmstrip_c.navigate_to(0);
+                    viewer_c.load_image(path);
+                }
+                if filmstrip_c.is_search_active() {
+                    suppress_search_restore_c.set(true);
+                    filmstrip_c.deactivate_search();
+                }
             });
         }
 
@@ -592,6 +639,7 @@ impl SharprWindow {
                 content_stack.set_visible_child_name("viewer");
                 sidebar_c.set_search_selected(!text.trim().is_empty());
                 sidebar_c.set_tags_selected(false);
+                sidebar_c.set_quality_selected(None);
                 filmstrip_c.show_autocomplete(vec![]);
 
                 if let Some(source_id) = pending_search.take() {
@@ -666,6 +714,7 @@ impl SharprWindow {
                                 sidebar_rx.set_search_selected(true);
                                 sidebar_rx.set_duplicates_selected(false);
                                 sidebar_rx.set_tags_selected(false);
+                                sidebar_rx.set_quality_selected(None);
                                 viewer_rx.clear();
                                 filmstrip_rx.refresh_virtual();
                                 let first_path = state_rx
@@ -718,6 +767,7 @@ impl SharprWindow {
                         sidebar_rx.set_search_selected(true);
                         sidebar_rx.set_duplicates_selected(false);
                         sidebar_rx.set_tags_selected(false);
+                        sidebar_rx.set_quality_selected(None);
                         viewer_rx.clear();
                         filmstrip_rx.refresh_virtual();
                         let first_path = state_rx
@@ -746,6 +796,7 @@ impl SharprWindow {
                 }
                 sidebar_c.set_search_selected(false);
                 sidebar_c.set_tags_selected(false);
+                sidebar_c.set_quality_selected(None);
                 if state_c.borrow().library.current_folder.is_none() {
                     // Extract last_folder in a separate let so the Ref<AppState> temporary
                     // is dropped at the semicolon — not held alive through the if let body
@@ -767,6 +818,7 @@ impl SharprWindow {
             tag_browser.connect_tag_activated(move |tag| {
                 content_stack_c.set_visible_child_name("viewer");
                 sidebar_c.set_tags_selected(false);
+                sidebar_c.set_quality_selected(None);
                 filmstrip_c.emit_search_activate(tag);
             });
         }

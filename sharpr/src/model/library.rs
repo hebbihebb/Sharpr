@@ -371,6 +371,9 @@ impl LibraryManager {
         if let Ok(meta) = std::fs::metadata(&path) {
             entry.set_file_size(meta.len());
         }
+        if let Ok((width, height)) = image::image_dimensions(&path) {
+            entry.set_dimensions(width, height);
+        }
         if let Some(texture) = self.thumbnail_cache.get(&path) {
             entry.set_thumbnail(Some(texture.clone()));
         }
