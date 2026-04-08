@@ -7,6 +7,8 @@ use libadwaita::subclass::prelude::*;
 
 use crate::ui::window::SharprWindow;
 
+const APP_DISPLAY_VERSION: &str = env!("SHARPR_DISPLAY_VERSION");
+
 // ---------------------------------------------------------------------------
 // GObject subclass boilerplate
 // ---------------------------------------------------------------------------
@@ -48,7 +50,19 @@ mod imp {
                 .build();
             let splash_pic = gtk4::Picture::for_resource("/io/github/hebbihebb/Sharpr/splash.png");
             splash_pic.set_content_fit(gtk4::ContentFit::Fill);
-            splash.set_child(Some(&splash_pic));
+            let splash_overlay = gtk4::Overlay::new();
+            splash_overlay.set_child(Some(&splash_pic));
+
+            let version_label = gtk4::Label::new(Some(APP_DISPLAY_VERSION));
+            version_label.add_css_class("caption");
+            version_label.add_css_class("dim-label");
+            version_label.set_halign(gtk4::Align::End);
+            version_label.set_valign(gtk4::Align::End);
+            version_label.set_margin_end(16);
+            version_label.set_margin_bottom(12);
+            splash_overlay.add_overlay(&version_label);
+
+            splash.set_child(Some(&splash_overlay));
             splash.present();
 
             let window = SharprWindow::new(app.upcast_ref::<libadwaita::Application>());
@@ -72,7 +86,7 @@ mod imp {
                     dialog.set_application_name("Sharpr");
                     dialog.set_application_icon("io.github.hebbihebb.Sharpr");
                     dialog.set_developer_name("Sharpr Contributors");
-                    dialog.set_version("0.1.0");
+                    dialog.set_version(APP_DISPLAY_VERSION);
                     dialog.set_license_type(gtk4::License::Gpl30Only);
                     dialog.set_copyright("© 2026 Sharpr Contributors");
                     if let Some(win) = app.active_window() {

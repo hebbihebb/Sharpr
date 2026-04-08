@@ -1,27 +1,43 @@
 # Sharpr
 
 <p align="center">
-  A fast, keyboard-friendly image viewer for GNOME — built with GTK4, Libadwaita, and Rust.
+  A GNOME-native image library viewer for Linux, built with GTK4, Libadwaita, and Rust.
 </p>
 
 ---
 
 <p align="center">
-  <img src="DesignDocs/film strip hamburger.png" alt="Sharpr with filmstrip and menu open" width="800">
+  <img src=".github/assets/sharpr-2026-04-08.png" alt="Sharpr showing smart folders, filmstrip, viewer overlays, and image preview" width="900">
 </p>
 
 ---
 
 ## Features
 
-- **Filmstrip sidebar** — browse a folder's images with thumbnail previews
-- **Smooth zoom & pan** — scroll to zoom, drag to pan; Fit and 1:1 toggle
-- **Rotate & flip** — in-memory transforms with save-to-disk (Edit menu)
-- **AI upscaling** — one-click upscale via Real-ESRGAN (Standard or Anime/Art model); before/after comparison slider
-- **Duplicate detection** — dHash-based near-duplicate grouping; Smart Folders sidebar
-- **Metadata overlay** — EXIF data via gexiv2
-- **Keyboard navigation** — arrow keys, F11 fullscreen, Delete to trash, and more
-- **Prefetch** — background decode of adjacent images for instant navigation
+- **Three-pane library workflow** — smart folders on the left, a live filmstrip in the middle, and a large preview pane on the right
+- **Smart folders** — browse duplicates, tags, search results, and global quality bands like `Excellent`, `Good`, and `Needs Upscale`
+- **Fast viewer interactions** — fit/1:1 modes, Ctrl+scroll zoom, drag-to-pan, fullscreen, and background prefetching of nearby images
+- **Compact viewer overlays** — bottom-right metadata and IQ chip plus bottom-left tag chip for quick tag editing
+- **Tagging workflow** — click the tag pill or press `Ctrl+T` to open the inline tag editor; tag search and tag browser are both built in
+- **Rotate, flip, and save** — non-destructive in-view transforms with explicit save/discard actions
+- **AI upscaling** — Real-ESRGAN integration with model selection and before/after comparison
+- **Shared thumbnail caching** — memory cache, on-disk cache, and freedesktop thumbnail cache support for fast folder reloads
+- **Metadata-aware quality scoring** — explainable IQ score derived from resolution, size, and format for wallpaper curation
+
+## Current State
+
+Sharpr is already usable as a desktop image library browser and viewer. The current codebase includes:
+
+- folder browsing with persistent last-folder restore
+- thumbnail strip with incremental loading and right-click actions
+- full-resolution preview with zoom, pan, fullscreen, and edit actions
+- duplicate detection via perceptual hashing
+- tag browser, tag search, and inline per-image tag editing
+- compact GNOME-style metadata and quality OSD
+- quality smart folders that work across the whole indexed library
+- AI upscale workflow with pending-output comparison and commit/discard
+
+The project is still under active development, but the app is beyond prototype stage and already covers the main browsing and curation loop.
 
 ## Requirements
 
@@ -49,7 +65,7 @@ flatpak run io.github.hebbihebb.Sharpr
 cd sharpr
 
 # Install dependencies (Fedora example)
-sudo dnf install gtk4-devel libadwaita-devel gexiv2-devel
+sudo dnf install gtk4-devel libadwaita-devel gexiv2-devel pkg-config gcc
 
 cargo build
 ```
@@ -80,12 +96,13 @@ The Flatpak build bundles the binary and models automatically.
 
 | Key | Action |
 |-----|--------|
-| ← / → | Previous / Next image |
-| Scroll | Zoom in/out |
-| Z | Toggle Fit / 1:1 zoom |
+| Alt+Left / Alt+Right | Previous / Next image |
+| Ctrl+Scroll | Zoom in/out |
+| Ctrl+0 | Reset to Fit |
 | F11 | Toggle fullscreen |
 | Delete | Move to trash |
-| Ctrl+S | Save edit |
+| Ctrl+T | Open tag editor |
+| Alt+Return | Toggle metadata overlay |
 | ? | Show all shortcuts |
 
 ## License
