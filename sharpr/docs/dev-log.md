@@ -1,5 +1,47 @@
 # Development Log
 
+## 2026-04-08 Viewer Metadata / Quality OSD Polish
+
+### What changed
+
+- Removed the separate quality indicator block that sat above the preview image in [`src/ui/viewer.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/ui/viewer.rs), so the image remains the dominant visual element in the viewer.
+- Redesigned [`src/ui/metadata_chip.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/ui/metadata_chip.rs) into a compact two-line bottom-right OSD chip that shows `dimensions · format · size` on the first line and `IQ NN% · Class` plus a five-step segmented indicator on the second line.
+- Kept the existing metadata loading and IQ scoring logic intact; the polish pass only changes layout, hierarchy, and presentation.
+- Added a narrow chip-specific CSS pass for rounded corners, softer dark translucency, tighter spacing, and a restrained inline quality indicator that reads as status instead of a control.
+
+### Manual test focus
+
+- Open bright and dark images and confirm the bottom-right OSD remains readable without dominating the frame.
+- Navigate between images and confirm the chip updates dimensions, format, size, IQ score, class, and segments without layout jumps.
+- Toggle metadata visibility and confirm the compact OSD still follows the existing show/hide behavior.
+- Confirm the old top-of-viewer quality bar no longer appears.
+
+### Handoff note for Claude
+
+- The viewer still computes IQ from [`src/quality/scorer.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/quality/scorer.rs); this pass intentionally moved only the presentation into [`src/ui/metadata_chip.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/ui/metadata_chip.rs).
+- The OSD chip uses a small application CSS provider installed once from the widget module; keep future polish localized there rather than adding broad app-wide styling.
+
+## 2026-04-08 MVP Image Quality Scoring
+
+### What changed
+
+- Added `src/quality/scorer.rs`, a dedicated metadata-only scorer that computes an explainable `0..100` IQ score from width, height, file size, and format.
+- Weighted the heuristic toward wallpaper suitability: long-edge resolution and megapixels drive most of the score, bytes-per-pixel works as a compression proxy, and format family adds a smaller quality bias.
+- Added a compact viewer indicator under the `Preview` header with a segmented bar, `IQ: NN%`, a class label, and a short reason string.
+- Added a `Quality` sidebar section with virtual folders for `Excellent`, `Good`, `Fair`, `Poor`, and `Needs Upscale`, wired through the existing smart-folder selection flow.
+- Populated `ImageEntry` dimensions during library scans using lightweight header reads so quality filtering does not require full image decodes.
+
+### Manual test focus
+
+- Open a folder with mixed resolutions and confirm the preview header shows an IQ bar, numeric score, class, and reason for the selected image.
+- Click each row in the `Quality` sidebar section and confirm the filmstrip filters to matching images.
+- Navigate between images and confirm the quality indicator updates as the selection changes.
+
+### Handoff note for Claude
+
+- The scorer is intentionally heuristic and isolated in [`src/quality/scorer.rs`](/home/hebbi/Projects/Sharpr/sharpr/src/quality/scorer.rs); if you tune thresholds, keep the class boundaries fixed to the product ranges.
+- Sidebar quality folders currently score whatever entries are in the active filmstrip before loading the new virtual view, which keeps the integration small and consistent with the existing `load_virtual` flow.
+
 ## 2026-04-08 Substring Search Across Tags And Filenames
 
 ### What changed
