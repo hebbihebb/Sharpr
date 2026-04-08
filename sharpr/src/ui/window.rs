@@ -14,6 +14,7 @@ use crate::config::AppSettings;
 use crate::model::{ImageEntry, LibraryManager};
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
+use crate::ui::preferences::build_preferences_window;
 use crate::ui::sidebar::SidebarPane;
 use crate::ui::tag_browser::TagBrowser;
 use crate::ui::viewer::{ViewerPane, ZoomMode};
@@ -284,6 +285,11 @@ impl SharprWindow {
                     }
                 }
 
+                let cache_max = AppSettings::load().thumbnail_cache_max as usize;
+                state_c
+                    .borrow_mut()
+                    .library
+                    .set_thumbnail_cache_max(cache_max);
                 state_c.borrow_mut().library.scan_folder(&path);
                 {
                     let mut st = state_c.borrow_mut();
@@ -1030,6 +1036,7 @@ impl SharprWindow {
 
         let app_section = gio::Menu::new();
         app_section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));
+        app_section.append(Some("Preferences"), Some("win.show-preferences"));
         app_section.append(Some("About Sharpr"), Some("app.about"));
         menu.append_section(Some("App"), &app_section);
 
@@ -1086,27 +1093,20 @@ impl SharprWindow {
         }
         self.add_action(&meta_action);
 
-        let model_action = gio::SimpleAction::new_stateful(
-            "upscale-model",
-            Some(glib::VariantTy::STRING),
-            &state.borrow().upscale_model.settings_key().to_variant(),
-        );
+        let pref_action = gio::SimpleAction::new("show-preferences", None);
         {
-            let state_m = state.clone();
-            model_action.connect_activate(move |action, param| {
-                let Some(param) = param else { return };
-                let model = UpscaleModel::from_settings(param.str().unwrap_or("standard"));
-                {
-                    let mut state = state_m.borrow_mut();
-                    state.upscale_model = model;
-                    state
-                        .settings
-                        .set_upscaler_default_model(model.settings_key());
-                }
-                action.set_state(param);
+            let window_weak = self.downgrade();
+            let state_c = state.clone();
+            pref_action.connect_activate(move |_, _| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                let settings = state_c.borrow().settings.clone();
+                let prefs = build_preferences_window(&settings, &window);
+                prefs.present();
             });
         }
-        self.add_action(&model_action);
+        self.add_action(&pref_action);
 
         for name in ["rotate-cw", "rotate-ccw", "flip-h", "flip-v"] {
             let a = gio::SimpleAction::new(name, None);
@@ -1130,6 +1130,11 @@ impl SharprWindow {
                 let Some(viewer) = viewer_weak.upgrade() else { return };
                 let has_binary = {
                     let mut st = state_c.borrow_mut();
+                    if st.upscale_binary.is_none() {
+                        st.upscale_binary = AppSettings::load()
+                            .upscaler_binary_path
+                            .filter(|path| path.is_file());
+                    }
                     if st.upscale_binary.is_none() {
                         st.upscale_binary = UpscaleDetector::find_realesrgan();
                     }
