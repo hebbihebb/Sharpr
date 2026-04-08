@@ -12,7 +12,6 @@ use std::path::PathBuf;
 
 use crate::config::AppSettings;
 use crate::model::{ImageEntry, LibraryManager};
-use crate::quality::scorer;
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::preferences::build_preferences_window;
@@ -253,6 +252,7 @@ impl SharprWindow {
         let sidebar = SidebarPane::new(state.clone());
         let filmstrip = FilmstripPane::new(state.clone());
         let viewer = ViewerPane::new(state.clone());
+        viewer.set_metadata_visible(state.borrow().settings.metadata_visible);
 
         if let Some(worker) = self.imp().thumbnail_worker.borrow().as_ref() {
             filmstrip.set_thumbnail_sender(
@@ -421,12 +421,9 @@ impl SharprWindow {
             sidebar.connect_quality_selected(move |class| {
                 content_stack.set_visible_child_name("viewer");
                 let paths: Vec<PathBuf> = {
-                    let state = state_c.borrow();
-                    (0..state.library.image_count())
-                        .filter_map(|index| state.library.entry_at(index))
-                        .filter(|entry| scorer::score_entry(entry).class == class)
-                        .map(|entry| entry.path())
-                        .collect()
+                    let mut state = state_c.borrow_mut();
+                    let settings = state.settings.clone();
+                    state.library.paths_for_quality_class(&settings, class)
                 };
 
                 state_c.borrow_mut().library.load_virtual(&paths);
@@ -971,12 +968,12 @@ impl SharprWindow {
             ));
         }
 
-        // T — open the tag editor for the selected image.
+        // Ctrl+T — open the tag editor for the selected image.
         {
             let state_t = state.clone();
             let viewer_t = viewer.clone();
             shortcuts.add_shortcut(gtk4::Shortcut::new(
-                Some(gtk4::ShortcutTrigger::parse_string("T").unwrap()),
+                Some(gtk4::ShortcutTrigger::parse_string("<Control>T").unwrap()),
                 Some(gtk4::CallbackAction::new(move |widget, _| {
                     if let Some(window) = widget.downcast_ref::<gtk4::Window>() {
                         if let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) {
