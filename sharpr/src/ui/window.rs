@@ -557,6 +557,10 @@ impl SharprWindow {
         self.add_breakpoint(bp_filmstrip);
 
         self.set_content(Some(&outer_split));
+        let builder =
+            gtk4::Builder::from_resource("/io/github/hebbihebb/Sharpr/help-overlay.ui");
+        let help_overlay: gtk4::ShortcutsWindow = builder.object("help_overlay").unwrap();
+        self.set_help_overlay(Some(&help_overlay));
         filmstrip.set_search_capture_widget(self.upcast_ref::<gtk4::Widget>());
 
         {
@@ -759,10 +763,12 @@ impl SharprWindow {
         // Restore last folder
         // -----------------------------------------------------------------------
         let last_folder = state.borrow().settings.last_folder.clone();
-        if let Some(folder) = last_folder {
-            if folder.is_dir() {
-                open_folder(folder);
-            }
+        let start_folder = last_folder
+            .filter(|p| p.is_dir())
+            .or_else(|| sidebar.first_folder_path());
+
+        if let Some(folder) = start_folder {
+            open_folder(folder);
         }
     }
 
@@ -1107,10 +1113,6 @@ impl SharprWindow {
             });
             self.add_action(&a);
         }
-
-        let help_action = gio::SimpleAction::new("show-help-overlay", None);
-        help_action.set_enabled(false);
-        self.add_action(&help_action);
 
         let upscale_action = gio::SimpleAction::new("upscale", None);
         {

@@ -261,6 +261,16 @@ impl SidebarPane {
         *self.imp().search_activated_cb.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Returns the path of the first folder row in the sidebar list, if any.
+    pub fn first_folder_path(&self) -> Option<PathBuf> {
+        self.imp()
+            .list_box
+            .first_child()?
+            .downcast::<FolderRow>()
+            .ok()
+            .map(|row| row.path())
+    }
+
     pub fn set_duplicates_selected(&self, selected: bool) {
         if selected {
             self.set_smart_selection(SmartFolderSelection::Duplicates);
