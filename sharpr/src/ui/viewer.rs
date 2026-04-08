@@ -958,20 +958,26 @@ impl ViewerPane {
     ///
     /// Disables `trigger_btn` for the duration; re-enables on completion or
     /// failure. On success, shows a comparison view backed by a temp output.
-    pub fn start_upscale(&self, path: PathBuf, trigger_btn: gtk4::Button) {
+    pub fn start_upscale(
+        &self,
+        path: PathBuf,
+        scale: u32,
+        model: crate::upscale::UpscaleModel,
+        trigger_btn: gtk4::Button,
+    ) {
         use crate::model::ImageEntry;
         use crate::upscale::runner::{UpscaleEvent, UpscaleRunner};
 
         let imp = self.imp();
 
-        let (binary, model) = {
+        let binary = {
             let st = imp.state.borrow();
             let Some(ref rc) = *st else {
                 trigger_btn.set_sensitive(true);
                 return;
             };
             let state = rc.borrow();
-            (state.upscale_binary.clone(), state.upscale_model)
+            state.upscale_binary.clone()
         };
         let Some(binary) = binary else {
             trigger_btn.set_sensitive(true);
@@ -979,15 +985,19 @@ impl ViewerPane {
         };
 
         let scale = {
-            let st = imp.state.borrow();
-            let Some(ref rc) = *st else { return };
-            let (w, h) = rc
-                .borrow()
-                .library
-                .selected_entry()
-                .and_then(|e: ImageEntry| e.dimensions())
-                .unwrap_or((0, 0));
-            UpscaleRunner::smart_scale(w, h)
+            if scale == 0 {
+                let st = imp.state.borrow();
+                let Some(ref rc) = *st else { return };
+                let (w, h) = rc
+                    .borrow()
+                    .library
+                    .selected_entry()
+                    .and_then(|e: ImageEntry| e.dimensions())
+                    .unwrap_or((0, 0));
+                UpscaleRunner::smart_scale(w, h)
+            } else {
+                scale
+            }
         };
 
         let final_output = {

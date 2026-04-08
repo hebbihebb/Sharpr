@@ -30,7 +30,6 @@ pub struct AppState {
     pub tags: Option<Arc<crate::tags::TagDatabase>>,
     /// Cached path to the realesrgan-ncnn-vulkan binary after successful detection.
     pub upscale_binary: Option<PathBuf>,
-    pub upscale_model: UpscaleModel,
 }
 
 #[derive(Clone)]
@@ -157,13 +156,11 @@ impl AppState {
         let mut library = LibraryManager::new();
         library.set_thumbnail_cache_max(settings.thumbnail_cache_max as usize);
         let upscale_binary = settings.upscaler_binary_path.clone();
-        let upscale_model = UpscaleModel::from_settings(&settings.upscaler_default_model);
         Self {
             library,
             settings,
             tags: crate::tags::TagDatabase::open().ok().map(Arc::new),
             upscale_binary,
-            upscale_model,
         }
     }
 }
@@ -1026,12 +1023,7 @@ impl SharprWindow {
         menu.append_section(Some("Rotate & Flip"), &transform_section);
 
         let upscale_section = gio::Menu::new();
-        upscale_section.append(Some("Run AI Upscale"), Some("win.upscale"));
-        upscale_section.append(
-            Some("Standard (Photo)"),
-            Some("win.upscale-model::standard"),
-        );
-        upscale_section.append(Some("Anime / Art"), Some("win.upscale-model::anime"));
+        upscale_section.append(Some("Upscale Image…"), Some("win.upscale"));
         menu.append_section(Some("AI Upscale"), &upscale_section);
 
         let app_section = gio::Menu::new();
@@ -1126,7 +1118,7 @@ impl SharprWindow {
             let banner_c = upscale_banner.clone();
             let viewer_weak = viewer.downgrade();
             let action_weak = upscale_action.downgrade();
-            upscale_action.connect_activate(move |action, _| {
+            upscale_action.connect_activate(move |_action, _| {
                 let Some(viewer) = viewer_weak.upgrade() else { return };
                 let has_binary = {
                     let mut st = state_c.borrow_mut();
@@ -1154,21 +1146,91 @@ impl SharprWindow {
                     .selected_entry()
                     .map(|e: ImageEntry| e.path());
                 if let Some(p) = path {
-                    action.set_enabled(false);
-                    // Proxy button bridges start_upscale's re-enable callback back
-                    // to the action: start insensitive so the true→false→true
-                    // transition fires the notify when the job finishes.
-                    let proxy_btn = gtk4::Button::new();
                     let action_weak_c = action_weak.clone();
-                    proxy_btn.connect_sensitive_notify(move |btn| {
-                        if btn.is_sensitive() {
-                            if let Some(a) = action_weak_c.upgrade() {
-                                a.set_enabled(true);
+                    let dialog = libadwaita::AlertDialog::new(Some("Upscale Image"), None);
+                    dialog.add_response("cancel", "Cancel");
+                    dialog.add_response("upscale", "Upscale");
+                    dialog.set_default_response(Some("upscale"));
+                    dialog.set_close_response("cancel");
+                    dialog.set_response_appearance(
+                        "upscale",
+                        libadwaita::ResponseAppearance::Suggested,
+                    );
+
+                    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 18);
+                    content.set_margin_top(6);
+                    content.set_margin_bottom(6);
+
+                    let model_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+                    let model_label = gtk4::Label::new(Some("Model"));
+                    model_label.set_halign(gtk4::Align::Start);
+                    model_box.append(&model_label);
+
+                    let standard_btn =
+                        gtk4::CheckButton::with_label("Standard  - best for photos");
+                    standard_btn.set_active(true);
+                    let anime_btn =
+                        gtk4::CheckButton::with_label("Anime / Art  - best for illustration");
+                    anime_btn.set_group(Some(&standard_btn));
+                    model_box.append(&standard_btn);
+                    model_box.append(&anime_btn);
+                    content.append(&model_box);
+
+                    let scale_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+                    let scale_label = gtk4::Label::new(Some("Scale"));
+                    scale_label.set_halign(gtk4::Align::Start);
+                    scale_box.append(&scale_label);
+
+                    let scale_dropdown =
+                        gtk4::DropDown::from_strings(&["Smart (auto)", "2×", "3×", "4×"]);
+                    scale_dropdown.set_selected(0);
+                    scale_box.append(&scale_dropdown);
+                    content.append(&scale_box);
+
+                    dialog.set_extra_child(Some(&content));
+
+                    let viewer_weak_c = viewer_weak.clone();
+                    dialog.choose(
+                        &viewer,
+                        None::<&gio::Cancellable>,
+                        move |response| {
+                            if response != "upscale" {
+                                return;
                             }
-                        }
-                    });
-                    proxy_btn.set_sensitive(false);
-                    viewer.start_upscale(p, proxy_btn);
+                            let Some(viewer) = viewer_weak_c.upgrade() else {
+                                return;
+                            };
+                            if let Some(action) = action_weak_c.upgrade() {
+                                action.set_enabled(false);
+                            }
+                            // Proxy button bridges start_upscale's re-enable callback back
+                            // to the action: start insensitive so the true→false→true
+                            // transition fires the notify when the job finishes.
+                            let proxy_btn = gtk4::Button::new();
+                            let action_weak_c = action_weak_c.clone();
+                            proxy_btn.connect_sensitive_notify(move |btn| {
+                                if btn.is_sensitive() {
+                                    if let Some(a) = action_weak_c.upgrade() {
+                                        a.set_enabled(true);
+                                    }
+                                }
+                            });
+                            proxy_btn.set_sensitive(false);
+
+                            let model = if anime_btn.is_active() {
+                                UpscaleModel::Anime
+                            } else {
+                                UpscaleModel::Standard
+                            };
+                            let scale = match scale_dropdown.selected() {
+                                1 => 2,
+                                2 => 3,
+                                3 => 4,
+                                _ => 0,
+                            };
+                            viewer.start_upscale(p.clone(), scale, model, proxy_btn);
+                        },
+                    );
                 }
             });
         }
