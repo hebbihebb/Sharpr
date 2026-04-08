@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkShortcutsWindow" id="help_overlay">
+    <property name="modal">1</property>
+    <child>
+      <object class="GtkShortcutsSection">
+        <property name="title">Navigation</property>
+        <property name="section-name">navigation</property>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Browse</property>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Next image</property>
+                <property name="accelerator">Alt+Right</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Previous image</property>
+                <property name="accelerator">Alt+Left</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Toggle fullscreen</property>
+                <property name="accelerator">F11</property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="GtkShortcutsSection">
+        <property name="title">Tags</property>
+        <property name="section-name">tags</property>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Tag Editor</property>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Open tag editor for selected image</property>
+                <property name="accelerator">t</property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="GtkShortcutsSection">
+        <property name="title">Viewer</property>
+        <property name="section-name">viewer</property>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Zoom</property>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Fit image to window</property>
+                <property name="accelerator">&lt;Control&gt;0</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">View</property>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Toggle metadata overlay</property>
+                <property name="accelerator">Alt+Return</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Edit</property>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Delete image</property>
+                <property name="accelerator">Delete</property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+</interface>
