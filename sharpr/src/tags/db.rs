@@ -74,11 +74,10 @@ impl TagDatabase {
             return vec![];
         };
         let pattern = format!("%{}%", query.to_lowercase());
-        let mut stmt =
-            match conn.prepare("SELECT DISTINCT path FROM file_tags WHERE tag LIKE ?1") {
-                Ok(stmt) => stmt,
-                Err(_) => return vec![],
-            };
+        let mut stmt = match conn.prepare("SELECT DISTINCT path FROM file_tags WHERE tag LIKE ?1") {
+            Ok(stmt) => stmt,
+            Err(_) => return vec![],
+        };
         let rows = match stmt.query_map(params![pattern], |row| row.get::<_, String>(0)) {
             Ok(rows) => rows,
             Err(_) => return vec![],

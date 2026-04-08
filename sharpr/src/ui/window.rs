@@ -1146,7 +1146,6 @@ impl SharprWindow {
                     .selected_entry()
                     .map(|e: ImageEntry| e.path());
                 if let Some(p) = path {
-                    let action_weak_c = action_weak.clone();
                     let dialog = libadwaita::AlertDialog::new(Some("Upscale Image"), None);
                     dialog.add_response("cancel", "Cancel");
                     dialog.add_response("upscale", "Upscale");
@@ -1166,12 +1165,18 @@ impl SharprWindow {
                     model_label.set_halign(gtk4::Align::Start);
                     model_box.append(&model_label);
 
+                    let saved_model =
+                        state_c.borrow().settings.upscaler_default_model.clone();
                     let standard_btn =
-                        gtk4::CheckButton::with_label("Standard  - best for photos");
-                    standard_btn.set_active(true);
+                        gtk4::CheckButton::with_label("Standard - best for photos");
                     let anime_btn =
-                        gtk4::CheckButton::with_label("Anime / Art  - best for illustration");
+                        gtk4::CheckButton::with_label("Anime / Art - best for illustration");
                     anime_btn.set_group(Some(&standard_btn));
+                    if saved_model == "anime" {
+                        anime_btn.set_active(true);
+                    } else {
+                        standard_btn.set_active(true);
+                    }
                     model_box.append(&standard_btn);
                     model_box.append(&anime_btn);
                     content.append(&model_box);
@@ -1190,6 +1195,7 @@ impl SharprWindow {
                     dialog.set_extra_child(Some(&content));
 
                     let viewer_weak_c = viewer_weak.clone();
+                    let action_weak_c = action_weak.clone();
                     dialog.choose(
                         &viewer,
                         None::<&gio::Cancellable>,

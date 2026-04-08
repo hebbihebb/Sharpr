@@ -95,7 +95,7 @@ impl SidebarPane {
         widget
     }
 
-    fn build_ui(&self, _state: Rc<RefCell<AppState>>) {
+    fn build_ui(&self, state: Rc<RefCell<AppState>>) {
         let imp = self.imp();
 
         let header = libadwaita::HeaderBar::new();
@@ -140,7 +140,8 @@ impl SidebarPane {
 
         imp.list_box.add_css_class("navigation-sidebar");
         imp.list_box.set_selection_mode(gtk4::SelectionMode::Single);
-        self.populate_default_folders();
+        let library_root = state.borrow().settings.library_root.clone();
+        self.populate_default_folders(library_root);
 
         let widget_weak = self.downgrade();
         imp.list_box.connect_selected_rows_changed(move |list_box| {
@@ -211,15 +212,25 @@ impl SidebarPane {
         imp.toolbar_view.set_parent(self);
     }
 
-    fn populate_default_folders(&self) {
+    fn populate_default_folders(&self, library_root: Option<PathBuf>) {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home".into());
         let home = PathBuf::from(&home);
 
-        let entries = [
-            (home.join("Pictures"), "Pictures"),
-            (home.join("Downloads"), "Downloads"),
-            (home.clone(), "Home"),
-        ];
+        // If the user configured a custom library root, scan only that path.
+        // Otherwise fall back to the default trio.
+        let entries: Vec<(PathBuf, String)> = if let Some(root) = library_root {
+            let name = root
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Library".to_string());
+            vec![(root, name)]
+        } else {
+            vec![
+                (home.join("Pictures"), "Pictures".into()),
+                (home.join("Downloads"), "Downloads".into()),
+                (home.clone(), "Home".into()),
+            ]
+        };
 
         let mut seen = HashSet::new();
 
@@ -229,11 +240,11 @@ impl SidebarPane {
             }
 
             if directory_contains_images(&root_path) && seen.insert(root_path.clone()) {
-                let row = FolderRow::new(root_path.clone(), root_name);
+                let row = FolderRow::new(root_path.clone(), &root_name);
                 self.imp().list_box.append(&row);
             }
 
-            let mut child_folders = discover_image_child_folders(&root_path, root_name);
+            let mut child_folders = discover_image_child_folders(&root_path, &root_name);
             child_folders.sort_by(|(_, a), (_, b)| a.to_lowercase().cmp(&b.to_lowercase()));
 
             for (path, label) in child_folders {
