@@ -1,7 +1,4 @@
-use std::path::Path;
-
 use crate::metadata::ImageMetadata;
-use crate::model::ImageEntry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QualityClass {
@@ -50,20 +47,20 @@ impl QualityScore {
     }
 }
 
-pub fn score_entry(entry: &ImageEntry) -> QualityScore {
-    score_dimensions(
-        entry.dimensions().map(|(width, height)| (width, height)),
-        entry.file_size(),
-        format_from_path(&entry.path()),
+pub fn score_metadata(meta: &ImageMetadata) -> QualityScore {
+    score_file_info(
+        Some((meta.width, meta.height)).filter(|(width, height)| *width > 0 && *height > 0),
+        meta.file_size_bytes,
+        &normalize_format(&meta.format),
     )
 }
 
-pub fn score_metadata(meta: &ImageMetadata) -> QualityScore {
-    score_dimensions(
-        Some((meta.width, meta.height)).filter(|(width, height)| *width > 0 && *height > 0),
-        meta.file_size_bytes,
-        normalize_format(&meta.format),
-    )
+pub fn score_file_info(
+    dimensions: Option<(u32, u32)>,
+    file_size_bytes: u64,
+    format: &str,
+) -> QualityScore {
+    score_dimensions(dimensions, file_size_bytes, normalize_format(format))
 }
 
 fn score_dimensions(
@@ -210,13 +207,6 @@ fn build_reason(long_edge: u32, detail_score: u8, compression_score: u8, format:
     }
 
     "Moderate resolution, moderate compression".to_string()
-}
-
-fn format_from_path(path: &Path) -> String {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(normalize_format)
-        .unwrap_or_else(|| "UNKNOWN".to_string())
 }
 
 fn normalize_format(format: &str) -> String {
