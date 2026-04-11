@@ -20,6 +20,14 @@ struct CachedImageData {
     quality: QualityScore,
 }
 
+pub struct RawImageEntry {
+    pub path: PathBuf,
+    pub filename: String,
+    pub file_size: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
 // ---------------------------------------------------------------------------
 // LibraryManager
 // ---------------------------------------------------------------------------
@@ -34,9 +42,9 @@ pub struct LibraryManager {
     pub selected_index: Option<u32>,
     folder_history: HashMap<PathBuf, u32>,
     /// O(1) path → list index lookup, kept in sync with `store`.
-    path_to_index: HashMap<PathBuf, u32>,
+    pub(crate) path_to_index: HashMap<PathBuf, u32>,
     /// Set of all image paths encountered during the session, for cross-folder duplicates.
-    all_known_paths: HashSet<PathBuf>,
+    pub(crate) all_known_paths: HashSet<PathBuf>,
     hash_store: HashMap<PathBuf, u64>,
     thumbnail_cache: HashMap<PathBuf, Texture>,
     /// Insertion order for LRU eviction.
@@ -79,6 +87,19 @@ impl LibraryManager {
     /// Scan `folder` for images and populate the store.
     /// Clears all existing entries and rebuilds the index map.
     pub fn scan_folder(&mut self, folder: &Path) {
+        self.reset_for_folder(folder);
+
+        for (index, raw) in Self::scan_folder_raw(folder).into_iter().enumerate() {
+            let entry = ImageEntry::new(raw.path.clone());
+            entry.set_file_size(raw.file_size);
+            entry.set_dimensions(raw.width, raw.height);
+            self.store.append(&entry);
+            self.path_to_index.insert(raw.path.clone(), index as u32);
+            self.all_known_paths.insert(raw.path);
+        }
+    }
+
+    pub fn reset_for_folder(&mut self, folder: &Path) {
         self.store.remove_all();
         self.path_to_index.clear();
         self.hash_store.clear();
@@ -92,19 +113,20 @@ impl LibraryManager {
         }
         self.selected_index = None;
         self.current_folder = Some(folder.to_path_buf());
+    }
 
+    pub fn scan_folder_raw(folder: &Path) -> Vec<RawImageEntry> {
         let Ok(dir) = std::fs::read_dir(folder) else {
-            return;
+            return Vec::new();
         };
 
         let mut paths: Vec<PathBuf> = dir
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-            .map(|e| e.path())
-            .filter(|p| Self::is_image(p))
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .map(|entry| entry.path())
+            .filter(|path| Self::is_image(path))
             .collect();
 
-        // Natural-ish sort by filename (case-insensitive).
         paths.sort_by(|a, b| {
             a.file_name()
                 .unwrap_or_default()
@@ -118,12 +140,25 @@ impl LibraryManager {
                 )
         });
 
-        for (index, path) in paths.iter().enumerate() {
-            let entry = self.build_entry(path.clone(), true);
-            self.store.append(&entry);
-            self.path_to_index.insert(path.clone(), index as u32);
-            self.all_known_paths.insert(path.clone());
-        }
+        paths.into_iter()
+            .map(|path| {
+                let filename = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                let file_size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+                let (width, height) = image::image_dimensions(&path).unwrap_or((0, 0));
+
+                RawImageEntry {
+                    path,
+                    filename,
+                    file_size,
+                    width,
+                    height,
+                }
+            })
+            .collect()
     }
 
     /// Insert `path` into the current folder's store in filename order.
@@ -606,6 +641,37 @@ mod tests {
 
         assert_eq!(excellent_paths, vec![excellent]);
         assert_eq!(upscale_paths, vec![needs_upscale]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_folder_raw_returns_sorted_plain_entries_with_metadata() {
+        let root = temp_path("raw-scan");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let img_a = root.join("a.JPG");
+        let img_b = root.join("B.bmp");
+        let txt = root.join("note.txt");
+
+        write_jpeg(&img_a, 640, 480, 80);
+        write_bmp(&img_b, 320, 200);
+        std::fs::write(&txt, b"not an image").unwrap();
+
+        let entries = LibraryManager::scan_folder_raw(&root);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, img_a);
+        assert_eq!(entries[0].filename, "a.JPG");
+        assert_eq!(entries[0].width, 640);
+        assert_eq!(entries[0].height, 480);
+        assert!(entries[0].file_size > 0);
+
+        assert_eq!(entries[1].path, img_b);
+        assert_eq!(entries[1].filename, "B.bmp");
+        assert_eq!(entries[1].width, 320);
+        assert_eq!(entries[1].height, 200);
+        assert!(entries[1].file_size > 0);
 
         std::fs::remove_dir_all(root).unwrap();
     }
