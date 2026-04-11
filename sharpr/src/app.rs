@@ -1,3 +1,4 @@
+use gdk4::prelude::*;
 use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -75,6 +76,13 @@ mod imp {
 
         fn startup(&self) {
             self.parent_startup();
+            // Register the GResource prefix so GTK's icon theme finds the
+            // bundled app icon (icons/hicolor/512x512/apps/…) at runtime.
+            if let Some(display) = gdk4::Display::default() {
+                gtk4::IconTheme::for_display(&display)
+                    .add_resource_path("/io/github/hebbihebb/Sharpr");
+            }
+            gtk4::Window::set_default_icon_name("io.github.hebbihebb.Sharpr");
             let app = self.obj();
             let about = gio::SimpleAction::new("about", None);
             {
