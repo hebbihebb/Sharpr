@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use crate::config::AppSettings;
 use crate::duplicates::phash;
+use crate::model::library::RawImageEntry;
 use crate::model::{ImageEntry, LibraryManager};
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
@@ -304,74 +305,108 @@ impl SharprWindow {
                     .borrow_mut()
                     .library
                     .set_thumbnail_cache_max(cache_max);
-                state_c.borrow_mut().library.scan_folder(&path);
+                state_c.borrow_mut().library.reset_for_folder(&path);
                 {
                     let mut st = state_c.borrow_mut();
                     st.settings.last_folder = Some(path.clone());
                     st.settings.save();
                 }
 
-                sidebar_c.select_folder(&path);
-                sidebar_c.set_search_selected(false);
-                sidebar_c.set_duplicates_selected(false);
-                sidebar_c.set_tags_selected(false);
-                sidebar_c.set_quality_selected(None);
+                let (tx, rx) = async_channel::unbounded::<Vec<RawImageEntry>>();
+                let scan_path = path.clone();
+                std::thread::spawn(move || {
+                    let entries = LibraryManager::scan_folder_raw(&scan_path);
+                    let _ = tx.send_blocking(entries);
+                });
 
-                viewer_c.clear();
-                filmstrip_c.refresh();
+                let filmstrip_rx = filmstrip_c.clone();
+                let viewer_rx = viewer_c.clone();
+                let sidebar_rx = sidebar_c.clone();
+                let state_rx = state_c.clone();
+                let suppress_search_restore_rx = suppress_search_restore_c.clone();
+                let path_rx = path.clone();
+                let window_weak_rx = window_weak.clone();
+                glib::MainContext::default().spawn_local(async move {
+                    let Ok(raw_entries) = rx.recv().await else {
+                        return;
+                    };
 
-                let thumb_total = state_c.borrow().library.image_count();
-                let thumb_op = if thumb_total > 0 {
-                    Some(
-                        state_c
+                    {
+                        let mut st = state_rx.borrow_mut();
+                        if st.library.current_folder.as_deref() != Some(path_rx.as_path()) {
+                            return;
+                        }
+
+                        for (index, raw) in raw_entries.into_iter().enumerate() {
+                            let entry = ImageEntry::new(raw.path.clone());
+                            entry.set_file_size(raw.file_size);
+                            entry.set_dimensions(raw.width, raw.height);
+                            st.library.store.append(&entry);
+                            st.library.path_to_index.insert(raw.path.clone(), index as u32);
+                            st.library.all_known_paths.insert(raw.path);
+                        }
+                    }
+
+                    sidebar_rx.select_folder(&path_rx);
+                    sidebar_rx.set_search_selected(false);
+                    sidebar_rx.set_duplicates_selected(false);
+                    sidebar_rx.set_tags_selected(false);
+                    sidebar_rx.set_quality_selected(None);
+
+                    viewer_rx.clear();
+                    filmstrip_rx.refresh();
+
+                    let thumb_total = state_rx.borrow().library.image_count();
+                    let thumb_op = if thumb_total > 0 {
+                        Some(
+                            state_rx
+                                .borrow()
+                                .ops
+                                .add(format!("Loading thumbnails ({thumb_total})")),
+                        )
+                    } else {
+                        None
+                    };
+
+                    if let Some(win) = window_weak_rx.upgrade() {
+                        if let Some(previous) = win.imp().thumbnail_op.borrow_mut().take() {
+                            previous.handle.complete();
+                        }
+                        if let Some(handle) = thumb_op {
+                            *win.imp().thumbnail_op.borrow_mut() = Some(ThumbnailOpState {
+                                total: thumb_total,
+                                received: 0,
+                                handle,
+                            });
+                        }
+                    }
+
+                    let target_index = {
+                        let st = state_rx.borrow();
+                        st.library
+                            .restore_index_for(&path_rx)
+                            .filter(|&idx| st.library.entry_at(idx).is_some())
+                            .or_else(|| st.library.entry_at(0).map(|_| 0))
+                    };
+
+                    if let Some(index) = target_index {
+                        state_rx.borrow_mut().library.selected_index = Some(index);
+                        filmstrip_rx.navigate_to(index);
+                        let path = state_rx
                             .borrow()
-                            .ops
-                            .add(format!("Loading thumbnails ({thumb_total})")),
-                    )
-                } else {
-                    None
-                };
-
-                if let Some(win) = window_weak.upgrade() {
-                    if let Some(previous) = win.imp().thumbnail_op.borrow_mut().take() {
-                        previous.handle.complete();
+                            .library
+                            .entry_at(index)
+                            .map(|e: ImageEntry| e.path());
+                        if let Some(path) = path {
+                            viewer_rx.load_image(path);
+                        }
                     }
-                    if let Some(handle) = thumb_op {
-                        *win.imp().thumbnail_op.borrow_mut() = Some(ThumbnailOpState {
-                            total: thumb_total,
-                            received: 0,
-                            handle,
-                        });
+
+                    if filmstrip_rx.is_search_active() {
+                        suppress_search_restore_rx.set(true);
+                        filmstrip_rx.deactivate_search();
                     }
-                }
-
-                let target_index = {
-                    let st = state_c.borrow();
-                    st.library
-                        .restore_index_for(&path)
-                        .filter(|&idx| st.library.entry_at(idx).is_some())
-                        .or_else(|| st.library.entry_at(0).map(|_| 0))
-                };
-
-                if let Some(index) = target_index {
-                    state_c.borrow_mut().library.selected_index = Some(index);
-                    filmstrip_c.navigate_to(index);
-                    // Extract path in a separate statement so the immutable borrow
-                    // is dropped before load_image calls borrow_mut() on the same RefCell.
-                    let path = state_c
-                        .borrow()
-                        .library
-                        .entry_at(index)
-                        .map(|e: ImageEntry| e.path());
-                    if let Some(path) = path {
-                        viewer_c.load_image(path);
-                    }
-                }
-
-                if filmstrip_c.is_search_active() {
-                    suppress_search_restore_c.set(true);
-                    filmstrip_c.deactivate_search();
-                }
+                });
             })
         };
 
@@ -417,7 +452,6 @@ impl SharprWindow {
                 let viewer_rx = viewer_c.clone();
                 let sidebar_rx = sidebar_c.clone();
                 let state_rx = state_c.clone();
-                let toast_overlay_rx = toast_overlay_c.clone();
                 let suppress_search_restore_rx = suppress_search_restore_c.clone();
                 glib::MainContext::default().spawn_local(async move {
                     let Ok(paths) = rx.recv().await else {
@@ -426,10 +460,7 @@ impl SharprWindow {
                     };
 
                     if paths.is_empty() {
-                        op.complete();
-                        toast_overlay_rx.add_toast(libadwaita::Toast::new(
-                            "No duplicate images detected in your library",
-                        ));
+                        op.fail("No duplicates found");
                         return;
                     }
 
