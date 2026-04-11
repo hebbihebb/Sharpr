@@ -1125,6 +1125,40 @@ impl SharprWindow {
             ));
         }
 
+        // Context-menu "Move to Trash" from filmstrip (duplicates mode).
+        {
+            let state_tr = state.clone();
+            let filmstrip_tr = filmstrip.clone();
+            let viewer_tr = viewer.clone();
+            filmstrip.connect_trash_requested(move |path| {
+                if gio::File::for_path(&path)
+                    .trash(None::<&gio::Cancellable>)
+                    .is_ok()
+                {
+                    if let Some(tags) = state_tr.borrow().tags.clone() {
+                        tags.remove_path(&path);
+                    }
+                    state_tr.borrow_mut().library.remove_path(&path);
+                    let new_count = state_tr.borrow().library.image_count();
+                    if new_count == 0 {
+                        viewer_tr.clear();
+                    } else {
+                        let index = state_tr.borrow().library.selected_index.unwrap_or(0);
+                        let new_index = index.min(new_count - 1);
+                        filmstrip_tr.navigate_to(new_index);
+                        let next_path = state_tr
+                            .borrow()
+                            .library
+                            .entry_at(new_index)
+                            .map(|e: ImageEntry| e.path());
+                        if let Some(p) = next_path {
+                            viewer_tr.load_image(p);
+                        }
+                    }
+                }
+            });
+        }
+
         // Ctrl+T — open the tag editor for the selected image.
         {
             let state_t = state.clone();

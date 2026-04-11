@@ -18,6 +18,7 @@ type ImageSelectedCallback = Box<dyn Fn(u32) + 'static>;
 type SearchChangedCallback = Box<dyn Fn(&str) + 'static>;
 type SearchActivateCallback = Box<dyn Fn(&str) + 'static>;
 type SearchDismissedCallback = Box<dyn Fn() + 'static>;
+type TrashRequestedCallback = Box<dyn Fn(std::path::PathBuf) + 'static>;
 
 const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
 const BUFFER_ROWS: u32 = 2000;
@@ -41,6 +42,7 @@ mod imp {
         pub search_changed_cb: RefCell<Option<SearchChangedCallback>>,
         pub search_activate_cb: RefCell<Option<SearchActivateCallback>>,
         pub search_dismissed_cb: RefCell<Option<SearchDismissedCallback>>,
+        pub trash_requested_cb: RefCell<Option<TrashRequestedCallback>>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub visible_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
         pub preload_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
@@ -78,6 +80,7 @@ mod imp {
                 search_changed_cb: RefCell::new(None),
                 search_activate_cb: RefCell::new(None),
                 search_dismissed_cb: RefCell::new(None),
+                trash_requested_cb: RefCell::new(None),
                 state: RefCell::new(None),
                 visible_thumbnail_tx: RefCell::new(None),
                 preload_thumbnail_tx: RefCell::new(None),
@@ -150,7 +153,8 @@ impl FilmstripPane {
 
         let factory = gtk4::SignalListItemFactory::new();
 
-        factory.connect_setup(|_, obj| {
+        let widget_weak_setup = self.downgrade();
+        factory.connect_setup(move |_, obj| {
             let list_item = obj
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("factory object must be ListItem");
@@ -211,6 +215,11 @@ impl FilmstripPane {
             reveal_button.set_halign(gtk4::Align::Fill);
             popover_box.append(&open_button);
             popover_box.append(&reveal_button);
+            let trash_button = gtk4::Button::with_label("Move to Trash");
+            trash_button.set_halign(gtk4::Align::Fill);
+            trash_button.add_css_class("destructive-action");
+            trash_button.set_visible(false);
+            popover_box.append(&trash_button);
             popover.set_child(Some(&popover_box));
 
             let gesture_right = gtk4::GestureClick::new();
@@ -240,6 +249,22 @@ impl FilmstripPane {
             });
 
             let list_item_weak = list_item.downgrade();
+            let widget_weak_trash = widget_weak_setup.clone();
+            trash_button.connect_clicked(move |_| {
+                let Some(list_item) = list_item_weak.upgrade() else {
+                    return;
+                };
+                let Some(widget) = widget_weak_trash.upgrade() else {
+                    return;
+                };
+                if let Some(path) = list_item_path(&list_item) {
+                    widget.emit_trash_requested(path);
+                }
+            });
+
+            let trash_button_weak = trash_button.downgrade();
+            let widget_weak_gesture = widget_weak_setup.clone();
+            let list_item_weak = list_item.downgrade();
             let popover_weak = popover.downgrade();
             gesture_right.connect_released(move |_, _, _, _| {
                 let Some(list_item) = list_item_weak.upgrade() else {
@@ -248,6 +273,20 @@ impl FilmstripPane {
                 if list_item.item().is_none() {
                     return;
                 }
+
+                if let (Some(widget), Some(btn)) =
+                    (widget_weak_gesture.upgrade(), trash_button_weak.upgrade())
+                {
+                    let is_virtual = widget
+                        .imp()
+                        .state
+                        .borrow()
+                        .as_ref()
+                        .map(|s| s.borrow().library.current_folder.is_none())
+                        .unwrap_or(false);
+                    btn.set_visible(is_virtual);
+                }
+
                 if let Some(popover) = popover_weak.upgrade() {
                     popover.popup();
                 }
@@ -720,6 +759,10 @@ impl FilmstripPane {
         *self.imp().search_dismissed_cb.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_trash_requested<F: Fn(std::path::PathBuf) + 'static>(&self, f: F) {
+        *self.imp().trash_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn show_autocomplete(&self, suggestions: Vec<String>) {
         let imp = self.imp();
         while let Some(child) = imp.suggestions_list.first_child() {
@@ -771,6 +814,12 @@ impl FilmstripPane {
     fn emit_search_dismissed(&self) {
         if let Some(cb) = self.imp().search_dismissed_cb.borrow().as_ref() {
             cb();
+        }
+    }
+
+    fn emit_trash_requested(&self, path: std::path::PathBuf) {
+        if let Some(cb) = self.imp().trash_requested_cb.borrow().as_ref() {
+            cb(path);
         }
     }
 }
