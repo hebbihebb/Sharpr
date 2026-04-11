@@ -1,12 +1,13 @@
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
+use libadwaita::prelude::*;
 
-use crate::quality::{scorer, QualityClass, QualityScore};
+use crate::quality::{scorer, QualityScore};
 use crate::tags::TagDatabase;
 use crate::ui::metadata_chip::MetadataChip;
 use crate::ui::window::AppState;
@@ -33,17 +34,16 @@ mod imp {
 
     pub struct ViewerPane {
         pub content_box: gtk4::Box,
-        pub quality_box: gtk4::Box,
-        pub quality_bar: gtk4::LevelBar,
-        pub quality_score_label: gtk4::Label,
-        pub quality_class_label: gtk4::Label,
-        pub quality_reason_label: gtk4::Label,
         /// Root stack: "view" = normal viewer, "compare" = before/after widget.
         pub stack: gtk4::Stack,
         pub overlay: gtk4::Overlay,
         pub scrolled_window: gtk4::ScrolledWindow,
         pub picture: gtk4::Picture,
         pub metadata_chip: MetadataChip,
+        pub tag_osd: gtk4::Box,
+        pub tag_label: gtk4::Label,
+        pub tag_button: gtk4::Button,
+        pub tag_add_button: gtk4::Button,
         pub spinner: gtk4::Spinner,
         /// OSD progress bar — shown during an upscale job, hidden otherwise.
         pub progress_bar: gtk4::ProgressBar,
@@ -88,47 +88,6 @@ mod imp {
         fn default() -> Self {
             let content_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
 
-            let quality_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-            quality_box.set_margin_top(8);
-            quality_box.set_margin_start(16);
-            quality_box.set_margin_end(16);
-            quality_box.set_margin_bottom(8);
-            quality_box.set_visible(false);
-
-            let quality_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-
-            let quality_score_label = gtk4::Label::new(Some("IQ: --"));
-            quality_score_label.add_css_class("heading");
-            quality_score_label.set_halign(gtk4::Align::Start);
-
-            let quality_class_label = gtk4::Label::new(None);
-            quality_class_label.add_css_class("caption");
-            quality_class_label.add_css_class("dim-label");
-            quality_class_label.set_halign(gtk4::Align::Start);
-
-            quality_header.append(&quality_score_label);
-            quality_header.append(&quality_class_label);
-
-            let quality_bar = gtk4::LevelBar::new();
-            quality_bar.set_min_value(0.0);
-            quality_bar.set_max_value(10.0);
-            quality_bar.set_mode(gtk4::LevelBarMode::Discrete);
-            quality_bar.add_offset_value("low", 3.0);
-            quality_bar.add_offset_value("high", 7.0);
-            quality_bar.add_offset_value("full", 8.5);
-            quality_bar.set_hexpand(true);
-            quality_bar.set_value(0.0);
-
-            let quality_reason_label = gtk4::Label::new(None);
-            quality_reason_label.add_css_class("caption");
-            quality_reason_label.add_css_class("dim-label");
-            quality_reason_label.set_halign(gtk4::Align::Start);
-            quality_reason_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-
-            quality_box.append(&quality_header);
-            quality_box.append(&quality_bar);
-            quality_box.append(&quality_reason_label);
-
             let picture = gtk4::Picture::new();
             picture.set_content_fit(gtk4::ContentFit::Contain);
             picture.set_can_shrink(true);
@@ -153,6 +112,36 @@ mod imp {
             metadata_chip.set_valign(gtk4::Align::End);
             metadata_chip.set_margin_end(16);
             metadata_chip.set_margin_bottom(16);
+
+            let tag_osd = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            tag_osd.add_css_class("osd");
+            tag_osd.add_css_class("tag-osd");
+            tag_osd.set_halign(gtk4::Align::Start);
+            tag_osd.set_valign(gtk4::Align::End);
+            tag_osd.set_margin_start(16);
+            tag_osd.set_margin_bottom(16);
+            tag_osd.set_visible(false);
+
+            let tag_button = gtk4::Button::new();
+            tag_button.add_css_class("flat");
+            tag_button.add_css_class("tag-osd-pill");
+            tag_button.set_focus_on_click(false);
+            tag_button.set_tooltip_text(Some("Edit tags"));
+
+            let tag_label = gtk4::Label::new(Some("Tags"));
+            tag_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            tag_label.set_max_width_chars(18);
+            tag_label.set_xalign(0.0);
+            tag_button.set_child(Some(&tag_label));
+
+            let tag_add_button = gtk4::Button::from_icon_name("list-add-symbolic");
+            tag_add_button.add_css_class("flat");
+            tag_add_button.add_css_class("tag-osd-add");
+            tag_add_button.set_focus_on_click(false);
+            tag_add_button.set_tooltip_text(Some("Add or edit tags"));
+
+            tag_osd.append(&tag_button);
+            tag_osd.append(&tag_add_button);
 
             let progress_bar = gtk4::ProgressBar::new();
             progress_bar.add_css_class("osd");
@@ -179,6 +168,7 @@ mod imp {
             let overlay = gtk4::Overlay::new();
             overlay.set_child(Some(&scrolled_window));
             overlay.add_overlay(&tag_anchor);
+            overlay.add_overlay(&tag_osd);
             overlay.add_overlay(&metadata_chip);
             overlay.add_overlay(&spinner);
             overlay.add_overlay(&progress_bar);
@@ -191,21 +181,19 @@ mod imp {
             stack.add_named(&overlay, Some("view"));
             stack.add_named(&comparison, Some("compare"));
 
-            content_box.append(&quality_box);
             content_box.append(&stack);
 
             Self {
                 content_box,
-                quality_box,
-                quality_bar,
-                quality_score_label,
-                quality_class_label,
-                quality_reason_label,
                 stack,
                 overlay,
                 scrolled_window,
                 picture,
                 metadata_chip,
+                tag_osd,
+                tag_label,
+                tag_button,
+                tag_add_button,
                 spinner,
                 progress_bar,
                 tag_anchor,
@@ -303,6 +291,7 @@ impl ViewerPane {
     fn build_ui(&self) {
         let imp = self.imp();
         imp.content_box.set_parent(self);
+        install_viewer_osd_css();
         self.build_tag_popover();
 
         let motion = gtk4::EventControllerMotion::new();
@@ -393,6 +382,20 @@ impl ViewerPane {
             glib::Propagation::Proceed
         });
         self.add_controller(scroll);
+
+        let viewer_weak = self.downgrade();
+        imp.tag_button.connect_clicked(move |_| {
+            if let Some(viewer) = viewer_weak.upgrade() {
+                viewer.open_tag_popover();
+            }
+        });
+
+        let viewer_weak = self.downgrade();
+        imp.tag_add_button.connect_clicked(move |_| {
+            if let Some(viewer) = viewer_weak.upgrade() {
+                viewer.open_tag_popover();
+            }
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -407,6 +410,7 @@ impl ViewerPane {
         self.restore_view_mode();
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
+        imp.tag_osd.set_visible(false);
         self.set_quality_score(None);
         imp.spinner.stop();
         imp.spinner.set_visible(false);
@@ -433,8 +437,10 @@ impl ViewerPane {
         self.restore_view_mode();
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
+        imp.tag_osd.set_visible(false);
         self.set_quality_score(None);
         *imp.current_rgba.borrow_mut() = None;
+        self.refresh_tag_summary();
 
         // ── Fastest path: use decoded bytes from the preview LRU cache. ────────
         let cached_preview = imp
@@ -467,8 +473,9 @@ impl ViewerPane {
                 if let Ok(meta) = meta_rx.recv().await {
                     if let Some(v) = widget_weak.upgrade() {
                         if v.imp().load_gen.get() == load_gen {
-                            v.imp().metadata_chip.update(&meta);
+                            v.imp().metadata_chip.update_metadata(&meta);
                             v.update_quality_indicator(&meta);
+                            v.refresh_tag_summary();
                         }
                     }
                 }
@@ -512,8 +519,9 @@ impl ViewerPane {
                 if let Ok(meta) = meta_rx.recv().await {
                     if let Some(v) = widget_weak.upgrade() {
                         if v.imp().load_gen.get() == load_gen {
-                            v.imp().metadata_chip.update(&meta);
+                            v.imp().metadata_chip.update_metadata(&meta);
                             v.update_quality_indicator(&meta);
+                            v.refresh_tag_summary();
                         }
                     }
                 }
@@ -549,8 +557,9 @@ impl ViewerPane {
                     if viewer.imp().load_gen.get() != load_gen {
                         return;
                     }
-                    viewer.imp().metadata_chip.update(&metadata);
+                    viewer.imp().metadata_chip.update_metadata(&metadata);
                     viewer.update_quality_indicator(&metadata);
+                    viewer.refresh_tag_summary();
                 }
             }
         });
@@ -712,7 +721,7 @@ impl ViewerPane {
     pub fn set_metadata_visible(&self, visible: bool) {
         let imp = self.imp();
         imp.metadata_visible.set(visible);
-        imp.metadata_chip.set_visible(visible);
+        imp.metadata_chip.set_enabled(visible);
     }
 
     fn update_quality_indicator(&self, metadata: &crate::metadata::ImageMetadata) {
@@ -722,41 +731,11 @@ impl ViewerPane {
     fn set_quality_score(&self, quality: Option<&QualityScore>) {
         let imp = self.imp();
         let Some(quality) = quality else {
-            imp.quality_box.set_visible(false);
-            imp.quality_bar.set_value(0.0);
-            imp.quality_bar.set_tooltip_text(None);
-            imp.quality_score_label.set_text("IQ: --");
-            imp.quality_class_label.set_text("");
-            imp.quality_reason_label.set_text("");
-            for class_name in ["success", "warning", "error"] {
-                imp.quality_class_label.remove_css_class(class_name);
-            }
+            imp.metadata_chip.update_quality(None);
             return;
         };
 
-        imp.quality_box.set_visible(true);
-        imp.quality_bar
-            .set_value(((quality.score as f64) / 10.0).clamp(0.0, 10.0));
-        imp.quality_bar.set_tooltip_text(Some(&quality.tooltip()));
-        imp.quality_score_label
-            .set_text(&format!("IQ: {}%", quality.score));
-        imp.quality_class_label.set_text(quality.class.label());
-        imp.quality_reason_label.set_text(&quality.reason);
-
-        for class_name in ["success", "warning", "error"] {
-            imp.quality_class_label.remove_css_class(class_name);
-        }
-        match quality.class {
-            QualityClass::Excellent | QualityClass::Good => {
-                imp.quality_class_label.add_css_class("success");
-            }
-            QualityClass::Fair => {
-                imp.quality_class_label.add_css_class("warning");
-            }
-            QualityClass::Poor | QualityClass::NeedsUpscale => {
-                imp.quality_class_label.add_css_class("error");
-            }
-        }
+        imp.metadata_chip.update_quality(Some(quality));
     }
 
     pub fn zoom_mode(&self) -> ZoomMode {
@@ -922,6 +901,7 @@ impl ViewerPane {
 
         imp.tag_entry.set_text("");
         self.refresh_tag_chips();
+        self.refresh_tag_summary();
         imp.tag_popover.popup();
     }
 
@@ -997,6 +977,7 @@ impl ViewerPane {
             entry.set_text("");
             drop(state);
             viewer.refresh_tag_chips();
+            viewer.refresh_tag_summary();
         });
     }
 
@@ -1041,8 +1022,46 @@ impl ViewerPane {
                 db.remove_tag(&path, &tag_name);
                 drop(state);
                 viewer.refresh_tag_chips();
+                viewer.refresh_tag_summary();
             });
         }
+    }
+
+    fn refresh_tag_summary(&self) {
+        let imp = self.imp();
+        let path = match imp.current_path.borrow().clone() {
+            Some(path) => path,
+            None => {
+                imp.tag_osd.set_visible(false);
+                return;
+            }
+        };
+
+        let db = imp
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|state| state.borrow().tags.clone());
+        let Some(db) = db else {
+            imp.tag_osd.set_visible(false);
+            return;
+        };
+
+        let tags = db.tags_for_path(&path);
+        let summary = match tags.len() {
+            0 => "Add tag".to_string(),
+            1..=3 => tags.join(" · "),
+            _ => format!("{} +{}", tags[..3].join(" · "), tags.len() - 3),
+        };
+        let tooltip = if tags.is_empty() {
+            "Add tags".to_string()
+        } else {
+            format!("Tags: {}", tags.join(", "))
+        };
+
+        imp.tag_label.set_text(&summary);
+        imp.tag_button.set_tooltip_text(Some(&tooltip));
+        imp.tag_osd.set_visible(true);
     }
 
     fn pan_drag(&self, offset_x: f64, offset_y: f64) {
@@ -1075,49 +1094,71 @@ impl ViewerPane {
     ) {
         use crate::model::ImageEntry;
         use crate::upscale::runner::{UpscaleEvent, UpscaleRunner};
+        use crate::upscale::{UpscaleCompressionMode, UpscaleJobConfig, UpscaleOutputFormat};
 
         let imp = self.imp();
 
-        let binary = {
+        let (binary, settings, mut selected_dims) = {
             let st = imp.state.borrow();
             let Some(ref rc) = *st else {
                 trigger_btn.set_sensitive(true);
                 return;
             };
             let state = rc.borrow();
-            state.upscale_binary.clone()
+            (
+                state.upscale_binary.clone(),
+                state.settings.clone(),
+                state
+                    .library
+                    .selected_entry()
+                    .and_then(|e: ImageEntry| e.dimensions())
+                    .unwrap_or((0, 0)),
+            )
         };
         let Some(binary) = binary else {
             trigger_btn.set_sensitive(true);
             return;
         };
+        if selected_dims == (0, 0) {
+            let meta = crate::metadata::ImageMetadata::load(&path);
+            if meta.width > 0 && meta.height > 0 {
+                selected_dims = (meta.width, meta.height);
+            }
+        }
 
-        let scale = {
+        let requested_scale = {
             if scale == 0 {
-                let st = imp.state.borrow();
-                let Some(ref rc) = *st else { return };
-                let (w, h) = rc
-                    .borrow()
-                    .library
-                    .selected_entry()
-                    .and_then(|e: ImageEntry| e.dimensions())
-                    .unwrap_or((0, 0));
+                let (w, h) = selected_dims;
                 UpscaleRunner::smart_scale(w, h)
             } else {
                 scale
             }
         };
-
-        let final_output = {
-            let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-            let name = path.file_name().unwrap_or_default();
-            parent.join("upscaled").join(name)
+        let output_format = UpscaleRunner::select_output_format(
+            &path,
+            UpscaleOutputFormat::from_settings(&settings.upscaler_output_format),
+            UpscaleCompressionMode::from_settings(&settings.upscaler_compression_mode),
+        );
+        let final_output = output_path_for_upscale(&path, output_format);
+        let job = UpscaleJobConfig {
+            source_dimensions: selected_dims,
+            requested_scale,
+            execution_scale: model.native_scale(),
+            model,
+            output_format,
+            compression_mode: UpscaleCompressionMode::from_settings(
+                &settings.upscaler_compression_mode,
+            ),
+            quality: settings.upscaler_quality.clamp(50, 100) as u8,
+            tile_size: (settings.upscaler_tile_size > 0).then_some(settings.upscaler_tile_size as u32),
+            gpu_id: (settings.upscaler_gpu_id >= 0).then_some(settings.upscaler_gpu_id as u32),
         };
+
         let rx = if let Some(dir) = final_output.parent() {
             match std::fs::create_dir_all(dir) {
                 Ok(()) => {
                     let output = pending_output_path(&final_output);
-                    UpscaleRunner::run(&binary, &path, &output, scale, model)
+                    UpscaleRunner::run(&binary, &path, &output, job)
                 }
                 Err(err) => {
                     let (tx, rx) = async_channel::bounded(1);
@@ -1130,7 +1171,7 @@ impl ViewerPane {
             }
         } else {
             let output = pending_output_path(&final_output);
-            UpscaleRunner::run(&binary, &path, &output, scale, model)
+            UpscaleRunner::run(&binary, &path, &output, job)
         };
 
         imp.progress_bar.set_fraction(0.0);
@@ -1155,15 +1196,25 @@ impl ViewerPane {
                         vimp.progress_bar.pulse();
                     }
                     UpscaleEvent::Done(out_path) => {
-                        vimp.progress_bar.set_visible(false);
                         trigger_btn.set_sensitive(true);
+                        vimp.progress_bar.pulse();
                         viewer.show_comparison(path.clone(), out_path);
                         break;
                     }
                     UpscaleEvent::Failed(msg) => {
                         vimp.progress_bar.set_visible(false);
-                        eprintln!("Upscale failed: {msg}");
                         trigger_btn.set_sensitive(true);
+                        let dialog = libadwaita::AlertDialog::new(
+                            Some("Upscale Failed"),
+                            Some(&msg),
+                        );
+                        dialog.add_response("ok", "OK");
+                        if let Some(root) = viewer.root() {
+                            if let Ok(window) = root.downcast::<gtk4::Window>() {
+                                dialog.present(Some(&window));
+                            }
+                        }
+                        eprintln!("Upscale failed: {msg}");
                         break;
                     }
                 }
@@ -1171,14 +1222,57 @@ impl ViewerPane {
         });
     }
 
+    /// Load both images into the comparison widget and switch the stack to the
+    /// "compare" page. `show_actions` controls whether Save/Discard are shown.
+    fn show_comparison_with_actions(
+        &self,
+        before_path: PathBuf,
+        after_path: PathBuf,
+        show_actions: bool,
+    ) {
+        let imp = self.imp();
+        imp.comparison.reset_zoom();
+        *imp.pending_output.borrow_mut() = show_actions.then_some(after_path.clone());
+        imp.stack.set_visible_child_name("compare");
+        let viewer_weak = self.downgrade();
+        imp.comparison.load(before_path, after_path, move || {
+            let Some(viewer) = viewer_weak.upgrade() else {
+                return;
+            };
+            let imp = viewer.imp();
+            imp.progress_bar.set_visible(false);
+            viewer.set_comparison_buttons_visible(show_actions);
+            imp.stack.set_visible_child_name("compare");
+        });
+    }
+
     /// Load both images into the comparison widget, show Commit/Discard, and
     /// switch the stack to the "compare" page.
     fn show_comparison(&self, before_path: PathBuf, after_path: PathBuf) {
+        self.show_comparison_with_actions(before_path, after_path, true);
+    }
+
+    pub fn toggle_debug_comparison(&self) {
         let imp = self.imp();
-        *imp.pending_output.borrow_mut() = Some(after_path.clone());
-        imp.comparison.load(before_path, after_path);
-        self.set_comparison_buttons_visible(true);
-        imp.stack.set_visible_child_name("compare");
+        if imp.stack.visible_child_name().as_deref() == Some("compare")
+            && imp.pending_output.borrow().is_none()
+        {
+            self.restore_view_mode();
+            return;
+        }
+
+        let path = imp.current_path.borrow().clone().or_else(|| {
+            imp.state
+                .borrow()
+                .as_ref()
+                .and_then(|state| state.borrow().library.selected_entry().map(|entry| entry.path()))
+        });
+
+        let Some(path) = path else {
+            return;
+        };
+
+        self.show_comparison_with_actions(path.clone(), path, false);
     }
 
     /// Commit: load the upscaled output into the viewer and return to the
@@ -1342,6 +1436,22 @@ fn choose_jpeg_scale_factor(
     turbojpeg::ScalingFactor::ONE
 }
 
+fn output_path_for_upscale(
+    input_path: &std::path::Path,
+    format: crate::upscale::UpscaleOutputFormat,
+) -> PathBuf {
+    let parent = input_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let stem = input_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("upscaled");
+    parent
+        .join("upscaled")
+        .join(format!("{stem}.{}", format.extension()))
+}
+
 fn pending_output_path(final_output: &std::path::Path) -> PathBuf {
     let stem = final_output
         .file_stem()
@@ -1373,4 +1483,46 @@ fn committed_output_path(pending_output: &std::path::Path) -> PathBuf {
         None => name.to_owned(),
     };
     pending_output.with_file_name(trimmed)
+}
+
+fn install_viewer_osd_css() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let provider = gtk4::CssProvider::new();
+        provider.load_from_string(
+            "
+            .tag-osd {
+                padding: 8px 10px;
+                border-radius: 16px;
+                background-color: rgba(28, 28, 30, 0.72);
+                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+            }
+            .tag-osd-pill,
+            .tag-osd-add {
+                border-radius: 999px;
+                min-height: 28px;
+                background-color: rgba(255, 255, 255, 0.08);
+                color: white;
+            }
+            .tag-osd-pill {
+                padding: 0 10px;
+            }
+            .tag-osd-pill:hover,
+            .tag-osd-add:hover {
+                background-color: rgba(255, 255, 255, 0.14);
+            }
+            .tag-osd-add {
+                min-width: 28px;
+                padding: 0;
+            }
+            ",
+        );
+        if let Some(display) = gdk4::Display::default() {
+            gtk4::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+    });
 }

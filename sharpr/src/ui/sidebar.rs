@@ -180,7 +180,7 @@ impl SidebarPane {
 
         let scroll = gtk4::ScrolledWindow::new();
         scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-        scroll.set_vexpand(true);
+        scroll.set_propagate_natural_height(true);
         scroll.set_child(Some(&imp.list_box));
 
         let smart_label = section_label("Smart Folders");
@@ -282,12 +282,12 @@ impl SidebarPane {
         });
 
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        vbox.append(&folders_label);
+        vbox.append(&scroll);
         vbox.append(&smart_label);
         vbox.append(&imp.smart_list);
         vbox.append(&quality_label);
         vbox.append(&imp.quality_list);
-        vbox.append(&folders_label);
-        vbox.append(&scroll);
 
         imp.toolbar_view.set_content(Some(&vbox));
         imp.toolbar_view.set_parent(self);

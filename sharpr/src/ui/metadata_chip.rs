@@ -1,10 +1,13 @@
+use std::sync::Once;
+
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
 use crate::metadata::ImageMetadata;
+use crate::quality::QualityScore;
 
 // ---------------------------------------------------------------------------
-// MetadataChip — floating overlay at the bottom-right of the viewer
+// MetadataChip — compact bottom-right OSD chip for metadata + quality
 // ---------------------------------------------------------------------------
 
 mod imp {
@@ -12,72 +15,83 @@ mod imp {
 
     pub struct MetadataChip {
         pub card: gtk4::Box,
-        pub filename_label: gtk4::Label,
-        pub dims_label: gtk4::Label,
-        pub size_label: gtk4::Label,
-        pub camera_label: gtk4::Label,
-        pub exif_label: gtk4::Label,
-        pub lens_label: gtk4::Label,
+        pub metadata_label: gtk4::Label,
+        pub quality_row: gtk4::Box,
+        pub quality_score_label: gtk4::Label,
+        pub quality_class_label: gtk4::Label,
+        pub quality_segments: [gtk4::Box; 5],
+        pub enabled: std::cell::Cell<bool>,
+        pub has_metadata: std::cell::Cell<bool>,
+        pub has_quality: std::cell::Cell<bool>,
     }
 
     impl Default for MetadataChip {
         fn default() -> Self {
-            // Outer box with a card-style frame
-            let card = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-            card.add_css_class("card");
+            let card = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+            card.add_css_class("osd");
+            card.add_css_class("metadata-osd");
+            card.set_valign(gtk4::Align::End);
             card.set_margin_top(12);
             card.set_margin_bottom(12);
             card.set_margin_start(12);
             card.set_margin_end(12);
+            card.set_visible(false);
 
-            let filename_label = gtk4::Label::new(None);
-            filename_label.set_halign(gtk4::Align::Start);
-            filename_label.add_css_class("caption-heading");
-            filename_label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
-            filename_label.set_max_width_chars(30);
+            let metadata_label = gtk4::Label::new(None);
+            metadata_label.set_halign(gtk4::Align::Start);
+            metadata_label.set_xalign(0.0);
+            metadata_label.add_css_class("caption");
+            metadata_label.add_css_class("metadata-osd-meta");
+            metadata_label.set_wrap(false);
+            metadata_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            metadata_label.set_max_width_chars(36);
 
-            let dims_label = gtk4::Label::new(None);
-            dims_label.set_halign(gtk4::Align::Start);
-            dims_label.add_css_class("caption");
-            dims_label.add_css_class("dim-label");
+            let quality_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            quality_row.set_halign(gtk4::Align::Start);
+            quality_row.add_css_class("metadata-osd-quality-row");
 
-            let size_label = gtk4::Label::new(None);
-            size_label.set_halign(gtk4::Align::Start);
-            size_label.add_css_class("caption");
-            size_label.add_css_class("dim-label");
+            let quality_score_label = gtk4::Label::new(Some("IQ --"));
+            quality_score_label.set_halign(gtk4::Align::Start);
+            quality_score_label.set_xalign(0.0);
+            quality_score_label.add_css_class("metadata-osd-quality-score");
 
-            let camera_label = gtk4::Label::new(None);
-            camera_label.set_halign(gtk4::Align::Start);
-            camera_label.add_css_class("caption");
-            camera_label.add_css_class("dim-label");
+            let separator = gtk4::Label::new(Some("·"));
+            separator.add_css_class("metadata-osd-dot");
 
-            let exif_label = gtk4::Label::new(None);
-            exif_label.set_halign(gtk4::Align::Start);
-            exif_label.add_css_class("caption");
-            exif_label.add_css_class("dim-label");
+            let quality_class_label = gtk4::Label::new(None);
+            quality_class_label.set_halign(gtk4::Align::Start);
+            quality_class_label.set_xalign(0.0);
+            quality_class_label.add_css_class("metadata-osd-quality-class");
 
-            let lens_label = gtk4::Label::new(None);
-            lens_label.set_halign(gtk4::Align::Start);
-            lens_label.add_css_class("caption");
-            lens_label.add_css_class("dim-label");
-            lens_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-            lens_label.set_max_width_chars(36);
+            let segment_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 3);
+            segment_row.add_css_class("metadata-osd-segments");
+            let quality_segments = std::array::from_fn(|_| {
+                let segment = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+                segment.add_css_class("metadata-osd-segment");
+                segment
+            });
+            for segment in &quality_segments {
+                segment_row.append(segment);
+            }
 
-            card.append(&filename_label);
-            card.append(&dims_label);
-            card.append(&size_label);
-            card.append(&camera_label);
-            card.append(&exif_label);
-            card.append(&lens_label);
+            quality_row.append(&quality_score_label);
+            quality_row.append(&separator);
+            quality_row.append(&quality_class_label);
+            quality_row.append(&segment_row);
+
+            card.append(&metadata_label);
+            card.append(&quality_row);
 
             Self {
                 card,
-                filename_label,
-                dims_label,
-                size_label,
-                camera_label,
-                exif_label,
-                lens_label,
+                metadata_label,
+                quality_row,
+                quality_score_label,
+                quality_class_label,
+                quality_segments,
+                enabled: std::cell::Cell::new(true),
+                has_metadata: std::cell::Cell::new(false),
+                has_quality: std::cell::Cell::new(false),
             }
         }
     }
@@ -109,66 +123,115 @@ glib::wrapper! {
 
 impl MetadataChip {
     pub fn new() -> Self {
+        install_css();
         let widget: Self = glib::Object::new();
         widget.imp().card.set_parent(&widget);
         widget
     }
 
-    /// Populate the chip with data from an `ImageMetadata` snapshot.
-    pub fn update(&self, meta: &ImageMetadata) {
+    pub fn update_metadata(&self, meta: &ImageMetadata) {
         let imp = self.imp();
-
-        imp.filename_label.set_text(&meta.filename);
-
-        // Dimensions + megapixels.
-        let dims_text = match meta.dimensions_display() {
-            Some(d) => match meta.megapixels_display() {
-                Some(mp) => format!("{} ({}) • {}", d, mp, meta.format),
-                None => format!("{} • {}", d, meta.format),
-            },
-            None => meta.format.clone(),
-        };
-        imp.dims_label.set_text(&dims_text);
-        imp.dims_label.set_visible(!dims_text.is_empty());
-
-        // File size.
-        imp.size_label.set_text(&meta.file_size_display());
-        imp.size_label.set_visible(meta.file_size_bytes > 0);
-
-        // Camera model.
-        if let Some(ref cam) = meta.camera {
-            imp.camera_label.set_text(cam);
-            imp.camera_label.set_visible(true);
-        } else {
-            imp.camera_label.set_text("");
-            imp.camera_label.set_visible(false);
+        let mut parts = Vec::new();
+        if let Some(dimensions) = meta.dimensions_display() {
+            parts.push(dimensions.replace(" × ", "×"));
+        }
+        if !meta.format.is_empty() {
+            parts.push(meta.format.clone());
+        }
+        let size = meta.file_size_display();
+        if !size.is_empty() {
+            parts.push(size);
         }
 
-        let exif_text = build_exif_text(meta);
-        imp.exif_label.set_text(&exif_text);
-        imp.exif_label.set_visible(!exif_text.is_empty());
+        let metadata_text = parts.join(" · ");
+        imp.metadata_label.set_text(&metadata_text);
+        let has_metadata = !metadata_text.is_empty();
+        imp.has_metadata.set(has_metadata);
+        imp.metadata_label.set_visible(has_metadata);
+        self.sync_visibility();
+    }
 
-        let lens_text = build_lens_text(meta);
-        imp.lens_label.set_text(&lens_text);
-        imp.lens_label.set_visible(!lens_text.is_empty());
+    pub fn set_enabled(&self, enabled: bool) {
+        self.imp().enabled.set(enabled);
+        self.sync_visibility();
+    }
 
-        self.set_visible(true);
+    pub fn update_quality(&self, quality: Option<&QualityScore>) {
+        let imp = self.imp();
+        let Some(quality) = quality else {
+            imp.has_quality.set(false);
+            imp.quality_score_label.set_text("IQ --");
+            imp.quality_class_label.set_text("");
+            imp.quality_row.set_visible(false);
+            for class_name in ["success", "warning", "error"] {
+                imp.quality_class_label.remove_css_class(class_name);
+            }
+            for segment in &imp.quality_segments {
+                segment.remove_css_class("active");
+            }
+            self.sync_visibility();
+            return;
+        };
+
+        imp.has_quality.set(true);
+        imp.quality_score_label
+            .set_text(&format!("IQ {}%", quality.score));
+        imp.quality_class_label.set_text(quality.class.label());
+        imp.quality_class_label
+            .set_tooltip_text(Some(&quality.tooltip()));
+        imp.quality_row.set_visible(true);
+
+        for class_name in ["success", "warning", "error"] {
+            imp.quality_class_label.remove_css_class(class_name);
+        }
+        match quality.class {
+            crate::quality::QualityClass::Excellent | crate::quality::QualityClass::Good => {
+                imp.quality_class_label.add_css_class("success");
+            }
+            crate::quality::QualityClass::Fair => {
+                imp.quality_class_label.add_css_class("warning");
+            }
+            crate::quality::QualityClass::Poor | crate::quality::QualityClass::NeedsUpscale => {
+                imp.quality_class_label.add_css_class("error");
+            }
+        }
+
+        let active_segments = ((quality.score as usize) + 19) / 20;
+        for (index, segment) in imp.quality_segments.iter().enumerate() {
+            if index < active_segments {
+                segment.add_css_class("active");
+            } else {
+                segment.remove_css_class("active");
+            }
+        }
+        self.sync_visibility();
     }
 
     /// Hide and clear all labels (e.g. before a new image loads).
     pub fn clear(&self) {
         let imp = self.imp();
-        for label in [
-            &imp.filename_label,
-            &imp.dims_label,
-            &imp.size_label,
-            &imp.camera_label,
-            &imp.exif_label,
-            &imp.lens_label,
-        ] {
-            label.set_text("");
-            label.set_visible(false);
+        imp.metadata_label.set_text("");
+        imp.has_metadata.set(false);
+        imp.metadata_label.set_visible(false);
+        imp.quality_score_label.set_text("IQ --");
+        imp.quality_class_label.set_text("");
+        imp.quality_class_label.set_tooltip_text(None);
+        imp.has_quality.set(false);
+        imp.quality_row.set_visible(false);
+        for class_name in ["success", "warning", "error"] {
+            imp.quality_class_label.remove_css_class(class_name);
         }
+        for segment in &imp.quality_segments {
+            segment.remove_css_class("active");
+        }
+        imp.card.set_visible(false);
+    }
+
+    fn sync_visibility(&self) {
+        let imp = self.imp();
+        let has_content = imp.has_metadata.get() || imp.has_quality.get();
+        let visible = imp.enabled.get() && has_content;
+        imp.card.set_visible(visible);
     }
 }
 
@@ -178,30 +241,53 @@ impl Default for MetadataChip {
     }
 }
 
-fn build_exif_text(meta: &ImageMetadata) -> String {
-    let mut parts = Vec::new();
-    if let Some(ref iso) = meta.iso {
-        parts.push(format!("ISO {}", iso));
-    }
-    if let Some(ref ss) = meta.shutter_speed {
-        parts.push(format!("{}s", ss));
-    }
-    if let Some(ref ap) = meta.aperture {
-        parts.push(ap.clone());
-    }
-    if let Some(ref fl) = meta.focal_length {
-        parts.push(fl.clone());
-    }
-    parts.join(" · ")
-}
-
-fn build_lens_text(meta: &ImageMetadata) -> String {
-    let mut parts = Vec::new();
-    if let Some(ref lens) = meta.lens {
-        parts.push(lens.clone());
-    }
-    if let Some(ref cs) = meta.color_space {
-        parts.push(cs.clone());
-    }
-    parts.join(" · ")
+fn install_css() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let provider = gtk4::CssProvider::new();
+        provider.load_from_string(
+            "
+            .metadata-osd {
+                padding: 10px 12px 8px 12px;
+                border-radius: 16px;
+                background-color: rgba(28, 28, 30, 0.72);
+                color: white;
+                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+            }
+            .metadata-osd-meta {
+                color: rgba(255, 255, 255, 0.78);
+                font-size: 0.92em;
+            }
+            .metadata-osd-quality-row {
+                margin-top: 1px;
+            }
+            .metadata-osd-quality-score,
+            .metadata-osd-quality-class {
+                font-weight: 600;
+            }
+            .metadata-osd-dot {
+                color: rgba(255, 255, 255, 0.62);
+            }
+            .metadata-osd-segments {
+                margin-left: 4px;
+            }
+            .metadata-osd-segment {
+                min-width: 11px;
+                min-height: 6px;
+                border-radius: 999px;
+                background-color: rgba(255, 255, 255, 0.20);
+            }
+            .metadata-osd-segment.active {
+                background-color: rgba(255, 255, 255, 0.90);
+            }
+            ",
+        );
+        if let Some(display) = gdk4::Display::default() {
+            gtk4::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+    });
 }
