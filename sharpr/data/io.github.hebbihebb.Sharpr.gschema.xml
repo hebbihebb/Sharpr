@@ -18,13 +18,38 @@
     </key>
     <key name="upscaler-binary-path" type="s">
       <default>""</default>
-      <summary>Custom realesrgan-ncnn-vulkan binary path</summary>
-      <description>Override the auto-detected binary location.</description>
+      <summary>Custom Vulkan upscaler binary path</summary>
+      <description>Override the auto-detected backend binary location.</description>
     </key>
     <key name="upscaler-default-model" type="s">
       <default>"standard"</default>
       <summary>Default upscale model</summary>
       <description>Either "standard" or "anime".</description>
+    </key>
+    <key name="upscaler-output-format" type="s">
+      <default>"auto"</default>
+      <summary>Upscaler output format</summary>
+      <description>One of "auto", "jpeg", "png", or "webp".</description>
+    </key>
+    <key name="upscaler-compression-mode" type="s">
+      <default>"auto"</default>
+      <summary>Upscaler compression mode</summary>
+      <description>One of "auto", "lossy", or "lossless".</description>
+    </key>
+    <key name="upscaler-quality" type="i">
+      <default>90</default>
+      <summary>Upscaler lossy quality</summary>
+      <description>Lossy encoder quality target used for JPEG output.</description>
+    </key>
+    <key name="upscaler-tile-size" type="i">
+      <default>0</default>
+      <summary>Upscaler tile size</summary>
+      <description>Tile size passed to the Vulkan backend; 0 means auto.</description>
+    </key>
+    <key name="upscaler-gpu-id" type="i">
+      <default>-1</default>
+      <summary>Upscaler GPU ID</summary>
+      <description>GPU device passed to the Vulkan backend; -1 means auto.</description>
     </key>
     <key name="thumbnail-cache-max" type="i">
       <default>500</default>

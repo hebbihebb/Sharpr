@@ -5,6 +5,7 @@ use std::sync::{Arc, Once};
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
+use libadwaita::prelude::*;
 
 use crate::quality::{scorer, QualityScore};
 use crate::tags::TagDatabase;
@@ -1093,49 +1094,71 @@ impl ViewerPane {
     ) {
         use crate::model::ImageEntry;
         use crate::upscale::runner::{UpscaleEvent, UpscaleRunner};
+        use crate::upscale::{UpscaleCompressionMode, UpscaleJobConfig, UpscaleOutputFormat};
 
         let imp = self.imp();
 
-        let binary = {
+        let (binary, settings, mut selected_dims) = {
             let st = imp.state.borrow();
             let Some(ref rc) = *st else {
                 trigger_btn.set_sensitive(true);
                 return;
             };
             let state = rc.borrow();
-            state.upscale_binary.clone()
+            (
+                state.upscale_binary.clone(),
+                state.settings.clone(),
+                state
+                    .library
+                    .selected_entry()
+                    .and_then(|e: ImageEntry| e.dimensions())
+                    .unwrap_or((0, 0)),
+            )
         };
         let Some(binary) = binary else {
             trigger_btn.set_sensitive(true);
             return;
         };
+        if selected_dims == (0, 0) {
+            let meta = crate::metadata::ImageMetadata::load(&path);
+            if meta.width > 0 && meta.height > 0 {
+                selected_dims = (meta.width, meta.height);
+            }
+        }
 
-        let scale = {
+        let requested_scale = {
             if scale == 0 {
-                let st = imp.state.borrow();
-                let Some(ref rc) = *st else { return };
-                let (w, h) = rc
-                    .borrow()
-                    .library
-                    .selected_entry()
-                    .and_then(|e: ImageEntry| e.dimensions())
-                    .unwrap_or((0, 0));
+                let (w, h) = selected_dims;
                 UpscaleRunner::smart_scale(w, h)
             } else {
                 scale
             }
         };
-
-        let final_output = {
-            let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-            let name = path.file_name().unwrap_or_default();
-            parent.join("upscaled").join(name)
+        let output_format = UpscaleRunner::select_output_format(
+            &path,
+            UpscaleOutputFormat::from_settings(&settings.upscaler_output_format),
+            UpscaleCompressionMode::from_settings(&settings.upscaler_compression_mode),
+        );
+        let final_output = output_path_for_upscale(&path, output_format);
+        let job = UpscaleJobConfig {
+            source_dimensions: selected_dims,
+            requested_scale,
+            execution_scale: model.native_scale(),
+            model,
+            output_format,
+            compression_mode: UpscaleCompressionMode::from_settings(
+                &settings.upscaler_compression_mode,
+            ),
+            quality: settings.upscaler_quality.clamp(50, 100) as u8,
+            tile_size: (settings.upscaler_tile_size > 0).then_some(settings.upscaler_tile_size as u32),
+            gpu_id: (settings.upscaler_gpu_id >= 0).then_some(settings.upscaler_gpu_id as u32),
         };
+
         let rx = if let Some(dir) = final_output.parent() {
             match std::fs::create_dir_all(dir) {
                 Ok(()) => {
                     let output = pending_output_path(&final_output);
-                    UpscaleRunner::run(&binary, &path, &output, scale, model)
+                    UpscaleRunner::run(&binary, &path, &output, job)
                 }
                 Err(err) => {
                     let (tx, rx) = async_channel::bounded(1);
@@ -1148,7 +1171,7 @@ impl ViewerPane {
             }
         } else {
             let output = pending_output_path(&final_output);
-            UpscaleRunner::run(&binary, &path, &output, scale, model)
+            UpscaleRunner::run(&binary, &path, &output, job)
         };
 
         imp.progress_bar.set_fraction(0.0);
@@ -1173,15 +1196,25 @@ impl ViewerPane {
                         vimp.progress_bar.pulse();
                     }
                     UpscaleEvent::Done(out_path) => {
-                        vimp.progress_bar.set_visible(false);
                         trigger_btn.set_sensitive(true);
+                        vimp.progress_bar.pulse();
                         viewer.show_comparison(path.clone(), out_path);
                         break;
                     }
                     UpscaleEvent::Failed(msg) => {
                         vimp.progress_bar.set_visible(false);
-                        eprintln!("Upscale failed: {msg}");
                         trigger_btn.set_sensitive(true);
+                        let dialog = libadwaita::AlertDialog::new(
+                            Some("Upscale Failed"),
+                            Some(&msg),
+                        );
+                        dialog.add_response("ok", "OK");
+                        if let Some(root) = viewer.root() {
+                            if let Ok(window) = root.downcast::<gtk4::Window>() {
+                                dialog.present(Some(&window));
+                            }
+                        }
+                        eprintln!("Upscale failed: {msg}");
                         break;
                     }
                 }
@@ -1194,9 +1227,16 @@ impl ViewerPane {
     fn show_comparison(&self, before_path: PathBuf, after_path: PathBuf) {
         let imp = self.imp();
         *imp.pending_output.borrow_mut() = Some(after_path.clone());
-        imp.comparison.load(before_path, after_path);
-        self.set_comparison_buttons_visible(true);
-        imp.stack.set_visible_child_name("compare");
+        let viewer_weak = self.downgrade();
+        imp.comparison.load(before_path, after_path, move || {
+            let Some(viewer) = viewer_weak.upgrade() else {
+                return;
+            };
+            let imp = viewer.imp();
+            imp.progress_bar.set_visible(false);
+            viewer.set_comparison_buttons_visible(true);
+            imp.stack.set_visible_child_name("compare");
+        });
     }
 
     /// Commit: load the upscaled output into the viewer and return to the
@@ -1358,6 +1398,22 @@ fn choose_jpeg_scale_factor(
     }
 
     turbojpeg::ScalingFactor::ONE
+}
+
+fn output_path_for_upscale(
+    input_path: &std::path::Path,
+    format: crate::upscale::UpscaleOutputFormat,
+) -> PathBuf {
+    let parent = input_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let stem = input_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("upscaled");
+    parent
+        .join("upscaled")
+        .join(format!("{stem}.{}", format.extension()))
 }
 
 fn pending_output_path(final_output: &std::path::Path) -> PathBuf {

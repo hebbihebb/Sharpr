@@ -110,13 +110,20 @@ impl BeforeAfterViewer {
     }
 
     /// Load before/after images from disk, decoding on background threads.
-    pub fn load(&self, before_path: PathBuf, after_path: PathBuf) {
+    /// Calls `on_ready` on the main thread once both textures are attached.
+    pub fn load<F>(&self, before_path: PathBuf, after_path: PathBuf, on_ready: F)
+    where
+        F: FnOnce() + 'static,
+    {
         let imp = self.imp();
         let load_gen = imp.load_gen.get().wrapping_add(1);
         imp.load_gen.set(load_gen);
         *imp.before_texture.borrow_mut() = None;
         *imp.after_texture.borrow_mut() = None;
         self.queue_draw();
+        let on_ready = std::rc::Rc::new(std::cell::RefCell::new(Some(
+            Box::new(on_ready) as Box<dyn FnOnce()>
+        )));
 
         let (tx, rx) = async_channel::bounded::<(bool, Option<(Vec<u8>, i32, i32)>)>(2);
 
@@ -162,6 +169,9 @@ impl BeforeAfterViewer {
                 count += 1;
                 if count == 2 {
                     w.queue_draw();
+                    if let Some(cb) = on_ready.borrow_mut().take() {
+                        cb();
+                    }
                     break;
                 }
             }

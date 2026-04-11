@@ -1,26 +1,29 @@
 use std::path::PathBuf;
 
-/// Locates the realesrgan-ncnn-vulkan binary in Flatpak-aware search paths.
+/// Locates a supported Vulkan upscaler binary in Flatpak-aware search paths.
 pub struct UpscaleDetector;
 
 impl UpscaleDetector {
-    /// Returns the path to `realesrgan-ncnn-vulkan` if found, `None` otherwise.
+    /// Returns the path to the preferred Vulkan backend if found, `None` otherwise.
     pub fn find_realesrgan() -> Option<PathBuf> {
         let candidates = Self::search_paths();
         for dir in candidates {
-            let binary = dir.join("realesrgan-ncnn-vulkan");
-            if binary.is_file() {
-                return Some(binary);
+            for name in ["upscayl-bin", "realesrgan-ncnn-vulkan"] {
+                let binary = dir.join(name);
+                if binary.is_file() {
+                    return Some(binary);
+                }
             }
-            // Some distributions ship it with a version suffix.
-            let binary_versioned = dir.join("realesrgan-ncnn-vulkan-v0");
-            if binary_versioned.is_file() {
-                return Some(binary_versioned);
+            for name in ["upscayl-bin-v0", "realesrgan-ncnn-vulkan-v0"] {
+                let binary_versioned = dir.join(name);
+                if binary_versioned.is_file() {
+                    return Some(binary_versioned);
+                }
             }
         }
 
         // Fall back to PATH search.
-        which_binary("realesrgan-ncnn-vulkan")
+        which_binary("upscayl-bin").or_else(|| which_binary("realesrgan-ncnn-vulkan"))
     }
 
     fn search_paths() -> Vec<PathBuf> {

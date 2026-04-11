@@ -71,11 +71,11 @@ pub fn build_preferences_window(
     upscaler_page.set_icon_name(Some("image-x-generic-symbolic"));
 
     let upscaler_group = libadwaita::PreferencesGroup::new();
-    upscaler_group.set_title("AI Upscale (realesrgan-ncnn-vulkan)");
+    upscaler_group.set_title("AI Upscale (Vulkan backend)");
 
     let binary_row = libadwaita::ActionRow::new();
     binary_row.set_title("Binary path");
-    binary_row.set_subtitle("Leave blank to auto-detect from ~/.local/bin/");
+    binary_row.set_subtitle("Leave blank to auto-detect upscayl-bin or realesrgan-ncnn-vulkan");
 
     let binary_entry = gtk4::Entry::new();
     binary_entry.set_hexpand(true);
@@ -125,8 +125,134 @@ pub fn build_preferences_window(
         });
     }
 
+    let output_row = libadwaita::ComboRow::new();
+    output_row.set_title("Output format");
+    output_row.set_subtitle("Auto keeps Sharpr in charge of the final save format");
+    let output_choices =
+        gtk4::StringList::new(&["Auto", "JPEG (lossy)", "WebP (lossless)", "PNG (lossless)"]);
+    output_row.set_model(Some(&output_choices));
+    output_row.set_selected(match settings.upscaler_output_format.as_str() {
+        "jpeg" => 1,
+        "webp" => 2,
+        "png" => 3,
+        _ => 0,
+    });
+
+    {
+        let settings_c = settings.clone();
+        output_row.connect_selected_notify(move |row| {
+            let mut settings = settings_c.clone();
+            settings.set_upscaler_output_format(match row.selected() {
+                1 => "jpeg",
+                2 => "webp",
+                3 => "png",
+                _ => "auto",
+            });
+        });
+    }
+
+    let compression_row = libadwaita::ComboRow::new();
+    compression_row.set_title("Compression");
+    let compression_choices =
+        gtk4::StringList::new(&["Auto", "Prefer lossy", "Prefer lossless"]);
+    compression_row.set_model(Some(&compression_choices));
+    compression_row.set_selected(match settings.upscaler_compression_mode.as_str() {
+        "lossy" => 1,
+        "lossless" => 2,
+        _ => 0,
+    });
+
+    {
+        let settings_c = settings.clone();
+        compression_row.connect_selected_notify(move |row| {
+            let mut settings = settings_c.clone();
+            settings.set_upscaler_compression_mode(match row.selected() {
+                1 => "lossy",
+                2 => "lossless",
+                _ => "auto",
+            });
+        });
+    }
+
+    let quality_row = libadwaita::ActionRow::new();
+    quality_row.set_title("Lossy quality");
+    quality_row.set_subtitle("Used when Sharpr saves the final result as JPEG");
+    let quality_adj = gtk4::Adjustment::new(
+        settings.upscaler_quality as f64,
+        50.0,
+        100.0,
+        1.0,
+        5.0,
+        0.0,
+    );
+    let quality_spin = gtk4::SpinButton::new(Some(&quality_adj), 1.0, 0);
+    quality_spin.set_numeric(true);
+    quality_row.add_suffix(&quality_spin);
+    quality_row.set_activatable_widget(Some(&quality_spin));
+
+    {
+        let settings_c = settings.clone();
+        quality_spin.connect_value_changed(move |spin| {
+            let mut settings = settings_c.clone();
+            settings.set_upscaler_quality(spin.value() as i32);
+        });
+    }
+
+    let tile_row = libadwaita::ActionRow::new();
+    tile_row.set_title("Tile size");
+    tile_row.set_subtitle("0 means auto; raise only if the GPU has headroom");
+    let tile_adj = gtk4::Adjustment::new(
+        settings.upscaler_tile_size as f64,
+        0.0,
+        4096.0,
+        32.0,
+        64.0,
+        0.0,
+    );
+    let tile_spin = gtk4::SpinButton::new(Some(&tile_adj), 1.0, 0);
+    tile_spin.set_numeric(true);
+    tile_row.add_suffix(&tile_spin);
+    tile_row.set_activatable_widget(Some(&tile_spin));
+
+    {
+        let settings_c = settings.clone();
+        tile_spin.connect_value_changed(move |spin| {
+            let mut settings = settings_c.clone();
+            settings.set_upscaler_tile_size(spin.value() as i32);
+        });
+    }
+
+    let gpu_row = libadwaita::ActionRow::new();
+    gpu_row.set_title("GPU ID");
+    gpu_row.set_subtitle("-1 means auto");
+    let gpu_adj = gtk4::Adjustment::new(
+        settings.upscaler_gpu_id as f64,
+        -1.0,
+        16.0,
+        1.0,
+        1.0,
+        0.0,
+    );
+    let gpu_spin = gtk4::SpinButton::new(Some(&gpu_adj), 1.0, 0);
+    gpu_spin.set_numeric(true);
+    gpu_row.add_suffix(&gpu_spin);
+    gpu_row.set_activatable_widget(Some(&gpu_spin));
+
+    {
+        let settings_c = settings.clone();
+        gpu_spin.connect_value_changed(move |spin| {
+            let mut settings = settings_c.clone();
+            settings.set_upscaler_gpu_id(spin.value() as i32);
+        });
+    }
+
     upscaler_group.add(&binary_row);
     upscaler_group.add(&model_row);
+    upscaler_group.add(&output_row);
+    upscaler_group.add(&compression_row);
+    upscaler_group.add(&quality_row);
+    upscaler_group.add(&tile_row);
+    upscaler_group.add(&gpu_row);
     upscaler_page.add(&upscaler_group);
     window.add(&upscaler_page);
 

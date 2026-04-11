@@ -28,7 +28,7 @@ pub struct AppState {
     pub library: LibraryManager,
     pub settings: AppSettings,
     pub tags: Option<Arc<crate::tags::TagDatabase>>,
-    /// Cached path to the realesrgan-ncnn-vulkan binary after successful detection.
+    /// Cached path to the active Vulkan upscaler binary after successful detection.
     pub upscale_binary: Option<PathBuf>,
 }
 
@@ -1199,7 +1199,7 @@ impl SharprWindow {
                 };
                 if !has_binary {
                     banner_c.set_title(
-                        "AI upscaling requires realesrgan-ncnn-vulkan. Install it to ~/.local/bin or via Flatpak.",
+                        "AI upscaling requires a supported Vulkan backend such as upscayl-bin or realesrgan-ncnn-vulkan.",
                     );
                     banner_c.set_revealed(true);
                     return;
