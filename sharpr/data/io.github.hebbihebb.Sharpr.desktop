@@ -8,5 +8,5 @@ Terminal=false
 Type=Application
 Categories=Graphics;Viewer;GNOME;GTK;
 MimeType=image/jpeg;image/png;image/gif;image/webp;image/tiff;image/bmp;
-StartupWMClass=sharpr
+StartupWMClass=Sharpr
 X-GNOME-UsesNotifications=false

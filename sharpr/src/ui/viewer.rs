@@ -111,7 +111,7 @@ mod imp {
             metadata_chip.set_halign(gtk4::Align::End);
             metadata_chip.set_valign(gtk4::Align::End);
             metadata_chip.set_margin_end(16);
-            metadata_chip.set_margin_bottom(16);
+            metadata_chip.set_margin_bottom(4);
 
             let tag_osd = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
             tag_osd.add_css_class("osd");

@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -191,7 +192,7 @@ mod imp {
         // Cloned receiver so the async task can hold it.
         pub result_rx: RefCell<Option<Receiver<ThumbnailResult>>>,
         pub hash_result_rx: RefCell<Option<Receiver<HashResult>>>,
-        pub(super) thumbnail_op: RefCell<Option<ThumbnailOpState>>,
+        pub(super) thumbnail_ops: RefCell<HashMap<PathBuf, ThumbnailOpState>>,
     }
 
     impl Default for SharprWindow {
@@ -202,7 +203,7 @@ mod imp {
                 thumbnail_worker: RefCell::new(None),
                 result_rx: RefCell::new(None),
                 hash_result_rx: RefCell::new(None),
-                thumbnail_op: RefCell::new(None),
+                thumbnail_ops: RefCell::new(HashMap::new()),
             }
         }
     }
@@ -294,12 +295,6 @@ impl SharprWindow {
             let content_stack = content_stack.clone();
             Rc::new(move |path: PathBuf| {
                 content_stack.set_visible_child_name("viewer");
-                if let Some(win) = window_weak.upgrade() {
-                    if let Some(worker) = win.imp().thumbnail_worker.borrow().as_ref() {
-                        worker.bump_generation();
-                    }
-                }
-
                 let cache_max = AppSettings::load().thumbnail_cache_max as usize;
                 state_c
                     .borrow_mut()
@@ -337,14 +332,16 @@ impl SharprWindow {
                             return;
                         }
 
+                        let mut new_entries: Vec<ImageEntry> = Vec::with_capacity(raw_entries.len());
                         for (index, raw) in raw_entries.into_iter().enumerate() {
                             let entry = ImageEntry::new(raw.path.clone());
                             entry.set_file_size(raw.file_size);
                             entry.set_dimensions(raw.width, raw.height);
-                            st.library.store.append(&entry);
                             st.library.path_to_index.insert(raw.path.clone(), index as u32);
                             st.library.all_known_paths.insert(raw.path);
+                            new_entries.push(entry);
                         }
+                        st.library.store.splice(0, 0, &new_entries);
                     }
 
                     sidebar_rx.select_folder(&path_rx);
@@ -369,15 +366,15 @@ impl SharprWindow {
                     };
 
                     if let Some(win) = window_weak_rx.upgrade() {
-                        if let Some(previous) = win.imp().thumbnail_op.borrow_mut().take() {
-                            previous.handle.complete();
-                        }
                         if let Some(handle) = thumb_op {
-                            *win.imp().thumbnail_op.borrow_mut() = Some(ThumbnailOpState {
-                                total: thumb_total,
-                                received: 0,
-                                handle,
-                            });
+                            win.imp().thumbnail_ops.borrow_mut().insert(
+                                path_rx.clone(),
+                                ThumbnailOpState {
+                                    total: thumb_total,
+                                    received: 0,
+                                    handle,
+                                },
+                            );
                         }
                     }
 
@@ -722,7 +719,7 @@ impl SharprWindow {
         ops_indicator.set_valign(gtk4::Align::End);
         ops_indicator.set_margin_start(12);
         ops_indicator.set_margin_end(12);
-        ops_indicator.set_margin_bottom(12);
+        ops_indicator.set_margin_bottom(16);
         sidebar_overlay.add_overlay(&ops_indicator);
 
         let sidebar_page = libadwaita::NavigationPage::builder()
@@ -1206,15 +1203,17 @@ impl SharprWindow {
                 filmstrip.mark_thumbnail_ready(&result_path);
 
                 if let Some(window) = window_weak.upgrade() {
-                    let mut thumbnail_op = window.imp().thumbnail_op.borrow_mut();
-                    if let Some(op_state) = thumbnail_op.as_mut() {
-                        op_state.received += 1;
-                        op_state.handle.progress(Some(
-                            op_state.received as f32 / op_state.total.max(1) as f32,
-                        ));
-                        if op_state.total > 0 && op_state.received >= op_state.total {
-                            if let Some(op_state) = thumbnail_op.take() {
-                                op_state.handle.complete();
+                    if let Some(folder) = result_path.parent().map(|p| p.to_path_buf()) {
+                        let mut thumbnail_ops = window.imp().thumbnail_ops.borrow_mut();
+                        if let Some(op_state) = thumbnail_ops.get_mut(&folder) {
+                            op_state.received += 1;
+                            op_state.handle.progress(Some(
+                                op_state.received as f32 / op_state.total.max(1) as f32,
+                            ));
+                            if op_state.total > 0 && op_state.received >= op_state.total {
+                                if let Some(completed) = thumbnail_ops.remove(&folder) {
+                                    completed.handle.complete();
+                                }
                             }
                         }
                     }
@@ -1222,7 +1221,7 @@ impl SharprWindow {
             }
 
             if let Some(window) = window_weak.upgrade() {
-                if let Some(op_state) = window.imp().thumbnail_op.borrow_mut().take() {
+                for (_, op_state) in window.imp().thumbnail_ops.borrow_mut().drain() {
                     op_state.handle.complete();
                 }
             }

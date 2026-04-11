@@ -43,6 +43,7 @@ mod imp {
             // The delay gives warm-cache thumbnail workers time to populate
             // visible rows before the UI appears.
             let splash = gtk4::Window::builder()
+                .application(app.upcast_ref::<gtk4::Application>())
                 .decorated(false)
                 .resizable(false)
                 .default_width(600)

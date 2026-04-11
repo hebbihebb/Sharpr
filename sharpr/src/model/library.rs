@@ -106,8 +106,6 @@ impl LibraryManager {
         self.prefetch_cache.clear();
         self.prefetch_order.clear();
         self.prefetch_in_flight.clear();
-        self.preview_cache.clear();
-        self.preview_order.clear();
         if let (Some(folder), Some(idx)) = (self.current_folder.as_ref(), self.selected_index) {
             self.folder_history.insert(folder.clone(), idx);
         }

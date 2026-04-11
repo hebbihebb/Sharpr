@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::Once;
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -60,6 +61,7 @@ glib::wrapper! {
 
 impl TagBrowser {
     pub fn new(tags: Arc<TagDatabase>) -> Self {
+        install_css();
         let widget: Self = glib::Object::new();
         *widget.imp().tags.borrow_mut() = Some(tags);
         widget.build_ui();
@@ -141,7 +143,7 @@ impl TagBrowser {
             for (tag, count) in entries {
                 let child = gtk4::FlowBoxChild::new();
                 let chip = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-                chip.add_css_class("card");
+                chip.add_css_class("tag-chip");
 
                 let name_button = gtk4::Button::with_label(&format!("{tag}  {count}"));
                 name_button.add_css_class("flat");
@@ -192,4 +194,33 @@ impl TagBrowser {
             cb(tag);
         }
     }
+}
+
+
+fn install_css() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let provider = gtk4::CssProvider::new();
+        provider.load_from_string(
+            "
+            .tag-chip {
+                border-radius: 16px;
+                background-color: rgba(28, 28, 30, 0.72);
+                color: white;
+                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+            }
+            .tag-chip button {
+                color: rgba(255, 255, 255, 0.78);
+                font-size: 0.92em;
+            }
+            ",
+        );
+        if let Some(display) = gtk4::gdk::Display::default() {
+            gtk4::StyleContext::add_provider_for_display(
+                &display,
+                &provider,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+    });
 }

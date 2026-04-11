@@ -381,18 +381,19 @@ fn install_css() {
                 min-width: 0;
                 padding: 0;
                 border-radius: 999px;
-                background-color: rgba(28, 28, 30, 0.88);
+                background-color: rgba(28, 28, 30, 0.72);
                 color: white;
                 box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
             }
             .ops-indicator-pill:hover {
-                background-color: rgba(40, 40, 43, 0.94);
+                background-color: rgba(40, 40, 43, 0.82);
             }
             .ops-indicator-pill:active {
-                background-color: rgba(52, 52, 56, 0.96);
+                background-color: rgba(52, 52, 56, 0.88);
             }
             .ops-indicator-summary {
                 font-weight: 600;
+                font-size: 0.92em;
             }
             ",
         );
