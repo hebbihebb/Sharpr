@@ -1,4 +1,10 @@
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+
+fn rexiv2_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// Display-ready snapshot of image metadata.
 #[derive(Default, Debug, Clone)]
@@ -43,6 +49,8 @@ impl ImageMetadata {
         };
 
         // Attempt EXIF read via rexiv2.
+        // rexiv2/GExiv2 is not thread-safe; serialise all calls with a global mutex.
+        let _guard = rexiv2_lock().lock().unwrap_or_else(|e| e.into_inner());
         match rexiv2::Metadata::new_from_path(path) {
             Ok(exif) => {
                 // Pixel dimensions — rexiv2 returns i32 directly (0 if unknown).

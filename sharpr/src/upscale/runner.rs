@@ -188,16 +188,15 @@ fn finalize_output(
         intermediate_image.resize_exact(target_w, target_h, FilterType::Lanczos3)
     };
 
-    save_image(
+    let result = save_image(
         final_image,
         output,
         target_format,
         config.compression_mode,
         config.quality,
-    )?;
-
-    let _ = std::fs::remove_file(intermediate);
-    Ok(())
+    );
+    let _ = std::fs::remove_file(intermediate); // always clean up temp file
+    result
 }
 
 fn save_image(
@@ -253,6 +252,8 @@ fn save_image(
                 .map_err(|err| format!("failed to encode PNG output: {err}"))
         }
         UpscaleOutputFormat::Webp => {
+            // image 0.25 only exposes lossless WebP encoding; lossy WebP would
+            // require an additional `webp` crate dependency.
             if image.color().has_alpha() {
                 let rgba = image.to_rgba8();
                 WebPEncoder::new_lossless(writer)
