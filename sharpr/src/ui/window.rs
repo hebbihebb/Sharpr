@@ -15,6 +15,7 @@ use crate::duplicates::phash;
 use crate::model::{ImageEntry, LibraryManager};
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
+use crate::ui::ops_indicator::OpsIndicator;
 use crate::ui::preferences::build_preferences_window;
 use crate::ui::sidebar::SidebarPane;
 use crate::ui::tag_browser::TagBrowser;
@@ -31,6 +32,7 @@ pub struct AppState {
     pub tags: Option<Arc<crate::tags::TagDatabase>>,
     /// Cached path to the active Vulkan upscaler binary after successful detection.
     pub upscale_binary: Option<PathBuf>,
+    pub ops: crate::ops::queue::OpQueue,
 }
 
 #[derive(Clone)]
@@ -46,6 +48,12 @@ struct PrefetchResult {
     bytes: Vec<u8>,
     width: u32,
     height: u32,
+}
+
+struct ThumbnailOpState {
+    total: u32,
+    received: u32,
+    handle: crate::ops::queue::OpHandle,
 }
 
 fn trigger_prefetch(state: &Rc<RefCell<AppState>>, index: u32) {
@@ -152,7 +160,7 @@ fn prefetch_decode(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)> {
 }
 
 impl AppState {
-    fn new() -> Self {
+    fn new(ops: crate::ops::queue::OpQueue) -> Self {
         let settings = AppSettings::load();
         let mut library = LibraryManager::new();
         library.set_thumbnail_cache_max(settings.thumbnail_cache_max as usize);
@@ -162,6 +170,7 @@ impl AppState {
             settings,
             tags: crate::tags::TagDatabase::open().ok().map(Arc::new),
             upscale_binary,
+            ops,
         }
     }
 }
@@ -181,15 +190,18 @@ mod imp {
         // Cloned receiver so the async task can hold it.
         pub result_rx: RefCell<Option<Receiver<ThumbnailResult>>>,
         pub hash_result_rx: RefCell<Option<Receiver<HashResult>>>,
+        pub(super) thumbnail_op: RefCell<Option<ThumbnailOpState>>,
     }
 
     impl Default for SharprWindow {
         fn default() -> Self {
+            let (ops_queue, _ops_rx) = crate::ops::queue::new_queue();
             Self {
-                state: Rc::new(RefCell::new(AppState::new())),
+                state: Rc::new(RefCell::new(AppState::new(ops_queue))),
                 thumbnail_worker: RefCell::new(None),
                 result_rx: RefCell::new(None),
                 hash_result_rx: RefCell::new(None),
+                thumbnail_op: RefCell::new(None),
             }
         }
     }
@@ -246,6 +258,8 @@ impl SharprWindow {
         *self.imp().hash_result_rx.borrow_mut() = Some(hash_result_rx);
 
         let state = self.imp().state.clone();
+        let (ops_queue, ops_rx) = crate::ops::queue::new_queue();
+        state.borrow_mut().ops = ops_queue;
 
         // -----------------------------------------------------------------------
         // Build panes
@@ -306,6 +320,31 @@ impl SharprWindow {
                 viewer_c.clear();
                 filmstrip_c.refresh();
 
+                let thumb_total = state_c.borrow().library.image_count();
+                let thumb_op = if thumb_total > 0 {
+                    Some(
+                        state_c
+                            .borrow()
+                            .ops
+                            .add(format!("Loading thumbnails ({thumb_total})")),
+                    )
+                } else {
+                    None
+                };
+
+                if let Some(win) = window_weak.upgrade() {
+                    if let Some(previous) = win.imp().thumbnail_op.borrow_mut().take() {
+                        previous.handle.complete();
+                    }
+                    if let Some(handle) = thumb_op {
+                        *win.imp().thumbnail_op.borrow_mut() = Some(ThumbnailOpState {
+                            total: thumb_total,
+                            received: 0,
+                            handle,
+                        });
+                    }
+                }
+
                 let target_index = {
                     let st = state_c.borrow();
                     st.library
@@ -363,6 +402,7 @@ impl SharprWindow {
                     return;
                 }
 
+                let op = state_c.borrow().ops.add("Finding duplicates");
                 let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
                 std::thread::spawn(move || {
                     let paths = phash::group_duplicates(&hashes)
@@ -381,10 +421,12 @@ impl SharprWindow {
                 let suppress_search_restore_rx = suppress_search_restore_c.clone();
                 glib::MainContext::default().spawn_local(async move {
                     let Ok(paths) = rx.recv().await else {
+                        op.fail("Detection failed");
                         return;
                     };
 
                     if paths.is_empty() {
+                        op.complete();
                         toast_overlay_rx.add_toast(libadwaita::Toast::new(
                             "No duplicate images detected in your library",
                         ));
@@ -412,6 +454,7 @@ impl SharprWindow {
                         suppress_search_restore_rx.set(true);
                         filmstrip_rx.deactivate_search();
                     }
+                    op.complete();
                 });
             });
         }
@@ -640,10 +683,21 @@ impl SharprWindow {
         // Outer split: explorer sidebar | inner_split.
         let outer_split = libadwaita::NavigationSplitView::new();
 
+        let sidebar_overlay = gtk4::Overlay::new();
+        sidebar_overlay.set_child(Some(&sidebar));
+
+        let ops_indicator = OpsIndicator::new();
+        ops_indicator.set_halign(gtk4::Align::Fill);
+        ops_indicator.set_valign(gtk4::Align::End);
+        ops_indicator.set_margin_start(12);
+        ops_indicator.set_margin_end(12);
+        ops_indicator.set_margin_bottom(12);
+        sidebar_overlay.add_overlay(&ops_indicator);
+
         let sidebar_page = libadwaita::NavigationPage::builder()
             .title("Library")
             .tag("sidebar")
-            .child(&sidebar)
+            .child(&sidebar_overlay)
             .build();
         outer_split.set_sidebar(Some(&sidebar_page));
 
@@ -673,7 +727,28 @@ impl SharprWindow {
         self.add_breakpoint(bp_filmstrip);
 
         toast_overlay.set_child(Some(&outer_split));
+
         self.set_content(Some(&toast_overlay));
+
+        // Drive the indicator from the ops event channel.
+        {
+            let indicator = ops_indicator.clone();
+            glib::MainContext::default().spawn_local(async move {
+                use crate::ops::queue::OpEvent;
+                while let Ok(event) = ops_rx.recv().await {
+                    match event {
+                        OpEvent::Added { id, title } => indicator.push_op(id, &title),
+                        OpEvent::Progress { id, fraction } => {
+                            indicator.update_op(id, fraction)
+                        }
+                        OpEvent::Completed(id) => indicator.complete_op(id),
+                        OpEvent::Failed { id, msg } => indicator.fail_op(id, &msg),
+                        OpEvent::Dismissed(id) => indicator.remove_op(id),
+                    }
+                }
+            });
+        }
+
         let builder = gtk4::Builder::from_resource("/io/github/hebbihebb/Sharpr/help-overlay.ui");
         let help_overlay: gtk4::ShortcutsWindow = builder.object("help_overlay").unwrap();
         self.set_help_overlay(Some(&help_overlay));
@@ -1061,6 +1136,7 @@ impl SharprWindow {
     fn start_thumbnail_poll(&self, state: Rc<RefCell<AppState>>, filmstrip: FilmstripPane) {
         let result_rx = self.imp().result_rx.borrow().clone();
         let Some(rx) = result_rx else { return };
+        let window_weak = self.downgrade();
 
         glib::MainContext::default().spawn_local(async move {
             while let Ok(result) = rx.recv().await {
@@ -1097,6 +1173,27 @@ impl SharprWindow {
                 }
 
                 filmstrip.mark_thumbnail_ready(&result_path);
+
+                if let Some(window) = window_weak.upgrade() {
+                    let mut thumbnail_op = window.imp().thumbnail_op.borrow_mut();
+                    if let Some(op_state) = thumbnail_op.as_mut() {
+                        op_state.received += 1;
+                        op_state.handle.progress(Some(
+                            op_state.received as f32 / op_state.total.max(1) as f32,
+                        ));
+                        if op_state.total > 0 && op_state.received >= op_state.total {
+                            if let Some(op_state) = thumbnail_op.take() {
+                                op_state.handle.complete();
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(window) = window_weak.upgrade() {
+                if let Some(op_state) = window.imp().thumbnail_op.borrow_mut().take() {
+                    op_state.handle.complete();
+                }
             }
         });
     }

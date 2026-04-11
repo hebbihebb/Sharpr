@@ -1098,7 +1098,7 @@ impl ViewerPane {
 
         let imp = self.imp();
 
-        let (binary, settings, mut selected_dims) = {
+        let (binary, settings, mut selected_dims, ops_queue) = {
             let st = imp.state.borrow();
             let Some(ref rc) = *st else {
                 trigger_btn.set_sensitive(true);
@@ -1113,6 +1113,7 @@ impl ViewerPane {
                     .selected_entry()
                     .and_then(|e: ImageEntry| e.dimensions())
                     .unwrap_or((0, 0)),
+                state.ops.clone(),
             )
         };
         let Some(binary) = binary else {
@@ -1174,34 +1175,39 @@ impl ViewerPane {
             UpscaleRunner::run(&binary, &path, &output, job)
         };
 
-        imp.progress_bar.set_fraction(0.0);
-        imp.progress_bar.set_visible(true);
-
         let widget_weak = self.downgrade();
+        let op = ops_queue.add("Upscaling image");
         // Keep a strong ref to trigger_btn inside the closure so we can
         // re-enable it on completion. The weak-ref pattern caused the strong
         // ref to drop when start_upscale() returned, leaving upgrade() returning None.
 
         glib::MainContext::default().spawn_local(async move {
+            let mut op = Some(op);
             while let Ok(event) = rx.recv().await {
                 let Some(viewer) = widget_weak.upgrade() else {
                     break;
                 };
-                let vimp = viewer.imp();
                 match event {
                     UpscaleEvent::Progress(Some(f)) => {
-                        vimp.progress_bar.set_fraction(f as f64);
+                        if let Some(op) = op.as_ref() {
+                            op.progress(Some(f));
+                        }
                     }
                     UpscaleEvent::Progress(None) => {
-                        vimp.progress_bar.pulse();
+                        if let Some(op) = op.as_ref() {
+                            op.progress(None);
+                        }
                     }
                     UpscaleEvent::Done(out_path) => {
                         trigger_btn.set_sensitive(true);
-                        vimp.progress_bar.pulse();
                         viewer.show_comparison(path.clone(), out_path);
+                        if let Some(op) = op.take() {
+                            op.complete();
+                        }
                         break;
                     }
                     UpscaleEvent::Failed(msg) => {
+                        let vimp = viewer.imp();
                         vimp.progress_bar.set_visible(false);
                         trigger_btn.set_sensitive(true);
                         let dialog = libadwaita::AlertDialog::new(
@@ -1215,6 +1221,9 @@ impl ViewerPane {
                             }
                         }
                         eprintln!("Upscale failed: {msg}");
+                        if let Some(op) = op.take() {
+                            op.fail(msg);
+                        }
                         break;
                     }
                 }

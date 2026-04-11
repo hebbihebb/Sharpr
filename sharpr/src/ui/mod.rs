@@ -1,5 +1,6 @@
 pub mod filmstrip;
 pub mod metadata_chip;
+pub mod ops_indicator;
 pub mod preferences;
 pub mod sidebar;
 pub mod tag_browser;
