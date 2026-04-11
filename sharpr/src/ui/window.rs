@@ -11,6 +11,7 @@ use libadwaita::subclass::prelude::*;
 use std::path::PathBuf;
 
 use crate::config::AppSettings;
+use crate::duplicates::phash;
 use crate::model::{ImageEntry, LibraryManager};
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
@@ -265,6 +266,7 @@ impl SharprWindow {
 
         let suppress_search_restore = Rc::new(Cell::new(false));
         let content_stack = gtk4::Stack::new();
+        let toast_overlay = libadwaita::ToastOverlay::new();
         let tag_browser = state.borrow().tags.clone().map(TagBrowser::new);
 
         let open_folder: Rc<dyn Fn(PathBuf)> = {
@@ -350,33 +352,67 @@ impl SharprWindow {
             let state_c = state.clone();
             let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
+            let toast_overlay_c = toast_overlay.clone();
             sidebar.connect_duplicates_selected(move || {
                 content_stack.set_visible_child_name("viewer");
-                let paths = state_c.borrow().library.find_duplicate_filenames();
-                if paths.is_empty() {
+                let hashes = state_c.borrow().library.all_hashes_snapshot();
+                if hashes.is_empty() {
+                    toast_overlay_c.add_toast(libadwaita::Toast::new(
+                        "Browse your library first — hashes are computed as thumbnails load",
+                    ));
                     return;
                 }
-                state_c.borrow_mut().library.load_virtual(&paths);
-                sidebar_c.set_duplicates_selected(true);
-                sidebar_c.set_search_selected(false);
-                sidebar_c.set_tags_selected(false);
-                sidebar_c.set_quality_selected(None);
-                filmstrip_c.refresh_virtual();
-                let first = state_c
-                    .borrow()
-                    .library
-                    .entry_at(0)
-                    .map(|e: ImageEntry| e.path());
-                if let Some(p) = first {
-                    filmstrip_c.navigate_to(0);
-                    viewer_c.load_image(p);
-                } else {
-                    viewer_c.clear();
-                }
-                if filmstrip_c.is_search_active() {
-                    suppress_search_restore_c.set(true);
-                    filmstrip_c.deactivate_search();
-                }
+
+                let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
+                std::thread::spawn(move || {
+                    let paths = phash::group_duplicates(&hashes)
+                        .into_iter()
+                        .filter(|group| group.len() > 1)
+                        .flatten()
+                        .collect();
+                    let _ = tx.send_blocking(paths);
+                });
+
+                let filmstrip_rx = filmstrip_c.clone();
+                let viewer_rx = viewer_c.clone();
+                let sidebar_rx = sidebar_c.clone();
+                let state_rx = state_c.clone();
+                let toast_overlay_rx = toast_overlay_c.clone();
+                let suppress_search_restore_rx = suppress_search_restore_c.clone();
+                glib::MainContext::default().spawn_local(async move {
+                    let Ok(paths) = rx.recv().await else {
+                        return;
+                    };
+
+                    if paths.is_empty() {
+                        toast_overlay_rx.add_toast(libadwaita::Toast::new(
+                            "No duplicate images detected in your library",
+                        ));
+                        return;
+                    }
+
+                    state_rx.borrow_mut().library.load_virtual(&paths);
+                    sidebar_rx.set_duplicates_selected(true);
+                    sidebar_rx.set_search_selected(false);
+                    sidebar_rx.set_tags_selected(false);
+                    sidebar_rx.set_quality_selected(None);
+                    filmstrip_rx.refresh_virtual();
+                    let first = state_rx
+                        .borrow()
+                        .library
+                        .entry_at(0)
+                        .map(|e: ImageEntry| e.path());
+                    if let Some(p) = first {
+                        filmstrip_rx.navigate_to(0);
+                        viewer_rx.load_image(p);
+                    } else {
+                        viewer_rx.clear();
+                    }
+                    if filmstrip_rx.is_search_active() {
+                        suppress_search_restore_rx.set(true);
+                        filmstrip_rx.deactivate_search();
+                    }
+                });
             });
         }
 
@@ -509,7 +545,14 @@ impl SharprWindow {
             .build();
         inner_split.set_sidebar(Some(&filmstrip_page));
 
-        let (viewer_header, commit_btn, discard_btn, edit_commit_btn, edit_discard_btn) =
+        let (
+            viewer_header,
+            preview_title_btn,
+            commit_btn,
+            discard_btn,
+            edit_commit_btn,
+            edit_discard_btn,
+        ) =
             self.build_viewer_header();
 
         let upscale_banner = libadwaita::Banner::new("");
@@ -545,6 +588,12 @@ impl SharprWindow {
         // Commit / Discard buttons for the comparison view.
         {
             let viewer_c = viewer.clone();
+            preview_title_btn.connect_clicked(move |_| {
+                viewer_c.toggle_debug_comparison();
+            });
+        }
+        {
+            let viewer_c = viewer.clone();
             commit_btn.connect_clicked(move |_| {
                 viewer_c.commit_upscale();
             });
@@ -578,9 +627,13 @@ impl SharprWindow {
         // Update the NavigationPage title to reflect which panel is active.
         {
             let viewer_page_c = viewer_page.clone();
+            let preview_title_btn_c = preview_title_btn.clone();
             content_stack.connect_visible_child_notify(move |stack| {
                 let name = stack.visible_child_name().unwrap_or_default();
-                viewer_page_c.set_title(if name == "tags" { "Tags" } else { "Preview" });
+                let is_tags = name == "tags";
+                viewer_page_c.set_title(if is_tags { "Tags" } else { "Preview" });
+                preview_title_btn_c.set_label(if is_tags { "Tags" } else { "Preview" });
+                preview_title_btn_c.set_sensitive(!is_tags);
             });
         }
 
@@ -619,7 +672,8 @@ impl SharprWindow {
         bp_filmstrip.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
         self.add_breakpoint(bp_filmstrip);
 
-        self.set_content(Some(&outer_split));
+        toast_overlay.set_child(Some(&outer_split));
+        self.set_content(Some(&toast_overlay));
         let builder = gtk4::Builder::from_resource("/io/github/hebbihebb/Sharpr/help-overlay.ui");
         let help_overlay: gtk4::ShortcutsWindow = builder.object("help_overlay").unwrap();
         self.set_help_overlay(Some(&help_overlay));
@@ -1309,7 +1363,7 @@ impl SharprWindow {
     }
 
     /// Build the viewer header bar.
-    /// Returns `(header, commit_btn, discard_btn, edit_commit_btn, edit_discard_btn)`.
+    /// Returns `(header, preview_title_btn, commit_btn, discard_btn, edit_commit_btn, edit_discard_btn)`.
     /// Commit and Discard are initially hidden; the comparison view shows them.
     fn build_viewer_header(
         &self,
@@ -1319,8 +1373,16 @@ impl SharprWindow {
         gtk4::Button,
         gtk4::Button,
         gtk4::Button,
+        gtk4::Button,
     ) {
         let header = libadwaita::HeaderBar::new();
+
+        let preview_title_btn = gtk4::Button::with_label("Preview");
+        preview_title_btn.add_css_class("flat");
+        preview_title_btn.add_css_class("title");
+        preview_title_btn.set_focus_on_click(false);
+        preview_title_btn.set_tooltip_text(Some("Temporary debug compare toggle"));
+        header.set_title_widget(Some(&preview_title_btn));
 
         let commit_btn = gtk4::Button::with_label("Save");
         commit_btn.set_tooltip_text(Some("Save upscaled image"));
@@ -1357,6 +1419,7 @@ impl SharprWindow {
 
         (
             header,
+            preview_title_btn,
             commit_btn,
             discard_btn,
             edit_commit_btn,

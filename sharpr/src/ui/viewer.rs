@@ -1222,11 +1222,18 @@ impl ViewerPane {
         });
     }
 
-    /// Load both images into the comparison widget, show Commit/Discard, and
-    /// switch the stack to the "compare" page.
-    fn show_comparison(&self, before_path: PathBuf, after_path: PathBuf) {
+    /// Load both images into the comparison widget and switch the stack to the
+    /// "compare" page. `show_actions` controls whether Save/Discard are shown.
+    fn show_comparison_with_actions(
+        &self,
+        before_path: PathBuf,
+        after_path: PathBuf,
+        show_actions: bool,
+    ) {
         let imp = self.imp();
-        *imp.pending_output.borrow_mut() = Some(after_path.clone());
+        imp.comparison.reset_zoom();
+        *imp.pending_output.borrow_mut() = show_actions.then_some(after_path.clone());
+        imp.stack.set_visible_child_name("compare");
         let viewer_weak = self.downgrade();
         imp.comparison.load(before_path, after_path, move || {
             let Some(viewer) = viewer_weak.upgrade() else {
@@ -1234,9 +1241,38 @@ impl ViewerPane {
             };
             let imp = viewer.imp();
             imp.progress_bar.set_visible(false);
-            viewer.set_comparison_buttons_visible(true);
+            viewer.set_comparison_buttons_visible(show_actions);
             imp.stack.set_visible_child_name("compare");
         });
+    }
+
+    /// Load both images into the comparison widget, show Commit/Discard, and
+    /// switch the stack to the "compare" page.
+    fn show_comparison(&self, before_path: PathBuf, after_path: PathBuf) {
+        self.show_comparison_with_actions(before_path, after_path, true);
+    }
+
+    pub fn toggle_debug_comparison(&self) {
+        let imp = self.imp();
+        if imp.stack.visible_child_name().as_deref() == Some("compare")
+            && imp.pending_output.borrow().is_none()
+        {
+            self.restore_view_mode();
+            return;
+        }
+
+        let path = imp.current_path.borrow().clone().or_else(|| {
+            imp.state
+                .borrow()
+                .as_ref()
+                .and_then(|state| state.borrow().library.selected_entry().map(|entry| entry.path()))
+        });
+
+        let Some(path) = path else {
+            return;
+        };
+
+        self.show_comparison_with_actions(path.clone(), path, false);
     }
 
     /// Commit: load the upscaled output into the viewer and return to the

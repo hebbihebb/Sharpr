@@ -4,6 +4,13 @@ use std::path::PathBuf;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DragMode {
+    None,
+    Divider,
+    Pan,
+}
+
 // ---------------------------------------------------------------------------
 // BeforeAfterViewer
 //
@@ -18,9 +25,14 @@ mod imp {
     pub struct BeforeAfterViewer {
         /// Divider position as a fraction of widget width in [0, 1].
         pub divider: Cell<f64>,
+        pub zoom: Cell<f64>,
+        pub pan_x: Cell<f64>,
+        pub pan_y: Cell<f64>,
         pub before_texture: std::cell::RefCell<Option<gdk4::Texture>>,
         pub after_texture: std::cell::RefCell<Option<gdk4::Texture>>,
-        pub dragging: Cell<bool>,
+        pub pointer_pos: Cell<(f64, f64)>,
+        pub(super) drag_mode: Cell<DragMode>,
+        pub pan_origin: Cell<Option<(f64, f64)>>,
         pub load_gen: Cell<u64>,
     }
 
@@ -28,9 +40,14 @@ mod imp {
         fn default() -> Self {
             Self {
                 divider: Cell::new(0.5),
+                zoom: Cell::new(1.0),
+                pan_x: Cell::new(0.0),
+                pan_y: Cell::new(0.0),
                 before_texture: std::cell::RefCell::new(None),
                 after_texture: std::cell::RefCell::new(None),
-                dragging: Cell::new(false),
+                pointer_pos: Cell::new((0.0, 0.0)),
+                drag_mode: Cell::new(DragMode::None),
+                pan_origin: Cell::new(None),
                 load_gen: Cell::new(0),
             }
         }
@@ -60,6 +77,14 @@ mod imp {
 
             let divider_x = (self.divider.get() as f32 * w).clamp(0.0, w);
             let full = gtk4::graphene::Rect::new(0.0, 0.0, w, h);
+            let zoom = self.zoom.get() as f32;
+            let pan_x = self.pan_x.get() as f32;
+            let pan_y = self.pan_y.get() as f32;
+            let img_w = w * zoom;
+            let img_h = h * zoom;
+            let origin_x = (w - img_w) / 2.0 + pan_x;
+            let origin_y = (h - img_h) / 2.0 + pan_y;
+            let img_rect = gtk4::graphene::Rect::new(origin_x, origin_y, img_w, img_h);
 
             // Opaque dark background so RGBA images with transparency don't
             // show a GTK checkerboard pattern.
@@ -68,14 +93,14 @@ mod imp {
             // Before — left of divider.
             if let Some(ref tex) = *self.before_texture.borrow() {
                 snapshot.push_clip(&gtk4::graphene::Rect::new(0.0, 0.0, divider_x, h));
-                snapshot.append_texture(tex, &full);
+                snapshot.append_texture(tex, &img_rect);
                 snapshot.pop();
             }
 
             // After — right of divider.
             if let Some(ref tex) = *self.after_texture.borrow() {
                 snapshot.push_clip(&gtk4::graphene::Rect::new(divider_x, 0.0, w - divider_x, h));
-                snapshot.append_texture(tex, &full);
+                snapshot.append_texture(tex, &img_rect);
                 snapshot.pop();
             }
 
@@ -105,7 +130,9 @@ impl BeforeAfterViewer {
         let widget: Self = glib::Object::new();
         widget.set_hexpand(true);
         widget.set_vexpand(true);
+        widget.setup_motion();
         widget.setup_drag();
+        widget.setup_zoom();
         widget
     }
 
@@ -183,7 +210,30 @@ impl BeforeAfterViewer {
         imp.load_gen.set(imp.load_gen.get().wrapping_add(1));
         *imp.before_texture.borrow_mut() = None;
         *imp.after_texture.borrow_mut() = None;
+        self.reset_zoom();
+    }
+
+    pub fn reset_zoom(&self) {
+        let imp = self.imp();
+        imp.zoom.set(1.0);
+        imp.pan_x.set(0.0);
+        imp.pan_y.set(0.0);
+        imp.pan_origin.set(None);
+        imp.drag_mode.set(DragMode::None);
         self.queue_draw();
+    }
+
+    fn setup_motion(&self) {
+        let motion = gtk4::EventControllerMotion::new();
+
+        let w = self.downgrade();
+        motion.connect_motion(move |_, x, y| {
+            if let Some(viewer) = w.upgrade() {
+                viewer.imp().pointer_pos.set((x, y));
+            }
+        });
+
+        self.add_controller(motion);
     }
 
     fn setup_drag(&self) {
@@ -191,41 +241,146 @@ impl BeforeAfterViewer {
         drag.set_button(gtk4::gdk::BUTTON_PRIMARY);
 
         let w = self.downgrade();
-        drag.connect_drag_begin(move |_, x, _| {
+        drag.connect_drag_begin(move |gesture, x, y| {
             let Some(viewer) = w.upgrade() else { return };
+            let imp = viewer.imp();
+            imp.pointer_pos.set((x, y));
+            imp.pan_origin.set(Some((imp.pan_x.get(), imp.pan_y.get())));
+
             let width = viewer.width() as f64;
-            if width > 0.0 {
-                viewer.imp().divider.set((x / width).clamp(0.0, 1.0));
-                viewer.imp().dragging.set(true);
-                viewer.queue_draw();
+            if width <= 0.0 {
+                imp.drag_mode.set(DragMode::None);
+                gesture.set_state(gtk4::EventSequenceState::Denied);
+                return;
+            }
+
+            let divider_x = imp.divider.get() * width;
+            let handle_half_width = 12.0;
+            if (x - divider_x).abs() <= handle_half_width {
+                imp.drag_mode.set(DragMode::Divider);
+            } else {
+                imp.drag_mode.set(DragMode::Pan);
             }
         });
 
         let w = self.downgrade();
-        drag.connect_drag_update(move |gesture, offset_x, _| {
+        drag.connect_drag_update(move |gesture, offset_x, offset_y| {
             let Some(viewer) = w.upgrade() else { return };
             let imp = viewer.imp();
-            if !imp.dragging.get() {
-                return;
+            match imp.drag_mode.get() {
+                DragMode::Divider => {
+                    let width = viewer.width() as f64;
+                    if width <= 0.0 {
+                        return;
+                    }
+                    let (start_x, _) = gesture.start_point().unwrap_or((0.0, 0.0));
+                    imp.divider
+                        .set(((start_x + offset_x) / width).clamp(0.0, 1.0));
+                    viewer.queue_draw();
+                }
+                DragMode::Pan => {
+                    viewer.pan_drag(offset_x, offset_y);
+                }
+                DragMode::None => {}
             }
-            let width = viewer.width() as f64;
-            if width <= 0.0 {
-                return;
-            }
-            let (start_x, _) = gesture.start_point().unwrap_or((0.0, 0.0));
-            imp.divider
-                .set(((start_x + offset_x) / width).clamp(0.0, 1.0));
-            viewer.queue_draw();
         });
 
         let w = self.downgrade();
         drag.connect_drag_end(move |_, _, _| {
             if let Some(viewer) = w.upgrade() {
-                viewer.imp().dragging.set(false);
+                let imp = viewer.imp();
+                imp.drag_mode.set(DragMode::None);
+                imp.pan_origin.set(None);
             }
         });
 
         self.add_controller(drag);
+
+        let pan_drag = gtk4::GestureDrag::new();
+        pan_drag.set_button(gtk4::gdk::BUTTON_MIDDLE);
+
+        let w = self.downgrade();
+        pan_drag.connect_drag_begin(move |_, _, _| {
+            let Some(viewer) = w.upgrade() else { return };
+            let imp = viewer.imp();
+            imp.pan_origin.set(Some((imp.pan_x.get(), imp.pan_y.get())));
+        });
+
+        let w = self.downgrade();
+        pan_drag.connect_drag_update(move |_, offset_x, offset_y| {
+            let Some(viewer) = w.upgrade() else { return };
+            let imp = viewer.imp();
+            let Some((start_x, start_y)) = imp.pan_origin.get() else {
+                return;
+            };
+            imp.pan_x.set(start_x + offset_x);
+            imp.pan_y.set(start_y + offset_y);
+            viewer.queue_draw();
+        });
+
+        let w = self.downgrade();
+        pan_drag.connect_drag_end(move |_, _, _| {
+            if let Some(viewer) = w.upgrade() {
+                viewer.imp().pan_origin.set(None);
+            }
+        });
+
+        self.add_controller(pan_drag);
+    }
+
+    fn setup_zoom(&self) {
+        let scroll = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
+
+        let w = self.downgrade();
+        scroll.connect_scroll(move |_, _dx, dy| {
+            let Some(viewer) = w.upgrade() else {
+                return glib::Propagation::Stop;
+            };
+            let factor = if dy < 0.0 { 1.1_f64 } else { 1.0 / 1.1 };
+            viewer.apply_zoom(factor);
+            glib::Propagation::Stop
+        });
+
+        self.add_controller(scroll);
+    }
+
+    fn pan_drag(&self, offset_x: f64, offset_y: f64) {
+        let imp = self.imp();
+        let Some((start_x, start_y)) = imp.pan_origin.get() else {
+            return;
+        };
+        imp.pan_x.set(start_x + offset_x);
+        imp.pan_y.set(start_y + offset_y);
+        self.queue_draw();
+    }
+
+    fn apply_zoom(&self, factor: f64) {
+        let imp = self.imp();
+        let old_zoom = imp.zoom.get();
+        let new_zoom = (old_zoom * factor).clamp(0.25, 8.0);
+        if (new_zoom - old_zoom).abs() < f64::EPSILON {
+            return;
+        }
+
+        let w = self.width() as f64;
+        let h = self.height() as f64;
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+
+        let (focus_x, focus_y) = imp.pointer_pos.get();
+        let old_origin_x = (w - w * old_zoom) / 2.0 + imp.pan_x.get();
+        let old_origin_y = (h - h * old_zoom) / 2.0 + imp.pan_y.get();
+        let scale_ratio = new_zoom / old_zoom;
+        let new_origin_x = focus_x - (focus_x - old_origin_x) * scale_ratio;
+        let new_origin_y = focus_y - (focus_y - old_origin_y) * scale_ratio;
+        let centered_origin_x = (w - w * new_zoom) / 2.0;
+        let centered_origin_y = (h - h * new_zoom) / 2.0;
+
+        imp.zoom.set(new_zoom);
+        imp.pan_x.set(new_origin_x - centered_origin_x);
+        imp.pan_y.set(new_origin_y - centered_origin_y);
+        self.queue_draw();
     }
 }
 

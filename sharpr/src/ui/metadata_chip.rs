@@ -30,6 +30,7 @@ mod imp {
             let card = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
             card.add_css_class("osd");
             card.add_css_class("metadata-osd");
+            card.set_valign(gtk4::Align::End);
             card.set_margin_top(12);
             card.set_margin_bottom(12);
             card.set_margin_start(12);
@@ -247,7 +248,7 @@ fn install_css() {
         provider.load_from_string(
             "
             .metadata-osd {
-                padding: 10px 12px;
+                padding: 10px 12px 8px 12px;
                 border-radius: 16px;
                 background-color: rgba(28, 28, 30, 0.72);
                 color: white;
