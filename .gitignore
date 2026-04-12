@@ -1,3 +1,5 @@
 /target/
 DesignDocs/
 .claude/
+.codex
+CLAUDE.md
