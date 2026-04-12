@@ -20,7 +20,11 @@
 - **Compact viewer overlays** — bottom-right metadata and IQ chip plus bottom-left tag chip for quick tag editing
 - **Tagging workflow** — click the tag pill or press `Ctrl+T` to open the inline tag editor; tag search and tag browser are both built in
 - **Rotate, flip, and save** — non-destructive in-view transforms with explicit save/discard actions
-- **AI upscaling** — Real-ESRGAN integration with model selection and before/after comparison
+- **AI upscaling** — Real-ESRGAN integration with a model and output format chooser, saved smart defaults, and a before/after comparison slider
+- **Background operations indicator** — a GNOME Files–style pill in the bottom-left corner tracks all long-running tasks (upscaling, duplicate scanning, thumbnail loading) with live progress bars; auto-dismisses when idle
+- **Filmstrip context menu** — right-click any thumbnail to open in the default viewer, show in the file manager, or move to trash (trash option appears in duplicates mode)
+- **Preferences window** — configure your default library folder, preferred upscale model, and appearance settings in a dedicated three-page preferences dialog
+- **Keyboard shortcuts overlay** — press `?` or open the hamburger menu to see every shortcut in a searchable GNOME-style help overlay
 - **Shared thumbnail caching** — memory cache, on-disk cache, and freedesktop thumbnail cache support for fast folder reloads
 - **Metadata-aware quality scoring** — explainable IQ score derived from resolution, size, and format for wallpaper curation
 
@@ -29,13 +33,16 @@
 Sharpr is already usable as a desktop image library browser and viewer. The current codebase includes:
 
 - folder browsing with persistent last-folder restore
-- thumbnail strip with incremental loading and right-click actions
+- thumbnail strip with incremental loading, position badges, and right-click context menu
 - full-resolution preview with zoom, pan, fullscreen, and edit actions
 - duplicate detection via perceptual hashing
 - tag browser, tag search, and inline per-image tag editing
-- compact GNOME-style metadata and quality OSD
+- compact GNOME-style metadata, quality OSD, and tag overlays
 - quality smart folders that work across the whole indexed library
-- AI upscale workflow with pending-output comparison and commit/discard
+- AI upscale workflow with model and format selection, saved defaults, and commit/discard comparison
+- background operations indicator for all long-running tasks
+- preferences window for library root, upscale defaults, and appearance
+- keyboard shortcuts help overlay
 
 The project is still under active development, but the app is beyond prototype stage and already covers the main browsing and curation loop.
 
@@ -103,6 +110,7 @@ The Flatpak build bundles the binary and models automatically.
 | Delete | Move to trash |
 | Ctrl+T | Open tag editor |
 | Alt+Return | Toggle metadata overlay |
+| Ctrl+, | Open Preferences |
 | ? | Show all shortcuts |
 
 ## License
