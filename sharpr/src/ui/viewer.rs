@@ -722,6 +722,11 @@ impl ViewerPane {
         let imp = self.imp();
         imp.metadata_visible.set(visible);
         imp.metadata_chip.set_enabled(visible);
+        if visible {
+            self.refresh_tag_summary();
+        } else {
+            imp.tag_osd.set_visible(false);
+        }
     }
 
     fn update_quality_indicator(&self, metadata: &crate::metadata::ImageMetadata) {
@@ -1061,7 +1066,7 @@ impl ViewerPane {
 
         imp.tag_label.set_text(&summary);
         imp.tag_button.set_tooltip_text(Some(&tooltip));
-        imp.tag_osd.set_visible(true);
+        imp.tag_osd.set_visible(imp.metadata_visible.get());
     }
 
     fn pan_drag(&self, offset_x: f64, offset_y: f64) {

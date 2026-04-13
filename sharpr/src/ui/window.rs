@@ -1332,7 +1332,7 @@ impl SharprWindow {
         zoom_subsection.append(Some("Fit to Window"), Some("win.zoom-mode::fit"));
         zoom_subsection.append(Some("1:1 Pixels"), Some("win.zoom-mode::1:1"));
         view_section.append_section(None, &zoom_subsection);
-        view_section.append(Some("Show Metadata"), Some("win.show-metadata"));
+        view_section.append(Some("Show Overlay"), Some("win.show-metadata"));
         menu.append_section(Some("View"), &view_section);
 
         let transform_section = gio::Menu::new();
