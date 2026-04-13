@@ -1316,8 +1316,8 @@ impl SharprWindow {
                 if let Some(tags_arc) = state.borrow().tags.clone() {
                     std::thread::spawn(move || {
                         let meta = crate::metadata::exif::ImageMetadata::load(&path);
-                        let tag_list = crate::tags::indexer::index_entry(&path, &meta);
-                        tags_arc.insert_tags(&path, &tag_list);
+                        let tag_list = crate::tags::indexer::auto_tags(&path, &meta);
+                        tags_arc.insert_auto_tags(&path, &tag_list);
                     });
                 }
             }

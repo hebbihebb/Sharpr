@@ -88,7 +88,7 @@ impl TagBrowser {
             .map(|db| db.all_tags())
             .unwrap_or_default()
             .into_iter()
-            .filter(|(_, count)| *count >= 2)
+            .filter(|(_, count)| *count >= 1)
             .collect();
 
         if tags.is_empty() {

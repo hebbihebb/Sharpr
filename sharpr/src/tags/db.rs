@@ -31,6 +31,21 @@ impl TagDatabase {
         })
     }
 
+    /// Insert auto-generated tags (format, resolution) without touching any
+    /// user-created tags. Safe to call on every scan — uses INSERT OR IGNORE.
+    pub fn insert_auto_tags(&self, path: &Path, tags: &[String]) {
+        let Ok(conn) = self.conn.lock() else {
+            return;
+        };
+        let path_str = path.to_string_lossy();
+        for tag in tags {
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO file_tags (path, tag) VALUES (?1, ?2)",
+                params![path_str.as_ref(), tag],
+            );
+        }
+    }
+
     pub fn insert_tags(&self, path: &Path, tags: &[String]) {
         let Ok(mut conn) = self.conn.lock() else {
             return;
