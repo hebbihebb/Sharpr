@@ -287,6 +287,11 @@ impl SharprWindow {
         let outer_split = libadwaita::OverlaySplitView::new();
         outer_split.set_max_sidebar_width(280.0);
         outer_split.set_min_sidebar_width(200.0);
+        outer_split.connect_collapsed_notify(|split| {
+            if split.is_collapsed() {
+                split.set_show_sidebar(false);
+            }
+        });
 
         let open_folder: Rc<dyn Fn(PathBuf)> = {
             let filmstrip_c = filmstrip.clone();
@@ -752,12 +757,11 @@ impl SharprWindow {
         // Adaptive breakpoints
         // -----------------------------------------------------------------------
 
-        // < 1200px: collapse explorer sidebar.
+        // < 900px: collapse explorer sidebar.
         let bp_sidebar = libadwaita::Breakpoint::new(
-            libadwaita::BreakpointCondition::parse("max-width: 1200px").unwrap(),
+            libadwaita::BreakpointCondition::parse("max-width: 900px").unwrap(),
         );
         bp_sidebar.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
-        bp_sidebar.add_setter(&outer_split, "show-sidebar", Some(&false.to_value()));
         self.add_breakpoint(bp_sidebar);
 
         // < 800px: collapse filmstrip into overlay.
