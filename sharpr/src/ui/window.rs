@@ -623,6 +623,7 @@ impl SharprWindow {
 
         let (
             viewer_header,
+            sidebar_toggle,
             preview_title_btn,
             commit_btn,
             discard_btn,
@@ -738,6 +739,11 @@ impl SharprWindow {
             .child(&inner_split)
             .build();
         outer_split.set_content(Some(&content_page));
+
+        sidebar_toggle
+            .bind_property("active", &outer_split, "show-sidebar")
+            .flags(glib::BindingFlags::SYNC_CREATE | glib::BindingFlags::BIDIRECTIONAL)
+            .build();
 
         // -----------------------------------------------------------------------
         // Adaptive breakpoints
@@ -984,7 +990,12 @@ impl SharprWindow {
         // Alt+Left / Alt+Right — navigate between images.
         // Scoped to the window so it fires regardless of focus position.
         // -----------------------------------------------------------------------
-        self.setup_nav_shortcuts(state.clone(), filmstrip.clone(), viewer.clone());
+        self.setup_nav_shortcuts(
+            state.clone(),
+            filmstrip.clone(),
+            viewer.clone(),
+            outer_split.clone(),
+        );
 
         // -----------------------------------------------------------------------
         // Restore last folder
@@ -1010,6 +1021,7 @@ impl SharprWindow {
         state: Rc<RefCell<AppState>>,
         filmstrip: FilmstripPane,
         viewer: ViewerPane,
+        outer_split: libadwaita::OverlaySplitView,
     ) {
         let shortcuts = gtk4::ShortcutController::new();
         // Managed scope means the window itself handles these even when a child
@@ -1072,6 +1084,15 @@ impl SharprWindow {
                         win.fullscreen();
                     }
                 }
+                glib::Propagation::Stop
+            })),
+        ));
+
+        // F9 — Toggle Library sidebar.
+        shortcuts.add_shortcut(gtk4::Shortcut::new(
+            Some(gtk4::ShortcutTrigger::parse_string("F9").unwrap()),
+            Some(gtk4::CallbackAction::new(move |_, _| {
+                outer_split.set_show_sidebar(!outer_split.shows_sidebar());
                 glib::Propagation::Stop
             })),
         ));
@@ -1537,13 +1558,14 @@ impl SharprWindow {
     }
 
     /// Build the viewer header bar.
-    /// Returns `(header, preview_title_btn, commit_btn, discard_btn, edit_commit_btn, edit_discard_btn)`.
+    /// Returns `(header, sidebar_toggle, preview_title_btn, commit_btn, discard_btn, edit_commit_btn, edit_discard_btn)`.
     /// Commit and Discard are initially hidden; the comparison view shows them.
     fn build_viewer_header(
         &self,
         menu_btn: &gtk4::MenuButton,
     ) -> (
         libadwaita::HeaderBar,
+        gtk4::ToggleButton,
         gtk4::Button,
         gtk4::Button,
         gtk4::Button,
@@ -1551,6 +1573,12 @@ impl SharprWindow {
         gtk4::Button,
     ) {
         let header = libadwaita::HeaderBar::new();
+
+        let sidebar_toggle = gtk4::ToggleButton::new();
+        sidebar_toggle.set_icon_name("sidebar-show-symbolic");
+        sidebar_toggle.set_tooltip_text(Some("Toggle Library"));
+        sidebar_toggle.add_css_class("flat");
+        header.pack_start(&sidebar_toggle);
 
         let preview_title_btn = gtk4::Button::with_label("Preview");
         preview_title_btn.add_css_class("flat");
@@ -1587,6 +1615,7 @@ impl SharprWindow {
 
         (
             header,
+            sidebar_toggle,
             preview_title_btn,
             commit_btn,
             discard_btn,
