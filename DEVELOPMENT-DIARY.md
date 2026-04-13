@@ -81,7 +81,7 @@ With the features largely in place, focus shifted to making everything faster an
 - Right-clicking a thumbnail brings up a context menu
 - You can now search for images by their tags
 
-**Compile errors from a batch of external contributions were fixed.** Some code written by an AI assistant (Codex) had a few issues — a library API had changed, there was a borrow ordering problem, and a variable had been renamed. These were all sorted out.
+**A round of compile errors were fixed.** A library API had changed, there was a borrow ordering problem, and a variable had been renamed. These were all sorted out.
 
 ---
 
@@ -105,7 +105,7 @@ With the features largely in place, focus shifted to making everything faster an
 
 **Some early startup quirks were cleaned up.** On a fresh launch, the Duplicates sidebar row was sometimes highlighted even though no scan had been run — fixed by making the app open the first real folder on startup instead. The tags view had also lost its hamburger menu button in a recent refactor, leaving it without a title bar; that was restored by restructuring where the toolbar lives. The tag browser chip design also got a visual refresh at this point.
 
-**README and build version.** A build-time version number was wired in so the About dialog always shows the correct version. The README was refreshed, and a `CLAUDE.md` guidance file was added for future AI-assisted development sessions.
+**README and build version.** A build-time version number was wired in so the About dialog always shows the correct version. The README was refreshed, and a `CLAUDE.md` guidance file was added to document the project structure and build commands.
 
 ---
 
@@ -186,4 +186,4 @@ As of the latest entry, Sharpr is a fully working image library viewer for the L
 - App icon and splash screen bundled into the binary
 - Packaged as a Flatpak for easy installation
 
-The development moved quickly — from nothing to a feature-complete app in just eight days — thanks to a combination of careful upfront planning, AI-assisted code writing, and focused review and bug-fix passes between each major feature.
+From nothing to a feature-complete app in eight days.
