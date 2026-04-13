@@ -284,8 +284,7 @@ impl SharprWindow {
         let content_stack = gtk4::Stack::new();
         let toast_overlay = libadwaita::ToastOverlay::new();
         let tag_browser = state.borrow().tags.clone().map(TagBrowser::new);
-        let outer_split = libadwaita::NavigationSplitView::new();
-        outer_split.set_show_content(true);
+        let outer_split = libadwaita::OverlaySplitView::new();
 
         let open_folder: Rc<dyn Fn(PathBuf)> = {
             let filmstrip_c = filmstrip.clone();
@@ -295,9 +294,7 @@ impl SharprWindow {
             let window_weak = self.downgrade();
             let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
-            let outer_split_c = outer_split.clone();
             Rc::new(move |path: PathBuf| {
-                outer_split_c.set_show_content(true);
                 content_stack.set_visible_child_name("viewer");
                 let cache_max = AppSettings::load().thumbnail_cache_max as usize;
                 state_c
@@ -428,9 +425,7 @@ impl SharprWindow {
             let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
             let toast_overlay_c = toast_overlay.clone();
-            let outer_split_c = outer_split.clone();
             sidebar.connect_duplicates_selected(move || {
-                outer_split_c.set_show_content(true);
                 content_stack.set_visible_child_name("viewer");
                 let hashes = state_c.borrow().library.all_hashes_snapshot();
                 if hashes.is_empty() {
@@ -499,9 +494,7 @@ impl SharprWindow {
             let sidebar_c = sidebar.clone();
             let state_c = state.clone();
             let content_stack = content_stack.clone();
-            let outer_split_c = outer_split.clone();
             sidebar.connect_search_activated(move || {
-                outer_split_c.set_show_content(true);
                 content_stack.set_visible_child_name("viewer");
                 sidebar_c.set_search_selected(true);
                 sidebar_c.set_duplicates_selected(false);
@@ -518,9 +511,7 @@ impl SharprWindow {
         if let Some(tag_browser) = tag_browser.clone() {
             let sidebar_c = sidebar.clone();
             let content_stack_c = content_stack.clone();
-            let outer_split_c = outer_split.clone();
             sidebar.connect_tags_selected(move || {
-                outer_split_c.set_show_content(true);
                 content_stack_c.set_visible_child_name("tags");
                 tag_browser.refresh();
                 sidebar_c.set_tags_selected(true);
@@ -535,9 +526,7 @@ impl SharprWindow {
             let state_c = state.clone();
             let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
-            let outer_split_c = outer_split.clone();
             sidebar.connect_quality_selected(move |class| {
-                outer_split_c.set_show_content(true);
                 content_stack.set_visible_child_name("viewer");
                 let paths: Vec<PathBuf> = {
                     let mut state = state_c.borrow_mut();
@@ -614,15 +603,12 @@ impl SharprWindow {
         self.start_hash_poll(state.clone());
 
         // -----------------------------------------------------------------------
-        // Layout: AdwNavigationSplitView (outer) → AdwOverlaySplitView (inner)
+        // Layout: AdwOverlaySplitView (outer) → AdwOverlaySplitView (inner)
         // -----------------------------------------------------------------------
 
         let menu = Self::build_primary_menu();
-        let sidebar_menu_btn = Self::make_menu_button(&menu);
         let viewer_menu_btn = Self::make_menu_button(&menu);
-        sidebar_menu_btn.set_visible(true);
-        viewer_menu_btn.set_visible(false);
-        sidebar.add_header_end(&sidebar_menu_btn);
+        viewer_menu_btn.set_visible(true);
 
         // Inner split: filmstrip sidebar | viewer content.
         let inner_split = libadwaita::OverlaySplitView::new();
@@ -762,8 +748,6 @@ impl SharprWindow {
             libadwaita::BreakpointCondition::parse("max-width: 1200px").unwrap(),
         );
         bp_sidebar.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
-        bp_sidebar.add_setter(&sidebar_menu_btn, "visible", Some(&false.to_value()));
-        bp_sidebar.add_setter(&viewer_menu_btn, "visible", Some(&true.to_value()));
         self.add_breakpoint(bp_sidebar);
 
         // < 800px: collapse filmstrip into overlay.
@@ -1567,7 +1551,6 @@ impl SharprWindow {
         gtk4::Button,
     ) {
         let header = libadwaita::HeaderBar::new();
-        header.set_show_back_button(false);
 
         let preview_title_btn = gtk4::Button::with_label("Preview");
         preview_title_btn.add_css_class("flat");
