@@ -753,6 +753,14 @@ impl SharprWindow {
             .flags(glib::BindingFlags::SYNC_CREATE | glib::BindingFlags::BIDIRECTIONAL)
             .build();
 
+        let outer_split_c = outer_split.clone();
+        inner_split.connect_collapsed_notify(move |inner| {
+            if inner.is_collapsed() {
+                outer_split_c.set_collapsed(true);
+                outer_split_c.set_show_sidebar(false);
+            }
+        });
+
         // -----------------------------------------------------------------------
         // Adaptive breakpoints
         // -----------------------------------------------------------------------
