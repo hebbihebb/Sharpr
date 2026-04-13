@@ -53,7 +53,7 @@ impl SmartTagger for LocalTagger {
         let resized = image::imageops::resize(&img, 224, 224, FilterType::Triangle);
 
         let means = [0.485f32, 0.456, 0.406];
-        let stds = [0.229f32, 0.224, 0.225];
+        let stds  = [0.229f32, 0.224, 0.225];
         let mut tensor = tract_ndarray::Array4::<f32>::zeros((1, 3, 224, 224));
 
         for y in 0..224usize {
@@ -81,6 +81,7 @@ impl SmartTagger for LocalTagger {
             .collect::<Vec<f32>>();
         let sum: f32 = exps.iter().sum();
         if sum <= 0.0 {
+            eprintln!("[smart] sum of exps is zero");
             return vec![];
         }
         let probs = exps.iter().map(|&e| e / sum).collect::<Vec<f32>>();

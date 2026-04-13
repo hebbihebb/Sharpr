@@ -165,7 +165,7 @@ fn prefetch_decode(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)> {
 fn maybe_download_model() {
     let model_path = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("sharpr/models/mobilenetv2-7.onnx");
+        .join("sharpr/models/resnet18-v1-7.onnx");
     if model_path.exists() {
         return;
     }
@@ -175,7 +175,7 @@ fn maybe_download_model() {
         };
         let _ = std::fs::create_dir_all(dir);
         let tmp = model_path.with_extension("onnx.tmp");
-        let url = "https://github.com/onnx/models/raw/main/validated/vision/classification/mobilenet/model/mobilenetv2-7.onnx";
+        let url = "https://github.com/onnx/models/raw/main/validated/vision/classification/efficientnet-lite4/model/resnet18-v1-7.onnx";
         match ureq::get(url).call() {
             Ok(response) => {
                 let mut reader = response.into_reader();
@@ -202,7 +202,7 @@ impl AppState {
         let upscale_binary = settings.upscaler_binary_path.clone();
         let model_path = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("sharpr/models/mobilenetv2-7.onnx");
+            .join("sharpr/models/resnet18-v1-7.onnx");
         let smart_tagger: Option<Arc<dyn crate::tags::smart::SmartTagger + Send + Sync>> =
             if model_path.exists() {
                 Some(Arc::new(crate::tags::smart::LocalTagger::new(model_path)))

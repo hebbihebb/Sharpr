@@ -117,10 +117,16 @@ mod imp {
                     dialog.add_credit_section(
                         Some("Libraries"),
                         &[
-                            "tract-onnx — Pure-Rust ONNX inference",
                             "image-rs — Image decoding",
                             "SQLite + rusqlite — Tag storage",
                             "rexiv2 / GExiv2 — EXIF metadata",
+                        ],
+                    );
+                    dialog.add_credit_section(
+                        Some("AI Tag Suggestions"),
+                        &[
+                            "ResNet-18 — ONNX Model Zoo",
+                            "tract-onnx — Pure-Rust ONNX inference",
                         ],
                     );
                     dialog.add_credit_section(
