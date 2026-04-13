@@ -285,6 +285,8 @@ impl SharprWindow {
         let toast_overlay = libadwaita::ToastOverlay::new();
         let tag_browser = state.borrow().tags.clone().map(TagBrowser::new);
         let outer_split = libadwaita::OverlaySplitView::new();
+        outer_split.set_max_sidebar_width(280.0);
+        outer_split.set_min_sidebar_width(200.0);
 
         let open_folder: Rc<dyn Fn(PathBuf)> = {
             let filmstrip_c = filmstrip.clone();
@@ -740,6 +742,7 @@ impl SharprWindow {
             .build();
         outer_split.set_content(Some(&content_page));
 
+        sidebar_toggle.set_active(true);
         sidebar_toggle
             .bind_property("active", &outer_split, "show-sidebar")
             .flags(glib::BindingFlags::SYNC_CREATE | glib::BindingFlags::BIDIRECTIONAL)
