@@ -754,6 +754,7 @@ impl SharprWindow {
             libadwaita::BreakpointCondition::parse("max-width: 1200px").unwrap(),
         );
         bp_sidebar.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
+        bp_sidebar.add_setter(&outer_split, "show-sidebar", Some(&false.to_value()));
         self.add_breakpoint(bp_sidebar);
 
         // < 800px: collapse filmstrip into overlay.
