@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -34,6 +34,7 @@ mod imp {
 
     pub struct SidebarPane {
         pub toolbar_view: libadwaita::ToolbarView,
+        pub header_bar: OnceCell<libadwaita::HeaderBar>,
         pub list_box: gtk4::ListBox,
         pub smart_list: gtk4::ListBox,
         pub quality_list: gtk4::ListBox,
@@ -58,6 +59,7 @@ mod imp {
         fn default() -> Self {
             Self {
                 toolbar_view: libadwaita::ToolbarView::new(),
+                header_bar: OnceCell::new(),
                 list_box: gtk4::ListBox::new(),
                 smart_list: gtk4::ListBox::new(),
                 quality_list: gtk4::ListBox::new(),
@@ -112,11 +114,16 @@ impl SidebarPane {
         widget
     }
 
+    pub fn add_header_end(&self, widget: &impl IsA<gtk4::Widget>) {
+        self.imp().header_bar.get().unwrap().pack_end(widget);
+    }
+
     fn build_ui(&self, state: Rc<RefCell<AppState>>) {
         let imp = self.imp();
 
         let header = libadwaita::HeaderBar::new();
         header.set_show_end_title_buttons(false);
+        imp.header_bar.set(header.clone()).unwrap();
 
         let open_btn = gtk4::Button::from_icon_name("folder-open-symbolic");
         open_btn.set_tooltip_text(Some("Open Folder"));
