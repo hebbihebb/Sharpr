@@ -2,6 +2,32 @@
 
 Sharpr is a fast, native image library viewer for GNOME.
 
+## Setting Up AI Upscaling
+
+Sharpr can upscale images using **RealESRGAN-NCNN-Vulkan**, a free open-source tool that runs entirely on your GPU. You need to download and set it up once.
+
+### Step 1 — Download RealESRGAN-NCNN-Vulkan
+
+Go to the releases page and download the Linux build (zip or tar.gz):
+
+[RealESRGAN-NCNN-Vulkan releases](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan/releases)
+
+### Step 2 — Extract the archive
+
+Extract the downloaded archive to a permanent location, for example:
+
+`~/.local/share/realesrgan/`
+
+The folder should contain the `realesrgan-ncnn-vulkan` binary and a `models/` subfolder with the `.bin` and `.param` model files.
+
+### Step 3 — Set the binary path in Preferences
+
+Open Sharpr → menu **(⋮)** → **Preferences** → paste the full path to the binary in the **Upscaler binary** field, for example:
+
+`/home/yourname/.local/share/realesrgan/realesrgan-ncnn-vulkan`
+
+Save Preferences. The **Upscale** action in the viewer is now available.
+
 ## Library
 
 The left panel shows your folder tree. Click any folder to load its images into the filmstrip. Use the **Library** toggle in the header to pin or hide the panel. The panel collapses automatically on narrow windows.

@@ -40,6 +40,22 @@ pub fn show_help_window(parent: &impl gtk4::prelude::IsA<gtk4::Widget>) {
     dialog.present(Some(parent));
 }
 
+fn parse_link(line: &str) -> Option<(String, String)> {
+    // Matches: [label](url) with nothing else on the line
+    let line = line.trim();
+    if !line.starts_with('[') {
+        return None;
+    }
+    let close_bracket = line.find(']')?;
+    let label = line[1..close_bracket].to_string();
+    let rest = &line[close_bracket + 1..];
+    if !rest.starts_with('(') || !rest.ends_with(')') {
+        return None;
+    }
+    let url = rest[1..rest.len() - 1].to_string();
+    Some((label, url))
+}
+
 fn inline_markup(text: &str) -> String {
     let escaped = text
         .replace('&', "&amp;")
@@ -94,6 +110,36 @@ fn add_label(container: &gtk4::Box, markup: &str, css_classes: &[&str], margin_t
     container.append(&label);
 }
 
+fn flush_table(rows: &mut Vec<Vec<String>>, container: &gtk4::Box) {
+    if rows.is_empty() {
+        return;
+    }
+    let grid = gtk4::Grid::new();
+    grid.set_halign(gtk4::Align::Start);
+    grid.set_margin_top(8);
+    grid.set_margin_bottom(8);
+    grid.set_column_spacing(24);
+    grid.set_row_spacing(3);
+
+    for (row_idx, cells) in rows.iter().enumerate() {
+        for (col_idx, cell) in cells.iter().enumerate() {
+            let label = gtk4::Label::new(None);
+            let markup = if row_idx == 0 {
+                format!("<b>{}</b>", glib::markup_escape_text(cell))
+            } else {
+                glib::markup_escape_text(cell).to_string()
+            };
+            label.set_markup(&markup);
+            label.set_halign(gtk4::Align::Start);
+            label.set_xalign(0.0);
+            grid.attach(&label, col_idx as i32, row_idx as i32, 1, 1);
+        }
+    }
+
+    container.append(&grid);
+    rows.clear();
+}
+
 fn flush_paragraph(buf: &mut Vec<String>, container: &gtk4::Box) {
     if buf.is_empty() {
         return;
@@ -109,9 +155,32 @@ fn flush_paragraph(buf: &mut Vec<String>, container: &gtk4::Box) {
 
 fn render_markdown(text: &str, container: &gtk4::Box) {
     let mut para_buf: Vec<String> = Vec::new();
+    let mut table_buf: Vec<Vec<String>> = Vec::new();
     let mut first_heading = true;
 
     for line in text.lines() {
+        // Table rows
+        if line.trim_start().starts_with('|') {
+            flush_paragraph(&mut para_buf, container);
+            if line.contains("---") {
+                // separator — marks end of header row, skip
+                continue;
+            }
+            let cells: Vec<String> = line
+                .trim()
+                .trim_matches('|')
+                .split('|')
+                .map(|s| s.trim().to_string())
+                .collect();
+            table_buf.push(cells);
+            continue;
+        }
+
+        // Flush pending table when we leave a table block
+        if !table_buf.is_empty() {
+            flush_table(&mut table_buf, container);
+        }
+
         if let Some(rest) = line.strip_prefix("### ") {
             flush_paragraph(&mut para_buf, container);
             let markup = format!("<b>{}</b>", glib::markup_escape_text(rest));
@@ -134,21 +203,17 @@ fn render_markdown(text: &str, container: &gtk4::Box) {
             continue;
         }
 
-        if line.trim_start().starts_with('|') {
-            flush_paragraph(&mut para_buf, container);
-            if line.contains("---") {
+        // Standalone link: [label](url)
+        if line.trim_start().starts_with('[') {
+            if let Some((label, url)) = parse_link(line.trim()) {
+                flush_paragraph(&mut para_buf, container);
+                let btn = gtk4::LinkButton::with_label(&url, &label);
+                btn.set_halign(gtk4::Align::Start);
+                btn.set_margin_top(2);
+                btn.set_margin_bottom(2);
+                container.append(&btn);
                 continue;
             }
-            let cells: Vec<&str> = line
-                .trim()
-                .trim_matches('|')
-                .split('|')
-                .map(|s| s.trim())
-                .collect();
-            let row_text = cells.join("    ");
-            let markup = format!("<tt>{}</tt>", glib::markup_escape_text(&row_text));
-            add_label(container, &markup, &[], 1, 1);
-            continue;
         }
 
         if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
@@ -164,6 +229,10 @@ fn render_markdown(text: &str, container: &gtk4::Box) {
         }
 
         para_buf.push(line.to_string());
+    }
+
+    if !table_buf.is_empty() {
+        flush_table(&mut table_buf, container);
     }
     flush_paragraph(&mut para_buf, container);
 }
