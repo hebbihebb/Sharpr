@@ -1,4 +1,5 @@
 pub mod filmstrip;
+pub mod help_window;
 pub mod metadata_chip;
 pub mod ops_indicator;
 pub mod preferences;

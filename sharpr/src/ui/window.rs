@@ -1396,6 +1396,7 @@ impl SharprWindow {
 
         let app_section = gio::Menu::new();
         app_section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));
+        app_section.append(Some("Manual"), Some("win.show-manual"));
         app_section.append(Some("Preferences"), Some("win.show-preferences"));
         app_section.append(Some("About Sharpr"), Some("app.about"));
         menu.append_section(Some("App"), &app_section);
@@ -1462,6 +1463,18 @@ impl SharprWindow {
             });
         }
         self.add_action(&meta_action);
+
+        let manual_action = gio::SimpleAction::new("show-manual", None);
+        {
+            let window_weak = self.downgrade();
+            manual_action.connect_activate(move |_, _| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                crate::ui::help_window::show_help_window(&window);
+            });
+        }
+        self.add_action(&manual_action);
 
         let pref_action = gio::SimpleAction::new("show-preferences", None);
         {

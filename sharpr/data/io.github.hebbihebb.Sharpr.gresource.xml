@@ -3,6 +3,7 @@
   <gresource prefix="/io/github/hebbihebb/Sharpr">
     <file preprocess="xml-stripblanks">help-overlay.ui</file>
     <file>splash.png</file>
-    <file alias="icons/hicolor/512x512/apps/io.github.hebbihebb.Sharpr.png">io.github.hebbihebb.Sharpr.png</file>
+    <file alias="512x512/apps/io.github.hebbihebb.Sharpr.png">io.github.hebbihebb.Sharpr.png</file>
+    <file>manual.md</file>
   </gresource>
 </gresources>

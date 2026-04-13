@@ -91,6 +91,12 @@ mod imp {
                     let Some(app) = app_weak.upgrade() else {
                         return;
                     };
+                    // Re-ensure icon theme has the resource path registered on
+                    // the active display before the dialog resolves the icon.
+                    if let Some(display) = gdk4::Display::default() {
+                        gtk4::IconTheme::for_display(&display)
+                            .add_resource_path("/io/github/hebbihebb/Sharpr");
+                    }
                     let dialog = adw::AboutDialog::new();
                     dialog.set_application_name("Sharpr");
                     dialog.set_application_icon("io.github.hebbihebb.Sharpr");
@@ -98,6 +104,29 @@ mod imp {
                     dialog.set_version(APP_DISPLAY_VERSION);
                     dialog.set_license_type(gtk4::License::Gpl30Only);
                     dialog.set_copyright("© 2026 Sharpr Contributors");
+                    dialog.set_website("https://github.com/hebbihebb/Sharpr");
+                    dialog.set_issue_url("https://github.com/hebbihebb/Sharpr/issues");
+                    dialog.add_credit_section(
+                        Some("Built with"),
+                        &[
+                            "GTK4 — https://gtk.org",
+                            "Libadwaita — https://gnome.pages.gitlab.gnome.org/libadwaita",
+                            "Rust — https://rust-lang.org",
+                        ],
+                    );
+                    dialog.add_credit_section(
+                        Some("Libraries"),
+                        &[
+                            "tract-onnx — Pure-Rust ONNX inference",
+                            "image-rs — Image decoding",
+                            "SQLite + rusqlite — Tag storage",
+                            "rexiv2 / GExiv2 — EXIF metadata",
+                        ],
+                    );
+                    dialog.add_credit_section(
+                        Some("AI Upscaling"),
+                        &["RealESRGAN-NCNN-Vulkan"],
+                    );
                     if let Some(win) = app.active_window() {
                         dialog.present(Some(&win));
                     }
