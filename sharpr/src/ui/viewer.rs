@@ -51,6 +51,11 @@ mod imp {
         pub tag_popover: gtk4::Popover,
         pub tag_entry: gtk4::Entry,
         pub tag_flowbox: gtk4::FlowBox,
+        pub smart_tag_btn: gtk4::Button,
+        pub smart_tag_spinner: gtk4::Spinner,
+        pub suggestions_box: gtk4::Box,
+        pub suggestions_flow: gtk4::FlowBox,
+        pub suggestions_add_all: gtk4::Button,
         pub(super) tag_state: Rc<RefCell<TagPopoverState>>,
         pub comparison: BeforeAfterViewer,
         /// Temp output path while the compare view is active.
@@ -163,6 +168,30 @@ mod imp {
 
             let tag_entry = gtk4::Entry::new();
             let tag_flowbox = gtk4::FlowBox::new();
+            let smart_tag_btn = gtk4::Button::from_icon_name("starred-symbolic");
+            smart_tag_btn.add_css_class("flat");
+            smart_tag_btn.set_tooltip_text(Some("Suggest tags with AI"));
+            smart_tag_btn.set_visible(false);
+
+            let smart_tag_spinner = gtk4::Spinner::new();
+            smart_tag_spinner.set_visible(false);
+            smart_tag_spinner.set_size_request(16, 16);
+
+            let suggestions_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+            suggestions_box.set_visible(false);
+
+            let suggestions_flow = gtk4::FlowBox::new();
+            suggestions_flow.set_selection_mode(gtk4::SelectionMode::None);
+            suggestions_flow.set_row_spacing(4);
+            suggestions_flow.set_column_spacing(4);
+            suggestions_flow.set_homogeneous(false);
+            suggestions_flow.set_valign(gtk4::Align::Start);
+
+            let suggestions_add_all = gtk4::Button::with_label("Add All");
+            suggestions_add_all.add_css_class("suggested-action");
+            suggestions_add_all.set_halign(gtk4::Align::End);
+            suggestions_add_all.set_visible(false);
+
             let tag_state = Rc::new(RefCell::new(TagPopoverState::default()));
 
             let overlay = gtk4::Overlay::new();
@@ -200,6 +229,11 @@ mod imp {
                 tag_popover,
                 tag_entry,
                 tag_flowbox,
+                smart_tag_btn,
+                smart_tag_spinner,
+                suggestions_box,
+                suggestions_flow,
+                suggestions_add_all,
                 tag_state,
                 comparison,
                 pending_output: std::cell::RefCell::new(None),
@@ -910,6 +944,10 @@ impl ViewerPane {
         imp.tag_popover.popup();
     }
 
+    pub fn show_smart_tag_btn(&self) {
+        self.imp().smart_tag_btn.set_visible(true);
+    }
+
     fn build_tag_popover(&self) {
         let imp = self.imp();
 
@@ -931,9 +969,14 @@ impl ViewerPane {
         content.set_margin_end(12);
         content.set_size_request(320, -1);
 
+        let header_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         let title = gtk4::Label::new(Some("Tags"));
         title.set_halign(gtk4::Align::Start);
+        title.set_hexpand(true);
         title.add_css_class("heading");
+        header_row.append(&title);
+        header_row.append(&imp.smart_tag_spinner);
+        header_row.append(&imp.smart_tag_btn);
 
         let chips_scroll = gtk4::ScrolledWindow::new();
         chips_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
@@ -941,8 +984,17 @@ impl ViewerPane {
         chips_scroll.set_max_content_height(180);
         chips_scroll.set_child(Some(&imp.tag_flowbox));
 
-        content.append(&title);
+        content.append(&header_row);
         content.append(&imp.tag_entry);
+
+        let suggestions_label = gtk4::Label::new(Some("Suggestions"));
+        suggestions_label.set_halign(gtk4::Align::Start);
+        suggestions_label.add_css_class("dim-label");
+        imp.suggestions_box.append(&suggestions_label);
+        imp.suggestions_box.append(&imp.suggestions_flow);
+        imp.suggestions_box.append(&imp.suggestions_add_all);
+        content.append(&imp.suggestions_box);
+
         content.append(&chips_scroll);
 
         imp.tag_popover.set_child(Some(&content));
@@ -951,6 +1003,17 @@ impl ViewerPane {
         let entry = imp.tag_entry.clone();
         imp.tag_popover.connect_show(move |_| {
             entry.grab_focus();
+        });
+
+        let sugg_box = imp.suggestions_box.clone();
+        let sugg_flow = imp.suggestions_flow.clone();
+        let sugg_add_all = imp.suggestions_add_all.clone();
+        imp.tag_popover.connect_closed(move |_| {
+            while let Some(child) = sugg_flow.first_child() {
+                sugg_flow.remove(&child);
+            }
+            sugg_add_all.set_visible(false);
+            sugg_box.set_visible(false);
         });
 
         let key = gtk4::EventControllerKey::new();
@@ -982,6 +1045,135 @@ impl ViewerPane {
             entry.set_text("");
             drop(state);
             viewer.refresh_tag_chips();
+            viewer.refresh_tag_summary();
+        });
+
+        let viewer_weak = self.downgrade();
+        imp.smart_tag_btn.connect_clicked(move |btn| {
+            let Some(viewer) = viewer_weak.upgrade() else {
+                return;
+            };
+            let imp = viewer.imp();
+
+            let Some((rgba, w, h)) = imp.current_rgba.borrow().clone() else {
+                return;
+            };
+
+            let tagger = imp
+                .state
+                .borrow()
+                .as_ref()
+                .and_then(|s| s.borrow().smart_tagger.clone());
+            let Some(tagger) = tagger else {
+                return;
+            };
+
+            let db_path = {
+                let state = imp.tag_state.borrow();
+                state.db.clone().zip(state.path.clone())
+            };
+            let Some((db, path)) = db_path else {
+                return;
+            };
+
+            btn.set_visible(false);
+            imp.smart_tag_spinner.set_spinning(true);
+            imp.smart_tag_spinner.set_visible(true);
+            while let Some(child) = imp.suggestions_flow.first_child() {
+                imp.suggestions_flow.remove(&child);
+            }
+            imp.suggestions_add_all.set_visible(false);
+            imp.suggestions_box.set_visible(false);
+
+            let (tx, rx) = async_channel::bounded::<Vec<String>>(1);
+            std::thread::spawn(move || {
+                let tags = tagger.suggest_tags(&rgba, w, h);
+                tx.send_blocking(tags).ok();
+            });
+
+            let viewer_weak2 = viewer.downgrade();
+            let db2 = db.clone();
+            let path2 = path.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let Ok(tags) = rx.recv().await else {
+                    return;
+                };
+                let Some(viewer) = viewer_weak2.upgrade() else {
+                    return;
+                };
+                let imp = viewer.imp();
+
+                imp.smart_tag_spinner.set_spinning(false);
+                imp.smart_tag_spinner.set_visible(false);
+                imp.smart_tag_btn.set_visible(true);
+
+                if tags.is_empty() {
+                    return;
+                }
+
+                for tag in &tags {
+                    let chip = gtk4::Button::with_label(tag);
+                    chip.add_css_class("flat");
+                    chip.add_css_class("pill");
+                    chip.add_css_class("suggested-tag-chip");
+
+                    let db3 = db2.clone();
+                    let path3 = path2.clone();
+                    let tag3 = tag.clone();
+                    let viewer_weak3 = viewer.downgrade();
+                    chip.connect_clicked(move |chip| {
+                        db3.add_tag(&path3, &tag3);
+                        if let Some(parent) = chip.parent() {
+                            if let Some(flow_child) = parent.parent() {
+                                if let Ok(fc) = flow_child.downcast::<gtk4::FlowBoxChild>() {
+                                    if let Some(flow) = fc.parent() {
+                                        if let Ok(fb) = flow.downcast::<gtk4::FlowBox>() {
+                                            fb.remove(&fc);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(viewer) = viewer_weak3.upgrade() {
+                            viewer.refresh_tag_summary();
+                        }
+                    });
+
+                    let child = gtk4::FlowBoxChild::new();
+                    child.set_child(Some(&chip));
+                    imp.suggestions_flow.insert(&child, -1);
+                }
+
+                imp.suggestions_add_all.set_visible(true);
+                imp.suggestions_box.set_visible(true);
+            });
+        });
+
+        let viewer_weak = self.downgrade();
+        imp.suggestions_add_all.connect_clicked(move |_| {
+            let Some(viewer) = viewer_weak.upgrade() else {
+                return;
+            };
+            let imp = viewer.imp();
+            let state = imp.tag_state.borrow();
+            let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) else {
+                return;
+            };
+            drop(state);
+
+            let mut child = imp.suggestions_flow.first_child();
+            while let Some(flow_child) = child {
+                child = flow_child.next_sibling();
+                if let Ok(fc) = flow_child.downcast::<gtk4::FlowBoxChild>() {
+                    if let Some(btn) = fc.child().and_then(|w| w.downcast::<gtk4::Button>().ok()) {
+                        db.add_tag(&path, &btn.label().unwrap_or_default());
+                    }
+                    imp.suggestions_flow.remove(&fc);
+                }
+            }
+
+            imp.suggestions_add_all.set_visible(false);
+            imp.suggestions_box.set_visible(false);
             viewer.refresh_tag_summary();
         });
     }

@@ -10,6 +10,8 @@ name = "sharpr"
 path = "src/main.rs"
 
 [dependencies]
+tract-onnx = "0.21"
+ureq = { version = "2", features = ["tls"] }
 # GTK4 + Libadwaita UI stack
 gtk4 = { version = "0.9", features = ["v4_12"] }
 libadwaita = { version = "0.7", features = ["v1_5"] }

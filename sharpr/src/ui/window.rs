@@ -32,6 +32,7 @@ pub struct AppState {
     pub library: LibraryManager,
     pub settings: AppSettings,
     pub tags: Option<Arc<crate::tags::TagDatabase>>,
+    pub smart_tagger: Option<Arc<dyn crate::tags::smart::SmartTagger + Send + Sync>>,
     /// Cached path to the active Vulkan upscaler binary after successful detection.
     pub upscale_binary: Option<PathBuf>,
     pub ops: crate::ops::queue::OpQueue,
@@ -161,19 +162,63 @@ fn prefetch_decode(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)> {
     Some((rgba.into_raw(), w, h))
 }
 
+fn maybe_download_model() {
+    let model_path = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("sharpr/models/mobilenetv2-7.onnx");
+    if model_path.exists() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let Some(dir) = model_path.parent() else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(dir);
+        let tmp = model_path.with_extension("onnx.tmp");
+        let url = "https://github.com/onnx/models/raw/main/validated/vision/classification/mobilenet/model/mobilenetv2-7.onnx";
+        match ureq::get(url).call() {
+            Ok(response) => {
+                let mut reader = response.into_reader();
+                if let Ok(mut file) = std::fs::File::create(&tmp) {
+                    if std::io::copy(&mut reader, &mut file).is_ok() {
+                        let _ = std::fs::rename(&tmp, &model_path);
+                    } else {
+                        let _ = std::fs::remove_file(&tmp);
+                    }
+                }
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+    });
+}
+
 impl AppState {
     fn new(ops: crate::ops::queue::OpQueue) -> Self {
         let settings = AppSettings::load();
         let mut library = LibraryManager::new();
         library.set_thumbnail_cache_max(settings.thumbnail_cache_max as usize);
         let upscale_binary = settings.upscaler_binary_path.clone();
-        Self {
+        let model_path = dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("sharpr/models/mobilenetv2-7.onnx");
+        let smart_tagger: Option<Arc<dyn crate::tags::smart::SmartTagger + Send + Sync>> =
+            if model_path.exists() {
+                Some(Arc::new(crate::tags::smart::LocalTagger::new(model_path)))
+            } else {
+                None
+            };
+        let state = Self {
             library,
             settings,
             tags: crate::tags::TagDatabase::open().ok().map(Arc::new),
+            smart_tagger,
             upscale_binary,
             ops,
-        }
+        };
+        maybe_download_model();
+        state
     }
 }
 
@@ -270,6 +315,9 @@ impl SharprWindow {
         let filmstrip = FilmstripPane::new(state.clone());
         let viewer = ViewerPane::new(state.clone());
         viewer.set_metadata_visible(state.borrow().settings.metadata_visible);
+        if state.borrow().smart_tagger.is_some() {
+            viewer.show_smart_tag_btn();
+        }
 
         if let Some(worker) = self.imp().thumbnail_worker.borrow().as_ref() {
             filmstrip.set_thumbnail_sender(
