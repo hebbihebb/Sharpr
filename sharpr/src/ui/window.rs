@@ -757,9 +757,9 @@ impl SharprWindow {
         // Adaptive breakpoints
         // -----------------------------------------------------------------------
 
-        // < 900px: collapse explorer sidebar.
+        // < 1200px: collapse explorer sidebar.
         let bp_sidebar = libadwaita::Breakpoint::new(
-            libadwaita::BreakpointCondition::parse("max-width: 900px").unwrap(),
+            libadwaita::BreakpointCondition::parse("max-width: 1200px").unwrap(),
         );
         bp_sidebar.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
         self.add_breakpoint(bp_sidebar);
