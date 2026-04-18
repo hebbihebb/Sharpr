@@ -69,22 +69,43 @@ mod imp {
     impl WidgetImpl for BeforeAfterViewer {
         fn snapshot(&self, snapshot: &gtk4::Snapshot) {
             let widget = self.obj();
-            let w = widget.width() as f32;
-            let h = widget.height() as f32;
+            let w = widget.width() as f64;
+            let h = widget.height() as f64;
             if w <= 0.0 || h <= 0.0 {
                 return;
             }
 
-            let divider_x = (self.divider.get() as f32 * w).clamp(0.0, w);
-            let full = gtk4::graphene::Rect::new(0.0, 0.0, w, h);
-            let zoom = self.zoom.get() as f32;
-            let pan_x = self.pan_x.get() as f32;
-            let pan_y = self.pan_y.get() as f32;
-            let img_w = w * zoom;
-            let img_h = h * zoom;
+            let (img_intrinsic_w, img_intrinsic_h) = {
+                let after = self.after_texture.borrow();
+                let before = self.before_texture.borrow();
+                if let Some(tex) = after.as_ref().or(before.as_ref()) {
+                    (tex.width() as f64, tex.height() as f64)
+                } else {
+                    (w, h)
+                }
+            };
+
+            let base_scale = if img_intrinsic_w > 0.0 && img_intrinsic_h > 0.0 {
+                (w / img_intrinsic_w).min(h / img_intrinsic_h)
+            } else {
+                1.0
+            };
+
+            let divider_x = (self.divider.get() * w).clamp(0.0, w) as f32;
+            let zoom = self.zoom.get();
+            let pan_x = self.pan_x.get();
+            let pan_y = self.pan_y.get();
+            let img_w = img_intrinsic_w * base_scale * zoom;
+            let img_h = img_intrinsic_h * base_scale * zoom;
             let origin_x = (w - img_w) / 2.0 + pan_x;
             let origin_y = (h - img_h) / 2.0 + pan_y;
-            let img_rect = gtk4::graphene::Rect::new(origin_x, origin_y, img_w, img_h);
+            let img_rect = gtk4::graphene::Rect::new(
+                origin_x as f32,
+                origin_y as f32,
+                img_w as f32,
+                img_h as f32,
+            );
+            let full = gtk4::graphene::Rect::new(0.0, 0.0, w as f32, h as f32);
 
             // Opaque dark background so RGBA images with transparency don't
             // show a GTK checkerboard pattern.
@@ -92,14 +113,19 @@ mod imp {
 
             // Before — left of divider.
             if let Some(ref tex) = *self.before_texture.borrow() {
-                snapshot.push_clip(&gtk4::graphene::Rect::new(0.0, 0.0, divider_x, h));
+                snapshot.push_clip(&gtk4::graphene::Rect::new(0.0, 0.0, divider_x, h as f32));
                 snapshot.append_texture(tex, &img_rect);
                 snapshot.pop();
             }
 
             // After — right of divider.
             if let Some(ref tex) = *self.after_texture.borrow() {
-                snapshot.push_clip(&gtk4::graphene::Rect::new(divider_x, 0.0, w - divider_x, h));
+                snapshot.push_clip(&gtk4::graphene::Rect::new(
+                    divider_x,
+                    0.0,
+                    (w as f32) - divider_x,
+                    h as f32,
+                ));
                 snapshot.append_texture(tex, &img_rect);
                 snapshot.pop();
             }
@@ -107,14 +133,19 @@ mod imp {
             // Divider line.
             snapshot.append_color(
                 &gdk4::RGBA::new(1.0, 1.0, 1.0, 0.85),
-                &gtk4::graphene::Rect::new(divider_x - 1.0, 0.0, 2.0, h),
+                &gtk4::graphene::Rect::new(divider_x - 1.0, 0.0, 2.0, h as f32),
             );
 
             // Drag handle — small white square centred on the divider.
             let nub = 20.0_f32;
             snapshot.append_color(
                 &gdk4::RGBA::new(1.0, 1.0, 1.0, 0.9),
-                &gtk4::graphene::Rect::new(divider_x - nub / 2.0, h / 2.0 - nub / 2.0, nub, nub),
+                &gtk4::graphene::Rect::new(
+                    divider_x - nub / 2.0,
+                    (h as f32) / 2.0 - nub / 2.0,
+                    nub,
+                    nub,
+                ),
             );
         }
     }
@@ -130,6 +161,18 @@ impl BeforeAfterViewer {
         let widget: Self = glib::Object::new();
         widget.set_hexpand(true);
         widget.set_vexpand(true);
+        let shortcuts = gtk4::ShortcutController::new();
+        shortcuts.set_scope(gtk4::ShortcutScope::Managed);
+        shortcuts.add_shortcut(gtk4::Shortcut::new(
+            Some(gtk4::ShortcutTrigger::parse_string("<Control>0").unwrap()),
+            Some(gtk4::CallbackAction::new(move |widget, _| {
+                if let Some(viewer) = widget.downcast_ref::<BeforeAfterViewer>() {
+                    viewer.reset_zoom();
+                }
+                glib::Propagation::Stop
+            })),
+        ));
+        widget.add_controller(shortcuts);
         widget.setup_motion();
         widget.setup_drag();
         widget.setup_zoom();
@@ -313,8 +356,10 @@ impl BeforeAfterViewer {
             let Some((start_x, start_y)) = imp.pan_origin.get() else {
                 return;
             };
-            imp.pan_x.set(start_x + offset_x);
-            imp.pan_y.set(start_y + offset_y);
+            let (pan_x, pan_y) =
+                viewer.clamp_pan(start_x + offset_x, start_y + offset_y, imp.zoom.get());
+            imp.pan_x.set(pan_x);
+            imp.pan_y.set(pan_y);
             viewer.queue_draw();
         });
 
@@ -330,15 +375,19 @@ impl BeforeAfterViewer {
 
     fn setup_zoom(&self) {
         let scroll = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
+        scroll.set_propagation_phase(gtk4::PropagationPhase::Capture);
 
         let w = self.downgrade();
-        scroll.connect_scroll(move |_, _dx, dy| {
-            let Some(viewer) = w.upgrade() else {
+        scroll.connect_scroll(move |ctrl, _dx, dy| {
+            if let Some(viewer) = w.upgrade() {
+                if let Some((x, y)) = ctrl.current_event().and_then(|event| event.position()) {
+                    viewer.imp().pointer_pos.set((x, y));
+                }
+                let factor = if dy < 0.0 { 1.1_f64 } else { 1.0 / 1.1 };
+                viewer.apply_zoom(factor);
                 return glib::Propagation::Stop;
-            };
-            let factor = if dy < 0.0 { 1.1_f64 } else { 1.0 / 1.1 };
-            viewer.apply_zoom(factor);
-            glib::Propagation::Stop
+            }
+            glib::Propagation::Proceed
         });
 
         self.add_controller(scroll);
@@ -349,15 +398,16 @@ impl BeforeAfterViewer {
         let Some((start_x, start_y)) = imp.pan_origin.get() else {
             return;
         };
-        imp.pan_x.set(start_x + offset_x);
-        imp.pan_y.set(start_y + offset_y);
+        let (pan_x, pan_y) = self.clamp_pan(start_x + offset_x, start_y + offset_y, imp.zoom.get());
+        imp.pan_x.set(pan_x);
+        imp.pan_y.set(pan_y);
         self.queue_draw();
     }
 
     fn apply_zoom(&self, factor: f64) {
         let imp = self.imp();
         let old_zoom = imp.zoom.get();
-        let new_zoom = (old_zoom * factor).clamp(0.25, 8.0);
+        let new_zoom = (old_zoom * factor).clamp(1.0, 8.0);
         if (new_zoom - old_zoom).abs() < f64::EPSILON {
             return;
         }
@@ -368,19 +418,77 @@ impl BeforeAfterViewer {
             return;
         }
 
+        let (img_intrinsic_w, img_intrinsic_h) = {
+            let after = imp.after_texture.borrow();
+            let before = imp.before_texture.borrow();
+            if let Some(tex) = after.as_ref().or(before.as_ref()) {
+                (tex.width() as f64, tex.height() as f64)
+            } else {
+                (w, h)
+            }
+        };
+        let base_scale = if img_intrinsic_w > 0.0 && img_intrinsic_h > 0.0 {
+            (w / img_intrinsic_w).min(h / img_intrinsic_h)
+        } else {
+            1.0
+        };
+
+        let img_w_old = img_intrinsic_w * base_scale * old_zoom;
+        let img_h_old = img_intrinsic_h * base_scale * old_zoom;
+        let img_w_new = img_intrinsic_w * base_scale * new_zoom;
+        let img_h_new = img_intrinsic_h * base_scale * new_zoom;
+
         let (focus_x, focus_y) = imp.pointer_pos.get();
-        let old_origin_x = (w - w * old_zoom) / 2.0 + imp.pan_x.get();
-        let old_origin_y = (h - h * old_zoom) / 2.0 + imp.pan_y.get();
+        let old_origin_x = (w - img_w_old) / 2.0 + imp.pan_x.get();
+        let old_origin_y = (h - img_h_old) / 2.0 + imp.pan_y.get();
         let scale_ratio = new_zoom / old_zoom;
         let new_origin_x = focus_x - (focus_x - old_origin_x) * scale_ratio;
         let new_origin_y = focus_y - (focus_y - old_origin_y) * scale_ratio;
-        let centered_origin_x = (w - w * new_zoom) / 2.0;
-        let centered_origin_y = (h - h * new_zoom) / 2.0;
+        let centered_origin_x = (w - img_w_new) / 2.0;
+        let centered_origin_y = (h - img_h_new) / 2.0;
+        let (pan_x, pan_y) = self.clamp_pan(
+            new_origin_x - centered_origin_x,
+            new_origin_y - centered_origin_y,
+            new_zoom,
+        );
 
         imp.zoom.set(new_zoom);
-        imp.pan_x.set(new_origin_x - centered_origin_x);
-        imp.pan_y.set(new_origin_y - centered_origin_y);
+        imp.pan_x.set(pan_x);
+        imp.pan_y.set(pan_y);
         self.queue_draw();
+    }
+
+    fn clamp_pan(&self, pan_x: f64, pan_y: f64, zoom: f64) -> (f64, f64) {
+        let w = self.width() as f64;
+        let h = self.height() as f64;
+        if w <= 0.0 || h <= 0.0 {
+            return (pan_x, pan_y);
+        }
+
+        let imp = self.imp();
+        let (img_intrinsic_w, img_intrinsic_h) = {
+            let after = imp.after_texture.borrow();
+            let before = imp.before_texture.borrow();
+            if let Some(tex) = after.as_ref().or(before.as_ref()) {
+                (tex.width() as f64, tex.height() as f64)
+            } else {
+                (w, h)
+            }
+        };
+        let base_scale = if img_intrinsic_w > 0.0 && img_intrinsic_h > 0.0 {
+            (w / img_intrinsic_w).min(h / img_intrinsic_h)
+        } else {
+            1.0
+        };
+        let img_w = img_intrinsic_w * base_scale * zoom;
+        let img_h = img_intrinsic_h * base_scale * zoom;
+        let max_pan_x = ((img_w - w) / 2.0).max(0.0);
+        let max_pan_y = ((img_h - h) / 2.0).max(0.0);
+
+        (
+            pan_x.clamp(-max_pan_x, max_pan_x),
+            pan_y.clamp(-max_pan_y, max_pan_y),
+        )
     }
 }
 
