@@ -47,6 +47,8 @@ mod imp {
         pub spinner: gtk4::Spinner,
         /// OSD progress bar — shown during an upscale job, hidden otherwise.
         pub progress_bar: gtk4::ProgressBar,
+        pub zoom_label: gtk4::Label,
+        pub zoom_hide_source: RefCell<Option<glib::SourceId>>,
         pub tag_anchor: gtk4::Box,
         pub tag_popover: gtk4::Popover,
         pub tag_entry: gtk4::Entry,
@@ -154,6 +156,18 @@ mod imp {
             progress_bar.set_valign(gtk4::Align::End);
             progress_bar.set_visible(false);
 
+            let zoom_label = gtk4::Label::new(None);
+            zoom_label.add_css_class("osd");
+            zoom_label.add_css_class("title-2");
+            zoom_label.add_css_class("zoom-osd");
+            zoom_label.set_halign(gtk4::Align::Center);
+            zoom_label.set_valign(gtk4::Align::Center);
+            zoom_label.set_margin_start(24);
+            zoom_label.set_margin_end(24);
+            zoom_label.set_margin_top(16);
+            zoom_label.set_margin_bottom(16);
+            zoom_label.set_visible(false);
+
             let tag_anchor = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             tag_anchor.set_halign(gtk4::Align::End);
             tag_anchor.set_valign(gtk4::Align::Start);
@@ -201,6 +215,7 @@ mod imp {
             overlay.add_overlay(&metadata_chip);
             overlay.add_overlay(&spinner);
             overlay.add_overlay(&progress_bar);
+            overlay.add_overlay(&zoom_label);
 
             let comparison = BeforeAfterViewer::new();
 
@@ -225,6 +240,8 @@ mod imp {
                 tag_add_button,
                 spinner,
                 progress_bar,
+                zoom_label,
+                zoom_hide_source: RefCell::new(None),
                 tag_anchor,
                 tag_popover,
                 tag_entry,
@@ -416,6 +433,20 @@ impl ViewerPane {
             glib::Propagation::Proceed
         });
         self.add_controller(scroll);
+
+        let w = self.downgrade();
+        imp.scrolled_window.connect_notify_local(Some("width"), move |_, _| {
+            if let Some(viewer) = w.upgrade() {
+                viewer.update_picture_zoom();
+            }
+        });
+
+        let w = self.downgrade();
+        imp.scrolled_window.connect_notify_local(Some("height"), move |_, _| {
+            if let Some(viewer) = w.upgrade() {
+                viewer.update_picture_zoom();
+            }
+        });
 
         let viewer_weak = self.downgrade();
         imp.tag_button.connect_clicked(move |_| {
@@ -650,7 +681,12 @@ impl ViewerPane {
     fn apply_zoom(&self, factor: f64) {
         let imp = self.imp();
         let old_zoom = imp.zoom.get();
-        let new_zoom = (old_zoom * factor).clamp(0.05, 20.0);
+        let Some(paintable) = imp.picture.paintable() else {
+            return;
+        };
+        let fit_scale = self.fit_scale_for_paintable(&paintable);
+        let max_zoom = (1.0 / fit_scale.max(f64::EPSILON)).max(1.0) * 20.0;
+        let new_zoom = (old_zoom * factor).clamp(1.0, max_zoom);
         if (new_zoom - old_zoom).abs() < f64::EPSILON {
             return;
         }
@@ -662,27 +698,25 @@ impl ViewerPane {
         let content_focus_y = vadj.value() + focus_y;
         imp.zoom.set(new_zoom);
 
-        let Some(paintable) = imp.picture.paintable() else {
-            return;
-        };
-
         let base_width = paintable.intrinsic_width().max(1);
         let base_height = paintable.intrinsic_height().max(1);
-        let scaled_width = (base_width as f64 * new_zoom).round().max(1.0) as i32;
-        let scaled_height = (base_height as f64 * new_zoom).round().max(1.0) as i32;
+        let scaled_width = (base_width as f64 * fit_scale * new_zoom).round().max(1.0) as i32;
+        let scaled_height = (base_height as f64 * fit_scale * new_zoom).round().max(1.0) as i32;
 
         imp.picture.set_size_request(scaled_width, scaled_height);
 
         let scale_ratio = new_zoom / old_zoom;
         self.set_adjustment_value(&hadj, content_focus_x * scale_ratio - focus_x);
         self.set_adjustment_value(&vadj, content_focus_y * scale_ratio - focus_y);
+        let pct = (new_zoom * 100.0).round() as u32;
+        self.show_zoom_osd(&format!("{pct}%"));
     }
 
     pub fn reset_zoom(&self) {
         let imp = self.imp();
         imp.zoom.set(1.0);
         imp.zoom_mode.set(ZoomMode::Fit);
-        imp.picture.set_size_request(-1, -1);
+        self.update_picture_zoom();
         imp.scrolled_window.hadjustment().set_value(0.0);
         imp.scrolled_window.vadjustment().set_value(0.0);
         self.sync_zoom_button();
@@ -704,7 +738,7 @@ impl ViewerPane {
         match new_mode {
             ZoomMode::Fit => {
                 imp.zoom.set(1.0);
-                imp.picture.set_size_request(-1, -1);
+                self.update_picture_zoom();
                 imp.scrolled_window.hadjustment().set_value(0.0);
                 imp.scrolled_window.vadjustment().set_value(0.0);
             }
@@ -712,10 +746,9 @@ impl ViewerPane {
                 let Some(paintable) = imp.picture.paintable() else {
                     return;
                 };
-                let w = paintable.intrinsic_width().max(1);
-                let h = paintable.intrinsic_height().max(1);
-                imp.zoom.set(1.0);
-                imp.picture.set_size_request(w, h);
+                let fit_scale = self.fit_scale_for_paintable(&paintable);
+                imp.zoom.set((1.0 / fit_scale.max(f64::EPSILON)).max(1.0));
+                self.update_picture_zoom();
                 // Centre the scroll on the image after layout.
                 let hadj = imp.scrolled_window.hadjustment();
                 let vadj = imp.scrolled_window.vadjustment();
@@ -729,7 +762,77 @@ impl ViewerPane {
                 });
             }
         }
+        if new_mode == ZoomMode::OneToOne {
+            let pct = (imp.zoom.get() * 100.0).round() as u32;
+            self.show_zoom_osd(&format!("{pct}%"));
+        }
         self.sync_zoom_button();
+    }
+
+    fn fit_scale_for_paintable(&self, paintable: &gdk4::Paintable) -> f64 {
+        let base_width = paintable.intrinsic_width().max(1) as f64;
+        let base_height = paintable.intrinsic_height().max(1) as f64;
+        let imp = self.imp();
+        let hadj = imp.scrolled_window.hadjustment();
+        let vadj = imp.scrolled_window.vadjustment();
+        let viewport_width = if hadj.page_size() > 0.0 {
+            hadj.page_size()
+        } else {
+            imp.scrolled_window.width() as f64
+        };
+        let viewport_height = if vadj.page_size() > 0.0 {
+            vadj.page_size()
+        } else {
+            imp.scrolled_window.height() as f64
+        };
+
+        if viewport_width <= 0.0 || viewport_height <= 0.0 {
+            1.0
+        } else {
+            (viewport_width / base_width)
+                .min(viewport_height / base_height)
+                .min(1.0)
+        }
+    }
+
+    fn update_picture_zoom(&self) {
+        let imp = self.imp();
+        let Some(paintable) = imp.picture.paintable() else {
+            return;
+        };
+        if imp.zoom_mode.get() == ZoomMode::Fit && (imp.zoom.get() - 1.0).abs() < f64::EPSILON {
+            imp.picture.set_size_request(-1, -1);
+            return;
+        }
+
+        let fit_scale = self.fit_scale_for_paintable(&paintable);
+        let render_scale = (fit_scale * imp.zoom.get()).max(0.01);
+        let width = (paintable.intrinsic_width().max(1) as f64 * render_scale)
+            .round()
+            .max(1.0) as i32;
+        let height = (paintable.intrinsic_height().max(1) as f64 * render_scale)
+            .round()
+            .max(1.0) as i32;
+        imp.picture.set_size_request(width, height);
+    }
+
+    fn show_zoom_osd(&self, text: &str) {
+        let imp = self.imp();
+        imp.zoom_label.set_text(text);
+        imp.zoom_label.set_visible(true);
+        if let Some(source) = imp.zoom_hide_source.borrow_mut().take() {
+            source.remove();
+        }
+        let w = self.downgrade();
+        let source =
+            glib::timeout_add_local_once(std::time::Duration::from_millis(2000), move || {
+                if let Some(viewer) = w.upgrade() {
+                    let imp = viewer.imp();
+                    imp.zoom_label.set_visible(false);
+                    *imp.zoom_hide_source.borrow_mut() = None;
+                }
+            });
+        *imp.zoom_hide_source.borrow_mut() = Some(source);
     }
 
     fn sync_zoom_button(&self) {
@@ -1720,6 +1823,12 @@ fn install_viewer_osd_css() {
             .tag-osd-add {
                 min-width: 28px;
                 padding: 0;
+            }
+            .zoom-osd {
+                padding: 10px 18px;
+                border-radius: 18px;
+                background-color: rgba(28, 28, 30, 0.78);
+                box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
             }
             ",
         );
