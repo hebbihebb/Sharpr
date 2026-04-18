@@ -321,6 +321,22 @@ impl SharprWindow {
             glib::Propagation::Proceed
         });
 
+        // Clean up any upscale artifacts left behind by a previous crash.
+        {
+            let last_folder = self.imp().state.borrow().settings.last_folder.clone();
+            if let Some(folder) = last_folder {
+                let upscaled_dir = folder.join("upscaled");
+                if let Ok(entries) = std::fs::read_dir(&upscaled_dir) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        if name.contains(".pending-") || name.contains(".ncnn-intermediate") {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+
         // -----------------------------------------------------------------------
         // Build panes
         // -----------------------------------------------------------------------
