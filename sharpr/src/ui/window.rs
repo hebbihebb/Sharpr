@@ -628,33 +628,58 @@ impl SharprWindow {
             let content_stack = content_stack.clone();
             sidebar.connect_quality_selected(move |class| {
                 content_stack.set_visible_child_name("viewer");
-                let paths: Vec<PathBuf> = {
-                    let mut state = state_c.borrow_mut();
-                    let settings = state.settings.clone();
-                    state.library.paths_for_quality_class(&settings, class)
-                };
 
-                state_c.borrow_mut().library.load_virtual(&paths);
-                sidebar_c.set_quality_selected(Some(class));
-                sidebar_c.set_search_selected(false);
-                sidebar_c.set_duplicates_selected(false);
-                sidebar_c.set_tags_selected(false);
-                viewer_c.clear();
-                filmstrip_c.refresh_virtual();
-                let first = state_c
-                    .borrow()
-                    .library
-                    .entry_at(0)
-                    .map(|e: ImageEntry| e.path());
-                if let Some(path) = first {
-                    state_c.borrow_mut().library.selected_index = Some(0);
-                    filmstrip_c.navigate_to(0);
-                    viewer_c.load_image(path);
-                }
-                if filmstrip_c.is_search_active() {
-                    suppress_search_restore_c.set(true);
-                    filmstrip_c.deactivate_search();
-                }
+                let (indexed_paths, current_folder, metadata_cache) = {
+                    state_c.borrow().library.bg_scan_quality_prep()
+                };
+                let library_root = state_c.borrow().settings.library_root.clone();
+                let op = state_c.borrow().ops.add(format!("Scanning for {} quality", class.label()));
+
+                let (tx, rx) = async_channel::bounded(1);
+                std::thread::spawn(move || {
+                    let result = crate::model::library::LibraryManager::compute_paths_for_quality_class(
+                        library_root, class, indexed_paths, current_folder, metadata_cache
+                    );
+                    let _ = tx.send_blocking(result);
+                });
+
+                let filmstrip_rx = filmstrip_c.clone();
+                let viewer_rx = viewer_c.clone();
+                let sidebar_rx = sidebar_c.clone();
+                let state_rx = state_c.clone();
+                let suppress_rx = suppress_search_restore_c.clone();
+                
+                glib::MainContext::default().spawn_local(async move {
+                    let Ok((new_indexed, new_cache, paths)) = rx.recv().await else {
+                        op.fail("Quality scan failed");
+                        return;
+                    };
+                    
+                    state_rx.borrow_mut().library.bg_scan_quality_finish(new_indexed, new_cache);
+                    state_rx.borrow_mut().library.load_virtual(&paths);
+                    sidebar_rx.set_quality_selected(Some(class));
+                    sidebar_rx.set_search_selected(false);
+                    sidebar_rx.set_duplicates_selected(false);
+                    sidebar_rx.set_tags_selected(false);
+                    viewer_rx.clear();
+                    filmstrip_rx.refresh_virtual();
+                    let first = state_rx
+                        .borrow()
+                        .library
+                        .entry_at(0)
+                        .map(|e: crate::model::ImageEntry| e.path());
+                    
+                    if let Some(path) = first {
+                        state_rx.borrow_mut().library.selected_index = Some(0);
+                        filmstrip_rx.navigate_to(0);
+                        viewer_rx.load_image(path);
+                    }
+                    if filmstrip_rx.is_search_active() {
+                        suppress_rx.set(true);
+                        filmstrip_rx.deactivate_search();
+                    }
+                    op.complete();
+                });
             });
         }
 

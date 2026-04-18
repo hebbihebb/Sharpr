@@ -196,7 +196,7 @@ impl MetadataChip {
             }
         }
 
-        let active_segments = ((quality.score as usize) + 19) / 20;
+        let active_segments = (quality.score as usize).div_ceil(20);
         for (index, segment) in imp.quality_segments.iter().enumerate() {
             if index < active_segments {
                 segment.add_css_class("active");
