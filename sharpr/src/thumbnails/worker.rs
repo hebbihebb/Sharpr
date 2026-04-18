@@ -245,18 +245,18 @@ fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
         .unwrap_or(false);
 
     if is_jpeg {
-        if let Some(img) = extract_exif_thumbnail(path) {
-            let img = apply_exif_orientation(img, path);
+        let (thumb_opt, orientation) = extract_exif_data(path);
+        if let Some(img) = thumb_opt {
+            let img = apply_exif_orientation_value(img, orientation);
             return build_thumbnail_and_cache(path, img);
         }
+
+        let img = decode_jpeg_scaled(path).or_else(|| decode_with_image_crate(path))?;
+        let img = apply_exif_orientation_value(img, orientation);
+        return build_thumbnail_and_cache(path, img);
     }
 
-    let img = if is_jpeg {
-        // Try turbojpeg DCT-scale decode first (substantially faster for large JPEGs).
-        decode_jpeg_scaled(path).or_else(|| decode_with_image_crate(path))?
-    } else {
-        decode_with_image_crate(path)?
-    };
+    let img = decode_with_image_crate(path)?;
     let img = apply_exif_orientation(img, path);
     build_thumbnail_and_cache(path, img)
 }
@@ -426,13 +426,9 @@ fn thumbnail_cache_path(source_path: &Path) -> Option<PathBuf> {
     super::cache::thumbnail_cache_path(source_path)
 }
 
-fn apply_exif_orientation(img: image::DynamicImage, path: &Path) -> image::DynamicImage {
+fn apply_exif_orientation_value(img: image::DynamicImage, orientation: u32) -> image::DynamicImage {
     use image::imageops;
     use image::DynamicImage;
-
-    // Parse the EXIF orientation tag directly from the file bytes using a
-    // minimal scan — avoids rexiv2/GExiv2 which is not thread-safe.
-    let orientation: u32 = read_exif_orientation(path).unwrap_or(1);
 
     match orientation {
         1 => img,
@@ -451,79 +447,18 @@ fn apply_exif_orientation(img: image::DynamicImage, path: &Path) -> image::Dynam
     }
 }
 
-fn extract_exif_thumbnail(path: &Path) -> Option<image::DynamicImage> {
-    let (_, tiff) = read_exif_tiff(path)?;
-    let tiff = tiff.as_slice();
-    if tiff.len() < 8 {
-        return None;
-    }
-
-    let little_endian = match &tiff[..2] {
-        b"II" => true,
-        b"MM" => false,
-        _ => return None,
-    };
-
-    let read_u16 = |buf: &[u8], offset: usize| -> Option<u16> {
-        let b = buf.get(offset..offset + 2)?;
-        Some(if little_endian {
-            u16::from_le_bytes(b.try_into().ok()?)
-        } else {
-            u16::from_be_bytes(b.try_into().ok()?)
-        })
-    };
-    let read_u32 = |buf: &[u8], offset: usize| -> Option<u32> {
-        let b = buf.get(offset..offset + 4)?;
-        Some(if little_endian {
-            u32::from_le_bytes(b.try_into().ok()?)
-        } else {
-            u32::from_be_bytes(b.try_into().ok()?)
-        })
-    };
-
-    let ifd0_offset = read_u32(tiff, 4)? as usize;
-    let entry_count = read_u16(tiff, ifd0_offset)? as usize;
-    let next_ifd_ptr = ifd0_offset
-        .checked_add(2)?
-        .checked_add(entry_count.checked_mul(12)?)?;
-    let ifd1_offset = read_u32(tiff, next_ifd_ptr)? as usize;
-    if ifd1_offset == 0 || ifd1_offset >= tiff.len() {
-        return None;
-    }
-
-    let ifd1_entries = read_u16(tiff, ifd1_offset)? as usize;
-    let mut thumb_offset = None;
-    let mut thumb_len = None;
-    for i in 0..ifd1_entries {
-        let entry_offset = ifd1_offset
-            .checked_add(2)?
-            .checked_add(i.checked_mul(12)?)?;
-        let tag = read_u16(tiff, entry_offset)?;
-        match tag {
-            0x0201 => thumb_offset = Some(read_u32(tiff, entry_offset + 8)? as usize),
-            0x0202 => thumb_len = Some(read_u32(tiff, entry_offset + 8)? as usize),
-            _ => {}
-        }
-    }
-
-    let thumb_offset = thumb_offset?;
-    let thumb_len = thumb_len?;
-    let thumb_end = thumb_offset.checked_add(thumb_len)?;
-    let thumb_bytes = tiff.get(thumb_offset..thumb_end)?;
-    let img = image::load_from_memory(thumb_bytes).ok()?;
-    if img.height() < THUMB_HEIGHT {
-        return None;
-    }
-    Some(img)
+fn apply_exif_orientation(img: image::DynamicImage, path: &Path) -> image::DynamicImage {
+    let orientation = extract_exif_data(path).1;
+    apply_exif_orientation_value(img, orientation)
 }
 
-/// Read the EXIF Orientation tag (0x0112) from a JPEG file without using
-/// rexiv2/GExiv2, which are not safe to call from multiple threads.
-///
-/// Returns `None` (caller treats as orientation 1 = normal) on any error.
-fn read_exif_orientation(path: &Path) -> Option<u32> {
-    let (little_endian, tiff) = read_exif_tiff(path)?;
-    let tiff = tiff.as_slice();
+fn extract_exif_data(path: &Path) -> (Option<image::DynamicImage>, u32) {
+    let mut orientation = 1;
+    let Some((little_endian, tiff_vec)) = read_exif_tiff(path) else {
+        return (None, orientation);
+    };
+    let tiff = tiff_vec.as_slice();
+
     let read_u16 = |buf: &[u8], offset: usize| -> Option<u16> {
         let b = buf.get(offset..offset + 2)?;
         Some(if little_endian {
@@ -541,21 +476,71 @@ fn read_exif_orientation(path: &Path) -> Option<u32> {
         })
     };
 
-    let ifd0_offset = read_u32(tiff, 4)? as usize;
-    let entry_count = read_u16(tiff, ifd0_offset)? as usize;
+    let ifd0_offset = read_u32(tiff, 4).unwrap_or(0) as usize;
+    if ifd0_offset == 0 {
+        return (None, orientation);
+    }
+    let entry_count = read_u16(tiff, ifd0_offset).unwrap_or(0) as usize;
 
     for i in 0..entry_count {
-        let entry_offset = ifd0_offset
-            .checked_add(2)?
-            .checked_add(i.checked_mul(12)?)?;
-        let tag = read_u16(tiff, entry_offset)?;
-        if tag == 0x0112 {
-            // Orientation tag: value is a SHORT stored at offset+8.
-            let value = read_u16(tiff, entry_offset + 8)?;
-            return Some(value as u32);
+        if let Some(entry_offset) = ifd0_offset
+            .checked_add(2)
+            .and_then(|x| x.checked_add(i.checked_mul(12)?))
+        {
+            if let Some(tag) = read_u16(tiff, entry_offset) {
+                if tag == 0x0112 {
+                    if let Some(val) = read_u16(tiff, entry_offset + 8) {
+                        orientation = val as u32;
+                    }
+                }
+            }
         }
     }
-    None
+
+    let next_ifd_ptr = ifd0_offset
+        .checked_add(2)
+        .and_then(|x| x.checked_add(entry_count.checked_mul(12).unwrap_or(0)));
+    
+    let mut thumb_img = None;
+    if let Some(ptr) = next_ifd_ptr {
+        if let Some(ifd1_offset) = read_u32(tiff, ptr) {
+            let ifd1_offset = ifd1_offset as usize;
+            if ifd1_offset > 0 && ifd1_offset < tiff.len() {
+                if let Some(ifd1_entries) = read_u16(tiff, ifd1_offset) {
+                    let ifd1_entries = ifd1_entries as usize;
+                    let mut thumb_offset = None;
+                    let mut thumb_len = None;
+                    for i in 0..ifd1_entries {
+                        if let Some(entry_offset) = ifd1_offset
+                            .checked_add(2)
+                            .and_then(|x| x.checked_add(i.checked_mul(12).unwrap_or(0)))
+                        {
+                            if let Some(tag) = read_u16(tiff, entry_offset) {
+                                match tag {
+                                    0x0201 => thumb_offset = Some(read_u32(tiff, entry_offset + 8).unwrap_or(0) as usize),
+                                    0x0202 => thumb_len = Some(read_u32(tiff, entry_offset + 8).unwrap_or(0) as usize),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    if let (Some(o), Some(l)) = (thumb_offset, thumb_len) {
+                        if let Some(end) = o.checked_add(l) {
+                            if let Some(thumb_bytes) = tiff.get(o..end) {
+                                if let Ok(img) = image::load_from_memory(thumb_bytes) {
+                                    if img.height() >= THUMB_HEIGHT {
+                                        thumb_img = Some(img);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (thumb_img, orientation)
 }
 
 fn read_exif_tiff(path: &Path) -> Option<(bool, Vec<u8>)> {

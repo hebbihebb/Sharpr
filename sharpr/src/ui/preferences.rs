@@ -267,7 +267,7 @@ pub fn build_preferences_window(
     metadata_row.set_title("Show metadata overlay");
     metadata_row.set_subtitle("EXIF data shown in the bottom-right corner");
     metadata_row.set_active(
-        action_state_bool(parent.as_ref(), "show-metadata").unwrap_or(settings.metadata_visible),
+        action_state_bool(parent, "show-metadata").unwrap_or(settings.metadata_visible),
     );
 
     {
@@ -276,7 +276,7 @@ pub fn build_preferences_window(
         metadata_row.connect_active_notify(move |row| {
             let desired = row.is_active();
             if action_state_bool(&parent_c, "show-metadata") != Some(desired) {
-                let _ = gtk4::prelude::ActionGroupExt::activate_action(
+                gtk4::prelude::ActionGroupExt::activate_action(
                     &parent_c,
                     "show-metadata",
                     None,

@@ -4,9 +4,8 @@ use std::path::{Path, PathBuf};
 use gdk4::Texture;
 use gio::prelude::*;
 
-use crate::config::AppSettings;
 use crate::model::image_entry::ImageEntry;
-use crate::quality::{scorer, QualityClass, QualityScore};
+use crate::quality::{QualityClass, QualityScore};
 
 /// Known image file extensions (lower-case).
 const IMAGE_EXTENSIONS: &[&str] = &[
@@ -14,10 +13,10 @@ const IMAGE_EXTENSIONS: &[&str] = &[
 ];
 
 #[derive(Clone)]
-struct CachedImageData {
-    file_size: u64,
-    dimensions: Option<(u32, u32)>,
-    quality: QualityScore,
+pub struct CachedImageData {
+    pub file_size: u64,
+    pub dimensions: Option<(u32, u32)>,
+    pub quality: QualityScore,
 }
 
 pub struct RawImageEntry {
@@ -60,7 +59,7 @@ pub struct LibraryManager {
 }
 
 impl LibraryManager {
-    const MAX_PREVIEW_CACHE: usize = 30;
+    const MAX_PREVIEW_CACHE: usize = 3;
 
     pub fn new() -> Self {
         Self {
@@ -193,7 +192,7 @@ impl LibraryManager {
         self.all_known_paths.insert(path.clone());
         if !self.indexed_library_paths.contains(&path) {
             self.indexed_library_paths.push(path.clone());
-            self.indexed_library_paths.sort_by(path_sort_key);
+            self.indexed_library_paths.sort_by(|a, b| path_sort_key(a, b));
         }
         Some(insert_at)
     }
@@ -297,13 +296,13 @@ impl LibraryManager {
         self.prefetch_in_flight.insert(path);
     }
 
-    /// Store completed prefetch bytes. Evicts oldest if cache exceeds 8 entries.
+    /// Store completed prefetch bytes. Evicts oldest if cache exceeds 3 entries.
     pub fn insert_prefetch(&mut self, path: PathBuf, bytes: Vec<u8>, width: u32, height: u32) {
         self.prefetch_in_flight.remove(&path);
         if self.prefetch_cache.contains_key(&path) {
             return;
         }
-        if self.prefetch_order.len() >= 8 {
+        if self.prefetch_order.len() >= 3 {
             let oldest = self.prefetch_order.remove(0);
             self.prefetch_cache.remove(&oldest);
         }
@@ -409,22 +408,59 @@ impl LibraryManager {
         duplicates
     }
 
-    pub fn paths_for_quality_class(
-        &mut self,
-        settings: &AppSettings,
+    pub fn bg_scan_quality_prep(&self) -> (Vec<PathBuf>, Option<PathBuf>, HashMap<PathBuf, CachedImageData>) {
+        (self.indexed_library_paths.clone(), self.current_folder.clone(), self.metadata_cache.clone())
+    }
+
+    pub fn bg_scan_quality_finish(&mut self, paths: Vec<PathBuf>, cache: HashMap<PathBuf, CachedImageData>) {
+        self.indexed_library_paths = paths;
+        self.metadata_cache = cache;
+    }
+
+    pub fn compute_paths_for_quality_class(
+        library_root: Option<PathBuf>,
         class: QualityClass,
-    ) -> Vec<PathBuf> {
-        self.refresh_library_index(settings);
-        self.indexed_library_paths
+        mut indexed_paths: Vec<PathBuf>,
+        current_folder: Option<PathBuf>,
+        mut metadata_cache: HashMap<PathBuf, CachedImageData>,
+    ) -> (Vec<PathBuf>, HashMap<PathBuf, CachedImageData>, Vec<PathBuf>) {
+        let paths = collect_library_image_paths(library_root, current_folder.as_deref());
+        if paths != indexed_paths {
+            for path in &paths {
+                Self::cached_image_data_static(path, &mut metadata_cache);
+            }
+            indexed_paths = paths;
+        }
+
+        let filtered = indexed_paths
             .iter()
             .filter(|path| {
-                self.metadata_cache
+                metadata_cache
                     .get(*path)
                     .map(|cached| cached.quality.class == class)
                     .unwrap_or(false)
             })
             .cloned()
-            .collect()
+            .collect();
+
+        (indexed_paths, metadata_cache, filtered)
+    }
+
+    pub fn cached_image_data_static(path: &Path, cache: &mut HashMap<PathBuf, CachedImageData>) -> CachedImageData {
+        if let Some(cached) = cache.get(path) {
+            return cached.clone();
+        }
+
+        let file_size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        let dimensions = image::image_dimensions(path).ok();
+        let format = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+        let cached = CachedImageData {
+            file_size,
+            dimensions,
+            quality: crate::quality::scorer::score_file_info(dimensions, file_size, format),
+        };
+        cache.insert(path.to_path_buf(), cached.clone());
+        cached
     }
 
     fn is_image(path: &Path) -> bool {
@@ -450,35 +486,13 @@ impl LibraryManager {
     }
 
     fn cached_image_data(&mut self, path: &Path, refresh: bool) -> CachedImageData {
-        if !refresh {
-            if let Some(cached) = self.metadata_cache.get(path) {
-                return cached.clone();
-            }
+        if refresh {
+            self.metadata_cache.remove(path);
         }
-
-        let file_size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
-        let dimensions = image::image_dimensions(path).ok();
-        let format = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
-        let cached = CachedImageData {
-            file_size,
-            dimensions,
-            quality: scorer::score_file_info(dimensions, file_size, format),
-        };
-        self.metadata_cache.insert(path.to_path_buf(), cached.clone());
-        cached
+        Self::cached_image_data_static(path, &mut self.metadata_cache)
     }
 
-    fn refresh_library_index(&mut self, settings: &AppSettings) {
-        let paths = collect_library_image_paths(settings, self.current_folder.as_deref());
-        if paths == self.indexed_library_paths {
-            return;
-        }
 
-        for path in &paths {
-            self.cached_image_data(path, false);
-        }
-        self.indexed_library_paths = paths;
-    }
 
     fn reindex_from(&mut self, start: u32) {
         for index in start..self.store.n_items() {
@@ -495,8 +509,8 @@ impl Default for LibraryManager {
     }
 }
 
-fn collect_library_image_paths(settings: &AppSettings, current_folder: Option<&Path>) -> Vec<PathBuf> {
-    let mut folders = collect_library_folders(settings);
+fn collect_library_image_paths(library_root: Option<PathBuf>, current_folder: Option<&Path>) -> Vec<PathBuf> {
+    let mut folders = collect_library_folders(library_root);
     if let Some(current_folder) = current_folder {
         if current_folder.is_dir() && !folders.iter().any(|folder| folder == current_folder) {
             folders.push(current_folder.to_path_buf());
@@ -515,19 +529,19 @@ fn collect_library_image_paths(settings: &AppSettings, current_folder: Option<&P
             .map(|entry| entry.path())
             .filter(|path| LibraryManager::is_image(path))
             .collect();
-        folder_paths.sort_by(path_sort_key);
+        folder_paths.sort_by(|a, b| path_sort_key(a, b));
         paths.extend(folder_paths);
     }
 
-    paths.sort_by(path_sort_key);
+    paths.sort_by(|a, b| path_sort_key(a, b));
     paths.dedup();
     paths
 }
 
-fn collect_library_folders(settings: &AppSettings) -> Vec<PathBuf> {
+fn collect_library_folders(library_root: Option<PathBuf>) -> Vec<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home".into());
     let home = PathBuf::from(home);
-    let roots = if let Some(root) = settings.library_root.clone() {
+    let roots = if let Some(root) = library_root {
         vec![root]
     } else {
         vec![home.join("Pictures"), home.join("Downloads"), home]
@@ -562,7 +576,7 @@ fn collect_library_folders(settings: &AppSettings) -> Vec<PathBuf> {
         }
     }
 
-    folders.sort_by(path_sort_key);
+    folders.sort_by(|a, b| path_sort_key(a, b));
     folders
 }
 
@@ -577,7 +591,7 @@ fn directory_contains_images(dir: &Path) -> bool {
     })
 }
 
-fn path_sort_key(a: &PathBuf, b: &PathBuf) -> std::cmp::Ordering {
+fn path_sort_key(a: &Path, b: &Path) -> std::cmp::Ordering {
     a.to_string_lossy()
         .to_lowercase()
         .cmp(&b.to_string_lossy().to_lowercase())
@@ -633,9 +647,13 @@ mod tests {
         let mut library = LibraryManager::new();
         library.scan_folder(&folder_a);
 
-        let excellent_paths = library.paths_for_quality_class(&settings, QualityClass::Excellent);
-        let upscale_paths =
-            library.paths_for_quality_class(&settings, QualityClass::NeedsUpscale);
+        let (indexed_paths, current_folder, metadata_cache) = library.bg_scan_quality_prep();
+        let (_, _, excellent_paths) = LibraryManager::compute_paths_for_quality_class(
+            settings.library_root.clone(), QualityClass::Excellent, indexed_paths.clone(), current_folder.clone(), metadata_cache.clone()
+        );
+        let (_, _, upscale_paths) = LibraryManager::compute_paths_for_quality_class(
+            settings.library_root.clone(), QualityClass::NeedsUpscale, indexed_paths, current_folder, metadata_cache
+        );
 
         assert_eq!(excellent_paths, vec![excellent]);
         assert_eq!(upscale_paths, vec![needs_upscale]);

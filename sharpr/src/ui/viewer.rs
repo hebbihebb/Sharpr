@@ -796,10 +796,11 @@ impl ViewerPane {
         use image::imageops;
 
         let imp = self.imp();
-        let Some((rgba_bytes, w, h)) = imp.current_rgba.borrow().clone() else {
+        let Some((rgba_bytes, w, h)) = imp.current_rgba.borrow_mut().take() else {
             return;
         };
         if w == 0 || h == 0 {
+            *imp.current_rgba.borrow_mut() = Some((rgba_bytes, w, h));
             return;
         }
 
@@ -812,14 +813,18 @@ impl ViewerPane {
             "rotate-ccw" => image::DynamicImage::ImageRgba8(imageops::rotate270(&buf)),
             "flip-h" => image::DynamicImage::ImageRgba8(imageops::flip_horizontal(&buf)),
             "flip-v" => image::DynamicImage::ImageRgba8(imageops::flip_vertical(&buf)),
-            _ => return,
+            _ => {
+                let rgba_bytes = buf.into_raw();
+                *imp.current_rgba.borrow_mut() = Some((rgba_bytes, w, h));
+                return;
+            }
         };
 
         let rgba = transformed.into_rgba8();
         let (nw, nh) = (rgba.width(), rgba.height());
-        let rgba_bytes = rgba.into_raw();
-        *imp.current_rgba.borrow_mut() = Some((rgba_bytes.clone(), nw, nh));
-        let gbytes = glib::Bytes::from_owned(rgba_bytes);
+        let new_rgba_bytes = rgba.into_raw();
+        *imp.current_rgba.borrow_mut() = Some((new_rgba_bytes.clone(), nw, nh));
+        let gbytes = glib::Bytes::from_owned(new_rgba_bytes);
         let texture = MemoryTexture::new(
             nw as i32,
             nh as i32,
