@@ -1703,11 +1703,7 @@ impl SharprWindow {
         header.pack_start(&sidebar_toggle);
 
         let preview_title_btn = gtk4::Button::with_label("Preview");
-        preview_title_btn.add_css_class("flat");
-        preview_title_btn.add_css_class("title");
-        preview_title_btn.set_focus_on_click(false);
-        preview_title_btn.set_tooltip_text(Some("Temporary debug compare toggle"));
-        header.set_title_widget(Some(&preview_title_btn));
+        preview_title_btn.set_visible(false);
 
         let commit_btn = gtk4::Button::with_label("Save");
         commit_btn.set_tooltip_text(Some("Save upscaled image"));
