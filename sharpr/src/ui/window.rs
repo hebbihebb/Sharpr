@@ -289,7 +289,11 @@ impl SharprWindow {
 
     fn setup(&self) {
         self.set_title(Some("Image Library"));
-        self.set_default_size(1400, 900);
+        let (ww, wh) = {
+            let st = self.imp().state.borrow();
+            (st.settings.window_width, st.settings.window_height)
+        };
+        self.set_default_size(ww, wh);
 
         // -----------------------------------------------------------------------
         // Thumbnail worker pool
@@ -307,6 +311,15 @@ impl SharprWindow {
         let state = self.imp().state.clone();
         let (ops_queue, ops_rx) = crate::ops::queue::new_queue();
         state.borrow_mut().ops = ops_queue;
+        let state_close = state.clone();
+        self.connect_close_request(move |win| {
+            let (w, h) = (win.width(), win.height());
+            let mut st = state_close.borrow_mut();
+            st.settings.window_width = w;
+            st.settings.window_height = h;
+            st.settings.save();
+            glib::Propagation::Proceed
+        });
 
         // -----------------------------------------------------------------------
         // Build panes

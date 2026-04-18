@@ -9,6 +9,10 @@ pub struct AppSettings {
     pub last_folder: Option<PathBuf>,
     /// Whether the metadata overlay is visible by default.
     pub metadata_visible: bool,
+    /// Restored main window width in logical pixels.
+    pub window_width: i32,
+    /// Restored main window height in logical pixels.
+    pub window_height: i32,
     /// Optional custom root shown in preferences for future library scans.
     pub library_root: Option<PathBuf>,
     /// Optional custom path to the upscale binary.
@@ -35,6 +39,8 @@ impl std::fmt::Debug for AppSettings {
         f.debug_struct("AppSettings")
             .field("last_folder", &self.last_folder)
             .field("metadata_visible", &self.metadata_visible)
+            .field("window_width", &self.window_width)
+            .field("window_height", &self.window_height)
             .field("library_root", &self.library_root)
             .field("upscaler_binary_path", &self.upscaler_binary_path)
             .field("upscaler_default_model", &self.upscaler_default_model)
@@ -53,6 +59,8 @@ impl Default for AppSettings {
         Self {
             last_folder: None,
             metadata_visible: true,
+            window_width: 1400,
+            window_height: 900,
             library_root: None,
             upscaler_binary_path: None,
             upscaler_default_model: "standard".into(),
@@ -71,6 +79,8 @@ impl AppSettings {
     pub fn load() -> Self {
         let settings = gio::Settings::new("io.github.hebbihebb.Sharpr");
         let last_folder = string_path(&settings, "last-folder");
+        let window_width = settings.int("window-width").clamp(400, 7680);
+        let window_height = settings.int("window-height").clamp(300, 4320);
         let library_root = string_path(&settings, "library-root");
         let upscaler_binary_path = string_path(&settings, "upscaler-binary-path");
         let upscaler_default_model = match settings.string("upscaler-default-model").as_str() {
@@ -97,6 +107,8 @@ impl AppSettings {
         Self {
             last_folder,
             metadata_visible: settings.boolean("metadata-visible"),
+            window_width,
+            window_height,
             library_root,
             upscaler_binary_path,
             upscaler_default_model,
@@ -120,6 +132,12 @@ impl AppSettings {
         let _ = self
             .settings
             .set_boolean("metadata-visible", self.metadata_visible);
+        let _ = self
+            .settings
+            .set_int("window-width", self.window_width.clamp(400, 7680));
+        let _ = self
+            .settings
+            .set_int("window-height", self.window_height.clamp(300, 4320));
         let library_root = self
             .library_root
             .as_ref()
