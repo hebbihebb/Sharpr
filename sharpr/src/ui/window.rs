@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use crate::config::AppSettings;
 use crate::duplicates::phash;
-use crate::model::library::RawImageEntry;
+use crate::model::library::{RawImageEntry, SortOrder};
 use crate::model::{ImageEntry, LibraryManager};
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
@@ -31,6 +31,7 @@ use crate::upscale::{UpscaleDetector, UpscaleModel};
 pub struct AppState {
     pub library: LibraryManager,
     pub settings: AppSettings,
+    pub sort_order: SortOrder,
     pub tags: Option<Arc<crate::tags::TagDatabase>>,
     pub smart_tagger: Option<Arc<dyn crate::tags::smart::SmartTagger + Send + Sync>>,
     /// Cached path to the active Vulkan upscaler binary after successful detection.
@@ -212,6 +213,7 @@ impl AppState {
         let state = Self {
             library,
             settings,
+            sort_order: SortOrder::default(),
             tags: crate::tags::TagDatabase::open().ok().map(Arc::new),
             smart_tagger,
             upscale_binary,
@@ -407,7 +409,7 @@ impl SharprWindow {
                 let path_rx = path.clone();
                 let window_weak_rx = window_weak.clone();
                 glib::MainContext::default().spawn_local(async move {
-                    let Ok(raw_entries) = rx.recv().await else {
+                    let Ok(mut raw_entries) = rx.recv().await else {
                         return;
                     };
 
@@ -417,6 +419,8 @@ impl SharprWindow {
                             return;
                         }
 
+                        let order = st.sort_order;
+                        crate::model::library::sort_raw_entries(&mut raw_entries, order);
                         let mut new_entries: Vec<ImageEntry> = Vec::with_capacity(raw_entries.len());
                         for (index, raw) in raw_entries.into_iter().enumerate() {
                             let entry = ImageEntry::new(raw.path.clone());
@@ -497,6 +501,18 @@ impl SharprWindow {
             let open_folder_c = open_folder.clone();
             sidebar.connect_folder_selected(move |path| {
                 open_folder_c(path);
+            });
+        }
+
+        {
+            let state_sort = state.clone();
+            let open_folder_sort = open_folder.clone();
+            filmstrip.set_sort_order_changed_cb(move |order| {
+                let current_folder = state_sort.borrow().settings.last_folder.clone();
+                state_sort.borrow_mut().sort_order = order;
+                if let Some(folder) = current_folder {
+                    open_folder_sort(folder);
+                }
             });
         }
 

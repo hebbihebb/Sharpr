@@ -11,6 +11,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
 use crate::model::ImageEntry;
+use crate::model::library::SortOrder;
 use crate::thumbnails::worker::WorkerRequest;
 use crate::ui::window::AppState;
 
@@ -43,6 +44,8 @@ mod imp {
         pub search_activate_cb: RefCell<Option<SearchActivateCallback>>,
         pub search_dismissed_cb: RefCell<Option<SearchDismissedCallback>>,
         pub trash_requested_cb: RefCell<Option<TrashRequestedCallback>>,
+        pub sort_order_changed_cb: RefCell<Option<Box<dyn Fn(SortOrder)>>>,
+        pub sort_btn: RefCell<Option<gtk4::MenuButton>>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub visible_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
         pub preload_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
@@ -81,6 +84,8 @@ mod imp {
                 search_activate_cb: RefCell::new(None),
                 search_dismissed_cb: RefCell::new(None),
                 trash_requested_cb: RefCell::new(None),
+                sort_order_changed_cb: RefCell::new(None),
+                sort_btn: RefCell::new(None),
                 state: RefCell::new(None),
                 visible_thumbnail_tx: RefCell::new(None),
                 preload_thumbnail_tx: RefCell::new(None),
@@ -129,7 +134,63 @@ impl FilmstripPane {
 
         let header = libadwaita::HeaderBar::new();
         header.set_show_end_title_buttons(false);
+
+        let sort_popover = gtk4::Popover::new();
+        let sort_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        sort_box.add_css_class("menu");
+
+        let name_row = gtk4::CheckButton::with_label("Name");
+        name_row.set_active(true);
+        let date_row = gtk4::CheckButton::with_label("Date Modified");
+        date_row.set_group(Some(&name_row));
+        let type_row = gtk4::CheckButton::with_label("Type");
+        type_row.set_group(Some(&name_row));
+
+        sort_box.append(&name_row);
+        sort_box.append(&date_row);
+        sort_box.append(&type_row);
+        sort_popover.set_child(Some(&sort_box));
+
+        let sort_btn = gtk4::MenuButton::new();
+        sort_btn.set_icon_name("pan-down-symbolic");
+        sort_btn.set_tooltip_text(Some("Sort order"));
+        sort_btn.set_popover(Some(&sort_popover));
+        header.pack_end(&sort_btn);
+        *imp.sort_btn.borrow_mut() = Some(sort_btn.clone());
         imp.toolbar_view.add_top_bar(&header);
+
+        let w = self.downgrade();
+        name_row.connect_toggled(move |btn| {
+            if btn.is_active() {
+                if let Some(f) = w.upgrade() {
+                    if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
+                        cb(SortOrder::Name);
+                    }
+                }
+            }
+        });
+
+        let w = self.downgrade();
+        date_row.connect_toggled(move |btn| {
+            if btn.is_active() {
+                if let Some(f) = w.upgrade() {
+                    if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
+                        cb(SortOrder::DateModified);
+                    }
+                }
+            }
+        });
+
+        let w = self.downgrade();
+        type_row.connect_toggled(move |btn| {
+            if btn.is_active() {
+                if let Some(f) = w.upgrade() {
+                    if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
+                        cb(SortOrder::FileType);
+                    }
+                }
+            }
+        });
 
         self.install_css();
 
@@ -761,6 +822,10 @@ impl FilmstripPane {
 
     pub fn connect_trash_requested<F: Fn(std::path::PathBuf) + 'static>(&self, f: F) {
         *self.imp().trash_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn set_sort_order_changed_cb<F: Fn(SortOrder) + 'static>(&self, cb: F) {
+        *self.imp().sort_order_changed_cb.borrow_mut() = Some(Box::new(cb));
     }
 
     pub fn show_autocomplete(&self, suggestions: Vec<String>) {

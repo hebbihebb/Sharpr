@@ -8,6 +8,14 @@ use crate::config::AppSettings;
 use crate::model::image_entry::ImageEntry;
 use crate::quality::{scorer, QualityClass, QualityScore};
 
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum SortOrder {
+    #[default]
+    Name,
+    DateModified,
+    FileType,
+}
+
 /// Known image file extensions (lower-case).
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
@@ -24,6 +32,7 @@ pub struct RawImageEntry {
     pub path: PathBuf,
     pub filename: String,
     pub file_size: u64,
+    pub modified: Option<std::time::SystemTime>,
     pub width: u32,
     pub height: u32,
 }
@@ -145,13 +154,16 @@ impl LibraryManager {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned();
-                let file_size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+                let meta = std::fs::metadata(&path).ok();
+                let file_size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let modified = meta.and_then(|m| m.modified().ok());
                 let (width, height) = image::image_dimensions(&path).unwrap_or((0, 0));
 
                 RawImageEntry {
                     path,
                     filename,
                     file_size,
+                    modified,
                     width,
                     height,
                 }
@@ -581,6 +593,25 @@ fn path_sort_key(a: &PathBuf, b: &PathBuf) -> std::cmp::Ordering {
     a.to_string_lossy()
         .to_lowercase()
         .cmp(&b.to_string_lossy().to_lowercase())
+}
+
+pub fn sort_raw_entries(entries: &mut Vec<RawImageEntry>, order: SortOrder) {
+    match order {
+        SortOrder::Name => {}
+        SortOrder::DateModified => entries.sort_by(|a, b| b.modified.cmp(&a.modified)),
+        SortOrder::FileType => entries.sort_by(|a, b| {
+            let ext = |e: &RawImageEntry| {
+                e.path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase()
+            };
+            ext(a)
+                .cmp(&ext(b))
+                .then_with(|| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()))
+        }),
+    }
 }
 
 #[cfg(test)]
