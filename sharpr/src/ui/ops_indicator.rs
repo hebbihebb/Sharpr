@@ -180,7 +180,7 @@ mod imp {
             let mut rows = self.rows.borrow_mut();
             let done_ids: Vec<u64> = rows
                 .iter()
-                .filter(|(_, w)| w.progress_bar.is_visible() == false)
+                .filter(|(_, w)| !w.progress_bar.is_visible())
                 .map(|(id, _)| *id)
                 .collect();
             for id in done_ids {
