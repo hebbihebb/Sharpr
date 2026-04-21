@@ -195,11 +195,11 @@ impl SidebarPane {
             .set_selection_mode(gtk4::SelectionMode::Single);
 
         configure_smart_row(&imp.duplicates_row, "edit-find-symbolic", "Duplicates");
-        configure_smart_row(&imp.tags_row, "tag-symbolic", "Tags");
+        configure_smart_row(&imp.tags_row, "bookmark-new-symbolic", "Tags");
         configure_smart_row(&imp.search_row, "system-search-symbolic", "Search");
         configure_smart_row(
             &imp.excellent_row,
-            "emblem-ok-symbolic",
+            "object-select-symbolic",
             QualityClass::Excellent.label(),
         );
         configure_smart_row(

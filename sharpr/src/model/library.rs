@@ -146,7 +146,8 @@ impl LibraryManager {
                 )
         });
 
-        paths.into_iter()
+        paths
+            .into_iter()
             .map(|path| {
                 let filename = path
                     .file_name()
@@ -204,7 +205,8 @@ impl LibraryManager {
         self.all_known_paths.insert(path.clone());
         if !self.indexed_library_paths.contains(&path) {
             self.indexed_library_paths.push(path.clone());
-            self.indexed_library_paths.sort_by(|a, b| path_sort_key(a, b));
+            self.indexed_library_paths
+                .sort_by(|a, b| path_sort_key(a, b));
         }
         Some(insert_at)
     }
@@ -267,6 +269,37 @@ impl LibraryManager {
             self.selected_index = None;
         }
         self.reindex_from(index);
+    }
+
+    /// Drop all cached decode state for `path` so the next load uses fresh bytes.
+    pub fn invalidate_path_caches(&mut self, path: &Path) {
+        self.thumbnail_cache.remove(path);
+        if let Some(pos) = self.cache_order.iter().position(|p| p == path) {
+            self.cache_order.remove(pos);
+        }
+
+        self.preview_cache.remove(path);
+        if let Some(pos) = self.preview_order.iter().position(|p| p == path) {
+            self.preview_order.remove(pos);
+        }
+
+        self.prefetch_cache.remove(path);
+        if let Some(pos) = self.prefetch_order.iter().position(|p| p == path) {
+            self.prefetch_order.remove(pos);
+        }
+        self.prefetch_in_flight.remove(path);
+        self.metadata_cache.remove(path);
+
+        if let Some(index) = self.index_of_path(path) {
+            if let Some(entry) = self.entry_at(index) {
+                entry.set_thumbnail(None::<Texture>);
+                let refreshed = self.cached_image_data(path, true);
+                entry.set_file_size(refreshed.file_size);
+                if let Some((width, height)) = refreshed.dimensions {
+                    entry.set_dimensions(width, height);
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -420,11 +453,25 @@ impl LibraryManager {
         duplicates
     }
 
-    pub fn bg_scan_quality_prep(&self) -> (Vec<PathBuf>, Option<PathBuf>, HashMap<PathBuf, CachedImageData>) {
-        (self.indexed_library_paths.clone(), self.current_folder.clone(), self.metadata_cache.clone())
+    pub fn bg_scan_quality_prep(
+        &self,
+    ) -> (
+        Vec<PathBuf>,
+        Option<PathBuf>,
+        HashMap<PathBuf, CachedImageData>,
+    ) {
+        (
+            self.indexed_library_paths.clone(),
+            self.current_folder.clone(),
+            self.metadata_cache.clone(),
+        )
     }
 
-    pub fn bg_scan_quality_finish(&mut self, paths: Vec<PathBuf>, cache: HashMap<PathBuf, CachedImageData>) {
+    pub fn bg_scan_quality_finish(
+        &mut self,
+        paths: Vec<PathBuf>,
+        cache: HashMap<PathBuf, CachedImageData>,
+    ) {
         self.indexed_library_paths = paths;
         self.metadata_cache = cache;
     }
@@ -435,7 +482,11 @@ impl LibraryManager {
         mut indexed_paths: Vec<PathBuf>,
         current_folder: Option<PathBuf>,
         mut metadata_cache: HashMap<PathBuf, CachedImageData>,
-    ) -> (Vec<PathBuf>, HashMap<PathBuf, CachedImageData>, Vec<PathBuf>) {
+    ) -> (
+        Vec<PathBuf>,
+        HashMap<PathBuf, CachedImageData>,
+        Vec<PathBuf>,
+    ) {
         let paths = collect_library_image_paths(library_root, current_folder.as_deref());
         if paths != indexed_paths {
             for path in &paths {
@@ -458,14 +509,20 @@ impl LibraryManager {
         (indexed_paths, metadata_cache, filtered)
     }
 
-    pub fn cached_image_data_static(path: &Path, cache: &mut HashMap<PathBuf, CachedImageData>) -> CachedImageData {
+    pub fn cached_image_data_static(
+        path: &Path,
+        cache: &mut HashMap<PathBuf, CachedImageData>,
+    ) -> CachedImageData {
         if let Some(cached) = cache.get(path) {
             return cached.clone();
         }
 
         let file_size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
         let dimensions = image::image_dimensions(path).ok();
-        let format = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+        let format = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default();
         let cached = CachedImageData {
             file_size,
             dimensions,
@@ -504,8 +561,6 @@ impl LibraryManager {
         Self::cached_image_data_static(path, &mut self.metadata_cache)
     }
 
-
-
     fn reindex_from(&mut self, start: u32) {
         for index in start..self.store.n_items() {
             if let Some(entry) = self.entry_at(index) {
@@ -521,7 +576,10 @@ impl Default for LibraryManager {
     }
 }
 
-fn collect_library_image_paths(library_root: Option<PathBuf>, current_folder: Option<&Path>) -> Vec<PathBuf> {
+fn collect_library_image_paths(
+    library_root: Option<PathBuf>,
+    current_folder: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut folders = collect_library_folders(library_root);
     if let Some(current_folder) = current_folder {
         if current_folder.is_dir() && !folders.iter().any(|folder| folder == current_folder) {
@@ -680,10 +738,18 @@ mod tests {
 
         let (indexed_paths, current_folder, metadata_cache) = library.bg_scan_quality_prep();
         let (_, _, excellent_paths) = LibraryManager::compute_paths_for_quality_class(
-            settings.library_root.clone(), QualityClass::Excellent, indexed_paths.clone(), current_folder.clone(), metadata_cache.clone()
+            settings.library_root.clone(),
+            QualityClass::Excellent,
+            indexed_paths.clone(),
+            current_folder.clone(),
+            metadata_cache.clone(),
         );
         let (_, _, upscale_paths) = LibraryManager::compute_paths_for_quality_class(
-            settings.library_root.clone(), QualityClass::NeedsUpscale, indexed_paths, current_folder, metadata_cache
+            settings.library_root.clone(),
+            QualityClass::NeedsUpscale,
+            indexed_paths,
+            current_folder,
+            metadata_cache,
         );
 
         assert_eq!(excellent_paths, vec![excellent]);

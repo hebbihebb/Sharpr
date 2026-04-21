@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
-fn rexiv2_lock() -> &'static Mutex<()> {
+pub(crate) fn rexiv2_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }

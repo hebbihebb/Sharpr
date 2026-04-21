@@ -7,6 +7,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 
+use crate::metadata::orientation::apply_exif_orientation;
 use crate::quality::{scorer, QualityScore};
 use crate::tags::TagDatabase;
 use crate::ui::metadata_chip::MetadataChip;
@@ -435,18 +436,20 @@ impl ViewerPane {
         self.add_controller(scroll);
 
         let w = self.downgrade();
-        imp.scrolled_window.connect_notify_local(Some("width"), move |_, _| {
-            if let Some(viewer) = w.upgrade() {
-                viewer.update_picture_zoom();
-            }
-        });
+        imp.scrolled_window
+            .connect_notify_local(Some("width"), move |_, _| {
+                if let Some(viewer) = w.upgrade() {
+                    viewer.update_picture_zoom();
+                }
+            });
 
         let w = self.downgrade();
-        imp.scrolled_window.connect_notify_local(Some("height"), move |_, _| {
-            if let Some(viewer) = w.upgrade() {
-                viewer.update_picture_zoom();
-            }
-        });
+        imp.scrolled_window
+            .connect_notify_local(Some("height"), move |_, _| {
+                if let Some(viewer) = w.upgrade() {
+                    viewer.update_picture_zoom();
+                }
+            });
 
         let viewer_weak = self.downgrade();
         imp.tag_button.connect_clicked(move |_| {
@@ -964,48 +967,21 @@ impl ViewerPane {
             .unwrap_or("")
             .to_lowercase();
 
-        let result = match ext.as_str() {
-            "jpg" | "jpeg" => {
-                // JPEG has no alpha — convert RGBA → RGB before encoding.
-                let rgb: Vec<u8> = rgba
-                    .chunks_exact(4)
-                    .flat_map(|px| [px[0], px[1], px[2]])
-                    .collect();
-                image::save_buffer_with_format(
-                    &path,
-                    &rgb,
-                    w,
-                    h,
-                    image::ColorType::Rgb8,
-                    image::ImageFormat::Jpeg,
-                )
-            }
-            "png" => image::save_buffer_with_format(
-                &path,
-                &rgba,
-                w,
-                h,
-                image::ColorType::Rgba8,
-                image::ImageFormat::Png,
-            ),
-            _ => {
-                let png_path = path.with_extension("png");
-                image::save_buffer_with_format(
-                    &png_path,
-                    &rgba,
-                    w,
-                    h,
-                    image::ColorType::Rgba8,
-                    image::ImageFormat::Png,
-                )
-            }
-        };
+        let result = save_edit_pixels(&path, &ext, &rgba, w, h);
 
-        if result.is_ok() {
+        if let Ok(saved_path) = result {
+            if let Some(ref rc) = *imp.state.borrow() {
+                rc.borrow_mut().library.invalidate_path_caches(&saved_path);
+            }
             imp.pending_edit.set(false);
             Self::set_edit_buttons_visible_on(imp, false);
+            self.load_image(saved_path);
         } else {
-            eprintln!("save_edit: failed to write {}", path.display());
+            eprintln!(
+                "save_edit: failed to write {}: {}",
+                path.display(),
+                result.err().unwrap_or_else(|| "unknown error".to_string())
+            );
         }
     }
 
@@ -1456,7 +1432,8 @@ impl ViewerPane {
                 &settings.upscaler_compression_mode,
             ),
             quality: settings.upscaler_quality.clamp(50, 100) as u8,
-            tile_size: (settings.upscaler_tile_size > 0).then_some(settings.upscaler_tile_size as u32),
+            tile_size: (settings.upscaler_tile_size > 0)
+                .then_some(settings.upscaler_tile_size as u32),
             gpu_id: (settings.upscaler_gpu_id >= 0).then_some(settings.upscaler_gpu_id as u32),
         };
 
@@ -1515,10 +1492,8 @@ impl ViewerPane {
                         let vimp = viewer.imp();
                         vimp.progress_bar.set_visible(false);
                         trigger_btn.set_sensitive(true);
-                        let dialog = libadwaita::AlertDialog::new(
-                            Some("Upscale Failed"),
-                            Some(&msg),
-                        );
+                        let dialog =
+                            libadwaita::AlertDialog::new(Some("Upscale Failed"), Some(&msg));
                         dialog.add_response("ok", "OK");
                         if let Some(root) = viewer.root() {
                             if let Ok(window) = root.downcast::<gtk4::Window>() {
@@ -1576,10 +1551,13 @@ impl ViewerPane {
         }
 
         let path = imp.current_path.borrow().clone().or_else(|| {
-            imp.state
-                .borrow()
-                .as_ref()
-                .and_then(|state| state.borrow().library.selected_entry().map(|entry| entry.path()))
+            imp.state.borrow().as_ref().and_then(|state| {
+                state
+                    .borrow()
+                    .library
+                    .selected_entry()
+                    .map(|entry| entry.path())
+            })
         });
 
         let Some(path) = path else {
@@ -1648,7 +1626,14 @@ fn decode_image_rgba(path: &PathBuf) -> Option<(Vec<u8>, u32, u32)> {
 
     const MIN_PREVIEW_LONG_EDGE: u32 = 1024;
 
-    if let Ok(metadata) = rexiv2::Metadata::new_from_path(path) {
+    let metadata = {
+        let _guard = crate::metadata::exif::rexiv2_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        rexiv2::Metadata::new_from_path(path)
+    };
+
+    if let Ok(metadata) = metadata {
         let mut previews = metadata.get_preview_images().unwrap_or_default();
         previews.sort_by_key(|preview| preview.get_width().max(preview.get_height()));
 
@@ -1660,7 +1645,7 @@ fn decode_image_rgba(path: &PathBuf) -> Option<(Vec<u8>, u32, u32)> {
                 &preview.get_data().ok()?,
                 image::ImageFormat::Jpeg,
             ) {
-                let rgba = img.into_rgba8();
+                let rgba = apply_exif_orientation(img, path).into_rgba8();
                 let (w, h) = (rgba.width(), rgba.height());
                 return Some((rgba.into_raw(), w, h));
             }
@@ -1677,10 +1662,129 @@ fn decode_image_rgba(path: &PathBuf) -> Option<(Vec<u8>, u32, u32)> {
     let reader = ImageReader::new(BufReader::new(file))
         .with_guessed_format()
         .ok()?;
-    let img = reader.decode().ok()?;
+    let img = apply_exif_orientation(reader.decode().ok()?, path);
     let rgba = img.into_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
     Some((rgba.into_raw(), w, h))
+}
+
+fn save_edit_pixels(
+    path: &std::path::Path,
+    ext: &str,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<PathBuf, String> {
+    let output_path = if matches!(ext, "jpg" | "jpeg" | "png") {
+        path.to_path_buf()
+    } else {
+        path.with_extension("png")
+    };
+    let output_ext = output_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let temp_path = unique_temp_path(&output_path)?;
+
+    let write_result = match output_ext.as_str() {
+        "jpg" | "jpeg" => {
+            let rgb: Vec<u8> = rgba
+                .chunks_exact(4)
+                .flat_map(|px| [px[0], px[1], px[2]])
+                .collect();
+            image::save_buffer_with_format(
+                &temp_path,
+                &rgb,
+                width,
+                height,
+                image::ColorType::Rgb8,
+                image::ImageFormat::Jpeg,
+            )
+        }
+        "png" => image::save_buffer_with_format(
+            &temp_path,
+            rgba,
+            width,
+            height,
+            image::ColorType::Rgba8,
+            image::ImageFormat::Png,
+        ),
+        _ => unreachable!("output extension is normalized to jpg/jpeg/png"),
+    };
+
+    if let Err(err) = write_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(err.to_string());
+    }
+
+    if matches!(output_ext.as_str(), "jpg" | "jpeg") {
+        if let Err(err) = copy_metadata_for_baked_pixels(path, &temp_path, width, height) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(err);
+        }
+    }
+
+    if output_path == path {
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let _ = std::fs::set_permissions(&temp_path, metadata.permissions());
+        }
+    }
+
+    if let Err(err) = std::fs::rename(&temp_path, &output_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(err.to_string());
+    }
+
+    Ok(output_path)
+}
+
+fn copy_metadata_for_baked_pixels(
+    source_path: &std::path::Path,
+    output_path: &std::path::Path,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let _guard = crate::metadata::exif::rexiv2_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let Ok(metadata) = rexiv2::Metadata::new_from_path(source_path) else {
+        return Ok(());
+    };
+
+    metadata.set_orientation(rexiv2::Orientation::Normal);
+    let _ = metadata.set_tag_string("Exif.Photo.PixelXDimension", &width.to_string());
+    let _ = metadata.set_tag_string("Exif.Photo.PixelYDimension", &height.to_string());
+    let _ = metadata.set_tag_string("Exif.Image.ImageWidth", &width.to_string());
+    let _ = metadata.set_tag_string("Exif.Image.ImageLength", &height.to_string());
+
+    metadata
+        .save_to_file(output_path)
+        .map_err(|err| err.to_string())
+}
+
+fn unique_temp_path(path: &std::path::Path) -> Result<PathBuf, String> {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("image");
+    let pid = std::process::id();
+
+    for attempt in 0..1000 {
+        let temp_path = parent.join(format!(".{filename}.sharpr-save-{pid}-{attempt}.tmp"));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(_) => return Ok(temp_path),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+
+    Err("could not create a unique temporary save path".to_string())
 }
 
 fn is_jpeg_path(path: &std::path::Path) -> bool {
@@ -1723,7 +1827,10 @@ fn decode_jpeg_rgba_scaled(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)
         .decompress(&jpeg_data, image.as_deref_mut())
         .ok()?;
 
-    Some((image.pixels, scaled.width as u32, scaled.height as u32))
+    let rgba = image::RgbaImage::from_raw(scaled.width as u32, scaled.height as u32, image.pixels)?;
+    let img = apply_exif_orientation(image::DynamicImage::ImageRgba8(rgba), path).into_rgba8();
+    let (width, height) = (img.width(), img.height());
+    Some((img.into_raw(), width, height))
 }
 
 fn choose_jpeg_scale_factor(
