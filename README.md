@@ -7,7 +7,11 @@
 ---
 
 <p align="center">
-  <img src="./Screenshot.png" alt="Sharpr showing smart folders, filmstrip, viewer overlays, and image preview" width="900">
+  <img src="./light.jpg" alt="Sharpr in light mode — folder browser, filmstrip strip, and full-resolution viewer with metadata overlay" width="900">
+</p>
+
+<p align="center">
+  <img src="./dark.jpg" alt="Sharpr in dark mode — collections sidebar, multi-select filmstrip, and viewer with quality score overlay" width="900">
 </p>
 
 ---
