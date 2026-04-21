@@ -85,6 +85,7 @@ This document outlines a step-by-step execution plan based on the findings from 
     3.  Refactor `load_virtual` to quickly populate the GTK `ListStore` with "placeholder" entries (containing just the path).
     4.  Offload the metadata extraction (`std::fs::metadata` and `image::image_dimensions`) to a background thread (or Rayon pool).
     5.  As metadata is extracted in the background, send the results back to the main thread via an `async-channel` or `glib::idle_add` to update the placeholder entries in the `ListStore`.
+*   **Implementation Comment:** Completed. Virtual views now populate placeholder entries synchronously using only cached metadata and thumbnails, return uncached paths for background hydration, and `window.rs` computes missing file metadata on Rayon before applying it back on the GTK main thread.
 
 ### Task 3.2: Optimize GTK Label Formatting
 *   **Target Files:** `sharpr/src/ui/sidebar.rs`, `sharpr/src/ui/tag_browser.rs`
@@ -93,6 +94,7 @@ This document outlines a step-by-step execution plan based on the findings from 
     1.  Locate label creation in `sidebar.rs` (L1023): `let count_label = gtk4::Label::new(Some(&item_count.to_string()));`
     2.  Replace this with format macros or `glib::GString` if supported, or use a stack-allocated buffer (like `itoa` or `ryu` for numbers) if possible. If GTK requires a string, use `format!("{}", item_count)` instead of `.to_string()` for clarity, though it still allocates.
     3.  A better fix for GTK is to use the `label.set_text(&format!("{}", item_count))` or `label.set_markup(...)` and reuse label widgets instead of destroying and recreating them during updates.
+*   **Implementation Comment:** Completed. Numeric collection counts and tag counts now use `itoa` stack formatting, and tag chips compose separate labels for tag text and count instead of allocating a combined formatted button label.
 
 ### Task 3.3: Refactor Smart Tagger Dynamic Dispatch
 *   **Target File:** `sharpr/src/ui/window.rs`
@@ -101,3 +103,4 @@ This document outlines a step-by-step execution plan based on the findings from 
     1.  Check `sharpr/src/tags/smart.rs` to see if there are multiple implementations of `SmartTagger`.
     2.  If only the ONNX tagger exists, refactor `sharpr/src/ui/window.rs` to hold a concrete type: `Option<Arc<OnnxSmartTagger>>` instead of `Option<Arc<dyn SmartTagger + Send + Sync>>`.
     3.  Update the struct definition of `SharprWindow` and the initialization logic to use the concrete type, allowing the compiler to inline function calls to the tagger.
+*   **Implementation Comment:** Completed. `LocalTagger` is the only smart tagger implementation, so the trait object was removed and app state now stores `Option<Arc<LocalTagger>>` directly.

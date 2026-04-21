@@ -81,7 +81,9 @@ impl TagDatabase {
             Ok(rows) => rows,
             Err(_) => return vec![],
         };
-        rows.filter_map(|r| r.ok()).map(PathBuf::from).collect()
+        let paths: Vec<PathBuf> = rows.filter_map(|r| r.ok()).map(PathBuf::from).collect();
+        drop(stmt);
+        prune_missing_paths(&conn, paths)
     }
 
     pub fn search_paths(&self, query: &str) -> Vec<PathBuf> {
@@ -97,7 +99,9 @@ impl TagDatabase {
             Ok(rows) => rows,
             Err(_) => return vec![],
         };
-        rows.filter_map(|r| r.ok()).map(PathBuf::from).collect()
+        let paths: Vec<PathBuf> = rows.filter_map(|r| r.ok()).map(PathBuf::from).collect();
+        drop(stmt);
+        prune_missing_paths(&conn, paths)
     }
 
     pub fn autocomplete(&self, prefix: &str, limit: usize) -> Vec<String> {
@@ -124,6 +128,7 @@ impl TagDatabase {
         let Ok(conn) = self.conn.lock() else {
             return vec![];
         };
+        prune_all_missing_paths(&conn);
         let mut stmt = match conn
             .prepare("SELECT tag, COUNT(*) FROM file_tags GROUP BY tag ORDER BY tag COLLATE NOCASE")
         {
@@ -198,5 +203,98 @@ impl TagDatabase {
             "DELETE FROM file_tags WHERE path = ?1",
             params![path.to_string_lossy().as_ref()],
         );
+    }
+}
+
+#[cfg(test)]
+impl TagDatabase {
+    fn open_in_memory() -> rusqlite::Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS file_tags (
+                path TEXT NOT NULL,
+                tag  TEXT NOT NULL,
+                PRIMARY KEY (path, tag)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tag ON file_tags(tag);
+            ",
+        )?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+}
+
+fn prune_missing_paths(conn: &Connection, paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut existing = Vec::with_capacity(paths.len());
+    for path in paths {
+        if path.exists() {
+            existing.push(path);
+        } else {
+            let _ = conn.execute(
+                "DELETE FROM file_tags WHERE path = ?1",
+                params![path.to_string_lossy().as_ref()],
+            );
+        }
+    }
+    existing
+}
+
+fn prune_all_missing_paths(conn: &Connection) {
+    let mut stmt = match conn.prepare("SELECT DISTINCT path FROM file_tags") {
+        Ok(stmt) => stmt,
+        Err(_) => return,
+    };
+    let rows = match stmt.query_map([], |row| row.get::<_, String>(0)) {
+        Ok(rows) => rows,
+        Err(_) => return,
+    };
+    let paths: Vec<String> = rows.filter_map(Result::ok).collect();
+    drop(stmt);
+    for path in paths {
+        if !Path::new(&path).exists() {
+            let _ = conn.execute("DELETE FROM file_tags WHERE path = ?1", params![path]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let unique = format!(
+            "sharpr-tags-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        std::env::temp_dir().join(unique).join(name)
+    }
+
+    #[test]
+    fn tag_queries_prune_missing_paths() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let root = temp_path("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let existing = root.join("cow.jpg");
+        let missing = root.join("missing.jpg");
+        std::fs::write(&existing, b"not really an image").unwrap();
+
+        db.add_tag(&existing, "cow");
+        db.add_tag(&missing, "cow");
+
+        assert_eq!(db.paths_for_tag("cow"), vec![existing.clone()]);
+        assert_eq!(db.search_paths("cow"), vec![existing.clone()]);
+        assert_eq!(db.all_tags(), vec![("cow".to_string(), 1)]);
+
+        std::fs::remove_file(&existing).unwrap();
+        assert!(db.paths_for_tag("cow").is_empty());
+        assert!(db.all_tags().is_empty());
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use crate::config::AppSettings;
 use crate::duplicates::phash;
 use crate::library_index::{BasicImageInfo, LibraryIndex};
-use crate::model::library::{RawImageEntry, SortOrder};
+use crate::model::library::{CachedImageData, RawImageEntry, SortOrder};
 use crate::model::{ImageEntry, LibraryManager};
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
@@ -43,7 +43,7 @@ pub struct AppState {
     pub library_index: Option<Arc<LibraryIndex>>,
     pub library_index_error: Option<String>,
     pub tags: Option<Arc<crate::tags::TagDatabase>>,
-    pub smart_tagger: Option<Arc<dyn crate::tags::smart::SmartTagger + Send + Sync>>,
+    pub smart_tagger: Option<Arc<crate::tags::smart::LocalTagger>>,
     /// Cached path to the active Vulkan upscaler binary after successful detection.
     pub upscale_binary: Option<PathBuf>,
     pub ops: crate::ops::queue::OpQueue,
@@ -88,6 +88,11 @@ struct MetadataIndexResult {
     path: PathBuf,
     width: u32,
     height: u32,
+}
+
+struct VirtualMetadataResult {
+    path: PathBuf,
+    cached: CachedImageData,
 }
 
 enum FolderOpenResult {
@@ -281,6 +286,42 @@ fn start_metadata_indexer(
     });
 }
 
+fn load_virtual_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf]) {
+    let pending = state.borrow_mut().library.load_virtual(paths);
+    if pending.is_empty() {
+        return;
+    }
+
+    let (tx, rx) = async_channel::unbounded::<VirtualMetadataResult>();
+    rayon::spawn(move || {
+        let started = Instant::now();
+        let total = pending.len();
+        let mut cache = rustc_hash::FxHashMap::default();
+        for path in pending {
+            let cached = LibraryManager::cached_image_data_static(&path, &mut cache);
+            let _ = tx.send_blocking(VirtualMetadataResult { path, cached });
+        }
+        crate::bench_event!(
+            "virtual_view.metadata.finish",
+            serde_json::json!({
+                "total": total,
+                "duration_ms": crate::bench::duration_ms(started),
+            }),
+        );
+    });
+
+    let state_rx = state.clone();
+    glib::MainContext::default().spawn_local(async move {
+        while let Ok(result) = rx.recv().await {
+            let mut st = state_rx.borrow_mut();
+            if st.library.current_folder.is_none() {
+                st.library
+                    .apply_cached_image_data(&result.path, result.cached);
+            }
+        }
+    });
+}
+
 fn maybe_download_model() {
     let model_path = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -336,12 +377,11 @@ impl AppState {
         let model_path = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("sharpr/models/resnet18-v1-7.onnx");
-        let smart_tagger: Option<Arc<dyn crate::tags::smart::SmartTagger + Send + Sync>> =
-            if model_path.exists() {
-                Some(Arc::new(crate::tags::smart::LocalTagger::new(model_path)))
-            } else {
-                None
-            };
+        let smart_tagger = if model_path.exists() {
+            Some(Arc::new(crate::tags::smart::LocalTagger::new(model_path)))
+        } else {
+            None
+        };
         let (library_index, library_index_error) = match LibraryIndex::open() {
             Ok(index) => (Some(Arc::new(index)), None),
             Err(err) => {
@@ -1018,7 +1058,7 @@ impl SharprWindow {
                     }
 
                     let result_count = paths.len();
-                    state_rx.borrow_mut().library.load_virtual(&paths);
+                    load_virtual_async(&state_rx, &paths);
                     crate::bench_event!(
                         "virtual_view.load",
                         serde_json::json!({
@@ -1070,7 +1110,7 @@ impl SharprWindow {
                 sidebar_c.set_tags_selected(false);
                 sidebar_c.set_quality_selected(None);
                 // Show an empty filmstrip immediately so the user knows to type.
-                state_c.borrow_mut().library.load_virtual(&[]);
+                load_virtual_async(&state_c, &[]);
                 crate::bench_event!(
                     "virtual_view.load",
                     serde_json::json!({
@@ -1224,7 +1264,7 @@ impl SharprWindow {
                             .library
                             .bg_scan_quality_finish(new_indexed, new_cache);
                     }
-                    state_rx.borrow_mut().library.load_virtual(&paths);
+                    load_virtual_async(&state_rx, &paths);
                     crate::bench_event!(
                         "virtual_view.load",
                         serde_json::json!({
@@ -1365,8 +1405,8 @@ impl SharprWindow {
                     let mut s = state_c.borrow_mut();
                     s.active_collection = Some(id);
                     s.selected_paths.clear();
-                    s.library.load_virtual(&paths);
                 }
+                load_virtual_async(&state_c, &paths);
                 crate::bench_event!(
                     "collection.load",
                     serde_json::json!({
@@ -1449,7 +1489,8 @@ impl SharprWindow {
                                 let mut s = state_c.borrow_mut();
                                 s.active_collection = None;
                                 s.selected_paths.clear();
-                                s.library.load_virtual(&[]);
+                                drop(s);
+                                load_virtual_async(&state_c, &[]);
                             }
                             refresh_c();
                             if was_active {
@@ -1501,7 +1542,7 @@ impl SharprWindow {
                         // If we're viewing this collection, append newly added paths.
                         if state_c.borrow().active_collection == Some(id) {
                             let all_paths = idx.collection_paths(id).unwrap_or_default();
-                            state_c.borrow_mut().library.load_virtual(&all_paths);
+                            load_virtual_async(&state_c, &all_paths);
                             filmstrip_c.refresh_virtual();
                             let first = state_c
                                 .borrow()
@@ -1789,7 +1830,7 @@ impl SharprWindow {
 
                 let text = text.trim().to_string();
                 if text.is_empty() {
-                    state_c.borrow_mut().library.load_virtual(&[]);
+                    load_virtual_async(&state_c, &[]);
                     viewer_c.clear();
                     filmstrip_c.refresh_virtual();
                     return;
@@ -1850,7 +1891,7 @@ impl SharprWindow {
                                     .cloned()
                                     .collect();
 
-                                state_rx.borrow_mut().library.load_virtual(&merged);
+                                load_virtual_async(&state_rx, &merged);
                                 content_stack_rx.set_visible_child_name("viewer");
                                 sidebar_rx.set_search_selected(true);
                                 sidebar_rx.set_duplicates_selected(false);
@@ -1903,7 +1944,7 @@ impl SharprWindow {
                 let content_stack_rx = content_stack.clone();
                 glib::MainContext::default().spawn_local(async move {
                     if let Ok(paths) = rx.recv().await {
-                        state_rx.borrow_mut().library.load_virtual(&paths);
+                        load_virtual_async(&state_rx, &paths);
                         content_stack_rx.set_visible_child_name("viewer");
                         sidebar_rx.set_search_selected(true);
                         sidebar_rx.set_duplicates_selected(false);
@@ -2182,7 +2223,7 @@ impl SharprWindow {
                             })
                         );
                         let remaining = idx.collection_paths(id).unwrap_or_default();
-                        state_c.borrow_mut().library.load_virtual(&remaining);
+                        load_virtual_async(&state_c, &remaining);
                         state_c.borrow_mut().selected_paths.clear();
                         filmstrip_c.refresh_virtual();
                         let first = state_c

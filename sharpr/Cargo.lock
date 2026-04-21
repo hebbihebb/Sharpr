@@ -2112,6 +2112,7 @@ dependencies = [
  "glib-build-tools",
  "gtk4",
  "image",
+ "itoa",
  "libadwaita",
  "memmap2",
  "r2d2",

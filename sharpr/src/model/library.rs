@@ -480,10 +480,11 @@ impl LibraryManager {
     /// Populate the store from an arbitrary list of paths (virtual view).
     /// Does not touch the filesystem or `current_folder`; sets it to `None`
     /// so callers can distinguish a virtual view from a real folder scan.
-    pub fn load_virtual(&mut self, paths: &[PathBuf]) {
+    /// Returns paths whose metadata was not already cached so callers can
+    /// hydrate them asynchronously.
+    pub fn load_virtual(&mut self, paths: &[PathBuf]) -> Vec<PathBuf> {
         self.store.remove_all();
         self.path_to_index.clear();
-        self.hash_store.clear();
         self.active_thumbnail_cache.clear();
         self.prefetch_cache.clear();
         self.prefetch_order.clear();
@@ -492,10 +493,35 @@ impl LibraryManager {
         self.preview_order.clear();
         self.selected_index = None;
         self.current_folder = None;
+        let mut metadata_pending = Vec::new();
         for (index, path) in paths.iter().enumerate() {
-            let entry = self.build_entry(path.clone(), false);
+            let entry = ImageEntry::new(path.clone());
+            if let Some(cached) = self.metadata_cache.get(path) {
+                entry.set_file_size(cached.file_size);
+                if let Some((width, height)) = cached.dimensions {
+                    entry.set_dimensions(width, height);
+                }
+            } else {
+                metadata_pending.push(path.clone());
+            }
+            if let Some(texture) = self.thumbnail_cache.get(path) {
+                entry.set_thumbnail(Some(texture.clone()));
+            }
             self.store.append(&entry);
             self.path_to_index.insert(path.clone(), index as u32);
+        }
+        metadata_pending
+    }
+
+    pub fn apply_cached_image_data(&mut self, path: &Path, cached: CachedImageData) {
+        self.metadata_cache.insert(path.to_path_buf(), cached.clone());
+        if let Some(index) = self.path_to_index.get(path).copied() {
+            if let Some(entry) = self.entry_at(index) {
+                entry.set_file_size(cached.file_size);
+                if let Some((width, height)) = cached.dimensions {
+                    entry.set_dimensions(width, height);
+                }
+            }
         }
     }
 
@@ -809,6 +835,18 @@ mod tests {
         encoder
             .encode_image(&image::DynamicImage::ImageRgb8(image))
             .unwrap();
+    }
+
+    #[test]
+    fn load_virtual_preserves_session_hashes_for_duplicates() {
+        let path = PathBuf::from("/photos/a.jpg");
+        let mut library = LibraryManager::new();
+        library.insert_hash(path.clone(), 0xabcd);
+
+        let pending = library.load_virtual(&[path.clone()]);
+
+        assert_eq!(pending, vec![path.clone()]);
+        assert_eq!(library.all_hashes_snapshot(), vec![(path, 0xabcd)]);
     }
 
     #[test]

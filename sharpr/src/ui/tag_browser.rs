@@ -123,7 +123,8 @@ impl TagBrowser {
         }
 
         for (letter, entries) in grouped {
-            let heading = gtk4::Label::new(Some(&letter.to_string()));
+            let mut heading_buf = [0u8; 4];
+            let heading = gtk4::Label::new(Some(letter.encode_utf8(&mut heading_buf)));
             heading.add_css_class("caption-heading");
             heading.set_halign(gtk4::Align::Start);
             heading.set_margin_start(12);
@@ -145,9 +146,17 @@ impl TagBrowser {
                 let chip = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
                 chip.add_css_class("tag-chip");
 
-                let name_button = gtk4::Button::with_label(&format!("{tag}  {count}"));
+                let name_button = gtk4::Button::new();
                 name_button.add_css_class("flat");
                 name_button.set_tooltip_text(Some(&format!("{count} image(s)")));
+                let button_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+                let tag_label = gtk4::Label::new(Some(&tag));
+                let mut count_buf = itoa::Buffer::new();
+                let count_label = gtk4::Label::new(Some(count_buf.format(count)));
+                count_label.add_css_class("dim-label");
+                button_box.append(&tag_label);
+                button_box.append(&count_label);
+                name_button.set_child(Some(&button_box));
 
                 let delete_button = gtk4::Button::from_icon_name("window-close-symbolic");
                 delete_button.add_css_class("flat");

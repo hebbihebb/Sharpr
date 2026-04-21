@@ -6,10 +6,6 @@ use std::sync::OnceLock;
 use image::imageops::FilterType;
 use tract_onnx::prelude::*;
 
-pub trait SmartTagger {
-    fn suggest_tags(&self, rgba: &[u8], width: u32, height: u32) -> Vec<String>;
-}
-
 type Plan = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
 
 pub struct LocalTagger {
@@ -40,8 +36,8 @@ fn load_plan(path: &PathBuf) -> TractResult<Plan> {
         .into_runnable()
 }
 
-impl SmartTagger for LocalTagger {
-    fn suggest_tags(&self, rgba: &[u8], width: u32, height: u32) -> Vec<String> {
+impl LocalTagger {
+    pub fn suggest_tags(&self, rgba: &[u8], width: u32, height: u32) -> Vec<String> {
         let Some(plan) = self.get_plan() else {
             return vec![];
         };

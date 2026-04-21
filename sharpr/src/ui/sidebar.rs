@@ -1022,7 +1022,8 @@ impl CollectionRow {
         name_label.set_hexpand(true);
         name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
 
-        let count_label = gtk4::Label::new(Some(&item_count.to_string()));
+        let mut count_buf = itoa::Buffer::new();
+        let count_label = gtk4::Label::new(Some(count_buf.format(item_count)));
         count_label.add_css_class("dim-label");
         count_label.add_css_class("caption");
 
