@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use gtk4::gio;
 use gtk4::prelude::*;
@@ -381,6 +382,16 @@ impl SharprWindow {
             let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
             Rc::new(move |path: PathBuf| {
+                crate::bench_event!(
+                    "folder.open.request",
+                    serde_json::json!({
+                        "path": path.display().to_string(),
+                    }),
+                );
+                if let Some(win) = window_weak.upgrade() {
+                    let _ = win.bump_thumbnail_generation("folder.open");
+                    win.complete_thumbnail_ops();
+                }
                 content_stack.set_visible_child_name("viewer");
                 let cache_max = AppSettings::load().thumbnail_cache_max as usize;
                 state_c
@@ -397,7 +408,16 @@ impl SharprWindow {
                 let (tx, rx) = async_channel::unbounded::<Vec<RawImageEntry>>();
                 let scan_path = path.clone();
                 std::thread::spawn(move || {
+                    let started = Instant::now();
                     let entries = LibraryManager::scan_folder_raw(&scan_path);
+                    crate::bench_event!(
+                        "folder.scan.finish",
+                        serde_json::json!({
+                            "path": scan_path.display().to_string(),
+                            "entry_count": entries.len(),
+                            "duration_ms": crate::bench::duration_ms(started),
+                        }),
+                    );
                     let _ = tx.send_blocking(entries);
                 });
 
@@ -414,23 +434,45 @@ impl SharprWindow {
                     };
 
                     {
+                        let started = Instant::now();
                         let mut st = state_rx.borrow_mut();
                         if st.library.current_folder.as_deref() != Some(path_rx.as_path()) {
+                            crate::bench_event!(
+                                "folder.open.stale_result",
+                                serde_json::json!({
+                                    "path": path_rx.display().to_string(),
+                                }),
+                            );
                             return;
                         }
 
                         let order = st.sort_order;
                         crate::model::library::sort_raw_entries(&mut raw_entries, order);
-                        let mut new_entries: Vec<ImageEntry> = Vec::with_capacity(raw_entries.len());
+                        let mut new_entries: Vec<ImageEntry> =
+                            Vec::with_capacity(raw_entries.len());
                         for (index, raw) in raw_entries.into_iter().enumerate() {
                             let entry = ImageEntry::new(raw.path.clone());
                             entry.set_file_size(raw.file_size);
                             entry.set_dimensions(raw.width, raw.height);
-                            st.library.path_to_index.insert(raw.path.clone(), index as u32);
+                            if let Some(texture) = st.library.cached_thumbnail(&raw.path) {
+                                entry.set_thumbnail(Some(texture));
+                            }
+                            st.library
+                                .path_to_index
+                                .insert(raw.path.clone(), index as u32);
                             st.library.all_known_paths.insert(raw.path);
                             new_entries.push(entry);
                         }
+                        let entry_count = new_entries.len();
                         st.library.store.splice(0, 0, &new_entries);
+                        crate::bench_event!(
+                            "folder.store_populate.finish",
+                            serde_json::json!({
+                                "path": path_rx.display().to_string(),
+                                "entry_count": entry_count,
+                                "duration_ms": crate::bench::duration_ms(started),
+                            }),
+                        );
                     }
 
                     sidebar_rx.select_folder(&path_rx);
@@ -443,6 +485,13 @@ impl SharprWindow {
                     filmstrip_rx.refresh();
 
                     let thumb_total = state_rx.borrow().library.image_count();
+                    crate::bench_event!(
+                        "folder.open.ready",
+                        serde_json::json!({
+                            "path": path_rx.display().to_string(),
+                            "image_count": thumb_total,
+                        }),
+                    );
                     let thumb_op = if thumb_total > 0 {
                         Some(
                             state_rx
@@ -525,9 +574,21 @@ impl SharprWindow {
             let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
             let toast_overlay_c = toast_overlay.clone();
+            let window_weak = self.downgrade();
             sidebar.connect_duplicates_selected(move || {
+                let expected_gen = window_weak.upgrade().and_then(|win| {
+                    let gen = win.bump_thumbnail_generation("smart.duplicates");
+                    win.complete_thumbnail_ops();
+                    gen
+                });
                 content_stack.set_visible_child_name("viewer");
                 let hashes = state_c.borrow().library.all_hashes_snapshot();
+                crate::bench_event!(
+                    "smart.duplicates.request",
+                    serde_json::json!({
+                        "hash_count": hashes.len(),
+                    }),
+                );
                 if hashes.is_empty() {
                     toast_overlay_c.add_toast(libadwaita::Toast::new(
                         "Browse your library first — hashes are computed as thumbnails load",
@@ -538,11 +599,18 @@ impl SharprWindow {
                 let op = state_c.borrow().ops.add("Finding duplicates");
                 let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
                 std::thread::spawn(move || {
+                    let started = Instant::now();
                     let paths = phash::group_duplicates(&hashes)
                         .into_iter()
                         .filter(|group| group.len() > 1)
                         .flatten()
                         .collect();
+                    crate::bench_event!(
+                        "smart.duplicates.finish",
+                        serde_json::json!({
+                            "duration_ms": crate::bench::duration_ms(started),
+                        }),
+                    );
                     let _ = tx.send_blocking(paths);
                 });
 
@@ -551,18 +619,39 @@ impl SharprWindow {
                 let sidebar_rx = sidebar_c.clone();
                 let state_rx = state_c.clone();
                 let suppress_search_restore_rx = suppress_search_restore_c.clone();
+                let window_weak_rx = window_weak.clone();
                 glib::MainContext::default().spawn_local(async move {
                     let Ok(paths) = rx.recv().await else {
                         op.fail("Detection failed");
                         return;
                     };
+                    if let (Some(expected), Some(win)) = (expected_gen, window_weak_rx.upgrade()) {
+                        if win.current_thumbnail_generation() != Some(expected) {
+                            crate::bench_event!(
+                                "smart.duplicates.stale_result",
+                                serde_json::json!({
+                                    "expected_gen": expected,
+                                }),
+                            );
+                            op.complete();
+                            return;
+                        }
+                    }
 
                     if paths.is_empty() {
                         op.fail("No duplicates found");
                         return;
                     }
 
+                    let result_count = paths.len();
                     state_rx.borrow_mut().library.load_virtual(&paths);
+                    crate::bench_event!(
+                        "virtual_view.load",
+                        serde_json::json!({
+                            "source": "duplicates",
+                            "image_count": result_count,
+                        }),
+                    );
                     sidebar_rx.set_duplicates_selected(true);
                     sidebar_rx.set_search_selected(false);
                     sidebar_rx.set_tags_selected(false);
@@ -594,14 +683,27 @@ impl SharprWindow {
             let sidebar_c = sidebar.clone();
             let state_c = state.clone();
             let content_stack = content_stack.clone();
+            let window_weak = self.downgrade();
             sidebar.connect_search_activated(move || {
+                if let Some(win) = window_weak.upgrade() {
+                    let _ = win.bump_thumbnail_generation("smart.search");
+                    win.complete_thumbnail_ops();
+                }
                 content_stack.set_visible_child_name("viewer");
+                crate::bench_event!("smart.search.activate", serde_json::json!({}));
                 sidebar_c.set_search_selected(true);
                 sidebar_c.set_duplicates_selected(false);
                 sidebar_c.set_tags_selected(false);
                 sidebar_c.set_quality_selected(None);
                 // Show an empty filmstrip immediately so the user knows to type.
                 state_c.borrow_mut().library.load_virtual(&[]);
+                crate::bench_event!(
+                    "virtual_view.load",
+                    serde_json::json!({
+                        "source": "search",
+                        "image_count": 0,
+                    }),
+                );
                 viewer_c.clear();
                 filmstrip_c.refresh_virtual();
                 filmstrip_c.activate_search();
@@ -626,19 +728,48 @@ impl SharprWindow {
             let state_c = state.clone();
             let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
+            let window_weak = self.downgrade();
             sidebar.connect_quality_selected(move |class| {
+                let expected_gen = window_weak.upgrade().and_then(|win| {
+                    let gen = win.bump_thumbnail_generation("smart.quality");
+                    win.complete_thumbnail_ops();
+                    gen
+                });
                 content_stack.set_visible_child_name("viewer");
+                crate::bench_event!(
+                    "smart.quality.request",
+                    serde_json::json!({
+                        "class": class.label(),
+                    }),
+                );
 
-                let (indexed_paths, current_folder, metadata_cache) = {
-                    state_c.borrow().library.bg_scan_quality_prep()
-                };
+                let (indexed_paths, current_folder, metadata_cache) =
+                    { state_c.borrow().library.bg_scan_quality_prep() };
                 let library_root = state_c.borrow().settings.library_root.clone();
-                let op = state_c.borrow().ops.add(format!("Scanning for {} quality", class.label()));
+                let op = state_c
+                    .borrow()
+                    .ops
+                    .add(format!("Scanning for {} quality", class.label()));
 
                 let (tx, rx) = async_channel::bounded(1);
                 std::thread::spawn(move || {
-                    let result = crate::model::library::LibraryManager::compute_paths_for_quality_class(
-                        library_root, class, indexed_paths, current_folder, metadata_cache
+                    let started = Instant::now();
+                    let result =
+                        crate::model::library::LibraryManager::compute_paths_for_quality_class(
+                            library_root,
+                            class,
+                            indexed_paths,
+                            current_folder,
+                            metadata_cache,
+                        );
+                    crate::bench_event!(
+                        "smart.quality.scan_finish",
+                        serde_json::json!({
+                            "class": class.label(),
+                            "indexed_count": result.0.len(),
+                            "result_count": result.2.len(),
+                            "duration_ms": crate::bench::duration_ms(started),
+                        }),
                     );
                     let _ = tx.send_blocking(result);
                 });
@@ -648,15 +779,41 @@ impl SharprWindow {
                 let sidebar_rx = sidebar_c.clone();
                 let state_rx = state_c.clone();
                 let suppress_rx = suppress_search_restore_c.clone();
-                
+                let window_weak_rx = window_weak.clone();
+
                 glib::MainContext::default().spawn_local(async move {
                     let Ok((new_indexed, new_cache, paths)) = rx.recv().await else {
                         op.fail("Quality scan failed");
                         return;
                     };
-                    
-                    state_rx.borrow_mut().library.bg_scan_quality_finish(new_indexed, new_cache);
+                    if let (Some(expected), Some(win)) = (expected_gen, window_weak_rx.upgrade()) {
+                        if win.current_thumbnail_generation() != Some(expected) {
+                            crate::bench_event!(
+                                "smart.quality.stale_result",
+                                serde_json::json!({
+                                    "class": class.label(),
+                                    "expected_gen": expected,
+                                }),
+                            );
+                            op.complete();
+                            return;
+                        }
+                    }
+
+                    let result_count = paths.len();
+                    state_rx
+                        .borrow_mut()
+                        .library
+                        .bg_scan_quality_finish(new_indexed, new_cache);
                     state_rx.borrow_mut().library.load_virtual(&paths);
+                    crate::bench_event!(
+                        "virtual_view.load",
+                        serde_json::json!({
+                            "source": "quality",
+                            "class": class.label(),
+                            "image_count": result_count,
+                        }),
+                    );
                     sidebar_rx.set_quality_selected(Some(class));
                     sidebar_rx.set_search_selected(false);
                     sidebar_rx.set_duplicates_selected(false);
@@ -668,7 +825,7 @@ impl SharprWindow {
                         .library
                         .entry_at(0)
                         .map(|e: crate::model::ImageEntry| e.path());
-                    
+
                     if let Some(path) = first {
                         state_rx.borrow_mut().library.selected_index = Some(0);
                         filmstrip_rx.navigate_to(0);
@@ -754,8 +911,7 @@ impl SharprWindow {
             discard_btn,
             edit_commit_btn,
             edit_discard_btn,
-        ) =
-            self.build_viewer_header(&viewer_menu_btn);
+        ) = self.build_viewer_header(&viewer_menu_btn);
 
         let upscale_banner = libadwaita::Banner::new("");
         upscale_banner.set_button_label(Some("Dismiss"));
@@ -909,9 +1065,7 @@ impl SharprWindow {
                 while let Ok(event) = ops_rx.recv().await {
                     match event {
                         OpEvent::Added { id, title } => indicator.push_op(id, &title),
-                        OpEvent::Progress { id, fraction } => {
-                            indicator.update_op(id, fraction)
-                        }
+                        OpEvent::Progress { id, fraction } => indicator.update_op(id, fraction),
                         OpEvent::Completed(id) => indicator.complete_op(id),
                         OpEvent::Failed { id, msg } => indicator.fail_op(id, &msg),
                         OpEvent::Dismissed(id) => indicator.remove_op(id),
@@ -1353,6 +1507,37 @@ impl SharprWindow {
     /// Drain thumbnail results from the worker pool on the GLib main context.
     /// For each result: construct a `MemoryTexture` on the main thread,
     /// find the matching `ImageEntry` in the store, and update it.
+    fn bump_thumbnail_generation(&self, reason: &str) -> Option<u64> {
+        let gen = self
+            .imp()
+            .thumbnail_worker
+            .borrow()
+            .as_ref()
+            .map(|worker| worker.bump_generation())?;
+        crate::bench_event!(
+            "thumbnail.generation_bump",
+            serde_json::json!({
+                "gen": gen,
+                "reason": reason,
+            }),
+        );
+        Some(gen)
+    }
+
+    fn current_thumbnail_generation(&self) -> Option<u64> {
+        self.imp()
+            .thumbnail_worker
+            .borrow()
+            .as_ref()
+            .map(|worker| worker.current_generation())
+    }
+
+    fn complete_thumbnail_ops(&self) {
+        for (_, op_state) in self.imp().thumbnail_ops.borrow_mut().drain() {
+            op_state.handle.complete();
+        }
+    }
+
     fn start_thumbnail_poll(&self, state: Rc<RefCell<AppState>>, filmstrip: FilmstripPane) {
         let result_rx = self.imp().result_rx.borrow().clone();
         let Some(rx) = result_rx else { return };
@@ -1364,6 +1549,8 @@ impl SharprWindow {
                 use glib::Bytes;
 
                 let result_path = result.path.clone();
+                let source = result.source;
+                let worker_ms = result.worker_ms;
                 let bytes = Bytes::from_owned(result.rgba_bytes);
                 let texture = MemoryTexture::new(
                     result.width as i32,
@@ -1380,7 +1567,25 @@ impl SharprWindow {
                     if let Some(idx) = st.library.index_of_path(&result_path) {
                         if let Some(entry) = st.library.entry_at(idx) {
                             entry.set_thumbnail(Some(texture.clone().upcast::<gdk4::Texture>()));
+                            crate::bench_event!(
+                                "thumbnail.apply",
+                                serde_json::json!({
+                                    "path": result_path.display().to_string(),
+                                    "index": idx,
+                                    "source": source,
+                                    "worker_ms": worker_ms,
+                                }),
+                            );
                         }
+                    } else {
+                        crate::bench_event!(
+                            "thumbnail.apply_skipped",
+                            serde_json::json!({
+                                "path": result_path.display().to_string(),
+                                "source": source,
+                                "reason": "not_in_active_view",
+                            }),
+                        );
                     }
                 }
 
@@ -1431,11 +1636,26 @@ impl SharprWindow {
                     .borrow_mut()
                     .library
                     .insert_hash(result.path, result.hash);
+                crate::bench_event!(
+                    "hash.apply",
+                    serde_json::json!({
+                        "path": path.display().to_string(),
+                    }),
+                );
                 if let Some(tags_arc) = state.borrow().tags.clone() {
                     std::thread::spawn(move || {
+                        let started = Instant::now();
                         let meta = crate::metadata::exif::ImageMetadata::load(&path);
                         let tag_list = crate::tags::indexer::auto_tags(&path, &meta);
                         tags_arc.insert_auto_tags(&path, &tag_list);
+                        crate::bench_event!(
+                            "tags.auto_index.finish",
+                            serde_json::json!({
+                                "path": path.display().to_string(),
+                                "tag_count": tag_list.len(),
+                                "duration_ms": crate::bench::duration_ms(started),
+                            }),
+                        );
                     });
                 }
             }

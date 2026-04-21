@@ -1,4 +1,5 @@
 mod app;
+mod bench;
 mod config;
 mod duplicates;
 mod metadata;
@@ -20,6 +21,8 @@ fn register_resources() {
 }
 
 fn main() -> glib::ExitCode {
+    bench::init();
+
     // Initialise rexiv2 (gexiv2 C library) once at startup.
     rexiv2::initialize().expect("Failed to initialise gexiv2");
     register_resources();

@@ -10,8 +10,8 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
-use crate::model::ImageEntry;
 use crate::model::library::SortOrder;
+use crate::model::ImageEntry;
 use crate::thumbnails::worker::WorkerRequest;
 use crate::ui::window::AppState;
 
@@ -694,6 +694,11 @@ impl FilmstripPane {
             }
         }
 
+        let visible_candidates = visible_worker_paths.len();
+        let preload_candidates = preload_worker_paths.len();
+        let mut visible_enqueued = 0usize;
+        let mut preload_enqueued = 0usize;
+
         for path in visible_worker_paths {
             let should_enqueue = {
                 let Ok(mut pending) = pending_set.lock() else {
@@ -716,6 +721,7 @@ impl FilmstripPane {
                 }
                 break;
             }
+            visible_enqueued += 1;
         }
 
         for path in preload_worker_paths {
@@ -740,6 +746,25 @@ impl FilmstripPane {
                 }
                 break;
             }
+            preload_enqueued += 1;
+        }
+
+        if visible_candidates > 0 || preload_candidates > 0 {
+            crate::bench_event!(
+                "filmstrip.thumbnail_schedule",
+                serde_json::json!({
+                    "image_count": image_count,
+                    "visible_start": visible_range_start,
+                    "visible_end": visible_capped_end,
+                    "preload_start": preload_range_start,
+                    "preload_end": preload_capped_end,
+                    "visible_candidates": visible_candidates,
+                    "preload_candidates": preload_candidates,
+                    "visible_enqueued": visible_enqueued,
+                    "preload_enqueued": preload_enqueued,
+                    "gen": gen,
+                }),
+            );
         }
     }
 

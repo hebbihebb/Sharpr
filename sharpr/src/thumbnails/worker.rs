@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use async_channel::{Receiver, Sender};
 use gtk4::gio;
@@ -29,6 +30,8 @@ pub struct ThumbnailResult {
     pub rgba_bytes: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    pub source: &'static str,
+    pub worker_ms: u128,
 }
 
 /// Message sent back from a worker thread after computing a perceptual hash.
@@ -88,13 +91,51 @@ impl ThumbnailWorker {
                         Ok(WorkerRequest::Thumbnail { path, gen }) => {
                             // Skip stale requests immediately — no decode needed.
                             if gen != gen_arc.load(Ordering::Relaxed) {
+                                crate::bench_event!(
+                                    "thumbnail.skip_stale",
+                                    serde_json::json!({
+                                        "path": path.display().to_string(),
+                                        "pool": "visible",
+                                        "request_gen": gen,
+                                        "current_gen": gen_arc.load(Ordering::Relaxed),
+                                    }),
+                                );
                                 if let Ok(mut pending) = pending_paths.lock() {
                                     pending.remove(&path);
                                 }
                                 continue;
                             }
+                            crate::bench_event!(
+                                "thumbnail.start",
+                                serde_json::json!({
+                                    "path": path.display().to_string(),
+                                    "pool": "visible",
+                                    "gen": gen,
+                                }),
+                            );
                             if let Some(result) = generate_thumbnail(&path) {
+                                crate::bench_event!(
+                                    "thumbnail.finish",
+                                    serde_json::json!({
+                                        "path": path.display().to_string(),
+                                        "pool": "visible",
+                                        "gen": gen,
+                                        "source": result.source,
+                                        "width": result.width,
+                                        "height": result.height,
+                                        "duration_ms": result.worker_ms,
+                                    }),
+                                );
                                 let _ = result_tx.send_blocking(result);
+                            } else {
+                                crate::bench_event!(
+                                    "thumbnail.fail",
+                                    serde_json::json!({
+                                        "path": path.display().to_string(),
+                                        "pool": "visible",
+                                        "gen": gen,
+                                    }),
+                                );
                             }
 
                             // Chain hashing request to the same worker pool.
@@ -112,8 +153,28 @@ impl ThumbnailWorker {
                             if gen != gen_arc.load(Ordering::Relaxed) {
                                 continue;
                             }
+                            let started = Instant::now();
                             if let Some(hash) = compute_hash(&path) {
+                                crate::bench_event!(
+                                    "hash.finish",
+                                    serde_json::json!({
+                                        "path": path.display().to_string(),
+                                        "pool": "visible",
+                                        "gen": gen,
+                                        "duration_ms": crate::bench::duration_ms(started),
+                                    }),
+                                );
                                 let _ = hash_result_tx.send_blocking(HashResult { path, hash });
+                            } else {
+                                crate::bench_event!(
+                                    "hash.fail",
+                                    serde_json::json!({
+                                        "path": path.display().to_string(),
+                                        "pool": "visible",
+                                        "gen": gen,
+                                        "duration_ms": crate::bench::duration_ms(started),
+                                    }),
+                                );
                             }
                         }
                         Ok(WorkerRequest::Shutdown) | Err(_) => break,
@@ -134,13 +195,51 @@ impl ThumbnailWorker {
                 match request_rx.recv_blocking() {
                     Ok(WorkerRequest::Thumbnail { path, gen }) => {
                         if gen != gen_arc.load(Ordering::Relaxed) {
+                            crate::bench_event!(
+                                "thumbnail.skip_stale",
+                                serde_json::json!({
+                                    "path": path.display().to_string(),
+                                    "pool": "preload",
+                                    "request_gen": gen,
+                                    "current_gen": gen_arc.load(Ordering::Relaxed),
+                                }),
+                            );
                             if let Ok(mut pending) = pending_paths.lock() {
                                 pending.remove(&path);
                             }
                             continue;
                         }
+                        crate::bench_event!(
+                            "thumbnail.start",
+                            serde_json::json!({
+                                "path": path.display().to_string(),
+                                "pool": "preload",
+                                "gen": gen,
+                            }),
+                        );
                         if let Some(result) = generate_thumbnail(&path) {
+                            crate::bench_event!(
+                                "thumbnail.finish",
+                                serde_json::json!({
+                                    "path": path.display().to_string(),
+                                    "pool": "preload",
+                                    "gen": gen,
+                                    "source": result.source,
+                                    "width": result.width,
+                                    "height": result.height,
+                                    "duration_ms": result.worker_ms,
+                                }),
+                            );
                             let _ = result_tx.send_blocking(result);
+                        } else {
+                            crate::bench_event!(
+                                "thumbnail.fail",
+                                serde_json::json!({
+                                    "path": path.display().to_string(),
+                                    "pool": "preload",
+                                    "gen": gen,
+                                }),
+                            );
                         }
 
                         // Hashing is low priority, so we chain it here.
@@ -157,8 +256,28 @@ impl ThumbnailWorker {
                         if gen != gen_arc.load(Ordering::Relaxed) {
                             continue;
                         }
+                        let started = Instant::now();
                         if let Some(hash) = compute_hash(&path) {
+                            crate::bench_event!(
+                                "hash.finish",
+                                serde_json::json!({
+                                    "path": path.display().to_string(),
+                                    "pool": "preload",
+                                    "gen": gen,
+                                    "duration_ms": crate::bench::duration_ms(started),
+                                }),
+                            );
                             let _ = hash_result_tx.send_blocking(HashResult { path, hash });
+                        } else {
+                            crate::bench_event!(
+                                "hash.fail",
+                                serde_json::json!({
+                                    "path": path.display().to_string(),
+                                    "pool": "preload",
+                                    "gen": gen,
+                                    "duration_ms": crate::bench::duration_ms(started),
+                                }),
+                            );
                         }
                     }
                     Ok(WorkerRequest::Shutdown) | Err(_) => break,
@@ -232,14 +351,17 @@ impl Drop for ThumbnailWorker {
 // ---------------------------------------------------------------------------
 
 fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
+    let started = Instant::now();
     // Try system-wide thumbnails first (GNOME/Freedesktop standard) as they
     // are likely already generated and high quality.
-    if let Some(system_cached) = load_system_thumbnail(path) {
+    if let Some(mut system_cached) = load_system_thumbnail(path) {
+        system_cached.worker_ms = crate::bench::duration_ms(started);
         return Some(system_cached);
     }
 
     // Fall back to Sharpr's own disk cache.
-    if let Some(cached) = load_cached_thumbnail(path) {
+    if let Some(mut cached) = load_cached_thumbnail(path) {
+        cached.worker_ms = crate::bench::duration_ms(started);
         return Some(cached);
     }
 
@@ -252,17 +374,23 @@ fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
         let (thumb_opt, orientation) = extract_exif_data(path, THUMB_HEIGHT);
         if let Some(img) = thumb_opt {
             let img = apply_exif_orientation_value(img, orientation);
-            return build_thumbnail_and_cache(path, img);
+            let mut result = build_thumbnail_and_cache(path, img, "embedded_jpeg")?;
+            result.worker_ms = crate::bench::duration_ms(started);
+            return Some(result);
         }
 
         let img = decode_jpeg_scaled(path).or_else(|| decode_with_image_crate(path))?;
         let img = apply_exif_orientation_value(img, orientation);
-        return build_thumbnail_and_cache(path, img);
+        let mut result = build_thumbnail_and_cache(path, img, "decoded_jpeg")?;
+        result.worker_ms = crate::bench::duration_ms(started);
+        return Some(result);
     }
 
     let img = decode_with_image_crate(path)?;
     let img = apply_exif_orientation(img, path);
-    build_thumbnail_and_cache(path, img)
+    let mut result = build_thumbnail_and_cache(path, img, "decoded_image")?;
+    result.worker_ms = crate::bench::duration_ms(started);
+    Some(result)
 }
 
 fn decode_jpeg_scaled(path: &Path) -> Option<image::DynamicImage> {
@@ -309,7 +437,11 @@ fn decode_with_image_crate(path: &Path) -> Option<image::DynamicImage> {
     reader.decode().ok()
 }
 
-fn build_thumbnail_and_cache(path: &Path, img: image::DynamicImage) -> Option<ThumbnailResult> {
+fn build_thumbnail_and_cache(
+    path: &Path,
+    img: image::DynamicImage,
+    source: &'static str,
+) -> Option<ThumbnailResult> {
     use image::imageops::{self, FilterType};
 
     let orig_w = img.width();
@@ -332,6 +464,8 @@ fn build_thumbnail_and_cache(path: &Path, img: image::DynamicImage) -> Option<Th
         rgba_bytes,
         width: thumb_w,
         height: thumb_h,
+        source,
+        worker_ms: 0,
     })
 }
 
@@ -347,6 +481,8 @@ fn load_cached_thumbnail(path: &Path) -> Option<ThumbnailResult> {
         rgba_bytes: img.into_raw(),
         width,
         height,
+        source: "sharpr_disk",
+        worker_ms: 0,
     })
 }
 
@@ -400,6 +536,8 @@ fn load_system_thumbnail(path: &Path) -> Option<ThumbnailResult> {
                     rgba_bytes: img.into_raw(),
                     width,
                     height,
+                    source: "system",
+                    worker_ms: 0,
                 });
             }
         }

@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Once};
+use std::time::Instant;
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -495,6 +496,12 @@ impl ViewerPane {
     /// Raw RGBA bytes are sent back to the main thread via a one-shot channel,
     /// where a `gdk4::MemoryTexture` is constructed and set on the `GtkPicture`.
     pub fn load_image(&self, path: PathBuf) {
+        crate::bench_event!(
+            "viewer.load.request",
+            serde_json::json!({
+                "path": path.display().to_string(),
+            }),
+        );
         let imp = self.imp();
         let load_gen = imp.load_gen.get().wrapping_add(1);
         imp.load_gen.set(load_gen);
@@ -518,6 +525,16 @@ impl ViewerPane {
             .and_then(|rc| rc.borrow().library.cached_preview(&path));
 
         if let Some((bytes, w, h)) = cached_preview {
+            crate::bench_event!(
+                "viewer.load.finish",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "source": "preview_cache",
+                    "width": w,
+                    "height": h,
+                    "duration_ms": 0,
+                }),
+            );
             *imp.current_rgba.borrow_mut() = Some((bytes.clone(), w, h));
             let gbytes = glib::Bytes::from_owned(bytes);
             let texture = gdk4::MemoryTexture::new(
@@ -559,6 +576,16 @@ impl ViewerPane {
             .and_then(|rc| rc.borrow_mut().library.take_prefetch(&path));
 
         if let Some((bytes, w, h)) = prefetched {
+            crate::bench_event!(
+                "viewer.load.finish",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "source": "prefetch_cache",
+                    "width": w,
+                    "height": h,
+                    "duration_ms": 0,
+                }),
+            );
             *imp.current_rgba.borrow_mut() = Some((bytes.clone(), w, h));
             if let Some(ref rc) = *imp.state.borrow() {
                 rc.borrow_mut()
@@ -607,7 +634,16 @@ impl ViewerPane {
         // Spawn background decode thread.
         let path_decode = path.clone();
         std::thread::spawn(move || {
-            let _ = pixel_tx.send_blocking(decode_image_rgba(&path_decode));
+            let started = Instant::now();
+            let decoded = decode_image_rgba(&path_decode);
+            crate::bench_event!(
+                "viewer.decode.finish",
+                serde_json::json!({
+                    "path": path_decode.display().to_string(),
+                    "duration_ms": crate::bench::duration_ms(started),
+                }),
+            );
+            let _ = pixel_tx.send_blocking(decoded);
         });
 
         // Spawn background metadata thread.
@@ -650,6 +686,15 @@ impl ViewerPane {
 
             match maybe_pixels {
                 Some((bytes, w, h)) => {
+                    crate::bench_event!(
+                        "viewer.load.finish",
+                        serde_json::json!({
+                            "path": path.display().to_string(),
+                            "source": "decode",
+                            "width": w,
+                            "height": h,
+                        }),
+                    );
                     *imp.current_rgba.borrow_mut() = Some((bytes.clone(), w, h));
                     if let Some(ref rc) = *imp.state.borrow() {
                         rc.borrow_mut()
@@ -669,6 +714,12 @@ impl ViewerPane {
                     viewer.reset_zoom();
                 }
                 None => {
+                    crate::bench_event!(
+                        "viewer.load.fail",
+                        serde_json::json!({
+                            "path": path.display().to_string(),
+                        }),
+                    );
                     // Decode failed — clear to blank.
                     *imp.current_rgba.borrow_mut() = None;
                     imp.picture.set_paintable(None::<&gdk4::Paintable>);
