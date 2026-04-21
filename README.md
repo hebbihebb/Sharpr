@@ -7,7 +7,7 @@
 ---
 
 <p align="center">
-  <img src=".github/assets/sharpr-2026-04-08.png" alt="Sharpr showing smart folders, filmstrip, viewer overlays, and image preview" width="900">
+  <img src="./Screenshot.png" alt="Sharpr showing smart folders, filmstrip, viewer overlays, and image preview" width="900">
 </p>
 
 ---
