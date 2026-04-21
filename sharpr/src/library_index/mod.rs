@@ -8,7 +8,16 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::model::library::SortOrder;
 use crate::quality::QualityClass;
 
-const SCHEMA_VERSION: &str = "1";
+const SCHEMA_VERSION: &str = "2";
+
+#[derive(Clone, Debug)]
+pub struct Collection {
+    pub id: i64,
+    pub name: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub item_count: usize,
+}
 
 #[derive(Clone, Debug)]
 pub struct BasicImageInfo {
@@ -46,6 +55,7 @@ impl LibraryIndex {
         let conn = Connection::open(dir.join("library-index.sqlite"))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS folders (
@@ -80,6 +90,26 @@ impl LibraryIndex {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS collections (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS collection_items (
+                collection_id INTEGER NOT NULL,
+                image_path TEXT NOT NULL,
+                added_at INTEGER NOT NULL,
+                PRIMARY KEY (collection_id, image_path),
+                FOREIGN KEY(collection_id) REFERENCES collections(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_collection_items_path
+                ON collection_items(image_path);
+            CREATE INDEX IF NOT EXISTS idx_collection_items_collection_added
+                ON collection_items(collection_id, added_at);
             ",
         )?;
         conn.execute(
@@ -497,6 +527,144 @@ impl LibraryIndex {
         Ok(rows.filter_map(Result::ok).collect())
     }
 
+    pub fn list_collections(&self) -> rusqlite::Result<Vec<Collection>> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.name, c.created_at, c.updated_at,
+                    COUNT(ci.image_path) AS item_count
+             FROM collections c
+             LEFT JOIN collection_items ci ON ci.collection_id = c.id
+             GROUP BY c.id
+             ORDER BY c.name COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Collection {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+                item_count: row.get::<_, i64>(4)? as usize,
+            })
+        })?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    pub fn create_collection(&self, name: &str) -> rusqlite::Result<Collection> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "collection name cannot be empty".into(),
+            ));
+        }
+        let now = now_secs();
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "INSERT INTO collections (name, created_at, updated_at) VALUES (?1, ?2, ?2)",
+            params![name, now],
+        )?;
+        let id = conn.last_insert_rowid();
+        Ok(Collection {
+            id,
+            name: name.to_string(),
+            created_at: now,
+            updated_at: now,
+            item_count: 0,
+        })
+    }
+
+    pub fn rename_collection(&self, id: i64, name: &str) -> rusqlite::Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "collection name cannot be empty".into(),
+            ));
+        }
+        let now = now_secs();
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "UPDATE collections SET name = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, name, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_collection(&self, id: i64) -> rusqlite::Result<()> {
+        let conn = self.lock_conn()?;
+        conn.execute("DELETE FROM collections WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn add_paths_to_collection(
+        &self,
+        collection_id: i64,
+        paths: &[PathBuf],
+    ) -> rusqlite::Result<usize> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
+        let now = now_secs();
+        let mut conn = self.conn.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let tx = conn.transaction()?;
+        let mut added = 0usize;
+        for path in paths {
+            let n = tx.execute(
+                "INSERT OR IGNORE INTO collection_items (collection_id, image_path, added_at)
+                 VALUES (?1, ?2, ?3)",
+                params![collection_id, path_to_string(path), now],
+            )?;
+            added += n;
+        }
+        if added > 0 {
+            tx.execute(
+                "UPDATE collections SET updated_at = ?2 WHERE id = ?1",
+                params![collection_id, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(added)
+    }
+
+    pub fn remove_paths_from_collection(
+        &self,
+        collection_id: i64,
+        paths: &[PathBuf],
+    ) -> rusqlite::Result<usize> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let tx = conn.transaction()?;
+        let mut removed = 0usize;
+        for path in paths {
+            let n = tx.execute(
+                "DELETE FROM collection_items
+                 WHERE collection_id = ?1 AND image_path = ?2",
+                params![collection_id, path_to_string(path)],
+            )?;
+            removed += n;
+        }
+        if removed > 0 {
+            let now = now_secs();
+            tx.execute(
+                "UPDATE collections SET updated_at = ?2 WHERE id = ?1",
+                params![collection_id, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    pub fn collection_paths(&self, collection_id: i64) -> rusqlite::Result<Vec<PathBuf>> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT image_path FROM collection_items
+             WHERE collection_id = ?1
+             ORDER BY added_at ASC",
+        )?;
+        let rows = stmt.query_map(params![collection_id], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(Result::ok).map(PathBuf::from).collect())
+    }
+
     fn lock_conn(&self) -> rusqlite::Result<std::sync::MutexGuard<'_, Connection>> {
         self.conn.lock().map_err(|_| rusqlite::Error::InvalidQuery)
     }
@@ -580,6 +748,7 @@ fn path_to_string(path: &Path) -> String {
 impl LibraryIndex {
     fn open_in_memory() -> rusqlite::Result<Self> {
         let conn = Connection::open_in_memory()?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS folders (
@@ -611,6 +780,23 @@ impl LibraryIndex {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS collections (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS collection_items (
+                collection_id INTEGER NOT NULL,
+                image_path TEXT NOT NULL,
+                added_at INTEGER NOT NULL,
+                PRIMARY KEY (collection_id, image_path),
+                FOREIGN KEY(collection_id) REFERENCES collections(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_collection_items_path
+                ON collection_items(image_path);
+            CREATE INDEX IF NOT EXISTS idx_collection_items_collection_added
+                ON collection_items(collection_id, added_at);
             ",
         )?;
         Ok(Self { conn: Mutex::new(conn) })
@@ -844,5 +1030,122 @@ mod tests {
         // jpg before png.
         assert_eq!(by_type[0].extension, "jpg");
         assert_eq!(by_type[2].extension, "png");
+    }
+
+    #[test]
+    fn create_and_list_collections() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let c = idx.create_collection("Pinned").unwrap();
+        assert_eq!(c.name, "Pinned");
+        assert_eq!(c.item_count, 0);
+
+        let list = idx.list_collections().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "Pinned");
+        assert_eq!(list[0].item_count, 0);
+    }
+
+    #[test]
+    fn create_collection_rejects_empty_name() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        assert!(idx.create_collection("").is_err());
+        assert!(idx.create_collection("   ").is_err());
+    }
+
+    #[test]
+    fn create_collection_rejects_duplicate_name() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        idx.create_collection("Pinned").unwrap();
+        assert!(idx.create_collection("Pinned").is_err());
+    }
+
+    #[test]
+    fn rename_collection() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let c = idx.create_collection("Old").unwrap();
+        idx.rename_collection(c.id, "New").unwrap();
+        let list = idx.list_collections().unwrap();
+        assert_eq!(list[0].name, "New");
+    }
+
+    #[test]
+    fn rename_collection_rejects_empty_name() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let c = idx.create_collection("Name").unwrap();
+        assert!(idx.rename_collection(c.id, "").is_err());
+    }
+
+    #[test]
+    fn delete_collection_cascades_items() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let c = idx.create_collection("Pinned").unwrap();
+        let paths = vec![PathBuf::from("/photos/a.jpg")];
+        idx.add_paths_to_collection(c.id, &paths).unwrap();
+
+        idx.delete_collection(c.id).unwrap();
+        assert!(idx.list_collections().unwrap().is_empty());
+        // Collection items should be gone via CASCADE.
+        assert!(idx.collection_paths(c.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn add_paths_idempotent() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let c = idx.create_collection("Pinned").unwrap();
+        let paths = vec![
+            PathBuf::from("/photos/a.jpg"),
+            PathBuf::from("/photos/b.jpg"),
+        ];
+        let added = idx.add_paths_to_collection(c.id, &paths).unwrap();
+        assert_eq!(added, 2);
+
+        // Add again — should be no-ops.
+        let added2 = idx.add_paths_to_collection(c.id, &paths).unwrap();
+        assert_eq!(added2, 0);
+
+        let list = idx.list_collections().unwrap();
+        assert_eq!(list[0].item_count, 2);
+    }
+
+    #[test]
+    fn remove_paths_from_collection() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let c = idx.create_collection("Batch").unwrap();
+        let paths = vec![
+            PathBuf::from("/photos/a.jpg"),
+            PathBuf::from("/photos/b.jpg"),
+            PathBuf::from("/photos/c.jpg"),
+        ];
+        idx.add_paths_to_collection(c.id, &paths).unwrap();
+
+        let removed = idx
+            .remove_paths_from_collection(c.id, &[PathBuf::from("/photos/b.jpg")])
+            .unwrap();
+        assert_eq!(removed, 1);
+
+        let remaining = idx.collection_paths(c.id).unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert!(!remaining.contains(&PathBuf::from("/photos/b.jpg")));
+    }
+
+    #[test]
+    fn collection_paths_ordered_by_added_at() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let c = idx.create_collection("Order Test").unwrap();
+        // Add one at a time so added_at timestamps differ (same second is fine; ordering is by
+        // insertion order since we use now_secs() once per batch call).
+        idx.add_paths_to_collection(c.id, &[PathBuf::from("/photos/a.jpg")])
+            .unwrap();
+        idx.add_paths_to_collection(c.id, &[PathBuf::from("/photos/b.jpg")])
+            .unwrap();
+        idx.add_paths_to_collection(c.id, &[PathBuf::from("/photos/c.jpg")])
+            .unwrap();
+
+        let paths = idx.collection_paths(c.id).unwrap();
+        assert_eq!(paths.len(), 3);
+        // All three paths are present (order within same second is not guaranteed).
+        assert!(paths.contains(&PathBuf::from("/photos/a.jpg")));
+        assert!(paths.contains(&PathBuf::from("/photos/b.jpg")));
+        assert!(paths.contains(&PathBuf::from("/photos/c.jpg")));
     }
 }

@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -41,6 +41,20 @@ pub struct AppState {
     /// Cached path to the active Vulkan upscaler binary after successful detection.
     pub upscale_binary: Option<PathBuf>,
     pub ops: crate::ops::queue::OpQueue,
+    /// Paths additionally highlighted by Ctrl/Shift-click for bulk collection actions.
+    pub selected_paths: HashSet<PathBuf>,
+    /// ID of the collection currently loaded as the virtual view, if any.
+    pub active_collection: Option<i64>,
+}
+
+/// Which virtual content source is currently displayed in the filmstrip.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum VirtualSource {
+    Duplicates,
+    Search,
+    Quality(crate::quality::QualityClass),
+    Collection(i64),
 }
 
 #[derive(Clone)]
@@ -331,6 +345,8 @@ impl AppState {
             smart_tagger,
             upscale_binary,
             ops,
+            selected_paths: HashSet::new(),
+            active_collection: None,
         };
         maybe_download_model();
         state
@@ -516,6 +532,8 @@ impl SharprWindow {
                     let mut st = state_c.borrow_mut();
                     st.settings.last_folder = Some(path.clone());
                     st.settings.save();
+                    st.selected_paths.clear();
+                    st.active_collection = None;
                 }
 
                 let (index, mut index_error, sort_order) = {
@@ -1221,6 +1239,277 @@ impl SharprWindow {
             });
         }
 
+        // Helper: refresh the sidebar collection list from the DB.
+        let refresh_sidebar_collections = {
+            let sidebar_c = sidebar.clone();
+            let state_c = state.clone();
+            move || {
+                if let Some(idx) = state_c.borrow().library_index.clone() {
+                    let collections = idx.list_collections().unwrap_or_default();
+                    sidebar_c.refresh_collections(&collections);
+                }
+            }
+        };
+
+        // Populate sidebar collections on startup.
+        refresh_sidebar_collections();
+
+        // "New Collection" + button → AlertDialog for name → create → refresh.
+        {
+            let state_c = state.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            let refresh_c = refresh_sidebar_collections.clone();
+            let window_weak = self.downgrade();
+            sidebar.connect_collection_add_requested(move || {
+                let Some(win) = window_weak.upgrade() else {
+                    return;
+                };
+                let dialog =
+                    libadwaita::AlertDialog::new(Some("New Collection"), None);
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("create", "Create");
+                dialog.set_default_response(Some("create"));
+                dialog.set_close_response("cancel");
+                dialog.set_response_appearance(
+                    "create",
+                    libadwaita::ResponseAppearance::Suggested,
+                );
+                let entry = gtk4::Entry::new();
+                entry.set_placeholder_text(Some("Collection name"));
+                let entry_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+                entry_box.set_margin_top(6);
+                entry_box.append(&entry);
+                dialog.set_extra_child(Some(&entry_box));
+                let state_d = state_c.clone();
+                let toast_d = toast_overlay_c.clone();
+                let refresh_d = refresh_c.clone();
+                let entry_clone = entry.clone();
+                dialog.connect_response(None, move |_, response| {
+                    if response != "create" {
+                        return;
+                    }
+                    let name = entry_clone.text().to_string();
+                    if let Some(idx) = state_d.borrow().library_index.clone() {
+                        let started = std::time::Instant::now();
+                        match idx.create_collection(&name) {
+                            Ok(coll) => {
+                                crate::bench_event!(
+                                    "collection.create",
+                                    serde_json::json!({
+                                        "collection_id": coll.id,
+                                        "name": coll.name,
+                                        "duration_ms": crate::bench::duration_ms(started),
+                                    }),
+                                );
+                                refresh_d();
+                                toast_d.add_toast(libadwaita::Toast::new(&format!(
+                                    "Collection \u{201c}{}\u{201d} created",
+                                    coll.name
+                                )));
+                            }
+                            Err(e) => {
+                                toast_d.add_toast(libadwaita::Toast::new(&format!(
+                                    "Could not create collection: {e}"
+                                )));
+                            }
+                        }
+                    }
+                });
+                dialog.present(Some(&win));
+            });
+        }
+
+        // Collection row selected → load as virtual view.
+        {
+            let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
+            let sidebar_c = sidebar.clone();
+            let state_c = state.clone();
+            let content_stack = content_stack.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            let window_weak = self.downgrade();
+            sidebar.connect_collection_selected(move |id| {
+                if let Some(win) = window_weak.upgrade() {
+                    let _ = win.bump_thumbnail_generation("collection.load");
+                    win.complete_thumbnail_ops();
+                }
+                content_stack.set_visible_child_name("viewer");
+                let paths = state_c
+                    .borrow()
+                    .library_index
+                    .clone()
+                    .and_then(|idx| idx.collection_paths(id).ok())
+                    .unwrap_or_default();
+                let started = std::time::Instant::now();
+                {
+                    let mut s = state_c.borrow_mut();
+                    s.active_collection = Some(id);
+                    s.selected_paths.clear();
+                    s.library.load_virtual(&paths);
+                }
+                crate::bench_event!(
+                    "collection.load",
+                    serde_json::json!({
+                        "collection_id": id,
+                        "path_count": paths.len(),
+                        "duration_ms": crate::bench::duration_ms(started),
+                    }),
+                );
+                sidebar_c.set_duplicates_selected(false);
+                sidebar_c.set_search_selected(false);
+                sidebar_c.set_tags_selected(false);
+                sidebar_c.set_quality_selected(None);
+                filmstrip_c.refresh_virtual();
+                let first = state_c
+                    .borrow()
+                    .library
+                    .entry_at(0)
+                    .map(|e: ImageEntry| e.path());
+                if let Some(p) = first {
+                    state_c.borrow_mut().library.selected_index = Some(0);
+                    filmstrip_c.navigate_to(0);
+                    viewer_c.load_image(p);
+                } else {
+                    viewer_c.clear();
+                    toast_overlay_c.add_toast(libadwaita::Toast::new("No images in collection"));
+                }
+            });
+        }
+
+        // Rename collection → update DB → refresh sidebar.
+        {
+            let state_c = state.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            let refresh_c = refresh_sidebar_collections.clone();
+            sidebar.connect_collection_rename_requested(move |id, new_name| {
+                if let Some(idx) = state_c.borrow().library_index.clone() {
+                    let started = std::time::Instant::now();
+                    match idx.rename_collection(id, &new_name) {
+                        Ok(()) => {
+                            crate::bench_event!(
+                                "collection.rename",
+                                serde_json::json!({
+                                    "collection_id": id,
+                                    "duration_ms": crate::bench::duration_ms(started),
+                                }),
+                            );
+                            refresh_c();
+                        }
+                        Err(e) => {
+                            toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                                "Could not rename collection: {e}"
+                            )));
+                        }
+                    }
+                }
+            });
+        }
+
+        // Delete collection → update DB → clear if active → refresh sidebar.
+        {
+            let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
+            let state_c = state.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            let refresh_c = refresh_sidebar_collections.clone();
+            sidebar.connect_collection_delete_requested(move |id| {
+                if let Some(idx) = state_c.borrow().library_index.clone() {
+                    let started = std::time::Instant::now();
+                    match idx.delete_collection(id) {
+                        Ok(()) => {
+                            crate::bench_event!(
+                                "collection.delete",
+                                serde_json::json!({
+                                    "collection_id": id,
+                                    "duration_ms": crate::bench::duration_ms(started),
+                                }),
+                            );
+                            let was_active = state_c.borrow().active_collection == Some(id);
+                            if was_active {
+                                let mut s = state_c.borrow_mut();
+                                s.active_collection = None;
+                                s.selected_paths.clear();
+                                s.library.load_virtual(&[]);
+                            }
+                            refresh_c();
+                            if was_active {
+                                viewer_c.clear();
+                                filmstrip_c.refresh_virtual();
+                            }
+                        }
+                        Err(e) => {
+                            toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                                "Could not delete collection: {e}"
+                            )));
+                        }
+                    }
+                }
+            });
+        }
+
+        // Drag-and-drop from filmstrip to sidebar collection row.
+        {
+            let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
+            let state_c = state.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            let refresh_c = refresh_sidebar_collections.clone();
+            sidebar.connect_drop_paths_to_collection(move |id, paths| {
+                let Some(idx) = state_c.borrow().library_index.clone() else {
+                    return;
+                };
+                let started = std::time::Instant::now();
+                match idx.add_paths_to_collection(id, &paths) {
+                    Ok(added) => {
+                        let name = idx
+                            .list_collections()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .find(|c| c.id == id)
+                            .map(|c| c.name)
+                            .unwrap_or_else(|| "collection".to_string());
+                        crate::bench_event!(
+                            "collection.drop_add",
+                            serde_json::json!({
+                                "collection_id": id,
+                                "path_count": paths.len(),
+                                "new_count": added,
+                                "duration_ms": crate::bench::duration_ms(started),
+                            })
+                        );
+                        refresh_c();
+                        // If we're viewing this collection, append newly added paths.
+                        if state_c.borrow().active_collection == Some(id) {
+                            let all_paths = idx.collection_paths(id).unwrap_or_default();
+                            state_c.borrow_mut().library.load_virtual(&all_paths);
+                            filmstrip_c.refresh_virtual();
+                            let first = state_c
+                                .borrow()
+                                .library
+                                .entry_at(0)
+                                .map(|e: ImageEntry| e.path());
+                            if let Some(p) = first {
+                                state_c.borrow_mut().library.selected_index = Some(0);
+                                filmstrip_c.navigate_to(0);
+                                viewer_c.load_image(p);
+                            }
+                        }
+                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                            "Added {} image{} to \u{201c}{}\u{201d}",
+                            added,
+                            if added == 1 { "" } else { "s" },
+                            name
+                        )));
+                    }
+                    Err(e) => {
+                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                            "Could not add to collection: {e}"
+                        )));
+                    }
+                }
+            });
+        }
+
         // Double-click on filmstrip item → open in default viewer.
         {
             let state_c = state.clone();
@@ -1659,6 +1948,254 @@ impl SharprWindow {
         // Alt+Left / Alt+Right — navigate between images.
         // Scoped to the window so it fires regardless of focus position.
         // -----------------------------------------------------------------------
+        // "Add to Collection…" context menu → pick / create collection → add paths.
+        {
+            let state_c = state.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            let refresh_c = refresh_sidebar_collections.clone();
+            let window_weak = self.downgrade();
+            filmstrip.connect_add_to_collection_requested(move |paths| {
+                let Some(win) = window_weak.upgrade() else {
+                    return;
+                };
+                let Some(idx) = state_c.borrow().library_index.clone() else {
+                    toast_overlay_c.add_toast(libadwaita::Toast::new(
+                        "Library index unavailable",
+                    ));
+                    return;
+                };
+                let collections = idx.list_collections().unwrap_or_default();
+
+                let dialog = libadwaita::AlertDialog::new(Some("Add to Collection"), None);
+                dialog.add_response("cancel", "Cancel");
+                dialog.set_close_response("cancel");
+
+                let list_box = gtk4::ListBox::new();
+                list_box.add_css_class("boxed-list");
+                list_box.set_selection_mode(gtk4::SelectionMode::Single);
+
+                // "New Collection…" entry at top
+                let new_row = gtk4::ListBoxRow::new();
+                let new_label = gtk4::Label::new(Some("New Collection\u{2026}"));
+                new_label.set_halign(gtk4::Align::Start);
+                new_label.set_margin_top(8);
+                new_label.set_margin_bottom(8);
+                new_label.set_margin_start(12);
+                new_row.set_child(Some(&new_label));
+                list_box.append(&new_row);
+
+                for coll in &collections {
+                    let row = gtk4::ListBoxRow::new();
+                    unsafe {
+                        row.set_data("collection-id", coll.id);
+                    }
+                    let lbl = gtk4::Label::new(Some(&coll.name));
+                    lbl.set_halign(gtk4::Align::Start);
+                    lbl.set_margin_top(8);
+                    lbl.set_margin_bottom(8);
+                    lbl.set_margin_start(12);
+                    lbl.set_margin_end(12);
+                    row.set_child(Some(&lbl));
+                    list_box.append(&row);
+                }
+
+                let scroll = gtk4::ScrolledWindow::new();
+                scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+                scroll.set_max_content_height(300);
+                scroll.set_propagate_natural_height(true);
+                scroll.set_child(Some(&list_box));
+
+                let extra = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+                extra.set_margin_top(6);
+                extra.append(&scroll);
+                dialog.set_extra_child(Some(&extra));
+
+                let paths_c = paths.clone();
+                let state_d = state_c.clone();
+                let toast_d = toast_overlay_c.clone();
+                let refresh_d = refresh_c.clone();
+                let win_weak2 = win.downgrade();
+                list_box.connect_row_activated(move |_, row| {
+                    let coll_id: Option<i64> =
+                        unsafe { row.data("collection-id").map(|p| *p.as_ref()) };
+                    if coll_id.is_none() {
+                        // New collection
+                        let Some(win2) = win_weak2.upgrade() else {
+                            return;
+                        };
+                        let new_dialog =
+                            libadwaita::AlertDialog::new(Some("New Collection"), None);
+                        new_dialog.add_response("cancel", "Cancel");
+                        new_dialog.add_response("create", "Create");
+                        new_dialog.set_default_response(Some("create"));
+                        new_dialog.set_close_response("cancel");
+                        new_dialog.set_response_appearance(
+                            "create",
+                            libadwaita::ResponseAppearance::Suggested,
+                        );
+                        let entry = gtk4::Entry::new();
+                        entry.set_placeholder_text(Some("Collection name"));
+                        let eb = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+                        eb.set_margin_top(6);
+                        eb.append(&entry);
+                        new_dialog.set_extra_child(Some(&eb));
+                        let entry_c = entry.clone();
+                        let paths_cc = paths_c.clone();
+                        let state_dd = state_d.clone();
+                        let toast_dd = toast_d.clone();
+                        let refresh_dd = refresh_d.clone();
+                        new_dialog.connect_response(None, move |_, response| {
+                            if response != "create" {
+                                return;
+                            }
+                            let name = entry_c.text().to_string();
+                            if let Some(idx) = state_dd.borrow().library_index.clone() {
+                                let started = std::time::Instant::now();
+                                match idx.create_collection(&name) {
+                                    Ok(coll) => {
+                                        let added = idx
+                                            .add_paths_to_collection(coll.id, &paths_cc)
+                                            .unwrap_or(0);
+                                        crate::bench_event!(
+                                            "collection.create",
+                                            serde_json::json!({
+                                                "collection_id": coll.id,
+                                                "name": coll.name,
+                                                "duration_ms": crate::bench::duration_ms(started),
+                                            })
+                                        );
+                                        crate::bench_event!(
+                                            "collection.add_paths",
+                                            serde_json::json!({
+                                                "collection_id": coll.id,
+                                                "path_count": paths_cc.len(),
+                                                "new_count": added,
+                                                "duration_ms": crate::bench::duration_ms(started),
+                                            })
+                                        );
+                                        refresh_dd();
+                                        toast_dd.add_toast(libadwaita::Toast::new(&format!(
+                                            "Added {} image{} to \u{201c}{}\u{201d}",
+                                            added,
+                                            if added == 1 { "" } else { "s" },
+                                            coll.name
+                                        )));
+                                    }
+                                    Err(e) => {
+                                        toast_dd.add_toast(libadwaita::Toast::new(&format!(
+                                            "Could not create collection: {e}"
+                                        )));
+                                    }
+                                }
+                            }
+                        });
+                        new_dialog.present(Some(&win2));
+                        return;
+                    }
+                    let id = coll_id.unwrap();
+                    if let Some(idx) = state_d.borrow().library_index.clone() {
+                        let started = std::time::Instant::now();
+                        match idx.add_paths_to_collection(id, &paths_c) {
+                            Ok(added) => {
+                                let name = idx
+                                    .list_collections()
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .find(|c| c.id == id)
+                                    .map(|c| c.name)
+                                    .unwrap_or_else(|| "collection".to_string());
+                                crate::bench_event!(
+                                    "collection.add_paths",
+                                    serde_json::json!({
+                                        "collection_id": id,
+                                        "path_count": paths_c.len(),
+                                        "new_count": added,
+                                        "duration_ms": crate::bench::duration_ms(started),
+                                    })
+                                );
+                                refresh_d();
+                                toast_d.add_toast(libadwaita::Toast::new(&format!(
+                                    "Added {} image{} to \u{201c}{}\u{201d}",
+                                    added,
+                                    if added == 1 { "" } else { "s" },
+                                    name
+                                )));
+                            }
+                            Err(e) => {
+                                toast_d.add_toast(libadwaita::Toast::new(&format!(
+                                    "Could not add to collection: {e}"
+                                )));
+                            }
+                        }
+                    }
+                });
+
+                dialog.present(Some(&win));
+            });
+        }
+
+        // "Remove from Collection" context menu → remove from active collection → reload view.
+        {
+            let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
+            let sidebar_c = sidebar.clone();
+            let state_c = state.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            let refresh_c = refresh_sidebar_collections.clone();
+            filmstrip.connect_remove_from_collection_requested(move |paths| {
+                let Some(idx) = state_c.borrow().library_index.clone() else {
+                    return;
+                };
+                let Some(id) = state_c.borrow().active_collection else {
+                    return;
+                };
+                let started = std::time::Instant::now();
+                match idx.remove_paths_from_collection(id, &paths) {
+                    Ok(removed) => {
+                        crate::bench_event!(
+                            "collection.remove_paths",
+                            serde_json::json!({
+                                "collection_id": id,
+                                "path_count": paths.len(),
+                                "removed_count": removed,
+                                "duration_ms": crate::bench::duration_ms(started),
+                            })
+                        );
+                        let remaining = idx.collection_paths(id).unwrap_or_default();
+                        state_c.borrow_mut().library.load_virtual(&remaining);
+                        state_c.borrow_mut().selected_paths.clear();
+                        filmstrip_c.refresh_virtual();
+                        let first = state_c
+                            .borrow()
+                            .library
+                            .entry_at(0)
+                            .map(|e: ImageEntry| e.path());
+                        if let Some(p) = first {
+                            state_c.borrow_mut().library.selected_index = Some(0);
+                            filmstrip_c.navigate_to(0);
+                            viewer_c.load_image(p);
+                        } else {
+                            viewer_c.clear();
+                        }
+                        refresh_c();
+                        if let Ok(colls) = idx.list_collections() {
+                            sidebar_c.refresh_collections(&colls);
+                        }
+                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                            "Removed {} image{} from collection",
+                            removed,
+                            if removed == 1 { "" } else { "s" }
+                        )));
+                    }
+                    Err(e) => {
+                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                            "Could not remove from collection: {e}"
+                        )));
+                    }
+                }
+            });
+        }
+
         self.setup_nav_shortcuts(
             state.clone(),
             filmstrip.clone(),

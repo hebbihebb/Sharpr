@@ -20,6 +20,8 @@ type SearchChangedCallback = Box<dyn Fn(&str) + 'static>;
 type SearchActivateCallback = Box<dyn Fn(&str) + 'static>;
 type SearchDismissedCallback = Box<dyn Fn() + 'static>;
 type TrashRequestedCallback = Box<dyn Fn(std::path::PathBuf) + 'static>;
+type AddToCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
+type RemoveFromCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 
 const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
 const BUFFER_ROWS: u32 = 2000;
@@ -44,6 +46,9 @@ mod imp {
         pub search_activate_cb: RefCell<Option<SearchActivateCallback>>,
         pub search_dismissed_cb: RefCell<Option<SearchDismissedCallback>>,
         pub trash_requested_cb: RefCell<Option<TrashRequestedCallback>>,
+        pub add_to_collection_requested_cb: RefCell<Option<AddToCollectionRequestedCallback>>,
+        pub remove_from_collection_requested_cb:
+            RefCell<Option<RemoveFromCollectionRequestedCallback>>,
         pub sort_order_changed_cb: RefCell<Option<Box<dyn Fn(SortOrder)>>>,
         pub sort_btn: RefCell<Option<gtk4::MenuButton>>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
@@ -84,6 +89,8 @@ mod imp {
                 search_activate_cb: RefCell::new(None),
                 search_dismissed_cb: RefCell::new(None),
                 trash_requested_cb: RefCell::new(None),
+                add_to_collection_requested_cb: RefCell::new(None),
+                remove_from_collection_requested_cb: RefCell::new(None),
                 sort_order_changed_cb: RefCell::new(None),
                 sort_btn: RefCell::new(None),
                 state: RefCell::new(None),
@@ -215,6 +222,7 @@ impl FilmstripPane {
         let factory = gtk4::SignalListItemFactory::new();
 
         let widget_weak_setup = self.downgrade();
+        let widget_weak_bind = self.downgrade();
         factory.connect_setup(move |_, obj| {
             let list_item = obj
                 .downcast_ref::<gtk4::ListItem>()
@@ -262,6 +270,7 @@ impl FilmstripPane {
                 list_item.set_data("fs-picture", picture.clone());
                 list_item.set_data("fs-index-label", index_label.clone());
                 list_item.set_data("fs-filename-label", filename_label.clone());
+                list_item.set_data("fs-item-box", item_box.clone());
             }
 
             let popover_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -281,11 +290,99 @@ impl FilmstripPane {
             trash_button.add_css_class("destructive-action");
             trash_button.set_visible(false);
             popover_box.append(&trash_button);
+
+            let separator = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+            popover_box.append(&separator);
+
+            let add_to_collection_button = gtk4::Button::with_label("Add to Collection\u{2026}");
+            add_to_collection_button.set_halign(gtk4::Align::Fill);
+            popover_box.append(&add_to_collection_button);
+
+            let remove_from_collection_button =
+                gtk4::Button::with_label("Remove from Collection");
+            remove_from_collection_button.set_halign(gtk4::Align::Fill);
+            remove_from_collection_button.set_visible(false);
+            popover_box.append(&remove_from_collection_button);
+
             popover.set_child(Some(&popover_box));
 
             let gesture_right = gtk4::GestureClick::new();
             gesture_right.set_button(3);
             item_box.add_controller(gesture_right.clone());
+
+            // Ctrl+Click: toggle item in multi-selection.
+            let gesture_ctrl = gtk4::GestureClick::new();
+            gesture_ctrl.set_button(1);
+            item_box.add_controller(gesture_ctrl.clone());
+
+            let list_item_weak = list_item.downgrade();
+            let widget_weak_ctrl = widget_weak_setup.clone();
+            let item_box_weak = item_box.downgrade();
+            gesture_ctrl.connect_released(move |gesture, _, _, _| {
+                let modifiers = gesture.current_event_state();
+                if !modifiers.contains(gdk4::ModifierType::CONTROL_MASK) {
+                    return;
+                }
+                gesture.set_state(gtk4::EventSequenceState::Claimed);
+                let Some(list_item) = list_item_weak.upgrade() else {
+                    return;
+                };
+                let Some(path) = list_item_path(&list_item) else {
+                    return;
+                };
+                let Some(widget) = widget_weak_ctrl.upgrade() else {
+                    return;
+                };
+                let is_now_selected = widget
+                    .imp()
+                    .state
+                    .borrow()
+                    .as_ref()
+                    .map(|s| {
+                        let mut s = s.borrow_mut();
+                        if s.selected_paths.contains(&path) {
+                            s.selected_paths.remove(&path);
+                            false
+                        } else {
+                            s.selected_paths.insert(path);
+                            true
+                        }
+                    })
+                    .unwrap_or(false);
+                if let Some(ib) = item_box_weak.upgrade() {
+                    if is_now_selected {
+                        ib.add_css_class("multi-selected");
+                    } else {
+                        ib.remove_css_class("multi-selected");
+                    }
+                }
+            });
+
+            // Drag source: drag this item (or all multi-selected items) to a sidebar collection.
+            let drag_source = gtk4::DragSource::new();
+            drag_source.set_actions(gdk4::DragAction::COPY);
+            item_box.add_controller(drag_source.clone());
+
+            let list_item_weak = list_item.downgrade();
+            let widget_weak_drag = widget_weak_setup.clone();
+            drag_source.connect_prepare(move |_, _, _| {
+                let Some(list_item) = list_item_weak.upgrade() else {
+                    return None;
+                };
+                let Some(dragged_path) = list_item_path(&list_item) else {
+                    return None;
+                };
+                let Some(widget) = widget_weak_drag.upgrade() else {
+                    return None;
+                };
+                let paths = collection_action_paths(&widget, &dragged_path);
+                let paths_str: String = paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(gdk4::ContentProvider::for_value(&paths_str.to_value()))
+            });
 
             // Double-click is handled by ListView::activate at the pane level.
 
@@ -323,7 +420,48 @@ impl FilmstripPane {
                 }
             });
 
+            let list_item_weak = list_item.downgrade();
+            let widget_weak_add = widget_weak_setup.clone();
+            let popover_weak_add = popover.downgrade();
+            add_to_collection_button.connect_clicked(move |_| {
+                let Some(list_item) = list_item_weak.upgrade() else {
+                    return;
+                };
+                let Some(widget) = widget_weak_add.upgrade() else {
+                    return;
+                };
+                let Some(clicked_path) = list_item_path(&list_item) else {
+                    return;
+                };
+                if let Some(p) = popover_weak_add.upgrade() {
+                    p.popdown();
+                }
+                let paths = collection_action_paths(&widget, &clicked_path);
+                widget.emit_add_to_collection_requested(paths);
+            });
+
+            let list_item_weak = list_item.downgrade();
+            let widget_weak_remove = widget_weak_setup.clone();
+            let popover_weak_remove = popover.downgrade();
+            remove_from_collection_button.connect_clicked(move |_| {
+                let Some(list_item) = list_item_weak.upgrade() else {
+                    return;
+                };
+                let Some(widget) = widget_weak_remove.upgrade() else {
+                    return;
+                };
+                let Some(clicked_path) = list_item_path(&list_item) else {
+                    return;
+                };
+                if let Some(p) = popover_weak_remove.upgrade() {
+                    p.popdown();
+                }
+                let paths = collection_action_paths(&widget, &clicked_path);
+                widget.emit_remove_from_collection_requested(paths);
+            });
+
             let trash_button_weak = trash_button.downgrade();
+            let remove_btn_weak = remove_from_collection_button.downgrade();
             let widget_weak_gesture = widget_weak_setup.clone();
             let list_item_weak = list_item.downgrade();
             let popover_weak = popover.downgrade();
@@ -335,17 +473,26 @@ impl FilmstripPane {
                     return;
                 }
 
-                if let (Some(widget), Some(btn)) =
-                    (widget_weak_gesture.upgrade(), trash_button_weak.upgrade())
-                {
-                    let is_virtual = widget
+                if let Some(widget) = widget_weak_gesture.upgrade() {
+                    let (is_virtual, active_collection) = widget
                         .imp()
                         .state
                         .borrow()
                         .as_ref()
-                        .map(|s| s.borrow().library.current_folder.is_none())
-                        .unwrap_or(false);
-                    btn.set_visible(is_virtual);
+                        .map(|s| {
+                            let s = s.borrow();
+                            (
+                                s.library.current_folder.is_none(),
+                                s.active_collection,
+                            )
+                        })
+                        .unwrap_or((false, None));
+                    if let Some(btn) = trash_button_weak.upgrade() {
+                        btn.set_visible(is_virtual && active_collection.is_none());
+                    }
+                    if let Some(btn) = remove_btn_weak.upgrade() {
+                        btn.set_visible(active_collection.is_some());
+                    }
                 }
 
                 if let Some(popover) = popover_weak.upgrade() {
@@ -365,7 +512,7 @@ impl FilmstripPane {
                 Some(entry) => entry,
                 None => return,
             };
-            let (picture, index_label, filename_label) = unsafe {
+            let (picture, index_label, filename_label, item_box) = unsafe {
                 let picture = list_item
                     .data::<gtk4::Picture>("fs-picture")
                     .map(|p| p.as_ref().clone());
@@ -375,11 +522,33 @@ impl FilmstripPane {
                 let filename_label = list_item
                     .data::<gtk4::Label>("fs-filename-label")
                     .map(|p| p.as_ref().clone());
+                let item_box = list_item
+                    .data::<gtk4::Box>("fs-item-box")
+                    .map(|p| p.as_ref().clone());
                 match (picture, index_label, filename_label) {
-                    (Some(p), Some(i), Some(f)) => (p, i, f),
+                    (Some(p), Some(i), Some(f)) => (p, i, f, item_box),
                     _ => return,
                 }
             };
+
+            // Restore multi-select visual state when items are recycled.
+            if let Some(ib) = item_box {
+                let is_selected = widget_weak_bind
+                    .upgrade()
+                    .and_then(|w| {
+                        w.imp()
+                            .state
+                            .borrow()
+                            .as_ref()
+                            .map(|s| s.borrow().selected_paths.contains(&entry.path()))
+                    })
+                    .unwrap_or(false);
+                if is_selected {
+                    ib.add_css_class("multi-selected");
+                } else {
+                    ib.remove_css_class("multi-selected");
+                }
+            }
 
             filename_label.set_text(&entry.filename());
             index_label.set_text(&(list_item.position() + 1).to_string());
@@ -540,6 +709,11 @@ impl FilmstripPane {
                 background-color: rgba(0, 0, 0, 0.45);
                 color: white;
                 border-radius: 0 3px 0 0;
+            }
+            .multi-selected {
+                outline: 2px solid @accent_color;
+                outline-offset: -2px;
+                border-radius: 4px;
             }
             ",
         );
@@ -912,6 +1086,57 @@ impl FilmstripPane {
             cb(path);
         }
     }
+
+    pub fn connect_add_to_collection_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {
+        *self.imp().add_to_collection_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_remove_from_collection_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {
+        *self.imp().remove_from_collection_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    fn emit_add_to_collection_requested(&self, paths: Vec<PathBuf>) {
+        if let Some(cb) = self.imp().add_to_collection_requested_cb.borrow().as_ref() {
+            cb(paths);
+        }
+    }
+
+    fn emit_remove_from_collection_requested(&self, paths: Vec<PathBuf>) {
+        if let Some(cb) = self
+            .imp()
+            .remove_from_collection_requested_cb
+            .borrow()
+            .as_ref()
+        {
+            cb(paths);
+        }
+    }
+
+    pub fn clear_multi_selection(&self) {
+        if let Some(state) = self.imp().state.borrow().as_ref() {
+            state.borrow_mut().selected_paths.clear();
+        }
+    }
+}
+
+/// Returns the effective set of paths for a collection action (add or remove).
+/// If `selected_paths` is non-empty and includes `clicked_path`, returns all of them.
+/// Otherwise returns just `clicked_path`.
+fn collection_action_paths(widget: &FilmstripPane, clicked_path: &Path) -> Vec<PathBuf> {
+    widget
+        .imp()
+        .state
+        .borrow()
+        .as_ref()
+        .and_then(|s| {
+            let s = s.borrow();
+            if !s.selected_paths.is_empty() && s.selected_paths.contains(clicked_path) {
+                Some(s.selected_paths.iter().cloned().collect())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| vec![clicked_path.to_path_buf()])
 }
 
 fn list_item_path(list_item: &gtk4::ListItem) -> Option<PathBuf> {
