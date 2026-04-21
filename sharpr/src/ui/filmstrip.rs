@@ -540,7 +540,8 @@ impl FilmstripPane {
                             .state
                             .borrow()
                             .as_ref()
-                            .map(|s| s.borrow().selected_paths.contains(&entry.path()))
+                            .and_then(|s| s.try_borrow().ok())
+                            .map(|s| s.selected_paths.contains(&entry.path()))
                     })
                     .unwrap_or(false);
                 if is_selected {
