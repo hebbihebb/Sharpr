@@ -26,11 +26,7 @@ use crate::ui::sidebar::SidebarPane;
 use crate::ui::tag_browser::TagBrowser;
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 use crate::upscale::{UpscaleDetector, UpscaleModel};
-
-const RESNET18_MODEL_URL: &str =
-    "https://huggingface.co/onnxmodelzoo/resnet18-v1-7/resolve/main/resnet18-v1-7.onnx";
-const RESNET18_MODEL_SHA256: &str =
-    "4e8f8653e7a2222b3904cc3fe8e304cd8b339ce1d05fd24688162f86fb6df52c";
+use crate::tags::smart::SmartModel;
 
 // ---------------------------------------------------------------------------
 // Shared application state (main thread only, Rc<RefCell<>>)
@@ -322,10 +318,10 @@ fn load_virtual_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf]) {
     });
 }
 
-fn maybe_download_model() {
+fn maybe_download_model(model: SmartModel) {
     let model_path = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("sharpr/models/resnet18-v1-7.onnx");
+        .join(format!("sharpr/models/{}", model.filename()));
     if model_path.exists() {
         return;
     }
@@ -337,7 +333,7 @@ fn maybe_download_model() {
         let tmp = model_path.with_extension("onnx.tmp");
 
         let result = (|| -> Result<(), String> {
-            let response = ureq::get(RESNET18_MODEL_URL)
+            let response = ureq::get(model.url())
                 .call()
                 .map_err(|err| format!("download failed: {err}"))?;
             let mut reader = response.into_reader();
@@ -350,9 +346,10 @@ fn maybe_download_model() {
             let downloaded = std::fs::read(&tmp)
                 .map_err(|err| format!("read downloaded model failed: {err}"))?;
             let actual_hash = format!("{:x}", Sha256::digest(&downloaded));
-            if actual_hash != RESNET18_MODEL_SHA256 {
+            let expected_hash = model.sha256();
+            if actual_hash != expected_hash {
                 return Err(format!(
-                    "downloaded model hash mismatch: expected {RESNET18_MODEL_SHA256}, got {actual_hash}"
+                    "downloaded model hash mismatch: expected {expected_hash}, got {actual_hash}"
                 ));
             }
 
@@ -374,9 +371,10 @@ impl AppState {
         let mut library = LibraryManager::new();
         library.set_thumbnail_cache_max(settings.thumbnail_cache_max as usize);
         let upscale_binary = settings.upscaler_binary_path.clone();
+        let smart_model = SmartModel::from_id(&settings.smart_tagger_model);
         let model_path = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("sharpr/models/resnet18-v1-7.onnx");
+            .join(format!("sharpr/models/{}", smart_model.filename()));
         let smart_tagger = if model_path.exists() {
             Some(Arc::new(crate::tags::smart::LocalTagger::new(model_path)))
         } else {
@@ -408,7 +406,7 @@ impl AppState {
             selected_paths: HashSet::new(),
             active_collection: None,
         };
-        maybe_download_model();
+        maybe_download_model(smart_model);
         state
     }
 }
@@ -424,6 +422,7 @@ mod imp {
 
     pub struct SharprWindow {
         pub state: Rc<RefCell<AppState>>,
+        pub viewer: RefCell<Option<ViewerPane>>,
         pub thumbnail_worker: RefCell<Option<ThumbnailWorker>>,
         // Cloned receiver so the async task can hold it.
         pub result_rx: RefCell<Option<Receiver<ThumbnailResult>>>,
@@ -436,6 +435,7 @@ mod imp {
             let (ops_queue, _ops_rx) = crate::ops::queue::new_queue();
             Self {
                 state: Rc::new(RefCell::new(AppState::new(ops_queue))),
+                viewer: RefCell::new(None),
                 thumbnail_worker: RefCell::new(None),
                 result_rx: RefCell::new(None),
                 hash_result_rx: RefCell::new(None),
@@ -476,6 +476,82 @@ glib::wrapper! {
 impl SharprWindow {
     pub fn new(app: &libadwaita::Application) -> Self {
         glib::Object::builder().property("application", app).build()
+    }
+
+    pub fn app_state(&self) -> std::rc::Rc<std::cell::RefCell<crate::ui::window::AppState>> {
+        self.imp().state.clone()
+    }
+
+    pub fn reload_smart_tagger_model(&self, model: SmartModel) {
+        let model_path = dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(format!("sharpr/models/{}", model.filename()));
+
+        if model_path.exists() {
+            let tagger = Arc::new(crate::tags::smart::LocalTagger::new(model_path));
+            self.app_state().borrow_mut().smart_tagger = Some(tagger);
+            if let Some(viewer) = self.imp().viewer.borrow().as_ref() {
+                viewer.show_smart_tag_btn();
+            }
+            return;
+        }
+
+        let (tx, rx) = async_channel::unbounded::<Arc<crate::tags::smart::LocalTagger>>();
+        let window_weak = self.downgrade();
+
+        rayon::spawn(move || {
+            let Some(dir) = model_path.parent() else {
+                return;
+            };
+            let _ = std::fs::create_dir_all(dir);
+            let tmp = model_path.with_extension("onnx.tmp");
+
+            let result = (|| -> Result<(), String> {
+                let response = ureq::get(model.url())
+                    .call()
+                    .map_err(|err| format!("download failed: {err}"))?;
+                let mut reader = response.into_reader();
+                let mut file = std::fs::File::create(&tmp)
+                    .map_err(|err| format!("create temp model failed: {err}"))?;
+                std::io::copy(&mut reader, &mut file)
+                    .map_err(|err| format!("write temp model failed: {err}"))?;
+                drop(file);
+
+                let downloaded = std::fs::read(&tmp)
+                    .map_err(|err| format!("read downloaded model failed: {err}"))?;
+                let actual_hash = format!("{:x}", Sha256::digest(&downloaded));
+                let expected_hash = model.sha256();
+                if actual_hash != expected_hash {
+                    return Err(format!(
+                        "downloaded model hash mismatch: expected {expected_hash}, got {actual_hash}"
+                    ));
+                }
+
+                std::fs::rename(&tmp, &model_path)
+                    .map_err(|err| format!("install downloaded model failed: {err}"))?;
+                Ok(())
+            })();
+
+            if let Err(err) = result {
+                let _ = std::fs::remove_file(&tmp);
+                eprintln!("Smart tagger model download aborted: {err}");
+                return;
+            }
+
+            let tagger = Arc::new(crate::tags::smart::LocalTagger::new(model_path));
+            let _ = tx.send_blocking(tagger);
+        });
+
+        glib::MainContext::default().spawn_local(async move {
+            if let Ok(tagger) = rx.recv().await {
+                if let Some(window) = window_weak.upgrade() {
+                    window.app_state().borrow_mut().smart_tagger = Some(tagger);
+                    if let Some(viewer) = window.imp().viewer.borrow().as_ref() {
+                        viewer.show_smart_tag_btn();
+                    }
+                }
+            }
+        });
     }
 
     fn setup(&self) {
@@ -534,6 +610,7 @@ impl SharprWindow {
         let sidebar = SidebarPane::new(state.clone());
         let filmstrip = FilmstripPane::new(state.clone());
         let viewer = ViewerPane::new(state.clone());
+        *self.imp().viewer.borrow_mut() = Some(viewer.clone());
         viewer.set_metadata_visible(state.borrow().settings.metadata_visible);
         if state.borrow().smart_tagger.is_some() {
             viewer.show_smart_tag_btn();

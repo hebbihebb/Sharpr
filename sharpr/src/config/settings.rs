@@ -31,6 +31,8 @@ pub struct AppSettings {
     pub upscaler_gpu_id: i32,
     /// Maximum thumbnail entries to retain in memory.
     pub thumbnail_cache_max: i32,
+    /// The smart tagger ONNX model to use.
+    pub smart_tagger_model: String,
     settings: gio::Settings,
 }
 
@@ -70,6 +72,7 @@ impl Default for AppSettings {
             upscaler_tile_size: 0,
             upscaler_gpu_id: -1,
             thumbnail_cache_max: 500,
+            smart_tagger_model: "resnet50-v1-7".into(),
             settings: gio::Settings::new("io.github.hebbihebb.Sharpr"),
         }
     }
@@ -103,6 +106,11 @@ impl AppSettings {
         let upscaler_tile_size = settings.int("upscaler-tile-size").clamp(0, 4096);
         let upscaler_gpu_id = settings.int("upscaler-gpu-id").clamp(-1, 16);
         let thumbnail_cache_max = settings.int("thumbnail-cache-max").clamp(100, 2000);
+        let smart_tagger_model = match settings.string("smart-tagger-model").as_str() {
+            "resnet18-v1-7" => "resnet18-v1-7".to_string(),
+            "resnet152-v1-7" => "resnet152-v1-7".to_string(),
+            _ => "resnet50-v1-7".to_string(),
+        };
 
         Self {
             last_folder,
@@ -118,6 +126,7 @@ impl AppSettings {
             upscaler_tile_size,
             upscaler_gpu_id,
             thumbnail_cache_max,
+            smart_tagger_model,
             settings,
         }
     }
@@ -185,6 +194,11 @@ impl AppSettings {
             "thumbnail-cache-max",
             self.thumbnail_cache_max.clamp(100, 2000),
         );
+        let model = match self.smart_tagger_model.as_str() {
+            "resnet18-v1-7" | "resnet152-v1-7" => self.smart_tagger_model.as_str(),
+            _ => "resnet50-v1-7",
+        };
+        let _ = self.settings.set_string("smart-tagger-model", model);
     }
 
     pub fn set_metadata_visible(&mut self, visible: bool) {
@@ -273,6 +287,17 @@ impl AppSettings {
         let _ = self
             .settings
             .set_int("thumbnail-cache-max", self.thumbnail_cache_max);
+    }
+
+    pub fn set_smart_tagger_model(&mut self, value: &str) {
+        self.smart_tagger_model = match value {
+            "resnet18-v1-7" => "resnet18-v1-7".to_string(),
+            "resnet152-v1-7" => "resnet152-v1-7".to_string(),
+            _ => "resnet50-v1-7".to_string(),
+        };
+        let _ = self
+            .settings
+            .set_string("smart-tagger-model", &self.smart_tagger_model);
     }
 }
 

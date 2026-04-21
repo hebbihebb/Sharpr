@@ -56,6 +56,11 @@
       <summary>Thumbnail memory cache size</summary>
       <description>Maximum number of thumbnails to hold in memory.</description>
     </key>
+    <key name="smart-tagger-model" type="s">
+      <default>"resnet50-v1-7"</default>
+      <summary>Smart tagger model</summary>
+      <description>The ONNX model used for smart tagging.</description>
+    </key>
     <key name="window-width" type="i">
       <default>1400</default>
       <summary>Window width</summary>
