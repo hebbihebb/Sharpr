@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use crate::config::AppSettings;
 use crate::duplicates::phash;
+use crate::library_index::{BasicImageInfo, LibraryIndex};
 use crate::model::library::{RawImageEntry, SortOrder};
 use crate::model::{ImageEntry, LibraryManager};
 use crate::thumbnails::ThumbnailWorker;
@@ -33,6 +34,8 @@ pub struct AppState {
     pub library: LibraryManager,
     pub settings: AppSettings,
     pub sort_order: SortOrder,
+    pub library_index: Option<Arc<LibraryIndex>>,
+    pub library_index_error: Option<String>,
     pub tags: Option<Arc<crate::tags::TagDatabase>>,
     pub smart_tagger: Option<Arc<dyn crate::tags::smart::SmartTagger + Send + Sync>>,
     /// Cached path to the active Vulkan upscaler binary after successful detection.
@@ -59,6 +62,30 @@ struct ThumbnailOpState {
     total: u32,
     received: u32,
     handle: crate::ops::queue::OpHandle,
+}
+
+struct MetadataIndexResult {
+    path: PathBuf,
+    width: u32,
+    height: u32,
+}
+
+enum FolderOpenResult {
+    /// Immediately-available rows from the DB before filesystem reconciliation.
+    Cached {
+        rows: Vec<crate::library_index::IndexedImage>,
+    },
+    /// Final reconciled rows after filesystem scan + DB upsert.
+    Indexed {
+        rows: Vec<crate::library_index::IndexedImage>,
+        metadata_pending: Vec<BasicImageInfo>,
+        stale_removed: usize,
+        basic_count: usize,
+    },
+    Raw {
+        entries: Vec<RawImageEntry>,
+        index_error: Option<String>,
+    },
 }
 
 fn trigger_prefetch(state: &Rc<RefCell<AppState>>, index: u32) {
@@ -164,6 +191,76 @@ fn prefetch_decode(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)> {
     Some((rgba.into_raw(), w, h))
 }
 
+fn start_metadata_indexer(
+    index: Arc<LibraryIndex>,
+    folder: PathBuf,
+    pending: Vec<BasicImageInfo>,
+    state: Rc<RefCell<AppState>>,
+) {
+    crate::bench_event!(
+        "index.metadata.queue",
+        serde_json::json!({
+            "folder": folder.display().to_string(),
+            "count": pending.len(),
+        }),
+    );
+    if pending.is_empty() {
+        return;
+    }
+
+    let (tx, rx) = async_channel::unbounded::<MetadataIndexResult>();
+    let worker_folder = folder.clone();
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let total = pending.len();
+        let mut completed = 0usize;
+        for info in pending {
+            match image::image_dimensions(&info.path) {
+                Ok((width, height)) => {
+                    let quality = crate::quality::scorer::score_file_info(
+                        Some((width, height)),
+                        info.file_size,
+                        &info.extension,
+                    );
+                    if index
+                        .update_image_metadata(&info.path, width, height, quality.class)
+                        .is_ok()
+                    {
+                        completed += 1;
+                        let _ = tx.send_blocking(MetadataIndexResult {
+                            path: info.path,
+                            width,
+                            height,
+                        });
+                    }
+                }
+                Err(err) => {
+                    let _ = index.mark_image_error(&info.path, &err.to_string());
+                }
+            }
+        }
+        crate::bench_event!(
+            "index.metadata.finish",
+            serde_json::json!({
+                "folder": worker_folder.display().to_string(),
+                "completed": completed,
+                "total": total,
+                "duration_ms": crate::bench::duration_ms(started),
+            }),
+        );
+    });
+
+    glib::MainContext::default().spawn_local(async move {
+        while let Ok(result) = rx.recv().await {
+            let mut st = state.borrow_mut();
+            if st.library.current_folder.as_deref() == Some(folder.as_path()) {
+                st.library
+                    .update_entry_metadata(&result.path, result.width, result.height);
+            }
+        }
+    });
+}
+
 fn maybe_download_model() {
     let model_path = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -211,10 +308,25 @@ impl AppState {
             } else {
                 None
             };
+        let (library_index, library_index_error) = match LibraryIndex::open() {
+            Ok(index) => (Some(Arc::new(index)), None),
+            Err(err) => {
+                let message = err.to_string();
+                crate::bench_event!(
+                    "index.open.fail",
+                    serde_json::json!({
+                        "error": message,
+                    }),
+                );
+                (None, Some(message))
+            }
+        };
         let state = Self {
             library,
             settings,
             sort_order: SortOrder::default(),
+            library_index,
+            library_index_error,
             tags: crate::tags::TagDatabase::open().ok().map(Arc::new),
             smart_tagger,
             upscale_binary,
@@ -378,6 +490,7 @@ impl SharprWindow {
             let viewer_c = viewer.clone();
             let sidebar_c = sidebar.clone();
             let state_c = state.clone();
+            let toast_overlay_c = toast_overlay.clone();
             let window_weak = self.downgrade();
             let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
@@ -405,20 +518,104 @@ impl SharprWindow {
                     st.settings.save();
                 }
 
-                let (tx, rx) = async_channel::unbounded::<Vec<RawImageEntry>>();
+                let (index, mut index_error, sort_order) = {
+                    let st = state_c.borrow();
+                    (
+                        st.library_index.clone(),
+                        st.library_index_error.clone(),
+                        st.sort_order,
+                    )
+                };
+                let (tx, rx) = async_channel::unbounded::<FolderOpenResult>();
                 let scan_path = path.clone();
                 std::thread::spawn(move || {
                     let started = Instant::now();
+                    if let Some(index) = index {
+                        // Send cached rows immediately so the UI can render before the
+                        // filesystem scan finishes.
+                        if let Ok(cached) = index.images_in_folder(&scan_path, sort_order) {
+                            if !cached.is_empty() {
+                                crate::bench_event!(
+                                    "folder.open.cached_rows",
+                                    serde_json::json!({
+                                        "path": scan_path.display().to_string(),
+                                        "row_count": cached.len(),
+                                    }),
+                                );
+                                let _ = tx.send_blocking(FolderOpenResult::Cached { rows: cached });
+                            }
+                        }
+
+                        let scan_started = Instant::now();
+                        let entries = LibraryManager::scan_folder_basic(&scan_path);
+                        crate::bench_event!(
+                            "index.folder_scan_basic.finish",
+                            serde_json::json!({
+                                "path": scan_path.display().to_string(),
+                                "entry_count": entries.len(),
+                                "duration_ms": crate::bench::duration_ms(scan_started),
+                            }),
+                        );
+
+                        match index.reconcile_folder(&scan_path, &entries, sort_order) {
+                            Ok((rows, stale_removed, metadata_pending)) => {
+                                crate::bench_event!(
+                                    "folder.open.stale_rows_removed",
+                                    serde_json::json!({
+                                        "path": scan_path.display().to_string(),
+                                        "count": stale_removed,
+                                    }),
+                                );
+                                crate::bench_event!(
+                                    "folder.open.db_rows",
+                                    serde_json::json!({
+                                        "path": scan_path.display().to_string(),
+                                        "row_count": rows.len(),
+                                    }),
+                                );
+                                crate::bench_event!(
+                                    "folder.scan.finish",
+                                    serde_json::json!({
+                                        "path": scan_path.display().to_string(),
+                                        "source": "index",
+                                        "duration_ms": crate::bench::duration_ms(started),
+                                    }),
+                                );
+                                let _ = tx.send_blocking(FolderOpenResult::Indexed {
+                                    rows,
+                                    metadata_pending,
+                                    stale_removed,
+                                    basic_count: entries.len(),
+                                });
+                                return;
+                            }
+                            Err(err) => {
+                                index_error = Some(err.to_string());
+                                crate::bench_event!(
+                                    "index.reconcile_folder.fail",
+                                    serde_json::json!({
+                                        "path": scan_path.display().to_string(),
+                                        "error": err.to_string(),
+                                    }),
+                                );
+                            }
+                        }
+                    }
+
                     let entries = LibraryManager::scan_folder_raw(&scan_path);
                     crate::bench_event!(
                         "folder.scan.finish",
                         serde_json::json!({
                             "path": scan_path.display().to_string(),
+                            "source": "raw",
                             "entry_count": entries.len(),
                             "duration_ms": crate::bench::duration_ms(started),
                         }),
                     );
-                    let _ = tx.send_blocking(entries);
+                    let _ = tx.send_blocking(FolderOpenResult::Raw {
+                        entries,
+                        index_error,
+                    });
                 });
 
                 let filmstrip_rx = filmstrip_c.clone();
@@ -428,43 +625,94 @@ impl SharprWindow {
                 let suppress_search_restore_rx = suppress_search_restore_c.clone();
                 let path_rx = path.clone();
                 let window_weak_rx = window_weak.clone();
+                let toast_overlay_rx = toast_overlay_c.clone();
                 glib::MainContext::default().spawn_local(async move {
-                    let Ok(mut raw_entries) = rx.recv().await else {
+                    let Ok(first_result) = rx.recv().await else {
                         return;
                     };
 
+                    if state_rx.borrow().library.current_folder.as_deref()
+                        != Some(path_rx.as_path())
+                    {
+                        crate::bench_event!(
+                            "folder.open.stale_result",
+                            serde_json::json!({ "path": path_rx.display().to_string() }),
+                        );
+                        return;
+                    }
+
+                    let mut metadata_pending = Vec::new();
+                    let mut got_cached = false;
+
+                    // Load the first result into the store.
                     {
                         let started = Instant::now();
                         let mut st = state_rx.borrow_mut();
-                        if st.library.current_folder.as_deref() != Some(path_rx.as_path()) {
-                            crate::bench_event!(
-                                "folder.open.stale_result",
-                                serde_json::json!({
-                                    "path": path_rx.display().to_string(),
-                                }),
-                            );
-                            return;
-                        }
-
-                        let order = st.sort_order;
-                        crate::model::library::sort_raw_entries(&mut raw_entries, order);
-                        let mut new_entries: Vec<ImageEntry> =
-                            Vec::with_capacity(raw_entries.len());
-                        for (index, raw) in raw_entries.into_iter().enumerate() {
-                            let entry = ImageEntry::new(raw.path.clone());
-                            entry.set_file_size(raw.file_size);
-                            entry.set_dimensions(raw.width, raw.height);
-                            if let Some(texture) = st.library.cached_thumbnail(&raw.path) {
-                                entry.set_thumbnail(Some(texture));
+                        let entry_count = match first_result {
+                            FolderOpenResult::Cached { rows } => {
+                                got_cached = true;
+                                let count = rows.len();
+                                st.library.load_indexed_folder(&path_rx, rows);
+                                crate::bench_event!(
+                                    "folder.open.cached_loaded",
+                                    serde_json::json!({
+                                        "path": path_rx.display().to_string(),
+                                        "row_count": count,
+                                    }),
+                                );
+                                count
                             }
-                            st.library
-                                .path_to_index
-                                .insert(raw.path.clone(), index as u32);
-                            st.library.all_known_paths.insert(raw.path);
-                            new_entries.push(entry);
-                        }
-                        let entry_count = new_entries.len();
-                        st.library.store.splice(0, 0, &new_entries);
+                            FolderOpenResult::Indexed {
+                                rows,
+                                metadata_pending: pending,
+                                stale_removed,
+                                basic_count,
+                            } => {
+                                metadata_pending = pending;
+                                let row_count = rows.len();
+                                st.library.load_indexed_folder(&path_rx, rows);
+                                crate::bench_event!(
+                                    "folder.open.index_loaded",
+                                    serde_json::json!({
+                                        "path": path_rx.display().to_string(),
+                                        "basic_count": basic_count,
+                                        "stale_removed": stale_removed,
+                                        "metadata_pending": metadata_pending.len(),
+                                    }),
+                                );
+                                row_count
+                            }
+                            FolderOpenResult::Raw {
+                                entries: mut raw_entries,
+                                index_error,
+                            } => {
+                                if let Some(error) = index_error {
+                                    toast_overlay_rx.add_toast(libadwaita::Toast::new(&format!(
+                                        "Library index unavailable; using direct folder scan ({error})"
+                                    )));
+                                }
+                                let order = st.sort_order;
+                                crate::model::library::sort_raw_entries(&mut raw_entries, order);
+                                let mut new_entries: Vec<ImageEntry> =
+                                    Vec::with_capacity(raw_entries.len());
+                                for (index, raw) in raw_entries.into_iter().enumerate() {
+                                    let entry = ImageEntry::new(raw.path.clone());
+                                    entry.set_file_size(raw.file_size);
+                                    entry.set_dimensions(raw.width, raw.height);
+                                    if let Some(texture) = st.library.cached_thumbnail(&raw.path) {
+                                        entry.set_thumbnail(Some(texture));
+                                    }
+                                    st.library
+                                        .path_to_index
+                                        .insert(raw.path.clone(), index as u32);
+                                    st.library.all_known_paths.insert(raw.path);
+                                    new_entries.push(entry);
+                                }
+                                let entry_count = new_entries.len();
+                                st.library.store.splice(0, 0, &new_entries);
+                                entry_count
+                            }
+                        };
                         crate::bench_event!(
                             "folder.store_populate.finish",
                             serde_json::json!({
@@ -540,6 +788,94 @@ impl SharprWindow {
                     if filmstrip_rx.is_search_active() {
                         suppress_search_restore_rx.set(true);
                         filmstrip_rx.deactivate_search();
+                    }
+
+                    // If we showed cached rows, wait for the reconciled result and apply
+                    // any changes silently (no full UI reset unless the path set changed).
+                    if got_cached {
+                        if let Ok(FolderOpenResult::Indexed {
+                            rows,
+                            metadata_pending: pending,
+                            stale_removed,
+                            basic_count,
+                        }) = rx.recv().await
+                        {
+                            if state_rx.borrow().library.current_folder.as_deref()
+                                == Some(path_rx.as_path())
+                            {
+                                metadata_pending = pending;
+
+                                let cached_paths: std::collections::HashSet<PathBuf> = {
+                                    let st = state_rx.borrow();
+                                    (0..st.library.image_count())
+                                        .filter_map(|i| st.library.entry_at(i).map(|e| e.path()))
+                                        .collect()
+                                };
+                                let reconciled_paths: std::collections::HashSet<PathBuf> =
+                                    rows.iter().map(|r| r.path.clone()).collect();
+
+                                crate::bench_event!(
+                                    "folder.open.index_loaded",
+                                    serde_json::json!({
+                                        "path": path_rx.display().to_string(),
+                                        "basic_count": basic_count,
+                                        "stale_removed": stale_removed,
+                                        "metadata_pending": metadata_pending.len(),
+                                    }),
+                                );
+
+                                if cached_paths != reconciled_paths {
+                                    // Folder contents changed since the cached result —
+                                    // save selection, reload, restore.
+                                    let selected_path = {
+                                        let st = state_rx.borrow();
+                                        st.library
+                                            .selected_index
+                                            .and_then(|i| st.library.entry_at(i))
+                                            .map(|e| e.path())
+                                    };
+                                    state_rx
+                                        .borrow_mut()
+                                        .library
+                                        .load_indexed_folder(&path_rx, rows);
+                                    filmstrip_rx.refresh();
+                                    let target = {
+                                        let st = state_rx.borrow();
+                                        selected_path
+                                            .as_deref()
+                                            .and_then(|p| st.library.index_of_path(p))
+                                            .or_else(|| {
+                                                if st.library.image_count() > 0 {
+                                                    Some(0)
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                    };
+                                    if let Some(idx) = target {
+                                        state_rx.borrow_mut().library.selected_index = Some(idx);
+                                        filmstrip_rx.navigate_to(idx);
+                                        let p = state_rx
+                                            .borrow()
+                                            .library
+                                            .entry_at(idx)
+                                            .map(|e| e.path());
+                                        if let Some(p) = p {
+                                            viewer_rx.load_image(p);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(index) = state_rx.borrow().library_index.clone() {
+                        start_metadata_indexer(
+                            index,
+                            path_rx.clone(),
+                            metadata_pending,
+                            state_rx.clone(),
+                        );
                     }
                 });
             })
@@ -746,15 +1082,57 @@ impl SharprWindow {
                 let (indexed_paths, current_folder, metadata_cache) =
                     { state_c.borrow().library.bg_scan_quality_prep() };
                 let library_root = state_c.borrow().settings.library_root.clone();
+                let library_index = state_c.borrow().library_index.clone();
                 let op = state_c
                     .borrow()
                     .ops
                     .add(format!("Scanning for {} quality", class.label()));
 
-                let (tx, rx) = async_channel::bounded(1);
+                // Channel carries (matched_paths, Option<scan_state_to_store_back>).
+                // None = result came from the DB index (no scan state to update).
+                type ScanState = (
+                    Vec<PathBuf>,
+                    std::collections::HashMap<
+                        PathBuf,
+                        crate::model::library::CachedImageData,
+                    >,
+                );
+                let (tx, rx) =
+                    async_channel::bounded::<(Vec<PathBuf>, Option<ScanState>)>(1);
                 std::thread::spawn(move || {
                     let started = Instant::now();
-                    let result =
+
+                    // Try the persistent index first — much faster than a filesystem walk.
+                    if let Some(index) = library_index {
+                        match index.images_by_quality(class) {
+                            Ok(paths) if !paths.is_empty() => {
+                                crate::bench_event!(
+                                    "smart.quality.scan_finish",
+                                    serde_json::json!({
+                                        "class": class.label(),
+                                        "source": "index",
+                                        "result_count": paths.len(),
+                                        "duration_ms": crate::bench::duration_ms(started),
+                                    }),
+                                );
+                                let _ = tx.send_blocking((paths, None));
+                                return;
+                            }
+                            Ok(_) => {} // not indexed yet — fall through to filesystem scan
+                            Err(err) => {
+                                crate::bench_event!(
+                                    "smart.quality.index_fail",
+                                    serde_json::json!({
+                                        "class": class.label(),
+                                        "error": err.to_string(),
+                                    }),
+                                );
+                            }
+                        }
+                    }
+
+                    // Fallback: full filesystem scan.
+                    let (new_indexed, new_cache, paths) =
                         crate::model::library::LibraryManager::compute_paths_for_quality_class(
                             library_root,
                             class,
@@ -766,12 +1144,13 @@ impl SharprWindow {
                         "smart.quality.scan_finish",
                         serde_json::json!({
                             "class": class.label(),
-                            "indexed_count": result.0.len(),
-                            "result_count": result.2.len(),
+                            "source": "scan",
+                            "indexed_count": new_indexed.len(),
+                            "result_count": paths.len(),
                             "duration_ms": crate::bench::duration_ms(started),
                         }),
                     );
-                    let _ = tx.send_blocking(result);
+                    let _ = tx.send_blocking((paths, Some((new_indexed, new_cache))));
                 });
 
                 let filmstrip_rx = filmstrip_c.clone();
@@ -782,7 +1161,7 @@ impl SharprWindow {
                 let window_weak_rx = window_weak.clone();
 
                 glib::MainContext::default().spawn_local(async move {
-                    let Ok((new_indexed, new_cache, paths)) = rx.recv().await else {
+                    let Ok((paths, scan_state)) = rx.recv().await else {
                         op.fail("Quality scan failed");
                         return;
                     };
@@ -801,10 +1180,12 @@ impl SharprWindow {
                     }
 
                     let result_count = paths.len();
-                    state_rx
-                        .borrow_mut()
-                        .library
-                        .bg_scan_quality_finish(new_indexed, new_cache);
+                    if let Some((new_indexed, new_cache)) = scan_state {
+                        state_rx
+                            .borrow_mut()
+                            .library
+                            .bg_scan_quality_finish(new_indexed, new_cache);
+                    }
                     state_rx.borrow_mut().library.load_virtual(&paths);
                     crate::bench_event!(
                         "virtual_view.load",
@@ -1643,16 +2024,32 @@ impl SharprWindow {
         glib::MainContext::default().spawn_local(async move {
             while let Ok(result) = rx.recv().await {
                 let path = result.path.clone();
+                let hash = result.hash;
                 state
                     .borrow_mut()
                     .library
-                    .insert_hash(result.path, result.hash);
+                    .insert_hash(result.path, hash);
                 crate::bench_event!(
                     "hash.apply",
                     serde_json::json!({
                         "path": path.display().to_string(),
                     }),
                 );
+                // Persist phash to the index so duplicate detection is cross-session.
+                if let Some(index) = state.borrow().library_index.clone() {
+                    let path_clone = path.clone();
+                    std::thread::spawn(move || {
+                        if let Err(err) = index.update_image_phash(&path_clone, hash) {
+                            crate::bench_event!(
+                                "hash.index_persist_fail",
+                                serde_json::json!({
+                                    "path": path_clone.display().to_string(),
+                                    "error": err.to_string(),
+                                }),
+                            );
+                        }
+                    });
+                }
                 if let Some(tags_arc) = state.borrow().tags.clone() {
                     std::thread::spawn(move || {
                         let started = Instant::now();

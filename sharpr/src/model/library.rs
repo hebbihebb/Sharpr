@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use gdk4::Texture;
 use gio::prelude::*;
 
+use crate::library_index::{basic_info_from_path, BasicImageInfo, IndexedImage};
 use crate::model::image_entry::ImageEntry;
 use crate::quality::{QualityClass, QualityScore};
 
@@ -172,6 +173,58 @@ impl LibraryManager {
                 }
             })
             .collect()
+    }
+
+    pub fn scan_folder_basic(folder: &Path) -> Vec<BasicImageInfo> {
+        let Ok(dir) = std::fs::read_dir(folder) else {
+            return Vec::new();
+        };
+
+        let mut paths: Vec<PathBuf> = dir
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .map(|entry| entry.path())
+            .filter(|path| Self::is_image(path))
+            .collect();
+
+        paths.sort_by(|a, b| path_sort_key(a, b));
+        paths
+            .into_iter()
+            .map(|path| basic_info_from_path(folder, path))
+            .collect()
+    }
+
+    pub fn load_indexed_folder(&mut self, folder: &Path, rows: Vec<IndexedImage>) {
+        self.reset_for_folder(folder);
+        let mut new_entries = Vec::with_capacity(rows.len());
+        for (index, row) in rows.into_iter().enumerate() {
+            let entry = ImageEntry::new(row.path.clone());
+            entry.set_file_size(row.file_size);
+            if let (Some(width), Some(height)) = (row.width, row.height) {
+                entry.set_dimensions(width, height);
+            }
+            if let Some(texture) = self.cached_thumbnail(&row.path) {
+                entry.set_thumbnail(Some(texture));
+            }
+            self.path_to_index.insert(row.path.clone(), index as u32);
+            self.all_known_paths.insert(row.path.clone());
+            if !self.indexed_library_paths.contains(&row.path) {
+                self.indexed_library_paths.push(row.path.clone());
+            }
+            new_entries.push(entry);
+        }
+        self.store.splice(0, 0, &new_entries);
+        self.indexed_library_paths
+            .sort_by(|a, b| path_sort_key(a, b));
+    }
+
+    pub fn update_entry_metadata(&mut self, path: &Path, width: u32, height: u32) {
+        self.metadata_cache.remove(path);
+        if let Some(index) = self.index_of_path(path) {
+            if let Some(entry) = self.entry_at(index) {
+                entry.set_dimensions(width, height);
+            }
+        }
     }
 
     /// Insert `path` into the current folder's store in filename order.
@@ -727,6 +780,7 @@ pub fn sort_raw_entries(entries: &mut Vec<RawImageEntry>, order: SortOrder) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AppSettings;
     use image::codecs::jpeg::JpegEncoder;
     use image::{ImageBuffer, ImageFormat, Rgb};
 
