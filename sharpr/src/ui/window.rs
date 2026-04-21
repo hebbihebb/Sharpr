@@ -1562,20 +1562,13 @@ impl SharprWindow {
 
                 // Use the path→index lookup built by LibraryManager to avoid a
                 // linear scan for every completed thumbnail.
+                let mut applied_index = None;
                 {
                     let st = state.borrow();
                     if let Some(idx) = st.library.index_of_path(&result_path) {
                         if let Some(entry) = st.library.entry_at(idx) {
                             entry.set_thumbnail(Some(texture.clone().upcast::<gdk4::Texture>()));
-                            crate::bench_event!(
-                                "thumbnail.apply",
-                                serde_json::json!({
-                                    "path": result_path.display().to_string(),
-                                    "index": idx,
-                                    "source": source,
-                                    "worker_ms": worker_ms,
-                                }),
-                            );
+                            applied_index = Some(idx);
                         }
                     } else {
                         crate::bench_event!(
@@ -1591,10 +1584,28 @@ impl SharprWindow {
 
                 // Cache the texture in LibraryManager (needs mut borrow).
                 {
-                    state
-                        .borrow_mut()
-                        .library
-                        .insert_thumbnail(result_path.clone(), texture.upcast());
+                    let mut st = state.borrow_mut();
+                    st.library.insert_thumbnail(
+                        result_path.clone(),
+                        texture.upcast(),
+                        applied_index.is_some(),
+                    );
+                    if let Some(idx) = applied_index {
+                        let (active_cache_len, global_cache_len, global_cache_max) =
+                            st.library.thumbnail_cache_stats();
+                        crate::bench_event!(
+                            "thumbnail.apply",
+                            serde_json::json!({
+                                "path": result_path.display().to_string(),
+                                "index": idx,
+                                "source": source,
+                                "worker_ms": worker_ms,
+                                "active_cache_len": active_cache_len,
+                                "global_cache_len": global_cache_len,
+                                "global_cache_max": global_cache_max,
+                            }),
+                        );
+                    }
                 }
 
                 filmstrip.mark_thumbnail_ready(&result_path);

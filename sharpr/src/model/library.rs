@@ -54,6 +54,7 @@ pub struct LibraryManager {
     /// Set of all image paths encountered during the session, for cross-folder duplicates.
     pub(crate) all_known_paths: HashSet<PathBuf>,
     hash_store: HashMap<PathBuf, u64>,
+    active_thumbnail_cache: HashMap<PathBuf, Texture>,
     thumbnail_cache: HashMap<PathBuf, Texture>,
     /// Insertion order for LRU eviction.
     cache_order: Vec<PathBuf>,
@@ -79,6 +80,7 @@ impl LibraryManager {
             path_to_index: HashMap::new(),
             all_known_paths: HashSet::new(),
             hash_store: HashMap::new(),
+            active_thumbnail_cache: HashMap::new(),
             thumbnail_cache: HashMap::new(),
             cache_order: Vec::new(),
             prefetch_cache: HashMap::new(),
@@ -111,6 +113,7 @@ impl LibraryManager {
         self.store.remove_all();
         self.path_to_index.clear();
         self.hash_store.clear();
+        self.active_thumbnail_cache.clear();
         self.prefetch_cache.clear();
         self.prefetch_order.clear();
         self.prefetch_in_flight.clear();
@@ -255,6 +258,7 @@ impl LibraryManager {
             return;
         };
         self.store.remove(index);
+        self.active_thumbnail_cache.remove(path);
         self.thumbnail_cache.remove(path);
         if let Some(pos) = self.cache_order.iter().position(|p| p == path) {
             self.cache_order.remove(pos);
@@ -273,6 +277,7 @@ impl LibraryManager {
 
     /// Drop all cached decode state for `path` so the next load uses fresh bytes.
     pub fn invalidate_path_caches(&mut self, path: &Path) {
+        self.active_thumbnail_cache.remove(path);
         self.thumbnail_cache.remove(path);
         if let Some(pos) = self.cache_order.iter().position(|p| p == path) {
             self.cache_order.remove(pos);
@@ -307,11 +312,35 @@ impl LibraryManager {
     // -----------------------------------------------------------------------
 
     pub fn cached_thumbnail(&self, path: &Path) -> Option<Texture> {
-        self.thumbnail_cache.get(path).cloned()
+        if let Some(texture) = self.active_thumbnail_cache.get(path) {
+            crate::bench_event!(
+                "thumbnail.cache_hit",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "cache": "active_view",
+                }),
+            );
+            return Some(texture.clone());
+        }
+        if let Some(texture) = self.thumbnail_cache.get(path) {
+            crate::bench_event!(
+                "thumbnail.cache_hit",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "cache": "global_lru",
+                }),
+            );
+            return Some(texture.clone());
+        }
+        None
     }
 
-    /// Insert into the LRU cache. No-op if already cached.
-    pub fn insert_thumbnail(&mut self, path: PathBuf, texture: Texture) {
+    /// Insert into the active view cache and the bounded global LRU cache.
+    pub fn insert_thumbnail(&mut self, path: PathBuf, texture: Texture, retain_active: bool) {
+        if retain_active {
+            self.active_thumbnail_cache
+                .insert(path.clone(), texture.clone());
+        }
         if self.thumbnail_cache.contains_key(&path) {
             return;
         }
@@ -321,6 +350,14 @@ impl LibraryManager {
         }
         self.thumbnail_cache.insert(path.clone(), texture);
         self.cache_order.push(path);
+    }
+
+    pub fn thumbnail_cache_stats(&self) -> (usize, usize, usize) {
+        (
+            self.active_thumbnail_cache.len(),
+            self.thumbnail_cache.len(),
+            self.thumbnail_cache_max,
+        )
     }
 
     pub fn set_thumbnail_cache_max(&mut self, max_entries: usize) {
@@ -393,6 +430,7 @@ impl LibraryManager {
         self.store.remove_all();
         self.path_to_index.clear();
         self.hash_store.clear();
+        self.active_thumbnail_cache.clear();
         self.prefetch_cache.clear();
         self.prefetch_order.clear();
         self.prefetch_in_flight.clear();
