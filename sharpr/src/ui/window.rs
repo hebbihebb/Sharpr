@@ -9,6 +9,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
+use sha2::{Digest, Sha256};
 
 use std::path::PathBuf;
 
@@ -25,6 +26,11 @@ use crate::ui::sidebar::SidebarPane;
 use crate::ui::tag_browser::TagBrowser;
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 use crate::upscale::{UpscaleDetector, UpscaleModel};
+
+const RESNET18_MODEL_URL: &str =
+    "https://huggingface.co/onnxmodelzoo/resnet18-v1-7/resolve/main/resnet18-v1-7.onnx";
+const RESNET18_MODEL_SHA256: &str =
+    "4e8f8653e7a2222b3904cc3fe8e304cd8b339ce1d05fd24688162f86fb6df52c";
 
 // ---------------------------------------------------------------------------
 // Shared application state (main thread only, Rc<RefCell<>>)
@@ -182,7 +188,7 @@ fn queue_prefetch(
         distance,
     };
     let tx = tx.clone();
-    std::thread::spawn(move || {
+    rayon::spawn(move || {
         if let Some((bytes, width, height)) = prefetch_decode(&request.path) {
             let _ = tx.send_blocking(PrefetchResult {
                 request,
@@ -224,7 +230,7 @@ fn start_metadata_indexer(
 
     let (tx, rx) = async_channel::unbounded::<MetadataIndexResult>();
     let worker_folder = folder.clone();
-    std::thread::spawn(move || {
+    rayon::spawn(move || {
         let started = Instant::now();
         let total = pending.len();
         let mut completed = 0usize;
@@ -282,27 +288,41 @@ fn maybe_download_model() {
     if model_path.exists() {
         return;
     }
-    std::thread::spawn(move || {
+    rayon::spawn(move || {
         let Some(dir) = model_path.parent() else {
             return;
         };
         let _ = std::fs::create_dir_all(dir);
         let tmp = model_path.with_extension("onnx.tmp");
-        let url = "https://github.com/onnx/models/raw/main/validated/vision/classification/efficientnet-lite4/model/resnet18-v1-7.onnx";
-        match ureq::get(url).call() {
-            Ok(response) => {
-                let mut reader = response.into_reader();
-                if let Ok(mut file) = std::fs::File::create(&tmp) {
-                    if std::io::copy(&mut reader, &mut file).is_ok() {
-                        let _ = std::fs::rename(&tmp, &model_path);
-                    } else {
-                        let _ = std::fs::remove_file(&tmp);
-                    }
-                }
+
+        let result = (|| -> Result<(), String> {
+            let response = ureq::get(RESNET18_MODEL_URL)
+                .call()
+                .map_err(|err| format!("download failed: {err}"))?;
+            let mut reader = response.into_reader();
+            let mut file = std::fs::File::create(&tmp)
+                .map_err(|err| format!("create temp model failed: {err}"))?;
+            std::io::copy(&mut reader, &mut file)
+                .map_err(|err| format!("write temp model failed: {err}"))?;
+            drop(file);
+
+            let downloaded = std::fs::read(&tmp)
+                .map_err(|err| format!("read downloaded model failed: {err}"))?;
+            let actual_hash = format!("{:x}", Sha256::digest(&downloaded));
+            if actual_hash != RESNET18_MODEL_SHA256 {
+                return Err(format!(
+                    "downloaded model hash mismatch: expected {RESNET18_MODEL_SHA256}, got {actual_hash}"
+                ));
             }
-            Err(_) => {
-                let _ = std::fs::remove_file(&tmp);
-            }
+
+            std::fs::rename(&tmp, &model_path)
+                .map_err(|err| format!("install downloaded model failed: {err}"))?;
+            Ok(())
+        })();
+
+        if let Err(err) = result {
+            let _ = std::fs::remove_file(&tmp);
+            eprintln!("Smart tagger model download aborted: {err}");
         }
     });
 }
@@ -546,7 +566,7 @@ impl SharprWindow {
                 };
                 let (tx, rx) = async_channel::unbounded::<FolderOpenResult>();
                 let scan_path = path.clone();
-                std::thread::spawn(move || {
+                rayon::spawn(move || {
                     let started = Instant::now();
                     if let Some(index) = index {
                         // Send cached rows immediately so the UI can render before the
@@ -952,7 +972,7 @@ impl SharprWindow {
 
                 let op = state_c.borrow().ops.add("Finding duplicates");
                 let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
-                std::thread::spawn(move || {
+                rayon::spawn(move || {
                     let started = Instant::now();
                     let paths = phash::group_duplicates(&hashes)
                         .into_iter()
@@ -1110,14 +1130,14 @@ impl SharprWindow {
                 // None = result came from the DB index (no scan state to update).
                 type ScanState = (
                     Vec<PathBuf>,
-                    std::collections::HashMap<
+                    rustc_hash::FxHashMap<
                         PathBuf,
                         crate::model::library::CachedImageData,
                     >,
                 );
                 let (tx, rx) =
                     async_channel::bounded::<(Vec<PathBuf>, Option<ScanState>)>(1);
-                std::thread::spawn(move || {
+                rayon::spawn(move || {
                     let started = Instant::now();
 
                     // Try the persistent index first — much faster than a filesystem walk.
@@ -1796,7 +1816,7 @@ impl SharprWindow {
                         let query = text.clone();
                         let db_query = query.clone();
                         let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
-                        std::thread::spawn(move || {
+                        rayon::spawn(move || {
                             let _ = tx.send_blocking(tags.search_paths(&db_query));
                         });
 
@@ -1873,7 +1893,7 @@ impl SharprWindow {
                 };
                 let tag = tag.to_string();
                 let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
-                std::thread::spawn(move || {
+                rayon::spawn(move || {
                     let _ = tx.send_blocking(tags.search_paths(&tag));
                 });
                 let filmstrip_rx = filmstrip_c.clone();
@@ -2575,7 +2595,7 @@ impl SharprWindow {
                 // Persist phash to the index so duplicate detection is cross-session.
                 if let Some(index) = state.borrow().library_index.clone() {
                     let path_clone = path.clone();
-                    std::thread::spawn(move || {
+                    rayon::spawn(move || {
                         if let Err(err) = index.update_image_phash(&path_clone, hash) {
                             crate::bench_event!(
                                 "hash.index_persist_fail",
@@ -2588,7 +2608,7 @@ impl SharprWindow {
                     });
                 }
                 if let Some(tags_arc) = state.borrow().tags.clone() {
-                    std::thread::spawn(move || {
+                    rayon::spawn(move || {
                         let started = Instant::now();
                         let meta = crate::metadata::exif::ImageMetadata::load(&path);
                         let tag_list = crate::tags::indexer::auto_tags(&path, &meta);

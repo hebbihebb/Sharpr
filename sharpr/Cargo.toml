@@ -33,16 +33,21 @@ async-channel = "2"
 # Serialisation (config, cache)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 
 # Regex for parsing NCNN progress output
 regex = "1"
 dirs = "5"
+rustc-hash = "1.1"
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
 rusqlite = { version = "0.31", features = ["bundled"] }
+rayon = "1"
 
 [build-dependencies]
 glib-build-tools = "0.20"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1

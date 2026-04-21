@@ -391,16 +391,18 @@ impl SidebarPane {
                 continue;
             }
 
-            if directory_contains_images(&root_path) && seen.insert(root_path.clone()) {
-                let row = FolderRow::new(root_path.clone(), &root_name);
-                self.imp().list_box.append(&row);
-            }
-
             let mut child_folders = discover_image_child_folders(&root_path, &root_name);
             child_folders.sort_by(|(_, a), (_, b)| a.to_lowercase().cmp(&b.to_lowercase()));
 
+            if directory_contains_images(&root_path) && !seen.contains(&root_path) {
+                seen.insert(root_path.clone());
+                let row = FolderRow::new(root_path, &root_name);
+                self.imp().list_box.append(&row);
+            }
+
             for (path, label) in child_folders {
-                if seen.insert(path.clone()) {
+                if !seen.contains(&path) {
+                    seen.insert(path.clone());
                     let row = FolderRow::new(path, &label);
                     self.imp().list_box.append(&row);
                 }

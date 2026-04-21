@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use gdk4::Texture;
 use gio::prelude::*;
+use rustc_hash::FxHashMap;
 
 use crate::library_index::{basic_info_from_path, BasicImageInfo, IndexedImage};
 use crate::model::image_entry::ImageEntry;
@@ -49,23 +50,23 @@ pub struct LibraryManager {
     pub store: gio::ListStore,
     pub current_folder: Option<PathBuf>,
     pub selected_index: Option<u32>,
-    folder_history: HashMap<PathBuf, u32>,
+    folder_history: FxHashMap<PathBuf, u32>,
     /// O(1) path → list index lookup, kept in sync with `store`.
-    pub(crate) path_to_index: HashMap<PathBuf, u32>,
+    pub(crate) path_to_index: FxHashMap<PathBuf, u32>,
     /// Set of all image paths encountered during the session, for cross-folder duplicates.
     pub(crate) all_known_paths: HashSet<PathBuf>,
-    hash_store: HashMap<PathBuf, u64>,
-    active_thumbnail_cache: HashMap<PathBuf, Texture>,
-    thumbnail_cache: HashMap<PathBuf, Texture>,
+    hash_store: FxHashMap<PathBuf, u64>,
+    active_thumbnail_cache: FxHashMap<PathBuf, Texture>,
+    thumbnail_cache: FxHashMap<PathBuf, Texture>,
     /// Insertion order for LRU eviction.
     cache_order: Vec<PathBuf>,
-    prefetch_cache: HashMap<PathBuf, (Vec<u8>, u32, u32)>,
+    prefetch_cache: FxHashMap<PathBuf, (Vec<u8>, u32, u32)>,
     prefetch_order: Vec<PathBuf>,
     prefetch_in_flight: HashSet<PathBuf>,
-    preview_cache: HashMap<PathBuf, (Vec<u8>, u32, u32)>,
+    preview_cache: FxHashMap<PathBuf, (Vec<u8>, u32, u32)>,
     preview_order: Vec<PathBuf>,
     thumbnail_cache_max: usize,
-    metadata_cache: HashMap<PathBuf, CachedImageData>,
+    metadata_cache: FxHashMap<PathBuf, CachedImageData>,
     indexed_library_paths: Vec<PathBuf>,
 }
 
@@ -77,20 +78,20 @@ impl LibraryManager {
             store: gio::ListStore::new::<ImageEntry>(),
             current_folder: None,
             selected_index: None,
-            folder_history: HashMap::new(),
-            path_to_index: HashMap::new(),
+            folder_history: FxHashMap::default(),
+            path_to_index: FxHashMap::default(),
             all_known_paths: HashSet::new(),
-            hash_store: HashMap::new(),
-            active_thumbnail_cache: HashMap::new(),
-            thumbnail_cache: HashMap::new(),
+            hash_store: FxHashMap::default(),
+            active_thumbnail_cache: FxHashMap::default(),
+            thumbnail_cache: FxHashMap::default(),
             cache_order: Vec::new(),
-            prefetch_cache: HashMap::new(),
+            prefetch_cache: FxHashMap::default(),
             prefetch_order: Vec::new(),
             prefetch_in_flight: HashSet::new(),
-            preview_cache: HashMap::new(),
+            preview_cache: FxHashMap::default(),
             preview_order: Vec::new(),
             thumbnail_cache_max: 500,
-            metadata_cache: HashMap::new(),
+            metadata_cache: FxHashMap::default(),
             indexed_library_paths: Vec::new(),
         }
     }
@@ -549,7 +550,7 @@ impl LibraryManager {
     ) -> (
         Vec<PathBuf>,
         Option<PathBuf>,
-        HashMap<PathBuf, CachedImageData>,
+        FxHashMap<PathBuf, CachedImageData>,
     ) {
         (
             self.indexed_library_paths.clone(),
@@ -561,7 +562,7 @@ impl LibraryManager {
     pub fn bg_scan_quality_finish(
         &mut self,
         paths: Vec<PathBuf>,
-        cache: HashMap<PathBuf, CachedImageData>,
+        cache: FxHashMap<PathBuf, CachedImageData>,
     ) {
         self.indexed_library_paths = paths;
         self.metadata_cache = cache;
@@ -572,10 +573,10 @@ impl LibraryManager {
         class: QualityClass,
         mut indexed_paths: Vec<PathBuf>,
         current_folder: Option<PathBuf>,
-        mut metadata_cache: HashMap<PathBuf, CachedImageData>,
+        mut metadata_cache: FxHashMap<PathBuf, CachedImageData>,
     ) -> (
         Vec<PathBuf>,
-        HashMap<PathBuf, CachedImageData>,
+        FxHashMap<PathBuf, CachedImageData>,
         Vec<PathBuf>,
     ) {
         let paths = collect_library_image_paths(library_root, current_folder.as_deref());
@@ -602,7 +603,7 @@ impl LibraryManager {
 
     pub fn cached_image_data_static(
         path: &Path,
-        cache: &mut HashMap<PathBuf, CachedImageData>,
+        cache: &mut FxHashMap<PathBuf, CachedImageData>,
     ) -> CachedImageData {
         if let Some(cached) = cache.get(path) {
             return cached.clone();

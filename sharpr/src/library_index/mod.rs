@@ -1,8 +1,10 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use r2d2::{Pool, PooledConnection};
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::model::library::SortOrder;
@@ -42,7 +44,7 @@ pub struct IndexedImage {
 }
 
 pub struct LibraryIndex {
-    conn: Mutex<Connection>,
+    pool: Pool<SqliteConnectionManager>,
 }
 
 impl LibraryIndex {
@@ -52,84 +54,28 @@ impl LibraryIndex {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("sharpr");
         std::fs::create_dir_all(&dir).ok();
-        let conn = Connection::open(dir.join("library-index.sqlite"))?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS folders (
-                path TEXT PRIMARY KEY,
-                ignored INTEGER NOT NULL DEFAULT 0,
-                discovered_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS images (
-                path TEXT PRIMARY KEY,
-                folder_path TEXT NOT NULL,
-                filename TEXT NOT NULL,
-                extension TEXT NOT NULL,
-                file_size INTEGER NOT NULL,
-                modified_secs INTEGER,
-                width INTEGER,
-                height INTEGER,
-                quality_class TEXT,
-                phash INTEGER,
-                phash_status TEXT NOT NULL DEFAULT 'missing',
-                metadata_status TEXT NOT NULL DEFAULT 'missing',
-                indexed_at INTEGER NOT NULL,
-                error TEXT
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_images_folder ON images(folder_path);
-            CREATE INDEX IF NOT EXISTS idx_images_quality ON images(quality_class);
-            CREATE INDEX IF NOT EXISTS idx_images_phash ON images(phash);
-
-            CREATE TABLE IF NOT EXISTS schema_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS collections (
-                id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS collection_items (
-                collection_id INTEGER NOT NULL,
-                image_path TEXT NOT NULL,
-                added_at INTEGER NOT NULL,
-                PRIMARY KEY (collection_id, image_path),
-                FOREIGN KEY(collection_id) REFERENCES collections(id) ON DELETE CASCADE
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_collection_items_path
-                ON collection_items(image_path);
-            CREATE INDEX IF NOT EXISTS idx_collection_items_collection_added
-                ON collection_items(collection_id, added_at);
-            ",
-        )?;
-        conn.execute(
-            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', ?1)",
-            params![SCHEMA_VERSION],
-        )?;
+        let manager = SqliteConnectionManager::file(dir.join("library-index.sqlite"))
+            .with_init(|conn| {
+                configure_connection(conn)?;
+                Ok(())
+            });
+        let pool = Pool::new(manager).map_err(|_| rusqlite::Error::InvalidQuery)?;
+        {
+            let conn = pool.get().map_err(|_| rusqlite::Error::InvalidQuery)?;
+            initialize_schema(&conn)?;
+        }
         crate::bench_event!(
             "index.open",
             serde_json::json!({
                 "duration_ms": crate::bench::duration_ms(started),
             }),
         );
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+        Ok(Self { pool })
     }
 
     pub fn upsert_folder(&self, path: &Path) -> rusqlite::Result<()> {
         let now = now_secs();
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         conn.execute(
             "
             INSERT INTO folders (path, ignored, discovered_at, updated_at)
@@ -143,7 +89,7 @@ impl LibraryIndex {
 
     pub fn set_folder_ignored(&self, path: &Path, ignored: bool) -> rusqlite::Result<()> {
         let now = now_secs();
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         conn.execute(
             "
             INSERT INTO folders (path, ignored, discovered_at, updated_at)
@@ -158,7 +104,7 @@ impl LibraryIndex {
     }
 
     pub fn ignored_folders(&self) -> rusqlite::Result<Vec<PathBuf>> {
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT path FROM folders WHERE ignored = 1 ORDER BY path")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         Ok(rows.filter_map(Result::ok).map(PathBuf::from).collect())
@@ -175,7 +121,7 @@ impl LibraryIndex {
         sort_order: SortOrder,
     ) -> rusqlite::Result<(Vec<IndexedImage>, usize, Vec<BasicImageInfo>)> {
         let now = now_secs();
-        let mut conn = self.conn.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut conn = self.conn()?;
 
         let stale_count: usize;
         {
@@ -301,7 +247,7 @@ impl LibraryIndex {
 
     pub fn upsert_image_basic(&self, info: &BasicImageInfo) -> rusqlite::Result<()> {
         let now = now_secs();
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         let existing = conn
             .query_row(
                 "SELECT file_size, modified_secs FROM images WHERE path = ?1",
@@ -315,15 +261,18 @@ impl LibraryIndex {
                 *size == info.file_size as i64 && *modified == info.modified_secs
             })
             .unwrap_or(false);
-        let (metadata_status, phash_status) = match (existing, unchanged) {
+        let (metadata_status, phash_status): (Cow<'static, str>, Cow<'static, str>) =
+            match (existing, unchanged) {
             (Some(_), true) => (
                 current_status(&conn, &info.path, "metadata_status")?
-                    .unwrap_or_else(|| "missing".into()),
+                    .map(Cow::Owned)
+                    .unwrap_or(Cow::Borrowed("missing")),
                 current_status(&conn, &info.path, "phash_status")?
-                    .unwrap_or_else(|| "missing".into()),
+                    .map(Cow::Owned)
+                    .unwrap_or(Cow::Borrowed("missing")),
             ),
-            (Some(_), false) => ("missing".into(), "stale".into()),
-            (None, _) => ("missing".into(), "missing".into()),
+            (Some(_), false) => (Cow::Borrowed("missing"), Cow::Borrowed("stale")),
+            (None, _) => (Cow::Borrowed("missing"), Cow::Borrowed("missing")),
         };
         conn.execute(
             "
@@ -355,8 +304,8 @@ impl LibraryIndex {
                 info.extension,
                 info.file_size as i64,
                 info.modified_secs,
-                phash_status,
-                metadata_status,
+                phash_status.as_ref(),
+                metadata_status.as_ref(),
                 now,
                 unchanged,
             ],
@@ -371,7 +320,7 @@ impl LibraryIndex {
         height: u32,
         quality_class: QualityClass,
     ) -> rusqlite::Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         conn.execute(
             "
             UPDATE images
@@ -393,7 +342,7 @@ impl LibraryIndex {
     }
 
     pub fn update_image_phash(&self, path: &Path, hash: u64) -> rusqlite::Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE images SET phash = ?2, phash_status = 'ready', error = NULL WHERE path = ?1",
             params![path_to_string(path), hash as i64],
@@ -402,7 +351,7 @@ impl LibraryIndex {
     }
 
     pub fn mark_image_error(&self, path: &Path, error: &str) -> rusqlite::Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         conn.execute(
             "
             UPDATE images
@@ -424,7 +373,7 @@ impl LibraryIndex {
             .iter()
             .map(|path| path_to_string(path))
             .collect();
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT path FROM images WHERE folder_path = ?1")?;
         let rows = stmt.query_map(params![path_to_string(folder)], |row| {
             row.get::<_, String>(0)
@@ -458,14 +407,14 @@ impl LibraryIndex {
             ORDER BY {order}
             "
         );
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![path_to_string(folder)], indexed_image_from_row)?;
         Ok(rows.filter_map(Result::ok).collect())
     }
 
     pub fn images_by_quality(&self, class: QualityClass) -> rusqlite::Result<Vec<PathBuf>> {
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "
             SELECT images.path
@@ -481,7 +430,7 @@ impl LibraryIndex {
     }
 
     pub fn images_with_phash(&self) -> rusqlite::Result<Vec<(PathBuf, u64)>> {
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "
             SELECT path, phash
@@ -506,14 +455,14 @@ impl LibraryIndex {
     }
 
     pub fn all_indexed_paths(&self) -> rusqlite::Result<Vec<PathBuf>> {
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT path FROM images ORDER BY path COLLATE NOCASE")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         Ok(rows.filter_map(Result::ok).map(PathBuf::from).collect())
     }
 
     pub fn images_needing_metadata(&self, folder: &Path) -> rusqlite::Result<Vec<BasicImageInfo>> {
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "
             SELECT path, folder_path, filename, extension, file_size, modified_secs
@@ -528,7 +477,7 @@ impl LibraryIndex {
     }
 
     pub fn list_collections(&self) -> rusqlite::Result<Vec<Collection>> {
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT c.id, c.name, c.created_at, c.updated_at,
                     COUNT(ci.image_path) AS item_count
@@ -557,7 +506,7 @@ impl LibraryIndex {
             ));
         }
         let now = now_secs();
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO collections (name, created_at, updated_at) VALUES (?1, ?2, ?2)",
             params![name, now],
@@ -580,7 +529,7 @@ impl LibraryIndex {
             ));
         }
         let now = now_secs();
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE collections SET name = ?2, updated_at = ?3 WHERE id = ?1",
             params![id, name, now],
@@ -589,7 +538,7 @@ impl LibraryIndex {
     }
 
     pub fn delete_collection(&self, id: i64) -> rusqlite::Result<()> {
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         conn.execute("DELETE FROM collections WHERE id = ?1", params![id])?;
         Ok(())
     }
@@ -603,7 +552,7 @@ impl LibraryIndex {
             return Ok(0);
         }
         let now = now_secs();
-        let mut conn = self.conn.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let mut added = 0usize;
         for path in paths {
@@ -632,7 +581,7 @@ impl LibraryIndex {
         if paths.is_empty() {
             return Ok(0);
         }
-        let mut conn = self.conn.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let mut removed = 0usize;
         for path in paths {
@@ -655,7 +604,7 @@ impl LibraryIndex {
     }
 
     pub fn collection_paths(&self, collection_id: i64) -> rusqlite::Result<Vec<PathBuf>> {
-        let conn = self.lock_conn()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT image_path FROM collection_items
              WHERE collection_id = ?1
@@ -665,8 +614,8 @@ impl LibraryIndex {
         Ok(rows.filter_map(Result::ok).map(PathBuf::from).collect())
     }
 
-    fn lock_conn(&self) -> rusqlite::Result<std::sync::MutexGuard<'_, Connection>> {
-        self.conn.lock().map_err(|_| rusqlite::Error::InvalidQuery)
+    fn conn(&self) -> rusqlite::Result<PooledConnection<SqliteConnectionManager>> {
+        self.pool.get().map_err(|_| rusqlite::Error::InvalidQuery)
     }
 }
 
@@ -744,62 +693,90 @@ fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(())
+}
+
+fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS folders (
+            path TEXT PRIMARY KEY,
+            ignored INTEGER NOT NULL DEFAULT 0,
+            discovered_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS images (
+            path TEXT PRIMARY KEY,
+            folder_path TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            extension TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            modified_secs INTEGER,
+            width INTEGER,
+            height INTEGER,
+            quality_class TEXT,
+            phash INTEGER,
+            phash_status TEXT NOT NULL DEFAULT 'missing',
+            metadata_status TEXT NOT NULL DEFAULT 'missing',
+            indexed_at INTEGER NOT NULL,
+            error TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_images_folder ON images(folder_path);
+        CREATE INDEX IF NOT EXISTS idx_images_quality ON images(quality_class);
+        CREATE INDEX IF NOT EXISTS idx_images_phash ON images(phash);
+
+        CREATE TABLE IF NOT EXISTS schema_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS collections (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_items (
+            collection_id INTEGER NOT NULL,
+            image_path TEXT NOT NULL,
+            added_at INTEGER NOT NULL,
+            PRIMARY KEY (collection_id, image_path),
+            FOREIGN KEY(collection_id) REFERENCES collections(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_collection_items_path
+            ON collection_items(image_path);
+        CREATE INDEX IF NOT EXISTS idx_collection_items_collection_added
+            ON collection_items(collection_id, added_at);
+        ",
+    )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', ?1)",
+        params![SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 impl LibraryIndex {
     fn open_in_memory() -> rusqlite::Result<Self> {
-        let conn = Connection::open_in_memory()?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS folders (
-                path TEXT PRIMARY KEY,
-                ignored INTEGER NOT NULL DEFAULT 0,
-                discovered_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS images (
-                path TEXT PRIMARY KEY,
-                folder_path TEXT NOT NULL,
-                filename TEXT NOT NULL,
-                extension TEXT NOT NULL,
-                file_size INTEGER NOT NULL,
-                modified_secs INTEGER,
-                width INTEGER,
-                height INTEGER,
-                quality_class TEXT,
-                phash INTEGER,
-                phash_status TEXT NOT NULL DEFAULT 'missing',
-                metadata_status TEXT NOT NULL DEFAULT 'missing',
-                indexed_at INTEGER NOT NULL,
-                error TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_images_folder   ON images(folder_path);
-            CREATE INDEX IF NOT EXISTS idx_images_quality  ON images(quality_class);
-            CREATE INDEX IF NOT EXISTS idx_images_phash    ON images(phash);
-            CREATE TABLE IF NOT EXISTS schema_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS collections (
-                id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS collection_items (
-                collection_id INTEGER NOT NULL,
-                image_path TEXT NOT NULL,
-                added_at INTEGER NOT NULL,
-                PRIMARY KEY (collection_id, image_path),
-                FOREIGN KEY(collection_id) REFERENCES collections(id) ON DELETE CASCADE
-            );
-            CREATE INDEX IF NOT EXISTS idx_collection_items_path
-                ON collection_items(image_path);
-            CREATE INDEX IF NOT EXISTS idx_collection_items_collection_added
-                ON collection_items(collection_id, added_at);
-            ",
-        )?;
-        Ok(Self { conn: Mutex::new(conn) })
+        let manager = SqliteConnectionManager::memory().with_init(|conn| {
+            configure_connection(conn)?;
+            initialize_schema(conn)?;
+            Ok(())
+        });
+        let pool = Pool::builder()
+            .max_size(1)
+            .build(manager)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        Ok(Self { pool })
     }
 }
 
