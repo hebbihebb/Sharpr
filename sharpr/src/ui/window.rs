@@ -431,6 +431,7 @@ mod imp {
         pub result_rx: RefCell<Option<Receiver<ThumbnailResult>>>,
         pub hash_result_rx: RefCell<Option<Receiver<HashResult>>>,
         pub(super) thumbnail_ops: RefCell<HashMap<PathBuf, ThumbnailOpState>>,
+        pub toast_overlay: RefCell<Option<libadwaita::ToastOverlay>>,
     }
 
     impl Default for SharprWindow {
@@ -443,6 +444,7 @@ mod imp {
                 result_rx: RefCell::new(None),
                 hash_result_rx: RefCell::new(None),
                 thumbnail_ops: RefCell::new(HashMap::new()),
+                toast_overlay: RefCell::new(None),
             }
         }
     }
@@ -483,6 +485,12 @@ impl SharprWindow {
 
     pub fn app_state(&self) -> std::rc::Rc<std::cell::RefCell<crate::ui::window::AppState>> {
         self.imp().state.clone()
+    }
+
+    pub fn add_toast(&self, toast: libadwaita::Toast) {
+        if let Some(overlay) = self.imp().toast_overlay.borrow().as_ref() {
+            overlay.add_toast(toast);
+        }
     }
 
     pub fn reload_smart_tagger_model(&self, model: SmartModel) {
@@ -631,6 +639,7 @@ impl SharprWindow {
         let suppress_search_restore = Rc::new(Cell::new(false));
         let content_stack = gtk4::Stack::new();
         let toast_overlay = libadwaita::ToastOverlay::new();
+        *self.imp().toast_overlay.borrow_mut() = Some(toast_overlay.clone());
         let tag_browser = state.borrow().tags.clone().map(TagBrowser::new);
         let outer_split = libadwaita::OverlaySplitView::new();
         outer_split.set_max_sidebar_width(280.0);
@@ -2953,7 +2962,7 @@ impl SharprWindow {
                     );
                     onnx_btn.set_group(Some(&cli_btn));
                     let comfyui_btn = gtk4::CheckButton::with_label(
-                        "ComfyUI – local server (coming soon)",
+                        "ComfyUI – Remote/Local server (JSON API)",
                     );
                     comfyui_btn.set_group(Some(&cli_btn));
                     comfyui_btn.set_sensitive(comfyui_enabled);
