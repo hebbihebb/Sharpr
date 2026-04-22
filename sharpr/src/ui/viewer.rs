@@ -1973,7 +1973,30 @@ fn committed_output_path(pending_output: &std::path::Path) -> PathBuf {
         },
         None => name.to_owned(),
     };
-    pending_output.with_file_name(trimmed)
+    let base = pending_output.with_file_name(&trimmed);
+    if !base.exists() {
+        return base;
+    }
+    // File already exists — find a free slot: stem_1.ext, stem_2.ext, …
+    let dir = pending_output
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let trimmed_path = std::path::Path::new(&trimmed);
+    let stem = trimmed_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("upscaled");
+    let ext = trimmed_path.extension().and_then(|s| s.to_str());
+    for i in 1u32.. {
+        let candidate = match ext {
+            Some(e) => dir.join(format!("{stem}_{i}.{e}")),
+            None => dir.join(format!("{stem}_{i}")),
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    base
 }
 
 fn install_viewer_osd_css() {
