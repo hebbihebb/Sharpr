@@ -7,11 +7,11 @@
 ---
 
 <p align="center">
-  <img src="./light.jpg" alt="Sharpr in light mode — folder browser, filmstrip strip, and full-resolution viewer with metadata overlay" width="900">
+  <img src="./light.jpg" alt="Sharpr — three-pane layout with sidebar, filmstrip, and full-resolution viewer showing a mountain scene with metadata overlay" width="900">
 </p>
 
 <p align="center">
-  <img src="./dark.jpg" alt="Sharpr in dark mode — collections sidebar, multi-select filmstrip, and viewer with quality score overlay" width="900">
+  <img src="./dark.jpg" alt="Sharpr — dark mode, Mountain collection selected, filmstrip with thumbnails and full-resolution viewer" width="900">
 </p>
 
 ---
