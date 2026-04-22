@@ -16,44 +16,36 @@
 
 ---
 
-## Features
+## What Sharpr Does
 
-- **Three-pane library workflow** — smart folders on the left, a live filmstrip in the middle, and a large preview pane on the right
-- **Smart folders** — browse duplicates, tags, search results, and global quality bands like `Excellent`, `Good`, and `Needs Upscale`
-- **Fast viewer interactions** — fit/1:1 modes, Ctrl+scroll zoom, drag-to-pan, fullscreen, and background prefetching of nearby images
-- **Compact viewer overlays** — bottom-right metadata and IQ chip plus bottom-left tag chip for quick tag editing
-- **Tagging workflow** — click the tag pill or press `Ctrl+T` to open the inline tag editor; tag search and tag browser are both built in
-- **Local AI tag suggestions** — run on-device image tagging from the inline tag editor, review suggested tags, and accept individual tags or apply them all at once
-- **Rotate, flip, and save** — non-destructive in-view transforms with explicit save/discard actions
-- **AI upscaling** — Real-ESRGAN integration with a model and output format chooser, saved smart defaults, and a before/after comparison slider
-- **Background operations indicator** — a GNOME Files–style pill in the bottom-left corner tracks all long-running tasks (upscaling, duplicate scanning, thumbnail loading) with live progress bars; auto-dismisses when idle
-- **Filmstrip context menu** — right-click any thumbnail to open in the default viewer, show in the file manager, or move to trash (trash option appears in duplicates mode)
-- **Filmstrip sort controls** — reorder the current folder by `Name`, `Date Modified`, or `Type` from the filmstrip header
-- **Preferences window** — configure your default library folder, preferred upscale model, and appearance settings in a dedicated three-page preferences dialog
-- **Session persistence** — restore the last library folder and window size between launches
-- **Keyboard shortcuts overlay** — press `?` or open the hamburger menu to see every shortcut in a searchable GNOME-style help overlay
-- **Built-in manual** — open the bundled help manual from the app menu for setup and workflow guidance
-- **Shared thumbnail caching** — memory cache, on-disk cache, and freedesktop thumbnail cache support for fast folder reloads
-- **Metadata-aware quality scoring** — explainable IQ score derived from resolution, size, and format for wallpaper curation
+Sharpr is an image library viewer for Linux. It is made for browsing folders of images, finding useful groups of images, checking image quality, tagging images, and previewing edits before saving them.
+
+You can use Sharpr to:
+
+- browse image folders with a sidebar, thumbnail strip, and large preview
+- open common folders or choose your own library folder
+- disable folders you do not want Sharpr to scan or include in smart views
+- sort images by name, date, or file type
+- view images fullscreen, zoom in, zoom out, and pan around
+- see basic image details such as size, dimensions, tags, and quality
+- add and search tags
+- find duplicate images
+- group images by quality, such as good images or images that need upscaling
+- rotate, flip, and save images
+- upscale images with AI tools when configured
+- add images to collections
+- move images to trash from the app
+- keep thumbnails cached so folders load faster after the first scan
 
 ## Current State
 
-Sharpr is already usable as a desktop image library browser and viewer. The current codebase includes:
+Sharpr is usable today as a desktop image browser and curation tool.
 
-- folder browsing with persistent last-folder restore
-- thumbnail strip with incremental loading, position badges, sort controls, and right-click context menu
-- full-resolution preview with zoom, pan, fullscreen, and edit actions
-- duplicate detection via perceptual hashing
-- tag browser, tag search, inline per-image tag editing, and local AI tag suggestions
-- compact GNOME-style metadata, quality OSD, and tag overlays with a shared visibility toggle
-- quality smart folders that work across the whole indexed library
-- AI upscale workflow with model and format selection, saved defaults, and commit/discard comparison
-- background operations indicator for all long-running tasks
-- preferences window for library root, upscale defaults, and appearance
-- keyboard shortcuts help overlay and bundled in-app manual
-- persistent window size restore across sessions
+It can browse real folders, remember your last folder, load thumbnails in the background, show a large preview, search and edit tags, find duplicates, score image quality, and run AI upscaling if the required tool is installed.
 
-The project is still under active development, but the app is beyond prototype stage and already covers the main browsing and curation loop.
+The app stores its library information locally on your computer. Disabled folders are remembered and are left out of indexing, smart folders, search results, duplicate detection, quality views, and collections.
+
+Sharpr is still being developed, but the main browsing, sorting, tagging, duplicate finding, quality checking, and upscaling workflows are already in place.
 
 ## Requirements
 
