@@ -677,8 +677,7 @@ impl SidebarPane {
         // Drop target: accept path strings dragged from the filmstrip.
         let id = row.collection_id();
         let widget_weak = self.downgrade();
-        let drop_target =
-            gtk4::DropTarget::new(glib::Type::STRING, gdk4::DragAction::COPY);
+        let drop_target = gtk4::DropTarget::new(glib::Type::STRING, gdk4::DragAction::COPY);
         drop_target.connect_drop(move |_, value, _, _| {
             let paths_str = match value.get::<String>() {
                 Ok(s) => s,
@@ -838,9 +837,7 @@ impl SidebarPane {
         }
     }
 
-    pub fn connect_drop_paths_to_collection<
-        F: Fn(i64, Vec<std::path::PathBuf>) + 'static,
-    >(
+    pub fn connect_drop_paths_to_collection<F: Fn(i64, Vec<std::path::PathBuf>) + 'static>(
         &self,
         f: F,
     ) {

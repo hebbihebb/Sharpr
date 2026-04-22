@@ -18,6 +18,7 @@ use crate::duplicates::phash;
 use crate::library_index::{BasicImageInfo, LibraryIndex};
 use crate::model::library::{CachedImageData, RawImageEntry, SortOrder};
 use crate::model::{ImageEntry, LibraryManager};
+use crate::tags::smart::SmartModel;
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::ops_indicator::OpsIndicator;
@@ -29,7 +30,6 @@ use crate::upscale::{
     downloader::{self, DownloadEvent},
     OnnxUpscaleModel, UpscaleBackendKind, UpscaleDetector, UpscaleModel,
 };
-use crate::tags::smart::SmartModel;
 
 // ---------------------------------------------------------------------------
 // Shared application state (main thread only, Rc<RefCell<>>)
@@ -1259,13 +1259,9 @@ impl SharprWindow {
                 // None = result came from the DB index (no scan state to update).
                 type ScanState = (
                     Vec<PathBuf>,
-                    rustc_hash::FxHashMap<
-                        PathBuf,
-                        crate::model::library::CachedImageData,
-                    >,
+                    rustc_hash::FxHashMap<PathBuf, crate::model::library::CachedImageData>,
                 );
-                let (tx, rx) =
-                    async_channel::bounded::<(Vec<PathBuf>, Option<ScanState>)>(1);
+                let (tx, rx) = async_channel::bounded::<(Vec<PathBuf>, Option<ScanState>)>(1);
                 rayon::spawn(move || {
                     let started = Instant::now();
 
@@ -1413,16 +1409,12 @@ impl SharprWindow {
                 let Some(win) = window_weak.upgrade() else {
                     return;
                 };
-                let dialog =
-                    libadwaita::AlertDialog::new(Some("New Collection"), None);
+                let dialog = libadwaita::AlertDialog::new(Some("New Collection"), None);
                 dialog.add_response("cancel", "Cancel");
                 dialog.add_response("create", "Create");
                 dialog.set_default_response(Some("create"));
                 dialog.set_close_response("cancel");
-                dialog.set_response_appearance(
-                    "create",
-                    libadwaita::ResponseAppearance::Suggested,
-                );
+                dialog.set_response_appearance("create", libadwaita::ResponseAppearance::Suggested);
                 let entry = gtk4::Entry::new();
                 entry.set_placeholder_text(Some("Collection name"));
                 let entry_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -2109,9 +2101,7 @@ impl SharprWindow {
                     return;
                 };
                 let Some(idx) = state_c.borrow().library_index.clone() else {
-                    toast_overlay_c.add_toast(libadwaita::Toast::new(
-                        "Library index unavailable",
-                    ));
+                    toast_overlay_c.add_toast(libadwaita::Toast::new("Library index unavailable"));
                     return;
                 };
                 let collections = idx.list_collections().unwrap_or_default();
@@ -2173,8 +2163,7 @@ impl SharprWindow {
                         let Some(win2) = win_weak2.upgrade() else {
                             return;
                         };
-                        let new_dialog =
-                            libadwaita::AlertDialog::new(Some("New Collection"), None);
+                        let new_dialog = libadwaita::AlertDialog::new(Some("New Collection"), None);
                         new_dialog.add_response("cancel", "Cancel");
                         new_dialog.add_response("create", "Create");
                         new_dialog.set_default_response(Some("create"));
@@ -2712,10 +2701,7 @@ impl SharprWindow {
             while let Ok(result) = rx.recv().await {
                 let path = result.path.clone();
                 let hash = result.hash;
-                state
-                    .borrow_mut()
-                    .library
-                    .insert_hash(result.path, hash);
+                state.borrow_mut().library.insert_hash(result.path, hash);
                 crate::bench_event!(
                     "hash.apply",
                     serde_json::json!({
@@ -3072,7 +3058,7 @@ impl SharprWindow {
                             btn.set_sensitive(false);
                             download_status_c.set_text("Downloading…");
                             let rx = downloader::download_model(model);
-                            let op = ops_queue_c.add(&format!(
+                            let op = ops_queue_c.add(format!(
                                 "Downloading {}",
                                 model.info().display_name
                             ));

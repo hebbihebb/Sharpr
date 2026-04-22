@@ -32,7 +32,8 @@ impl ComfyUiClient {
     /// Upload an image to ComfyUI's `/upload/image` endpoint.
     /// Returns the filename on the server.
     pub fn upload_image(&self, path: &Path) -> Result<String, String> {
-        let mut file = std::fs::File::open(path).map_err(|e| format!("Failed to open input: {e}"))?;
+        let mut file =
+            std::fs::File::open(path).map_err(|e| format!("Failed to open input: {e}"))?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)
             .map_err(|e| format!("Failed to read input: {e}"))?;
@@ -61,7 +62,10 @@ impl ComfyUiClient {
 
         let url = format!("{}/upload/image", self.base_url);
         let resp = ureq::post(&url)
-            .set("Content-Type", &format!("multipart/form-data; boundary={boundary}"))
+            .set(
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
             .send_bytes(&body)
             .map_err(|e| format!("Upload failed: {e}"))?;
 
@@ -236,7 +240,8 @@ impl UpscaleBackend for ComfyUiBackend {
             }
 
             let Some(f) = output_filename else {
-                let _ = tx.send_blocking(UpscaleEvent::Failed("Timeout waiting for ComfyUI".into()));
+                let _ =
+                    tx.send_blocking(UpscaleEvent::Failed("Timeout waiting for ComfyUI".into()));
                 return;
             };
             let _ = tx.send_blocking(UpscaleEvent::Progress(Some(0.8)));

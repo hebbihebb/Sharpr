@@ -51,7 +51,11 @@ pub fn build_preferences_window(
                 move |result| {
                     if let Ok(file) = result {
                         if let Some(path) = file.path() {
-                            parent_inner.app_state().borrow_mut().settings.set_library_root(Some(path.clone()));
+                            parent_inner
+                                .app_state()
+                                .borrow_mut()
+                                .settings
+                                .set_library_root(Some(path.clone()));
                             row_inner.set_subtitle(&library_root_subtitle(Some(&path)));
                         }
                     }
@@ -69,7 +73,11 @@ pub fn build_preferences_window(
 
     let smart_model_row = libadwaita::ComboRow::new();
     smart_model_row.set_title("Smart tagger model");
-    let smart_model_choices = gtk4::StringList::new(&["Fast (ResNet-18)", "Balanced (ResNet-50)", "Best (ResNet-152)"]);
+    let smart_model_choices = gtk4::StringList::new(&[
+        "Fast (ResNet-18)",
+        "Balanced (ResNet-50)",
+        "Best (ResNet-152)",
+    ]);
     smart_model_row.set_model(Some(&smart_model_choices));
     smart_model_row.set_selected(match settings.smart_tagger_model.as_str() {
         "resnet18-v1-7" => 0,
@@ -85,7 +93,11 @@ pub fn build_preferences_window(
                 2 => "resnet152-v1-7",
                 _ => "resnet50-v1-7",
             };
-            parent_c.app_state().borrow_mut().settings.set_smart_tagger_model(model_id);
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_smart_tagger_model(model_id);
             parent_c.reload_smart_tagger_model(crate::tags::smart::SmartModel::from_id(model_id));
         });
     }
@@ -122,11 +134,15 @@ pub fn build_preferences_window(
         let parent_c = parent.clone();
         binary_entry.connect_changed(move |entry| {
             let text = entry.text().trim().to_string();
-            parent_c.app_state().borrow_mut().settings.set_upscaler_binary_path(if text.is_empty() {
-                None
-            } else {
-                Some(PathBuf::from(text))
-            });
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_upscaler_binary_path(if text.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(text))
+                });
         });
     }
 
@@ -143,11 +159,15 @@ pub fn build_preferences_window(
     {
         let parent_c = parent.clone();
         model_row.connect_selected_notify(move |row| {
-            parent_c.app_state().borrow_mut().settings.set_upscaler_default_model(if row.selected() == 1 {
-                "anime"
-            } else {
-                "standard"
-            });
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_upscaler_default_model(if row.selected() == 1 {
+                    "anime"
+                } else {
+                    "standard"
+                });
         });
     }
 
@@ -167,19 +187,22 @@ pub fn build_preferences_window(
     {
         let parent_c = parent.clone();
         output_row.connect_selected_notify(move |row| {
-            parent_c.app_state().borrow_mut().settings.set_upscaler_output_format(match row.selected() {
-                1 => "jpeg",
-                2 => "webp",
-                3 => "png",
-                _ => "auto",
-            });
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_upscaler_output_format(match row.selected() {
+                    1 => "jpeg",
+                    2 => "webp",
+                    3 => "png",
+                    _ => "auto",
+                });
         });
     }
 
     let compression_row = libadwaita::ComboRow::new();
     compression_row.set_title("Compression");
-    let compression_choices =
-        gtk4::StringList::new(&["Auto", "Prefer lossy", "Prefer lossless"]);
+    let compression_choices = gtk4::StringList::new(&["Auto", "Prefer lossy", "Prefer lossless"]);
     compression_row.set_model(Some(&compression_choices));
     compression_row.set_selected(match settings.upscaler_compression_mode.as_str() {
         "lossy" => 1,
@@ -190,25 +213,23 @@ pub fn build_preferences_window(
     {
         let parent_c = parent.clone();
         compression_row.connect_selected_notify(move |row| {
-            parent_c.app_state().borrow_mut().settings.set_upscaler_compression_mode(match row.selected() {
-                1 => "lossy",
-                2 => "lossless",
-                _ => "auto",
-            });
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_upscaler_compression_mode(match row.selected() {
+                    1 => "lossy",
+                    2 => "lossless",
+                    _ => "auto",
+                });
         });
     }
 
     let quality_row = libadwaita::ActionRow::new();
     quality_row.set_title("Lossy quality");
     quality_row.set_subtitle("Used when Sharpr saves the final result as JPEG");
-    let quality_adj = gtk4::Adjustment::new(
-        settings.upscaler_quality as f64,
-        50.0,
-        100.0,
-        1.0,
-        5.0,
-        0.0,
-    );
+    let quality_adj =
+        gtk4::Adjustment::new(settings.upscaler_quality as f64, 50.0, 100.0, 1.0, 5.0, 0.0);
     let quality_spin = gtk4::SpinButton::new(Some(&quality_adj), 1.0, 0);
     quality_spin.set_numeric(true);
     quality_row.add_suffix(&quality_spin);
@@ -217,7 +238,11 @@ pub fn build_preferences_window(
     {
         let parent_c = parent.clone();
         quality_spin.connect_value_changed(move |spin| {
-            parent_c.app_state().borrow_mut().settings.set_upscaler_quality(spin.value() as i32);
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_upscaler_quality(spin.value() as i32);
         });
     }
 
@@ -240,21 +265,18 @@ pub fn build_preferences_window(
     {
         let parent_c = parent.clone();
         tile_spin.connect_value_changed(move |spin| {
-            parent_c.app_state().borrow_mut().settings.set_upscaler_tile_size(spin.value() as i32);
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_upscaler_tile_size(spin.value() as i32);
         });
     }
 
     let gpu_row = libadwaita::ActionRow::new();
     gpu_row.set_title("GPU ID");
     gpu_row.set_subtitle("-1 means auto");
-    let gpu_adj = gtk4::Adjustment::new(
-        settings.upscaler_gpu_id as f64,
-        -1.0,
-        16.0,
-        1.0,
-        1.0,
-        0.0,
-    );
+    let gpu_adj = gtk4::Adjustment::new(settings.upscaler_gpu_id as f64, -1.0, 16.0, 1.0, 1.0, 0.0);
     let gpu_spin = gtk4::SpinButton::new(Some(&gpu_adj), 1.0, 0);
     gpu_spin.set_numeric(true);
     gpu_row.add_suffix(&gpu_spin);
@@ -263,7 +285,11 @@ pub fn build_preferences_window(
     {
         let parent_c = parent.clone();
         gpu_spin.connect_value_changed(move |spin| {
-            parent_c.app_state().borrow_mut().settings.set_upscaler_gpu_id(spin.value() as i32);
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_upscaler_gpu_id(spin.value() as i32);
         });
     }
 
@@ -369,13 +395,13 @@ pub fn build_preferences_window(
         metadata_row.connect_active_notify(move |row| {
             let desired = row.is_active();
             if action_state_bool(&parent_c, "show-metadata") != Some(desired) {
-                gtk4::prelude::ActionGroupExt::activate_action(
-                    &parent_c,
-                    "show-metadata",
-                    None,
-                );
+                gtk4::prelude::ActionGroupExt::activate_action(&parent_c, "show-metadata", None);
             }
-            parent_c.app_state().borrow_mut().settings.set_metadata_visible(desired);
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_metadata_visible(desired);
         });
     }
 
@@ -391,7 +417,11 @@ pub fn build_preferences_window(
     {
         let parent_c = parent.clone();
         cache_spin.connect_value_changed(move |spin| {
-            parent_c.app_state().borrow_mut().settings.set_thumbnail_cache_max(spin.value_as_int());
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_thumbnail_cache_max(spin.value_as_int());
         });
     }
 

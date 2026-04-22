@@ -112,12 +112,12 @@ impl AppSettings {
             "webp" => "webp".to_string(),
             _ => "auto".to_string(),
         };
-        let upscaler_compression_mode =
-            match settings.string("upscaler-compression-mode").as_str() {
-                "lossy" => "lossy".to_string(),
-                "lossless" => "lossless".to_string(),
-                _ => "auto".to_string(),
-            };
+        let upscaler_compression_mode = match settings.string("upscaler-compression-mode").as_str()
+        {
+            "lossy" => "lossy".to_string(),
+            "lossless" => "lossless".to_string(),
+            _ => "auto".to_string(),
+        };
         let upscaler_quality = settings.int("upscaler-quality").clamp(50, 100);
         let upscaler_tile_size = settings.int("upscaler-tile-size").clamp(0, 4096);
         let upscaler_gpu_id = settings.int("upscaler-gpu-id").clamp(-1, 16);
@@ -341,10 +341,9 @@ impl AppSettings {
             "lossless" => "lossless".to_string(),
             _ => "auto".to_string(),
         };
-        let _ = self.settings.set_string(
-            "upscaler-compression-mode",
-            &self.upscaler_compression_mode,
-        );
+        let _ = self
+            .settings
+            .set_string("upscaler-compression-mode", &self.upscaler_compression_mode);
     }
 
     pub fn set_upscaler_quality(&mut self, value: i32) {

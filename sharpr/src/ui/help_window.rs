@@ -1,5 +1,5 @@
-use gtk4::{gio, glib};
 use gtk4::prelude::*;
+use gtk4::{gio, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 
@@ -95,7 +95,13 @@ fn replace_delimited(input: &str, delim: &str, open: &str, close: &str) -> Strin
     result
 }
 
-fn add_label(container: &gtk4::Box, markup: &str, css_classes: &[&str], margin_top: i32, margin_bottom: i32) {
+fn add_label(
+    container: &gtk4::Box,
+    markup: &str,
+    css_classes: &[&str],
+    margin_top: i32,
+    margin_bottom: i32,
+) {
     let label = gtk4::Label::new(None);
     label.set_markup(markup);
     label.set_halign(gtk4::Align::Start);

@@ -121,15 +121,15 @@ fn run_onnx_job(
         image::DynamicImage::ImageRgb8(upscaled)
     } else {
         use image::imageops::FilterType;
-        image::DynamicImage::ImageRgb8(upscaled)
-            .resize_exact(target_w, target_h, FilterType::Lanczos3)
+        image::DynamicImage::ImageRgb8(upscaled).resize_exact(
+            target_w,
+            target_h,
+            FilterType::Lanczos3,
+        )
     };
 
-    let target_format = UpscaleRunner::select_output_format(
-        &input,
-        config.output_format,
-        config.compression_mode,
-    );
+    let target_format =
+        UpscaleRunner::select_output_format(&input, config.output_format, config.compression_mode);
 
     match save_image(
         final_image,

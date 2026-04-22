@@ -106,7 +106,7 @@ impl LocalTagger {
         let resized = image::imageops::resize(&img, 224, 224, FilterType::Triangle);
 
         let means = [0.485f32, 0.456, 0.406];
-        let stds  = [0.229f32, 0.224, 0.225];
+        let stds = [0.229f32, 0.224, 0.225];
         let mut tensor = tract_ndarray::Array4::<f32>::zeros((1, 3, 224, 224));
 
         for y in 0..224usize {

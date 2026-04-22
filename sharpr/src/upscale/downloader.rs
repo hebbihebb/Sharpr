@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 
-use crate::upscale::{OnnxUpscaleModel, backends::onnx::OnnxBackend};
+use crate::upscale::{backends::onnx::OnnxBackend, OnnxUpscaleModel};
 
 pub enum DownloadEvent {
     Progress(f32),
@@ -28,7 +28,9 @@ fn run_download(model: OnnxUpscaleModel, tx: async_channel::Sender<DownloadEvent
 
     if let Some(dir) = dest.parent() {
         if let Err(e) = std::fs::create_dir_all(dir) {
-            send(DownloadEvent::Failed(format!("Cannot create models dir: {e}")));
+            send(DownloadEvent::Failed(format!(
+                "Cannot create models dir: {e}"
+            )));
             return;
         }
     }
@@ -36,7 +38,9 @@ fn run_download(model: OnnxUpscaleModel, tx: async_channel::Sender<DownloadEvent
     let response = match ureq::get(info.download_url).call() {
         Ok(r) => r,
         Err(e) => {
-            send(DownloadEvent::Failed(format!("Download request failed: {e}")));
+            send(DownloadEvent::Failed(format!(
+                "Download request failed: {e}"
+            )));
             return;
         }
     };
@@ -49,7 +53,9 @@ fn run_download(model: OnnxUpscaleModel, tx: async_channel::Sender<DownloadEvent
     let mut file = match std::fs::File::create(&tmp) {
         Ok(f) => f,
         Err(e) => {
-            send(DownloadEvent::Failed(format!("Cannot create temp file: {e}")));
+            send(DownloadEvent::Failed(format!(
+                "Cannot create temp file: {e}"
+            )));
             return;
         }
     };
@@ -84,7 +90,9 @@ fn run_download(model: OnnxUpscaleModel, tx: async_channel::Sender<DownloadEvent
 
     if let Err(e) = std::fs::rename(&tmp, &dest) {
         let _ = std::fs::remove_file(&tmp);
-        send(DownloadEvent::Failed(format!("Failed to finalise model file: {e}")));
+        send(DownloadEvent::Failed(format!(
+            "Failed to finalise model file: {e}"
+        )));
         return;
     }
 

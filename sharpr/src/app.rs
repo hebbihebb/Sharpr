@@ -129,10 +129,7 @@ mod imp {
                             "tract-onnx — Pure-Rust ONNX inference",
                         ],
                     );
-                    dialog.add_credit_section(
-                        Some("AI Upscaling"),
-                        &["RealESRGAN-NCNN-Vulkan"],
-                    );
+                    dialog.add_credit_section(Some("AI Upscaling"), &["RealESRGAN-NCNN-Vulkan"]);
                     if let Some(win) = app.active_window() {
                         dialog.present(Some(&win));
                     }

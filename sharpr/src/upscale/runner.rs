@@ -119,7 +119,9 @@ fn run_subprocess(
     let mut child = match command.stderr(Stdio::piped()).stdout(Stdio::null()).spawn() {
         Ok(c) => c,
         Err(e) => {
-            send(UpscaleEvent::Failed(format!("Failed to start upscaler: {e}")));
+            send(UpscaleEvent::Failed(format!(
+                "Failed to start upscaler: {e}"
+            )));
             return;
         }
     };
@@ -180,13 +182,12 @@ fn finalize_output(
         .decode()
         .map_err(|err| format!("failed to decode intermediate output: {err}"))?;
 
-    let final_image = if intermediate_image.width() == target_w
-        && intermediate_image.height() == target_h
-    {
-        intermediate_image
-    } else {
-        intermediate_image.resize_exact(target_w, target_h, FilterType::Lanczos3)
-    };
+    let final_image =
+        if intermediate_image.width() == target_w && intermediate_image.height() == target_h {
+            intermediate_image
+        } else {
+            intermediate_image.resize_exact(target_w, target_h, FilterType::Lanczos3)
+        };
 
     let result = save_image(
         final_image,

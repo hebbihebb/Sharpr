@@ -22,6 +22,7 @@ type SearchDismissedCallback = Box<dyn Fn() + 'static>;
 type TrashRequestedCallback = Box<dyn Fn(std::path::PathBuf) + 'static>;
 type AddToCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type RemoveFromCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
+type SortOrderChangedCallback = Box<dyn Fn(SortOrder) + 'static>;
 
 const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
 const BUFFER_ROWS: u32 = 2000;
@@ -49,7 +50,7 @@ mod imp {
         pub add_to_collection_requested_cb: RefCell<Option<AddToCollectionRequestedCallback>>,
         pub remove_from_collection_requested_cb:
             RefCell<Option<RemoveFromCollectionRequestedCallback>>,
-        pub sort_order_changed_cb: RefCell<Option<Box<dyn Fn(SortOrder)>>>,
+        pub sort_order_changed_cb: RefCell<Option<SortOrderChangedCallback>>,
         pub sort_btn: RefCell<Option<gtk4::MenuButton>>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub visible_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
@@ -298,8 +299,7 @@ impl FilmstripPane {
             add_to_collection_button.set_halign(gtk4::Align::Fill);
             popover_box.append(&add_to_collection_button);
 
-            let remove_from_collection_button =
-                gtk4::Button::with_label("Remove from Collection");
+            let remove_from_collection_button = gtk4::Button::with_label("Remove from Collection");
             remove_from_collection_button.set_halign(gtk4::Align::Fill);
             remove_from_collection_button.set_visible(false);
             popover_box.append(&remove_from_collection_button);
@@ -366,15 +366,9 @@ impl FilmstripPane {
             let list_item_weak = list_item.downgrade();
             let widget_weak_drag = widget_weak_setup.clone();
             drag_source.connect_prepare(move |_, _, _| {
-                let Some(list_item) = list_item_weak.upgrade() else {
-                    return None;
-                };
-                let Some(dragged_path) = list_item_path(&list_item) else {
-                    return None;
-                };
-                let Some(widget) = widget_weak_drag.upgrade() else {
-                    return None;
-                };
+                let list_item = list_item_weak.upgrade()?;
+                let dragged_path = list_item_path(&list_item)?;
+                let widget = widget_weak_drag.upgrade()?;
                 let paths = collection_action_paths(&widget, &dragged_path);
                 let paths_str: String = paths
                     .iter()
@@ -481,10 +475,7 @@ impl FilmstripPane {
                         .as_ref()
                         .map(|s| {
                             let s = s.borrow();
-                            (
-                                s.library.current_folder.is_none(),
-                                s.active_collection,
-                            )
+                            (s.library.current_folder.is_none(), s.active_collection)
                         })
                         .unwrap_or((false, None));
                     if let Some(btn) = trash_button_weak.upgrade() {

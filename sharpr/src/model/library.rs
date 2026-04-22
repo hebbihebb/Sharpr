@@ -514,7 +514,8 @@ impl LibraryManager {
     }
 
     pub fn apply_cached_image_data(&mut self, path: &Path, cached: CachedImageData) {
-        self.metadata_cache.insert(path.to_path_buf(), cached.clone());
+        self.metadata_cache
+            .insert(path.to_path_buf(), cached.clone());
         if let Some(index) = self.path_to_index.get(path).copied() {
             if let Some(entry) = self.entry_at(index) {
                 entry.set_file_size(cached.file_size);
@@ -785,7 +786,7 @@ fn path_sort_key(a: &Path, b: &Path) -> std::cmp::Ordering {
         .cmp(&b.to_string_lossy().to_lowercase())
 }
 
-pub fn sort_raw_entries(entries: &mut Vec<RawImageEntry>, order: SortOrder) {
+pub fn sort_raw_entries(entries: &mut [RawImageEntry], order: SortOrder) {
     match order {
         SortOrder::Name => {}
         SortOrder::DateModified => entries.sort_by(|a, b| b.modified.cmp(&a.modified)),

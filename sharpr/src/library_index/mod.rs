@@ -54,8 +54,8 @@ impl LibraryIndex {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("sharpr");
         std::fs::create_dir_all(&dir).ok();
-        let manager = SqliteConnectionManager::file(dir.join("library-index.sqlite"))
-            .with_init(|conn| {
+        let manager =
+            SqliteConnectionManager::file(dir.join("library-index.sqlite")).with_init(|conn| {
                 configure_connection(conn)?;
                 Ok(())
             });
@@ -184,13 +184,13 @@ impl LibraryIndex {
             let current_set: HashSet<String> =
                 entries.iter().map(|e| path_to_string(&e.path)).collect();
             let db_paths: Vec<String> = {
-                let mut stmt =
-                    tx.prepare("SELECT path FROM images WHERE folder_path = ?1")?;
-                let rows = stmt.query_map(params![path_to_string(folder)], |row| {
-                    row.get::<_, String>(0)
-                })?
-                .filter_map(Result::ok)
-                .collect();
+                let mut stmt = tx.prepare("SELECT path FROM images WHERE folder_path = ?1")?;
+                let rows = stmt
+                    .query_map(params![path_to_string(folder)], |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .filter_map(Result::ok)
+                    .collect();
                 rows
             };
             let stale: Vec<_> = db_paths
@@ -207,12 +207,8 @@ impl LibraryIndex {
 
         let order = match sort_order {
             SortOrder::Name => "filename COLLATE NOCASE ASC",
-            SortOrder::DateModified => {
-                "modified_secs DESC NULLS LAST, filename COLLATE NOCASE ASC"
-            }
-            SortOrder::FileType => {
-                "extension COLLATE NOCASE ASC, filename COLLATE NOCASE ASC"
-            }
+            SortOrder::DateModified => "modified_secs DESC NULLS LAST, filename COLLATE NOCASE ASC",
+            SortOrder::FileType => "extension COLLATE NOCASE ASC, filename COLLATE NOCASE ASC",
         };
         let rows: Vec<IndexedImage> = {
             let sql = format!(
@@ -263,17 +259,17 @@ impl LibraryIndex {
             .unwrap_or(false);
         let (metadata_status, phash_status): (Cow<'static, str>, Cow<'static, str>) =
             match (existing, unchanged) {
-            (Some(_), true) => (
-                current_status(&conn, &info.path, "metadata_status")?
-                    .map(Cow::Owned)
-                    .unwrap_or(Cow::Borrowed("missing")),
-                current_status(&conn, &info.path, "phash_status")?
-                    .map(Cow::Owned)
-                    .unwrap_or(Cow::Borrowed("missing")),
-            ),
-            (Some(_), false) => (Cow::Borrowed("missing"), Cow::Borrowed("stale")),
-            (None, _) => (Cow::Borrowed("missing"), Cow::Borrowed("missing")),
-        };
+                (Some(_), true) => (
+                    current_status(&conn, &info.path, "metadata_status")?
+                        .map(Cow::Owned)
+                        .unwrap_or(Cow::Borrowed("missing")),
+                    current_status(&conn, &info.path, "phash_status")?
+                        .map(Cow::Owned)
+                        .unwrap_or(Cow::Borrowed("missing")),
+                ),
+                (Some(_), false) => (Cow::Borrowed("missing"), Cow::Borrowed("stale")),
+                (None, _) => (Cow::Borrowed("missing"), Cow::Borrowed("missing")),
+            };
         conn.execute(
             "
             INSERT INTO images (
@@ -884,13 +880,8 @@ mod tests {
             .unwrap();
         idx.upsert_image_basic(&make_info("/photos", "keep.jpg", 200, None))
             .unwrap();
-        idx.update_image_metadata(
-            Path::new("/photos/keep.jpg"),
-            800,
-            600,
-            QualityClass::Good,
-        )
-        .unwrap();
+        idx.update_image_metadata(Path::new("/photos/keep.jpg"), 800, 600, QualityClass::Good)
+            .unwrap();
 
         // Reconcile with keep.jpg (unchanged) and new.jpg; old.jpg is gone.
         let entries = vec![
@@ -946,13 +937,8 @@ mod tests {
         let idx = LibraryIndex::open_in_memory().unwrap();
         idx.upsert_image_basic(&make_info("/ignored", "a.jpg", 100, None))
             .unwrap();
-        idx.update_image_metadata(
-            Path::new("/ignored/a.jpg"),
-            1920,
-            1080,
-            QualityClass::Good,
-        )
-        .unwrap();
+        idx.update_image_metadata(Path::new("/ignored/a.jpg"), 1920, 1080, QualityClass::Good)
+            .unwrap();
         idx.set_folder_ignored(Path::new("/ignored"), true).unwrap();
 
         let good = idx.images_by_quality(QualityClass::Good).unwrap();
@@ -990,7 +976,10 @@ mod tests {
             .images_in_folder(Path::new("/photos"), SortOrder::Name)
             .unwrap();
         assert_eq!(
-            by_name.iter().map(|r| r.filename.as_str()).collect::<Vec<_>>(),
+            by_name
+                .iter()
+                .map(|r| r.filename.as_str())
+                .collect::<Vec<_>>(),
             vec!["a.jpg", "b.jpg", "c.png"]
         );
 

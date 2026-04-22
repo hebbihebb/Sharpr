@@ -6,10 +6,19 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 pub enum OpEvent {
-    Added { id: u64, title: String },
-    Progress { id: u64, fraction: Option<f32> },
+    Added {
+        id: u64,
+        title: String,
+    },
+    Progress {
+        id: u64,
+        fraction: Option<f32>,
+    },
     Completed(u64),
-    Failed { id: u64, msg: String },
+    Failed {
+        id: u64,
+        msg: String,
+    },
     #[allow(dead_code)]
     Dismissed(u64),
 }
@@ -23,9 +32,10 @@ pub struct OpHandle {
 
 impl OpHandle {
     pub fn progress(&self, fraction: Option<f32>) {
-        let _ = self
-            .tx
-            .send_blocking(OpEvent::Progress { id: self.id, fraction });
+        let _ = self.tx.send_blocking(OpEvent::Progress {
+            id: self.id,
+            fraction,
+        });
     }
 
     pub fn complete(self) {

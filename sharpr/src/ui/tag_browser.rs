@@ -205,7 +205,6 @@ impl TagBrowser {
     }
 }
 
-
 fn install_css() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {

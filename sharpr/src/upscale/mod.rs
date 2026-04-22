@@ -84,7 +84,6 @@ impl UpscaleCompressionMode {
             _ => Self::Auto,
         }
     }
-
 }
 
 #[derive(Clone, Copy, Debug)]

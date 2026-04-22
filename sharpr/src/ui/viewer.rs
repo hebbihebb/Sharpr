@@ -1467,9 +1467,7 @@ impl ViewerPane {
             UpscaleBackendKind::Onnx => Box::new(OnnxBackend::new(
                 OnnxUpscaleModel::from_settings(&settings.onnx_upscale_model),
             )),
-            UpscaleBackendKind::ComfyUi => {
-                Box::new(ComfyUiBackend::new(&settings.comfyui_url))
-            }
+            UpscaleBackendKind::ComfyUi => Box::new(ComfyUiBackend::new(&settings.comfyui_url)),
         };
         if selected_dims == (0, 0) {
             let meta = crate::metadata::ImageMetadata::load(&path);
