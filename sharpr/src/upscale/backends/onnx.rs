@@ -66,13 +66,24 @@ fn run_onnx_job(
 
     send(UpscaleEvent::Progress(None));
 
-    let img = match image::open(&input) {
-        Ok(img) => img.to_rgb8(),
+    let decoded = match image::open(&input) {
+        Ok(img) => img,
         Err(e) => {
             send(UpscaleEvent::Failed(format!("Failed to open input: {e}")));
             return;
         }
     };
+    let alpha_plane = if decoded.color().has_alpha() {
+        let rgba = decoded.to_rgba8();
+        let mut alpha = image::GrayImage::new(rgba.width(), rgba.height());
+        for (x, y, pixel) in rgba.enumerate_pixels() {
+            alpha.put_pixel(x, y, image::Luma([pixel[3]]));
+        }
+        Some(alpha)
+    } else {
+        None
+    };
+    let img = decoded.to_rgb8();
 
     // Load ORT session once; all tiles reuse it.
     let mut session = match load_session(&model_path) {
@@ -117,15 +128,28 @@ fn run_onnx_job(
     let target_w = input_w.saturating_mul(config.requested_scale);
     let target_h = input_h.saturating_mul(config.requested_scale);
 
-    let final_image = if upscaled.width() == target_w && upscaled.height() == target_h {
-        image::DynamicImage::ImageRgb8(upscaled)
+    use image::imageops::FilterType;
+    let final_rgb = if upscaled.width() == target_w && upscaled.height() == target_h {
+        upscaled
     } else {
-        use image::imageops::FilterType;
-        image::DynamicImage::ImageRgb8(upscaled).resize_exact(
-            target_w,
-            target_h,
-            FilterType::Lanczos3,
-        )
+        image::DynamicImage::ImageRgb8(upscaled)
+            .resize_exact(target_w, target_h, FilterType::Lanczos3)
+            .to_rgb8()
+    };
+
+    let final_image = if let Some(alpha) = alpha_plane {
+        let alpha = image::imageops::resize(&alpha, target_w, target_h, FilterType::Lanczos3);
+        let mut rgba = image::RgbaImage::new(target_w, target_h);
+        for (x, y, pixel) in final_rgb.enumerate_pixels() {
+            rgba.put_pixel(
+                x,
+                y,
+                image::Rgba([pixel[0], pixel[1], pixel[2], alpha.get_pixel(x, y)[0]]),
+            );
+        }
+        image::DynamicImage::ImageRgba8(rgba)
+    } else {
+        image::DynamicImage::ImageRgb8(final_rgb)
     };
 
     let target_format =

@@ -132,7 +132,11 @@ impl ComfyUiClient {
 
     /// Download the output image from the ComfyUI server.
     pub fn download_output(&self, filename: &str, dest: &Path) -> Result<(), String> {
-        let url = format!("{}/view?filename={}", self.base_url, filename);
+        let url = format!(
+            "{}/view?filename={}",
+            self.base_url,
+            urlencoding::encode(filename)
+        );
         let resp = ureq::get(&url)
             .call()
             .map_err(|e| format!("Download failed: {e}"))?;
@@ -164,7 +168,7 @@ impl UpscaleBackend for ComfyUiBackend {
         self: Box<Self>,
         input: PathBuf,
         output: PathBuf,
-        _config: UpscaleJobConfig,
+        config: UpscaleJobConfig,
     ) -> async_channel::Receiver<UpscaleEvent> {
         let (tx, rx) = async_channel::bounded(4);
         let client = self.client;
@@ -202,7 +206,7 @@ impl UpscaleBackend for ComfyUiBackend {
             // Patch model
             if let Some(node) = workflow.get_mut("3") {
                 if let Some(inputs) = node.get_mut("inputs") {
-                    let model_name = match _config.model {
+                    let model_name = match config.model {
                         crate::upscale::UpscaleModel::Standard => "RealESRGAN_x4plus.pth",
                         crate::upscale::UpscaleModel::Anime => "RealESRGAN_x4plus_anime.pth",
                     };

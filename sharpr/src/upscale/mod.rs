@@ -189,12 +189,11 @@ impl OnnxUpscaleModel {
             },
             Self::Swin2srRealX4 => OnnxModelInfo {
                 filename: "swin2sr_real_x4.onnx",
-                // Placeholder URL — update when onnx-community repo is confirmed.
-                download_url: "https://huggingface.co/Xenova/swin2SR-compressed-sr-x4-48/resolve/main/onnx/model.onnx",
-                download_size_mb: 55,
+                download_url: "https://huggingface.co/Xenova/swin2SR-realworld-sr-x4-64-bsrgan-psnr/resolve/main/onnx/model.onnx",
+                download_size_mb: 53,
                 native_scale: 4,
                 window_size: 64,
-                display_name: "Realworld ×4  —  55 MB",
+                display_name: "Realworld ×4  —  53 MB",
             },
         }
     }
