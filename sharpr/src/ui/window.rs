@@ -2242,8 +2242,10 @@ impl SharprWindow {
                 let collections = idx.list_collections().unwrap_or_default();
 
                 let dialog = libadwaita::AlertDialog::new(Some("Add to Collection"), None);
-                dialog.add_response("cancel", "Cancel");
-                dialog.set_close_response("cancel");
+                dialog.add_response("done", "Done");
+                dialog.set_default_response(Some("done"));
+                dialog.set_close_response("done");
+                dialog.set_response_appearance("done", libadwaita::ResponseAppearance::Suggested);
 
                 let list_box = gtk4::ListBox::new();
                 list_box.add_css_class("boxed-list");
@@ -2283,6 +2285,18 @@ impl SharprWindow {
                 let extra = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
                 extra.set_margin_top(6);
                 extra.append(&scroll);
+                let done_shortcut = gtk4::EventControllerKey::new();
+                let dialog_weak = dialog.downgrade();
+                done_shortcut.connect_key_pressed(move |_, key, _, _| {
+                    if key == gtk4::gdk::Key::Return || key == gtk4::gdk::Key::KP_Enter {
+                        if let Some(dialog) = dialog_weak.upgrade() {
+                            dialog.close();
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                    glib::Propagation::Proceed
+                });
+                extra.add_controller(done_shortcut);
                 dialog.set_extra_child(Some(&extra));
 
                 let paths_c = paths.clone();
@@ -2313,16 +2327,11 @@ impl SharprWindow {
                         eb.set_margin_top(6);
                         eb.append(&entry);
                         new_dialog.set_extra_child(Some(&eb));
-                        let entry_c = entry.clone();
                         let paths_cc = paths_c.clone();
                         let state_dd = state_d.clone();
                         let toast_dd = toast_d.clone();
                         let refresh_dd = refresh_d.clone();
-                        new_dialog.connect_response(None, move |_, response| {
-                            if response != "create" {
-                                return;
-                            }
-                            let name = entry_c.text().to_string();
+                        let create_collection = Rc::new(move |name: String| {
                             if let Some(idx) = state_dd.borrow().library_index.clone() {
                                 let started = std::time::Instant::now();
                                 match idx.create_collection(&name) {
@@ -2363,7 +2372,22 @@ impl SharprWindow {
                                 }
                             }
                         });
+                        let entry_c = entry.clone();
+                        let create_c = create_collection.clone();
+                        new_dialog.connect_response(None, move |_, response| {
+                            if response == "create" {
+                                create_c(entry_c.text().to_string());
+                            }
+                        });
+                        let new_dialog_weak = new_dialog.downgrade();
+                        entry.connect_activate(move |entry| {
+                            create_collection(entry.text().to_string());
+                            if let Some(dialog) = new_dialog_weak.upgrade() {
+                                dialog.close();
+                            }
+                        });
                         new_dialog.present(Some(&win2));
+                        entry.grab_focus();
                         return;
                     }
                     let id = coll_id.unwrap();
