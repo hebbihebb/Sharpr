@@ -2,6 +2,9 @@
 DesignDocs/
 .claude/
 .codex
+.codex/
+.codex-*
+codex-*
 CLAUDE.md
 sharpr-support/
 sharpr/DEVELOPMENT.md
