@@ -275,6 +275,79 @@ pub fn build_preferences_window(
     upscaler_group.add(&tile_row);
     upscaler_group.add(&gpu_row);
     upscaler_page.add(&upscaler_group);
+
+    let comfy_group = libadwaita::PreferencesGroup::new();
+    comfy_group.set_title("ComfyUI (External Server)");
+
+    let comfy_enabled_row = libadwaita::SwitchRow::new();
+    comfy_enabled_row.set_title("Enable ComfyUI backend");
+    comfy_enabled_row.set_subtitle("Requires an external ComfyUI server running with API access");
+    comfy_enabled_row.set_active(settings.comfyui_enabled);
+
+    {
+        let parent_c = parent.clone();
+        comfy_enabled_row.connect_active_notify(move |row| {
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_comfyui_enabled(row.is_active());
+        });
+    }
+
+    let comfy_url_row = libadwaita::EntryRow::new();
+    comfy_url_row.set_title("Server URL");
+    comfy_url_row.set_text(&settings.comfyui_url);
+
+    {
+        let parent_c = parent.clone();
+        comfy_url_row.connect_apply(move |row| {
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_comfyui_url(row.text().as_str());
+        });
+    }
+
+    let test_row = libadwaita::ActionRow::new();
+    let test_button = gtk4::Button::with_label("Test Connection");
+    test_row.add_suffix(&test_button);
+
+    {
+        let parent_c = parent.clone();
+        let url_row_c = comfy_url_row.clone();
+        test_button.connect_clicked(move |_| {
+            let url = url_row_c.text().to_string();
+            let client = crate::upscale::backends::comfyui::ComfyUiClient::new(url);
+            let parent_inner = parent_c.clone();
+
+            let (tx, rx) = async_channel::bounded(1);
+            std::thread::spawn(move || {
+                let result = client.health_check();
+                let _ = tx.send_blocking(result);
+            });
+
+            glib::MainContext::default().spawn_local(async move {
+                if let Ok(result) = rx.recv().await {
+                    let body = match result {
+                        Ok(_) => "ComfyUI is reachable!".to_string(),
+                        Err(e) => e,
+                    };
+
+                    let toast = libadwaita::Toast::new(&body);
+                    toast.set_timeout(3);
+                    parent_inner.add_toast(toast);
+                }
+            });
+        });
+    }
+
+    comfy_group.add(&comfy_enabled_row);
+    comfy_group.add(&comfy_url_row);
+    comfy_group.add(&test_row);
+    upscaler_page.add(&comfy_group);
+
     window.add(&upscaler_page);
 
     let appearance_page = libadwaita::PreferencesPage::new();
