@@ -25,7 +25,10 @@ use crate::ui::preferences::build_preferences_window;
 use crate::ui::sidebar::SidebarPane;
 use crate::ui::tag_browser::TagBrowser;
 use crate::ui::viewer::{ViewerPane, ZoomMode};
-use crate::upscale::{UpscaleDetector, UpscaleModel};
+use crate::upscale::{
+    downloader::{self, DownloadEvent},
+    OnnxUpscaleModel, UpscaleBackendKind, UpscaleDetector, UpscaleModel,
+};
 use crate::tags::smart::SmartModel;
 
 // ---------------------------------------------------------------------------
@@ -2884,7 +2887,9 @@ impl SharprWindow {
             let action_weak = upscale_action.downgrade();
             upscale_action.connect_activate(move |_action, _| {
                 let Some(viewer) = viewer_weak.upgrade() else { return };
-                let has_binary = {
+
+                // For CLI, lazily detect the binary once.
+                let (saved_backend, saved_cli_model, saved_onnx_model, comfyui_enabled, ops_queue) = {
                     let mut st = state_c.borrow_mut();
                     if st.upscale_binary.is_none() {
                         st.upscale_binary = AppSettings::load()
@@ -2894,9 +2899,19 @@ impl SharprWindow {
                     if st.upscale_binary.is_none() {
                         st.upscale_binary = UpscaleDetector::find_realesrgan();
                     }
-                    st.upscale_binary.is_some()
+                    (
+                        st.settings.upscale_backend.clone(),
+                        st.settings.upscaler_default_model.clone(),
+                        st.settings.onnx_upscale_model.clone(),
+                        st.settings.comfyui_enabled,
+                        st.ops.clone(),
+                    )
                 };
-                if !has_binary {
+
+                let backend_kind = UpscaleBackendKind::from_settings(&saved_backend);
+                if backend_kind == UpscaleBackendKind::Cli
+                    && state_c.borrow().upscale_binary.is_none()
+                {
                     banner_c.set_title(
                         "AI upscaling requires a supported Vulkan backend such as upscayl-bin or realesrgan-ncnn-vulkan.",
                     );
@@ -2904,6 +2919,7 @@ impl SharprWindow {
                     return;
                 }
                 banner_c.set_revealed(false);
+
                 let path = state_c
                     .borrow()
                     .library
@@ -2924,32 +2940,186 @@ impl SharprWindow {
                     content.set_margin_top(6);
                     content.set_margin_bottom(6);
 
-                    let model_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-                    let model_label = gtk4::Label::new(Some("Model"));
-                    model_label.set_halign(gtk4::Align::Start);
-                    model_box.append(&model_label);
+                    // ── Backend selection ────────────────────────────────────
+                    let backend_label = gtk4::Label::new(Some("Backend"));
+                    backend_label.set_halign(gtk4::Align::Start);
+                    content.append(&backend_label);
 
-                    let saved_model =
-                        state_c.borrow().settings.upscaler_default_model.clone();
+                    let cli_btn = gtk4::CheckButton::with_label(
+                        "CLI Upscaler (realesrgan, GPU-accelerated)",
+                    );
+                    let onnx_btn = gtk4::CheckButton::with_label(
+                        "ONNX – Swin2SR (CPU/GPU, no binary needed)",
+                    );
+                    onnx_btn.set_group(Some(&cli_btn));
+                    let comfyui_btn = gtk4::CheckButton::with_label(
+                        "ComfyUI – local server (coming soon)",
+                    );
+                    comfyui_btn.set_group(Some(&cli_btn));
+                    comfyui_btn.set_sensitive(comfyui_enabled);
+                    comfyui_btn.set_visible(comfyui_enabled);
+                    if backend_kind == UpscaleBackendKind::Onnx {
+                        onnx_btn.set_active(true);
+                    } else if backend_kind == UpscaleBackendKind::ComfyUi && comfyui_enabled {
+                        comfyui_btn.set_active(true);
+                    } else {
+                        cli_btn.set_active(true);
+                    }
+                    content.append(&cli_btn);
+                    content.append(&onnx_btn);
+                    content.append(&comfyui_btn);
+
+                    // ── Per-backend model sections (stack) ───────────────────
+                    let backend_stack = gtk4::Stack::new();
+                    backend_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+                    backend_stack.set_transition_duration(120);
+
+                    // CLI page
+                    let cli_page = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+                    let cli_model_label = gtk4::Label::new(Some("CLI Model"));
+                    cli_model_label.set_halign(gtk4::Align::Start);
                     let standard_btn =
-                        gtk4::CheckButton::with_label("Standard - best for photos");
+                        gtk4::CheckButton::with_label("Standard – best for photos");
                     let anime_btn =
-                        gtk4::CheckButton::with_label("Anime / Art - best for illustration");
+                        gtk4::CheckButton::with_label("Anime / Art – best for illustration");
                     anime_btn.set_group(Some(&standard_btn));
-                    if saved_model == "anime" {
+                    if saved_cli_model == "anime" {
                         anime_btn.set_active(true);
                     } else {
                         standard_btn.set_active(true);
                     }
-                    model_box.append(&standard_btn);
-                    model_box.append(&anime_btn);
-                    content.append(&model_box);
+                    cli_page.append(&cli_model_label);
+                    cli_page.append(&standard_btn);
+                    cli_page.append(&anime_btn);
+                    backend_stack.add_named(&cli_page, Some("cli"));
 
+                    // ONNX page
+                    let onnx_page = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+                    let onnx_model_label = gtk4::Label::new(Some("ONNX Model"));
+                    onnx_model_label.set_halign(gtk4::Align::Start);
+
+                    let onnx_variants = [
+                        OnnxUpscaleModel::Swin2srLightweightX2,
+                        OnnxUpscaleModel::Swin2srCompressedX4,
+                        OnnxUpscaleModel::Swin2srRealX4,
+                    ];
+                    let onnx_labels: Vec<&str> =
+                        onnx_variants.iter().map(|m| m.info().display_name).collect();
+                    let onnx_dropdown = gtk4::DropDown::from_strings(&onnx_labels);
+                    let saved_onnx = OnnxUpscaleModel::from_settings(&saved_onnx_model);
+                    let onnx_selected_idx = onnx_variants
+                        .iter()
+                        .position(|&m| m == saved_onnx)
+                        .unwrap_or(0) as u32;
+                    onnx_dropdown.set_selected(onnx_selected_idx);
+
+                    // Download row — visible when the selected model file is absent.
+                    let download_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+                    download_row.set_halign(gtk4::Align::Start);
+                    let download_btn = gtk4::Button::new();
+                    let download_status = gtk4::Label::new(None);
+                    download_status.add_css_class("dim-label");
+
+                    let refresh_download_row = {
+                        let download_btn = download_btn.clone();
+                        let download_status = download_status.clone();
+                        move |model: OnnxUpscaleModel| {
+                            use crate::upscale::backends::onnx::OnnxBackend;
+                            let present = OnnxBackend::model_path(model).exists();
+                            if present {
+                                download_btn.set_visible(false);
+                                download_status.set_text("Downloaded ✓");
+                            } else {
+                                let info = model.info();
+                                download_btn.set_label(&format!(
+                                    "Download ({} MB)",
+                                    info.download_size_mb
+                                ));
+                                download_btn.set_visible(true);
+                                download_status.set_text("");
+                            }
+                        }
+                    };
+                    refresh_download_row(onnx_variants[onnx_selected_idx as usize]);
+
+                    {
+                        let refresh = refresh_download_row.clone();
+                        onnx_dropdown.connect_selected_notify(move |dd| {
+                            let idx = dd.selected() as usize;
+                            if let Some(&m) = onnx_variants.get(idx) {
+                                refresh(m);
+                            }
+                        });
+                    }
+
+                    {
+                        let download_btn_c = download_btn.clone();
+                        let download_status_c = download_status.clone();
+                        let onnx_dropdown_c = onnx_dropdown.clone();
+                        let ops_queue_c = ops_queue.clone();
+                        download_btn.connect_clicked(move |btn| {
+                            let idx = onnx_dropdown_c.selected() as usize;
+                            let Some(&model) = onnx_variants.get(idx) else { return };
+                            btn.set_sensitive(false);
+                            download_status_c.set_text("Downloading…");
+                            let rx = downloader::download_model(model);
+                            let op = ops_queue_c.add(&format!(
+                                "Downloading {}",
+                                model.info().display_name
+                            ));
+                            let btn_weak = download_btn_c.downgrade();
+                            let status_weak = download_status_c.downgrade();
+                            glib::MainContext::default().spawn_local(async move {
+                                let mut op = Some(op);
+                                while let Ok(event) = rx.recv().await {
+                                    match event {
+                                        DownloadEvent::Progress(f) => {
+                                            if let Some(op) = op.as_ref() {
+                                                op.progress(Some(f));
+                                            }
+                                        }
+                                        DownloadEvent::Done => {
+                                            if let Some(op) = op.take() { op.complete(); }
+                                            if let Some(b) = btn_weak.upgrade() { b.set_visible(false); }
+                                            if let Some(s) = status_weak.upgrade() { s.set_text("Downloaded ✓"); }
+                                        }
+                                        DownloadEvent::Failed(msg) => {
+                                            if let Some(op) = op.take() { op.fail(msg.clone()); }
+                                            if let Some(b) = btn_weak.upgrade() { b.set_sensitive(true); }
+                                            if let Some(s) = status_weak.upgrade() {
+                                                s.set_text(&format!("Failed: {msg}"));
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        });
+                    }
+
+                    download_row.append(&download_btn);
+                    download_row.append(&download_status);
+                    onnx_page.append(&onnx_model_label);
+                    onnx_page.append(&onnx_dropdown);
+                    onnx_page.append(&download_row);
+                    backend_stack.add_named(&onnx_page, Some("onnx"));
+
+                    {
+                        let stack_c = backend_stack.clone();
+                        onnx_btn.connect_toggled(move |btn| {
+                            stack_c.set_visible_child_name(if btn.is_active() { "onnx" } else { "cli" });
+                        });
+                    }
+                    backend_stack.set_visible_child_name(match backend_kind {
+                        UpscaleBackendKind::Onnx => "onnx",
+                        _ => "cli",
+                    });
+                    content.append(&backend_stack);
+
+                    // ── Scale ────────────────────────────────────────────────
                     let scale_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
                     let scale_label = gtk4::Label::new(Some("Scale"));
                     scale_label.set_halign(gtk4::Align::Start);
                     scale_box.append(&scale_label);
-
                     let scale_dropdown =
                         gtk4::DropDown::from_strings(&["Smart (auto)", "2×", "3×", "4×"]);
                     scale_dropdown.set_selected(0);
@@ -2960,6 +3130,7 @@ impl SharprWindow {
 
                     let viewer_weak_c = viewer_weak.clone();
                     let action_weak_c = action_weak.clone();
+                    let state_cc = state_c.clone();
                     dialog.choose(
                         &viewer,
                         None::<&gio::Cancellable>,
@@ -2973,9 +3144,29 @@ impl SharprWindow {
                             if let Some(action) = action_weak_c.upgrade() {
                                 action.set_enabled(false);
                             }
-                            // Proxy button bridges start_upscale's re-enable callback back
-                            // to the action: start insensitive so the true→false→true
-                            // transition fires the notify when the job finishes.
+
+                            // Persist backend + model choices.
+                            let chosen_backend = if onnx_btn.is_active() {
+                                UpscaleBackendKind::Onnx
+                            } else if comfyui_btn.is_active() {
+                                UpscaleBackendKind::ComfyUi
+                            } else {
+                                UpscaleBackendKind::Cli
+                            };
+                            let chosen_onnx_model = onnx_variants
+                                .get(onnx_dropdown.selected() as usize)
+                                .copied()
+                                .unwrap_or_default();
+                            {
+                                let mut st = state_cc.borrow_mut();
+                                st.settings.set_upscale_backend(chosen_backend.settings_key());
+                                st.settings
+                                    .set_onnx_upscale_model(chosen_onnx_model.settings_key());
+                                st.settings.set_upscaler_default_model(
+                                    if anime_btn.is_active() { "anime" } else { "standard" },
+                                );
+                            }
+
                             let proxy_btn = gtk4::Button::new();
                             let action_weak_c = action_weak_c.clone();
                             proxy_btn.connect_sensitive_notify(move |btn| {
@@ -2987,7 +3178,7 @@ impl SharprWindow {
                             });
                             proxy_btn.set_sensitive(false);
 
-                            let model = if anime_btn.is_active() {
+                            let cli_model = if anime_btn.is_active() {
                                 UpscaleModel::Anime
                             } else {
                                 UpscaleModel::Standard
@@ -2998,7 +3189,7 @@ impl SharprWindow {
                                 3 => 4,
                                 _ => 0,
                             };
-                            viewer.start_upscale(p.clone(), scale, model, proxy_btn);
+                            viewer.start_upscale(p.clone(), scale, cli_model, proxy_btn);
                         },
                     );
                 }

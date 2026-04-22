@@ -33,6 +33,14 @@ pub struct AppSettings {
     pub thumbnail_cache_max: i32,
     /// The smart tagger ONNX model to use.
     pub smart_tagger_model: String,
+    /// Active upscale backend: "cli", "onnx", or "comfyui".
+    pub upscale_backend: String,
+    /// ONNX upscale model: "swin2sr-compressed-x4" or "swin2sr-real-x4".
+    pub onnx_upscale_model: String,
+    /// Base URL of the local ComfyUI server.
+    pub comfyui_url: String,
+    /// Whether the ComfyUI backend option is shown in the upscale dialog.
+    pub comfyui_enabled: bool,
     settings: gio::Settings,
 }
 
@@ -52,6 +60,10 @@ impl std::fmt::Debug for AppSettings {
             .field("upscaler_tile_size", &self.upscaler_tile_size)
             .field("upscaler_gpu_id", &self.upscaler_gpu_id)
             .field("thumbnail_cache_max", &self.thumbnail_cache_max)
+            .field("upscale_backend", &self.upscale_backend)
+            .field("onnx_upscale_model", &self.onnx_upscale_model)
+            .field("comfyui_url", &self.comfyui_url)
+            .field("comfyui_enabled", &self.comfyui_enabled)
             .finish()
     }
 }
@@ -73,6 +85,10 @@ impl Default for AppSettings {
             upscaler_gpu_id: -1,
             thumbnail_cache_max: 500,
             smart_tagger_model: "resnet50-v1-7".into(),
+            upscale_backend: "cli".into(),
+            onnx_upscale_model: "swin2sr-lightweight-x2".into(),
+            comfyui_url: "http://127.0.0.1:8188".into(),
+            comfyui_enabled: false,
             settings: gio::Settings::new("io.github.hebbihebb.Sharpr"),
         }
     }
@@ -111,6 +127,24 @@ impl AppSettings {
             "resnet152-v1-7" => "resnet152-v1-7".to_string(),
             _ => "resnet50-v1-7".to_string(),
         };
+        let upscale_backend = match settings.string("upscale-backend").as_str() {
+            "onnx" => "onnx".to_string(),
+            _ => "cli".to_string(),
+        };
+        let onnx_upscale_model = match settings.string("onnx-upscale-model").as_str() {
+            "swin2sr-compressed-x4" => "swin2sr-compressed-x4".to_string(),
+            "swin2sr-real-x4" => "swin2sr-real-x4".to_string(),
+            _ => "swin2sr-lightweight-x2".to_string(),
+        };
+        let comfyui_url = {
+            let val = settings.string("comfyui-url");
+            if val.is_empty() {
+                "http://127.0.0.1:8188".to_string()
+            } else {
+                val.to_string()
+            }
+        };
+        let comfyui_enabled = settings.boolean("comfyui-enabled");
 
         Self {
             last_folder,
@@ -127,6 +161,10 @@ impl AppSettings {
             upscaler_gpu_id,
             thumbnail_cache_max,
             smart_tagger_model,
+            upscale_backend,
+            onnx_upscale_model,
+            comfyui_url,
+            comfyui_enabled,
             settings,
         }
     }
@@ -199,6 +237,54 @@ impl AppSettings {
             _ => "resnet50-v1-7",
         };
         let _ = self.settings.set_string("smart-tagger-model", model);
+        let backend = match self.upscale_backend.as_str() {
+            "onnx" => "onnx",
+            "comfyui" => "comfyui",
+            _ => "cli",
+        };
+        let _ = self.settings.set_string("upscale-backend", backend);
+        let onnx_model = match self.onnx_upscale_model.as_str() {
+            "swin2sr-compressed-x4" => "swin2sr-compressed-x4",
+            "swin2sr-real-x4" => "swin2sr-real-x4",
+            _ => "swin2sr-lightweight-x2",
+        };
+        let _ = self.settings.set_string("onnx-upscale-model", onnx_model);
+        let _ = self.settings.set_string("comfyui-url", &self.comfyui_url);
+        let _ = self
+            .settings
+            .set_boolean("comfyui-enabled", self.comfyui_enabled);
+    }
+
+    pub fn set_upscale_backend(&mut self, value: &str) {
+        self.upscale_backend = match value {
+            "onnx" => "onnx".to_string(),
+            "comfyui" => "comfyui".to_string(),
+            _ => "cli".to_string(),
+        };
+        let _ = self
+            .settings
+            .set_string("upscale-backend", &self.upscale_backend);
+    }
+
+    pub fn set_comfyui_url(&mut self, value: &str) {
+        self.comfyui_url = value.to_string();
+        let _ = self.settings.set_string("comfyui-url", &self.comfyui_url);
+    }
+
+    pub fn set_comfyui_enabled(&mut self, value: bool) {
+        self.comfyui_enabled = value;
+        let _ = self.settings.set_boolean("comfyui-enabled", value);
+    }
+
+    pub fn set_onnx_upscale_model(&mut self, value: &str) {
+        self.onnx_upscale_model = match value {
+            "swin2sr-compressed-x4" => "swin2sr-compressed-x4".to_string(),
+            "swin2sr-real-x4" => "swin2sr-real-x4".to_string(),
+            _ => "swin2sr-lightweight-x2".to_string(),
+        };
+        let _ = self
+            .settings
+            .set_string("onnx-upscale-model", &self.onnx_upscale_model);
     }
 
     pub fn set_metadata_visible(&mut self, visible: bool) {

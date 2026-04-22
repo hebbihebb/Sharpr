@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 tract-onnx = "0.21"
+ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
+ndarray = "0.17"
 ureq = { version = "2", features = ["tls"] }
 # GTK4 + Libadwaita UI stack
 gtk4 = { version = "0.9", features = ["v4_12"] }
