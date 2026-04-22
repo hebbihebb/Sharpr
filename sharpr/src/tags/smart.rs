@@ -6,6 +6,63 @@ use std::sync::OnceLock;
 use image::imageops::FilterType;
 use tract_onnx::prelude::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmartModel {
+    Fast,
+    Balanced,
+    Best,
+}
+
+impl SmartModel {
+    pub fn from_id(id: &str) -> Self {
+        match id {
+            "resnet18-v1-7" => Self::Fast,
+            "resnet152-v1-7" => Self::Best,
+            _ => Self::Balanced,
+        }
+    }
+
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::Fast => "resnet18-v1-7",
+            Self::Balanced => "resnet50-v1-7",
+            Self::Best => "resnet152-v1-7",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Fast => "Fast (ResNet-18)",
+            Self::Balanced => "Balanced (ResNet-50)",
+            Self::Best => "Best (ResNet-152)",
+        }
+    }
+
+    pub fn filename(&self) -> &'static str {
+        match self {
+            Self::Fast => "resnet18-v1-7.onnx",
+            Self::Balanced => "resnet50-v1-7.onnx",
+            Self::Best => "resnet152-v1-7.onnx",
+        }
+    }
+
+    pub fn url(&self) -> &'static str {
+        match self {
+            Self::Fast => "https://huggingface.co/onnxmodelzoo/resnet18-v1-7/resolve/main/resnet18-v1-7.onnx",
+            Self::Balanced => "https://huggingface.co/onnxmodelzoo/resnet50-v1-7/resolve/main/resnet50-v1-7.onnx",
+            Self::Best => "https://huggingface.co/onnxmodelzoo/resnet152-v1-7/resolve/main/resnet152-v1-7.onnx",
+        }
+    }
+
+    pub fn sha256(&self) -> &'static str {
+        match self {
+            Self::Fast => "4e8f8653e7a2222b3904cc3fe8e304cd8b339ce1d05fd24688162f86fb6df52c",
+            Self::Balanced => "361d7b3ea1e0d375355694a15993202e86c039fbcd4d1d86d9f783cb2bda247f",
+            Self::Best => "f75ea2c6d4ba5372332d7ea8940828d546059239d5b7463f6834d8b584eb2e3a",
+        }
+    }
+}
+
 type Plan = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
 
 pub struct LocalTagger {

@@ -199,7 +199,7 @@ fn finalize_output(
     result
 }
 
-fn save_image(
+pub(crate) fn save_image(
     image: image::DynamicImage,
     output: &Path,
     format: UpscaleOutputFormat,

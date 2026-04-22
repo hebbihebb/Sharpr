@@ -37,13 +37,13 @@ pub fn build_preferences_window(
     restart_note_row.set_sensitive(false);
 
     {
-        let settings_c = settings.clone();
+        let parent_c = parent.clone();
         let row_c = library_root_row.clone();
         let parent_window = parent.clone().upcast::<gtk4::Window>();
         choose_button.connect_clicked(move |_| {
             let dialog = gtk4::FileDialog::new();
             dialog.set_title("Choose Library Root");
-            let settings_inner = settings_c.clone();
+            let parent_inner = parent_c.clone();
             let row_inner = row_c.clone();
             dialog.select_folder(
                 Some(&parent_window),
@@ -51,8 +51,7 @@ pub fn build_preferences_window(
                 move |result| {
                     if let Ok(file) = result {
                         if let Some(path) = file.path() {
-                            let mut settings = settings_inner.clone();
-                            settings.set_library_root(Some(path.clone()));
+                            parent_inner.app_state().borrow_mut().settings.set_library_root(Some(path.clone()));
                             row_inner.set_subtitle(&library_root_subtitle(Some(&path)));
                         }
                     }
@@ -64,6 +63,35 @@ pub fn build_preferences_window(
     library_group.add(&library_root_row);
     library_group.add(&restart_note_row);
     library_page.add(&library_group);
+
+    let smart_group = libadwaita::PreferencesGroup::new();
+    smart_group.set_title("Smart Tagging");
+
+    let smart_model_row = libadwaita::ComboRow::new();
+    smart_model_row.set_title("Smart tagger model");
+    let smart_model_choices = gtk4::StringList::new(&["Fast (ResNet-18)", "Balanced (ResNet-50)", "Best (ResNet-152)"]);
+    smart_model_row.set_model(Some(&smart_model_choices));
+    smart_model_row.set_selected(match settings.smart_tagger_model.as_str() {
+        "resnet18-v1-7" => 0,
+        "resnet152-v1-7" => 2,
+        _ => 1,
+    });
+
+    {
+        let parent_c = parent.clone();
+        smart_model_row.connect_selected_notify(move |row| {
+            let model_id = match row.selected() {
+                0 => "resnet18-v1-7",
+                2 => "resnet152-v1-7",
+                _ => "resnet50-v1-7",
+            };
+            parent_c.app_state().borrow_mut().settings.set_smart_tagger_model(model_id);
+            parent_c.reload_smart_tagger_model(crate::tags::smart::SmartModel::from_id(model_id));
+        });
+    }
+    smart_group.add(&smart_model_row);
+    library_page.add(&smart_group);
+
     window.add(&library_page);
 
     let upscaler_page = libadwaita::PreferencesPage::new();
@@ -91,11 +119,10 @@ pub fn build_preferences_window(
     binary_row.set_activatable_widget(Some(&binary_entry));
 
     {
-        let settings_c = settings.clone();
+        let parent_c = parent.clone();
         binary_entry.connect_changed(move |entry| {
             let text = entry.text().trim().to_string();
-            let mut settings = settings_c.clone();
-            settings.set_upscaler_binary_path(if text.is_empty() {
+            parent_c.app_state().borrow_mut().settings.set_upscaler_binary_path(if text.is_empty() {
                 None
             } else {
                 Some(PathBuf::from(text))
@@ -114,10 +141,9 @@ pub fn build_preferences_window(
     });
 
     {
-        let settings_c = settings.clone();
+        let parent_c = parent.clone();
         model_row.connect_selected_notify(move |row| {
-            let mut settings = settings_c.clone();
-            settings.set_upscaler_default_model(if row.selected() == 1 {
+            parent_c.app_state().borrow_mut().settings.set_upscaler_default_model(if row.selected() == 1 {
                 "anime"
             } else {
                 "standard"
@@ -139,10 +165,9 @@ pub fn build_preferences_window(
     });
 
     {
-        let settings_c = settings.clone();
+        let parent_c = parent.clone();
         output_row.connect_selected_notify(move |row| {
-            let mut settings = settings_c.clone();
-            settings.set_upscaler_output_format(match row.selected() {
+            parent_c.app_state().borrow_mut().settings.set_upscaler_output_format(match row.selected() {
                 1 => "jpeg",
                 2 => "webp",
                 3 => "png",
@@ -163,10 +188,9 @@ pub fn build_preferences_window(
     });
 
     {
-        let settings_c = settings.clone();
+        let parent_c = parent.clone();
         compression_row.connect_selected_notify(move |row| {
-            let mut settings = settings_c.clone();
-            settings.set_upscaler_compression_mode(match row.selected() {
+            parent_c.app_state().borrow_mut().settings.set_upscaler_compression_mode(match row.selected() {
                 1 => "lossy",
                 2 => "lossless",
                 _ => "auto",
@@ -191,10 +215,9 @@ pub fn build_preferences_window(
     quality_row.set_activatable_widget(Some(&quality_spin));
 
     {
-        let settings_c = settings.clone();
+        let parent_c = parent.clone();
         quality_spin.connect_value_changed(move |spin| {
-            let mut settings = settings_c.clone();
-            settings.set_upscaler_quality(spin.value() as i32);
+            parent_c.app_state().borrow_mut().settings.set_upscaler_quality(spin.value() as i32);
         });
     }
 
@@ -215,10 +238,9 @@ pub fn build_preferences_window(
     tile_row.set_activatable_widget(Some(&tile_spin));
 
     {
-        let settings_c = settings.clone();
+        let parent_c = parent.clone();
         tile_spin.connect_value_changed(move |spin| {
-            let mut settings = settings_c.clone();
-            settings.set_upscaler_tile_size(spin.value() as i32);
+            parent_c.app_state().borrow_mut().settings.set_upscaler_tile_size(spin.value() as i32);
         });
     }
 
@@ -239,10 +261,9 @@ pub fn build_preferences_window(
     gpu_row.set_activatable_widget(Some(&gpu_spin));
 
     {
-        let settings_c = settings.clone();
+        let parent_c = parent.clone();
         gpu_spin.connect_value_changed(move |spin| {
-            let mut settings = settings_c.clone();
-            settings.set_upscaler_gpu_id(spin.value() as i32);
+            parent_c.app_state().borrow_mut().settings.set_upscaler_gpu_id(spin.value() as i32);
         });
     }
 
@@ -271,7 +292,6 @@ pub fn build_preferences_window(
     );
 
     {
-        let settings_c = settings.clone();
         let parent_c = parent.clone();
         metadata_row.connect_active_notify(move |row| {
             let desired = row.is_active();
@@ -282,8 +302,7 @@ pub fn build_preferences_window(
                     None,
                 );
             }
-            let mut settings = settings_c.clone();
-            settings.set_metadata_visible(desired);
+            parent_c.app_state().borrow_mut().settings.set_metadata_visible(desired);
         });
     }
 
@@ -297,10 +316,9 @@ pub fn build_preferences_window(
     cache_row.set_activatable_widget(Some(&cache_spin));
 
     {
-        let settings_c = settings.clone();
+        let parent_c = parent.clone();
         cache_spin.connect_value_changed(move |spin| {
-            let mut settings = settings_c.clone();
-            settings.set_thumbnail_cache_max(spin.value_as_int());
+            parent_c.app_state().borrow_mut().settings.set_thumbnail_cache_max(spin.value_as_int());
         });
     }
 

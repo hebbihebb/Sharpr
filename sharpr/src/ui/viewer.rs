@@ -1425,8 +1425,14 @@ impl ViewerPane {
         trigger_btn: gtk4::Button,
     ) {
         use crate::model::ImageEntry;
+        use crate::upscale::backend::UpscaleBackend;
+        use crate::upscale::backends::cli::CliBackend;
+        use crate::upscale::backends::onnx::OnnxBackend;
         use crate::upscale::runner::{UpscaleEvent, UpscaleRunner};
-        use crate::upscale::{UpscaleCompressionMode, UpscaleJobConfig, UpscaleOutputFormat};
+        use crate::upscale::{
+            ComfyUiBackend, OnnxUpscaleModel, UpscaleBackendKind, UpscaleCompressionMode,
+            UpscaleJobConfig, UpscaleOutputFormat,
+        };
 
         let imp = self.imp();
 
@@ -1448,9 +1454,22 @@ impl ViewerPane {
                 state.ops.clone(),
             )
         };
-        let Some(binary) = binary else {
-            trigger_btn.set_sensitive(true);
-            return;
+
+        let backend_kind = UpscaleBackendKind::from_settings(&settings.upscale_backend);
+        let backend: Box<dyn UpscaleBackend> = match backend_kind {
+            UpscaleBackendKind::Cli => {
+                let Some(bin) = binary else {
+                    trigger_btn.set_sensitive(true);
+                    return;
+                };
+                Box::new(CliBackend::new(bin))
+            }
+            UpscaleBackendKind::Onnx => Box::new(OnnxBackend::new(
+                OnnxUpscaleModel::from_settings(&settings.onnx_upscale_model),
+            )),
+            UpscaleBackendKind::ComfyUi => {
+                Box::new(ComfyUiBackend::new(&settings.comfyui_url))
+            }
         };
         if selected_dims == (0, 0) {
             let meta = crate::metadata::ImageMetadata::load(&path);
@@ -1492,7 +1511,7 @@ impl ViewerPane {
             match std::fs::create_dir_all(dir) {
                 Ok(()) => {
                     let output = pending_output_path(&final_output);
-                    UpscaleRunner::run(&binary, &path, &output, job)
+                    backend.run(path.clone(), output, job)
                 }
                 Err(err) => {
                     let (tx, rx) = async_channel::bounded(1);
@@ -1505,7 +1524,7 @@ impl ViewerPane {
             }
         } else {
             let output = pending_output_path(&final_output);
-            UpscaleRunner::run(&binary, &path, &output, job)
+            backend.run(path.clone(), output, job)
         };
 
         let widget_weak = self.downgrade();
@@ -1954,7 +1973,30 @@ fn committed_output_path(pending_output: &std::path::Path) -> PathBuf {
         },
         None => name.to_owned(),
     };
-    pending_output.with_file_name(trimmed)
+    let base = pending_output.with_file_name(&trimmed);
+    if !base.exists() {
+        return base;
+    }
+    // File already exists — find a free slot: stem_1.ext, stem_2.ext, …
+    let dir = pending_output
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let trimmed_path = std::path::Path::new(&trimmed);
+    let stem = trimmed_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("upscaled");
+    let ext = trimmed_path.extension().and_then(|s| s.to_str());
+    for i in 1u32.. {
+        let candidate = match ext {
+            Some(e) => dir.join(format!("{stem}_{i}.{e}")),
+            None => dir.join(format!("{stem}_{i}")),
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    base
 }
 
 fn install_viewer_osd_css() {

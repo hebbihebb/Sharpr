@@ -56,6 +56,31 @@
       <summary>Thumbnail memory cache size</summary>
       <description>Maximum number of thumbnails to hold in memory.</description>
     </key>
+    <key name="smart-tagger-model" type="s">
+      <default>"resnet50-v1-7"</default>
+      <summary>Smart tagger model</summary>
+      <description>The ONNX model used for smart tagging.</description>
+    </key>
+    <key name="upscale-backend" type="s">
+      <default>"cli"</default>
+      <summary>Active upscale backend</summary>
+      <description>One of "cli" (Vulkan subprocess) or "onnx" (ORT/Swin2SR).</description>
+    </key>
+    <key name="onnx-upscale-model" type="s">
+      <default>"swin2sr-lightweight-x2"</default>
+      <summary>ONNX upscale model</summary>
+      <description>Model used by the ONNX upscale backend.</description>
+    </key>
+    <key name="comfyui-url" type="s">
+      <default>"http://127.0.0.1:8188"</default>
+      <summary>ComfyUI server URL</summary>
+      <description>Base URL of the local ComfyUI server.</description>
+    </key>
+    <key name="comfyui-enabled" type="b">
+      <default>false</default>
+      <summary>Enable ComfyUI backend</summary>
+      <description>Show ComfyUI as an option in the upscale backend selector.</description>
+    </key>
     <key name="window-width" type="i">
       <default>1400</default>
       <summary>Window width</summary>
