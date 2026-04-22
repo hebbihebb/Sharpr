@@ -601,12 +601,14 @@ impl LibraryManager {
         mut indexed_paths: Vec<PathBuf>,
         current_folder: Option<PathBuf>,
         mut metadata_cache: FxHashMap<PathBuf, CachedImageData>,
+        disabled_folders: Vec<PathBuf>,
     ) -> (
         Vec<PathBuf>,
         FxHashMap<PathBuf, CachedImageData>,
         Vec<PathBuf>,
     ) {
-        let paths = collect_library_image_paths(library_root, current_folder.as_deref());
+        let paths =
+            collect_library_image_paths(library_root, current_folder.as_deref(), &disabled_folders);
         if paths != indexed_paths {
             for path in &paths {
                 Self::cached_image_data_static(path, &mut metadata_cache);
@@ -698,16 +700,23 @@ impl Default for LibraryManager {
 fn collect_library_image_paths(
     library_root: Option<PathBuf>,
     current_folder: Option<&Path>,
+    disabled_folders: &[PathBuf],
 ) -> Vec<PathBuf> {
     let mut folders = collect_library_folders(library_root);
     if let Some(current_folder) = current_folder {
-        if current_folder.is_dir() && !folders.iter().any(|folder| folder == current_folder) {
+        if current_folder.is_dir()
+            && !path_is_disabled(current_folder, disabled_folders)
+            && !folders.iter().any(|folder| folder == current_folder)
+        {
             folders.push(current_folder.to_path_buf());
         }
     }
 
     let mut paths = Vec::new();
     for folder in folders {
+        if path_is_disabled(&folder, disabled_folders) {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(&folder) else {
             continue;
         };
@@ -725,6 +734,12 @@ fn collect_library_image_paths(
     paths.sort_by(|a, b| path_sort_key(a, b));
     paths.dedup();
     paths
+}
+
+fn path_is_disabled(path: &Path, disabled_folders: &[PathBuf]) -> bool {
+    disabled_folders
+        .iter()
+        .any(|folder| path.starts_with(folder))
 }
 
 fn collect_library_folders(library_root: Option<PathBuf>) -> Vec<PathBuf> {
@@ -875,6 +890,7 @@ mod tests {
             indexed_paths.clone(),
             current_folder.clone(),
             metadata_cache.clone(),
+            Vec::new(),
         );
         let (_, _, upscale_paths) = LibraryManager::compute_paths_for_quality_class(
             settings.library_root.clone(),
@@ -882,6 +898,7 @@ mod tests {
             indexed_paths,
             current_folder,
             metadata_cache,
+            Vec::new(),
         );
 
         assert_eq!(excellent_paths, vec![excellent]);

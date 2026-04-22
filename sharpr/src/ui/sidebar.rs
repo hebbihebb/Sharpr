@@ -17,6 +17,7 @@ type DuplicatesSelectedCallback = Box<dyn Fn() + 'static>;
 type TagsSelectedCallback = Box<dyn Fn() + 'static>;
 type SearchActivatedCallback = Box<dyn Fn() + 'static>;
 type QualitySelectedCallback = Box<dyn Fn(QualityClass) + 'static>;
+type FolderIgnoredChangedCallback = Box<dyn Fn(PathBuf, bool) + 'static>;
 type CollectionSelectedCallback = Box<dyn Fn(i64) + 'static>;
 type CollectionAddRequestedCallback = Box<dyn Fn() + 'static>;
 type CollectionRenameRequestedCallback = Box<dyn Fn(i64, String) + 'static>;
@@ -58,6 +59,7 @@ mod imp {
         pub tags_selected_cb: RefCell<Option<TagsSelectedCallback>>,
         pub search_activated_cb: RefCell<Option<SearchActivatedCallback>>,
         pub quality_selected_cb: RefCell<Option<QualitySelectedCallback>>,
+        pub folder_ignored_changed_cb: RefCell<Option<FolderIgnoredChangedCallback>>,
         pub collection_selected_cb: RefCell<Option<CollectionSelectedCallback>>,
         pub collection_add_requested_cb: RefCell<Option<CollectionAddRequestedCallback>>,
         pub collection_rename_requested_cb: RefCell<Option<CollectionRenameRequestedCallback>>,
@@ -89,6 +91,7 @@ mod imp {
                 tags_selected_cb: RefCell::new(None),
                 search_activated_cb: RefCell::new(None),
                 quality_selected_cb: RefCell::new(None),
+                folder_ignored_changed_cb: RefCell::new(None),
                 collection_selected_cb: RefCell::new(None),
                 collection_add_requested_cb: RefCell::new(None),
                 collection_rename_requested_cb: RefCell::new(None),
@@ -178,8 +181,14 @@ impl SidebarPane {
 
         imp.list_box.add_css_class("navigation-sidebar");
         imp.list_box.set_selection_mode(gtk4::SelectionMode::Single);
-        let library_root = state.borrow().settings.library_root.clone();
-        self.populate_default_folders(library_root);
+        let (library_root, ignored_folders) = {
+            let state = state.borrow();
+            (
+                state.settings.library_root.clone(),
+                state.disabled_folders.clone(),
+            )
+        };
+        self.populate_default_folders(library_root, &ignored_folders);
 
         let widget_weak = self.downgrade();
         imp.list_box.connect_selected_rows_changed(move |list_box| {
@@ -195,6 +204,12 @@ impl SidebarPane {
             let Some(folder_row) = row.downcast_ref::<FolderRow>() else {
                 return;
             };
+            if folder_row.ignored() {
+                widget.imp().suppress_folder_signal.set(true);
+                list_box.unselect_row(&row);
+                widget.imp().suppress_folder_signal.set(false);
+                return;
+            }
             widget.set_smart_selection(SmartFolderSelection::None);
             widget.clear_collection_selection();
             widget.emit_folder_selected(folder_row.path());
@@ -364,7 +379,7 @@ impl SidebarPane {
         imp.toolbar_view.set_parent(self);
     }
 
-    fn populate_default_folders(&self, library_root: Option<PathBuf>) {
+    fn populate_default_folders(&self, library_root: Option<PathBuf>, ignored_folders: &[PathBuf]) {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home".into());
         let home = PathBuf::from(&home);
 
@@ -397,6 +412,8 @@ impl SidebarPane {
             if directory_contains_images(&root_path) && !seen.contains(&root_path) {
                 seen.insert(root_path.clone());
                 let row = FolderRow::new(root_path, &root_name);
+                row.set_ignored(row_is_ignored(&row.path(), ignored_folders));
+                self.attach_folder_row_menu(&row);
                 self.imp().list_box.append(&row);
             }
 
@@ -404,6 +421,8 @@ impl SidebarPane {
                 if !seen.contains(&path) {
                     seen.insert(path.clone());
                     let row = FolderRow::new(path, &label);
+                    row.set_ignored(row_is_ignored(&row.path(), ignored_folders));
+                    self.attach_folder_row_menu(&row);
                     self.imp().list_box.append(&row);
                 }
             }
@@ -428,6 +447,35 @@ impl SidebarPane {
 
     pub fn connect_quality_selected<F: Fn(QualityClass) + 'static>(&self, f: F) {
         *self.imp().quality_selected_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_folder_ignored_changed<F: Fn(PathBuf, bool) + 'static>(&self, f: F) {
+        *self.imp().folder_ignored_changed_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn set_folder_ignored(&self, path: &Path, ignored: bool) {
+        let mut child = self.imp().list_box.first_child();
+        while let Some(widget) = child {
+            let next = widget.next_sibling();
+            if let Ok(row) = widget.downcast::<FolderRow>() {
+                if row.path() == path {
+                    row.set_ignored(ignored);
+                    break;
+                }
+            }
+            child = next;
+        }
+    }
+
+    pub fn set_ignored_folders(&self, ignored_folders: &[PathBuf]) {
+        let mut child = self.imp().list_box.first_child();
+        while let Some(widget) = child {
+            let next = widget.next_sibling();
+            if let Ok(row) = widget.downcast::<FolderRow>() {
+                row.set_ignored(row_is_ignored(&row.path(), ignored_folders));
+            }
+            child = next;
+        }
     }
 
     /// Returns the path of the first folder row in the sidebar list, if any.
@@ -615,6 +663,12 @@ impl SidebarPane {
     fn emit_quality_selected(&self, class: QualityClass) {
         if let Some(cb) = self.imp().quality_selected_cb.borrow().as_ref() {
             cb(class);
+        }
+    }
+
+    fn emit_folder_ignored_changed(&self, path: PathBuf, ignored: bool) {
+        if let Some(cb) = self.imp().folder_ignored_changed_cb.borrow().as_ref() {
+            cb(path, ignored);
         }
     }
 
@@ -849,6 +903,67 @@ impl SidebarPane {
             cb(id, paths);
         }
     }
+
+    fn attach_folder_row_menu(&self, row: &FolderRow) {
+        let popover = gtk4::Popover::new();
+        popover.set_autohide(true);
+        popover.set_has_arrow(true);
+        popover.set_position(gtk4::PositionType::Right);
+
+        let toggle_btn = gtk4::Button::new();
+        toggle_btn.add_css_class("flat");
+        let row_weak = row.downgrade();
+        toggle_btn.connect_clicked({
+            let widget_weak = self.downgrade();
+            let popover = popover.clone();
+            move |_| {
+                popover.popdown();
+                let Some(widget) = widget_weak.upgrade() else {
+                    return;
+                };
+                let Some(row) = row_weak.upgrade() else {
+                    return;
+                };
+                let ignored = !row.ignored();
+                row.set_ignored(ignored);
+                widget.emit_folder_ignored_changed(row.path(), ignored);
+            }
+        });
+
+        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        vbox.set_margin_top(4);
+        vbox.set_margin_bottom(4);
+        vbox.append(&toggle_btn);
+        popover.set_child(Some(&vbox));
+        popover.set_parent(row);
+
+        let gesture = gtk4::GestureClick::new();
+        gesture.set_button(0);
+        gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let popover_clone = popover.clone();
+        let row_weak = row.downgrade();
+        gesture.connect_pressed(move |gesture, _, x, y| {
+            let button = gesture.current_button();
+            let modifiers = gesture.current_event_state();
+            let ctrl_click =
+                button == 1 && modifiers.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
+            if button != 3 && !ctrl_click {
+                return;
+            }
+            gesture.set_state(gtk4::EventSequenceState::Claimed);
+            if let Some(row) = row_weak.upgrade() {
+                toggle_btn.set_label(if row.ignored() {
+                    "Enable Folder"
+                } else {
+                    "Disable Folder"
+                });
+            }
+            let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            popover_clone.set_pointing_to(Some(&rect));
+            popover_clone.popup();
+        });
+        row.add_controller(gesture);
+    }
 }
 
 fn configure_smart_row(row: &gtk4::ListBoxRow, icon_name: &str, label_text: &str) {
@@ -923,12 +1038,19 @@ fn is_image_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn row_is_ignored(path: &Path, ignored_folders: &[PathBuf]) -> bool {
+    ignored_folders
+        .iter()
+        .any(|folder| path.starts_with(folder))
+}
+
 mod folder_row_imp {
     use super::*;
 
     #[derive(Default)]
     pub struct FolderRow {
         pub path: RefCell<PathBuf>,
+        pub ignored: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -972,6 +1094,20 @@ impl FolderRow {
 
     pub fn path(&self) -> PathBuf {
         self.imp().path.borrow().clone()
+    }
+
+    pub fn ignored(&self) -> bool {
+        self.imp().ignored.get()
+    }
+
+    pub fn set_ignored(&self, ignored: bool) {
+        self.imp().ignored.set(ignored);
+        self.set_opacity(if ignored { 0.45 } else { 1.0 });
+        self.set_tooltip_text(if ignored {
+            Some("Folder disabled")
+        } else {
+            None
+        });
     }
 }
 

@@ -90,17 +90,61 @@ impl LibraryIndex {
     pub fn set_folder_ignored(&self, path: &Path, ignored: bool) -> rusqlite::Result<()> {
         let now = now_secs();
         let conn = self.conn()?;
-        conn.execute(
-            "
-            INSERT INTO folders (path, ignored, discovered_at, updated_at)
-            VALUES (?1, ?2, ?3, ?3)
-            ON CONFLICT(path) DO UPDATE SET
-                ignored = excluded.ignored,
-                updated_at = excluded.updated_at
-            ",
-            params![path_to_string(path), ignored as i64, now],
-        )?;
+        if ignored {
+            conn.execute(
+                "
+                INSERT INTO folders (path, ignored, discovered_at, updated_at)
+                VALUES (?1, 1, ?2, ?2)
+                ON CONFLICT(path) DO UPDATE SET
+                    ignored = 1,
+                    updated_at = excluded.updated_at
+                ",
+                params![path_to_string(path), now],
+            )?;
+            let prefix = format!("{}/%", path_to_string(path).trim_end_matches('/'));
+            conn.execute(
+                "DELETE FROM images WHERE folder_path = ?1 OR folder_path LIKE ?2",
+                params![path_to_string(path), prefix],
+            )?;
+        } else {
+            let ignored_folders = {
+                let mut stmt = conn.prepare("SELECT path FROM folders WHERE ignored = 1")?;
+                let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+                rows.filter_map(Result::ok)
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>()
+            };
+            for folder in ignored_folders {
+                if path.starts_with(&folder) {
+                    conn.execute(
+                        "UPDATE folders SET ignored = 0, updated_at = ?2 WHERE path = ?1",
+                        params![path_to_string(&folder), now],
+                    )?;
+                }
+            }
+            conn.execute(
+                "
+                INSERT INTO folders (path, ignored, discovered_at, updated_at)
+                VALUES (?1, 0, ?2, ?2)
+                ON CONFLICT(path) DO UPDATE SET
+                    ignored = 0,
+                    updated_at = excluded.updated_at
+                ",
+                params![path_to_string(path), now],
+            )?;
+        }
         Ok(())
+    }
+
+    pub fn is_folder_ignored(&self, path: &Path) -> rusqlite::Result<bool> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT path FROM folders WHERE ignored = 1")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let ignored = rows
+            .filter_map(Result::ok)
+            .map(PathBuf::from)
+            .any(|folder| path.starts_with(folder));
+        Ok(ignored)
     }
 
     pub fn ignored_folders(&self) -> rusqlite::Result<Vec<PathBuf>> {
@@ -120,6 +164,9 @@ impl LibraryIndex {
         entries: &[BasicImageInfo],
         sort_order: SortOrder,
     ) -> rusqlite::Result<(Vec<IndexedImage>, usize, Vec<BasicImageInfo>)> {
+        if self.is_folder_ignored(folder)? {
+            return Ok((Vec::new(), 0, Vec::new()));
+        }
         let now = now_secs();
         let mut conn = self.conn()?;
 
@@ -242,6 +289,9 @@ impl LibraryIndex {
     }
 
     pub fn upsert_image_basic(&self, info: &BasicImageInfo) -> rusqlite::Result<()> {
+        if self.is_folder_ignored(&info.folder_path)? {
+            return Ok(());
+        }
         let now = now_secs();
         let conn = self.conn()?;
         let existing = conn
@@ -390,6 +440,9 @@ impl LibraryIndex {
         folder: &Path,
         sort_order: SortOrder,
     ) -> rusqlite::Result<Vec<IndexedImage>> {
+        if self.is_folder_ignored(folder)? {
+            return Ok(Vec::new());
+        }
         let order = match sort_order {
             SortOrder::Name => "filename COLLATE NOCASE ASC",
             SortOrder::DateModified => "modified_secs DESC NULLS LAST, filename COLLATE NOCASE ASC",
@@ -429,10 +482,13 @@ impl LibraryIndex {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "
-            SELECT path, phash
+            SELECT images.path, images.phash
             FROM images
-            WHERE phash_status = 'ready' AND phash IS NOT NULL
-            ORDER BY path COLLATE NOCASE
+            LEFT JOIN folders ON folders.path = images.folder_path
+            WHERE images.phash_status = 'ready'
+              AND images.phash IS NOT NULL
+              AND COALESCE(folders.ignored, 0) = 0
+            ORDER BY images.path COLLATE NOCASE
             ",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -452,7 +508,15 @@ impl LibraryIndex {
 
     pub fn all_indexed_paths(&self) -> rusqlite::Result<Vec<PathBuf>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT path FROM images ORDER BY path COLLATE NOCASE")?;
+        let mut stmt = conn.prepare(
+            "
+            SELECT images.path
+            FROM images
+            LEFT JOIN folders ON folders.path = images.folder_path
+            WHERE COALESCE(folders.ignored, 0) = 0
+            ORDER BY images.path COLLATE NOCASE
+            ",
+        )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         Ok(rows.filter_map(Result::ok).map(PathBuf::from).collect())
     }
@@ -601,13 +665,27 @@ impl LibraryIndex {
 
     pub fn collection_paths(&self, collection_id: i64) -> rusqlite::Result<Vec<PathBuf>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT image_path FROM collection_items
-             WHERE collection_id = ?1
-             ORDER BY added_at ASC",
-        )?;
-        let rows = stmt.query_map(params![collection_id], |row| row.get::<_, String>(0))?;
-        Ok(rows.filter_map(Result::ok).map(PathBuf::from).collect())
+        let ignored = {
+            let mut stmt =
+                conn.prepare("SELECT path FROM folders WHERE ignored = 1 ORDER BY path")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            rows.filter_map(Result::ok)
+                .map(PathBuf::from)
+                .collect::<Vec<_>>()
+        };
+        let paths = {
+            let mut stmt = conn.prepare(
+                "SELECT image_path FROM collection_items
+                 WHERE collection_id = ?1
+                 ORDER BY added_at ASC",
+            )?;
+            let rows = stmt.query_map(params![collection_id], |row| row.get::<_, String>(0))?;
+            rows.filter_map(Result::ok)
+                .map(PathBuf::from)
+                .filter(|path| !path_is_ignored(path, &ignored))
+                .collect()
+        };
+        Ok(paths)
     }
 
     fn conn(&self) -> rusqlite::Result<PooledConnection<SqliteConnectionManager>> {
@@ -687,6 +765,12 @@ fn system_time_to_secs(time: SystemTime) -> Option<i64> {
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn path_is_ignored(path: &Path, ignored_folders: &[PathBuf]) -> bool {
+    ignored_folders
+        .iter()
+        .any(|folder| path.starts_with(folder))
 }
 
 fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
@@ -943,6 +1027,36 @@ mod tests {
 
         let good = idx.images_by_quality(QualityClass::Good).unwrap();
         assert!(good.is_empty(), "ignored folder images should be excluded");
+    }
+
+    #[test]
+    fn ignored_folder_is_removed_and_not_reindexed() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let info = make_info("/ignored", "a.jpg", 100, None);
+        idx.upsert_image_basic(&info).unwrap();
+        idx.set_folder_ignored(Path::new("/ignored"), true).unwrap();
+
+        assert!(idx.is_folder_ignored(Path::new("/ignored")).unwrap());
+        assert!(idx
+            .images_in_folder(Path::new("/ignored"), SortOrder::Name)
+            .unwrap()
+            .is_empty());
+
+        idx.upsert_image_basic(&info).unwrap();
+        assert!(idx.all_indexed_paths().unwrap().is_empty());
+    }
+
+    #[test]
+    fn enabling_child_clears_ignored_ancestor() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        idx.set_folder_ignored(Path::new("/library"), true).unwrap();
+
+        assert!(idx.is_folder_ignored(Path::new("/library/child")).unwrap());
+        idx.set_folder_ignored(Path::new("/library/child"), false)
+            .unwrap();
+
+        assert!(!idx.is_folder_ignored(Path::new("/library")).unwrap());
+        assert!(!idx.is_folder_ignored(Path::new("/library/child")).unwrap());
     }
 
     #[test]

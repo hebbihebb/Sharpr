@@ -50,6 +50,8 @@ pub struct AppState {
     pub selected_paths: HashSet<PathBuf>,
     /// ID of the collection currently loaded as the virtual view, if any.
     pub active_collection: Option<i64>,
+    /// Folders disabled by the user. Images under these paths must not be indexed or shown.
+    pub disabled_folders: Vec<PathBuf>,
 }
 
 /// Which virtual content source is currently displayed in the filmstrip.
@@ -156,6 +158,12 @@ fn trigger_prefetch(state: &Rc<RefCell<AppState>>, index: u32) {
     });
 }
 
+fn path_is_disabled(path: &std::path::Path, disabled_folders: &[PathBuf]) -> bool {
+    disabled_folders
+        .iter()
+        .any(|folder| path.starts_with(folder))
+}
+
 fn queue_prefetch(
     state: &Rc<RefCell<AppState>>,
     tx: &async_channel::Sender<PrefetchResult>,
@@ -236,6 +244,16 @@ fn start_metadata_indexer(
     let worker_folder = folder.clone();
     rayon::spawn(move || {
         let started = Instant::now();
+        if index.is_folder_ignored(&worker_folder).unwrap_or(false) {
+            crate::bench_event!(
+                "index.metadata.skip",
+                serde_json::json!({
+                    "folder": worker_folder.display().to_string(),
+                    "reason": "disabled_folder",
+                }),
+            );
+            return;
+        }
         let total = pending.len();
         let mut completed = 0usize;
         for info in pending {
@@ -286,7 +304,15 @@ fn start_metadata_indexer(
 }
 
 fn load_virtual_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf]) {
-    let pending = state.borrow_mut().library.load_virtual(paths);
+    let paths: Vec<PathBuf> = {
+        let st = state.borrow();
+        paths
+            .iter()
+            .filter(|path| !path_is_disabled(path, &st.disabled_folders))
+            .cloned()
+            .collect()
+    };
+    let pending = state.borrow_mut().library.load_virtual(&paths);
     if pending.is_empty() {
         return;
     }
@@ -396,6 +422,10 @@ impl AppState {
                 (None, Some(message))
             }
         };
+        let disabled_folders = library_index
+            .as_ref()
+            .and_then(|index| index.ignored_folders().ok())
+            .unwrap_or_default();
         let state = Self {
             library,
             settings,
@@ -408,6 +438,7 @@ impl AppState {
             ops,
             selected_paths: HashSet::new(),
             active_collection: None,
+            disabled_folders,
         };
         maybe_download_model(smart_model);
         state
@@ -660,6 +691,11 @@ impl SharprWindow {
             let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
             Rc::new(move |path: PathBuf| {
+                if path_is_disabled(&path, &state_c.borrow().disabled_folders) {
+                    toast_overlay_c.add_toast(libadwaita::Toast::new("Folder is disabled"));
+                    sidebar_c.set_folder_ignored(&path, true);
+                    return;
+                }
                 crate::bench_event!(
                     "folder.open.request",
                     serde_json::json!({
@@ -1057,6 +1093,81 @@ impl SharprWindow {
         }
 
         {
+            let state_c = state.clone();
+            let sidebar_c = sidebar.clone();
+            let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            let window_weak = self.downgrade();
+            sidebar.connect_folder_ignored_changed(move |path, ignored| {
+                let Some(index) = state_c.borrow().library_index.clone() else {
+                    toast_overlay_c.add_toast(libadwaita::Toast::new("Library index unavailable"));
+                    sidebar_c.set_folder_ignored(&path, !ignored);
+                    return;
+                };
+
+                match index.set_folder_ignored(&path, ignored) {
+                    Ok(()) => {
+                        let disabled_folders = {
+                            let mut st = state_c.borrow_mut();
+                            if ignored {
+                                if !st.disabled_folders.iter().any(|p| p == &path) {
+                                    st.disabled_folders.push(path.clone());
+                                }
+                            } else {
+                                st.disabled_folders.retain(|p| !path.starts_with(p));
+                            }
+                            let disabled_folders = st.disabled_folders.clone();
+                            st.selected_paths
+                                .retain(|selected| !path_is_disabled(selected, &disabled_folders));
+
+                            if ignored
+                                && st
+                                    .library
+                                    .current_folder
+                                    .as_deref()
+                                    .map(|folder| folder.starts_with(&path))
+                                    .unwrap_or(false)
+                            {
+                                st.library.load_virtual(&[]);
+                                st.active_collection = None;
+                            } else if st.library.current_folder.is_none() {
+                                let visible_paths: Vec<PathBuf> = (0..st.library.image_count())
+                                    .filter_map(|i| st.library.entry_at(i).map(|e| e.path()))
+                                    .filter(|image_path| {
+                                        !path_is_disabled(image_path, &st.disabled_folders)
+                                    })
+                                    .collect();
+                                st.library.load_virtual(&visible_paths);
+                            }
+                            st.disabled_folders.clone()
+                        };
+
+                        sidebar_c.set_ignored_folders(&disabled_folders);
+                        viewer_c.clear();
+                        filmstrip_c.refresh_virtual();
+                        if let Some(win) = window_weak.upgrade() {
+                            let _ = win.bump_thumbnail_generation("folder.ignored_changed");
+                            win.complete_thumbnail_ops();
+                        }
+                        let label = if ignored {
+                            "Folder disabled"
+                        } else {
+                            "Folder enabled"
+                        };
+                        toast_overlay_c.add_toast(libadwaita::Toast::new(label));
+                    }
+                    Err(err) => {
+                        sidebar_c.set_folder_ignored(&path, !ignored);
+                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                            "Could not update folder: {err}"
+                        )));
+                    }
+                }
+            });
+        }
+
+        {
             let state_sort = state.clone();
             let open_folder_sort = open_folder.clone();
             filmstrip.set_sort_order_changed_cb(move |order| {
@@ -1085,7 +1196,14 @@ impl SharprWindow {
                     gen
                 });
                 content_stack.set_visible_child_name("viewer");
-                let hashes = state_c.borrow().library.all_hashes_snapshot();
+                let hashes = {
+                    let st = state_c.borrow();
+                    st.library
+                        .all_hashes_snapshot()
+                        .into_iter()
+                        .filter(|(path, _)| !path_is_disabled(path, &st.disabled_folders))
+                        .collect::<Vec<_>>()
+                };
                 crate::bench_event!(
                     "smart.duplicates.request",
                     serde_json::json!({
@@ -1249,6 +1367,7 @@ impl SharprWindow {
                 let (indexed_paths, current_folder, metadata_cache) =
                     { state_c.borrow().library.bg_scan_quality_prep() };
                 let library_root = state_c.borrow().settings.library_root.clone();
+                let disabled_folders = state_c.borrow().disabled_folders.clone();
                 let library_index = state_c.borrow().library_index.clone();
                 let op = state_c
                     .borrow()
@@ -1302,6 +1421,7 @@ impl SharprWindow {
                             indexed_paths,
                             current_folder,
                             metadata_cache,
+                            disabled_folders,
                         );
                     crate::bench_event!(
                         "smart.quality.scan_finish",
@@ -2701,6 +2821,16 @@ impl SharprWindow {
             while let Ok(result) = rx.recv().await {
                 let path = result.path.clone();
                 let hash = result.hash;
+                if path_is_disabled(&path, &state.borrow().disabled_folders) {
+                    crate::bench_event!(
+                        "hash.apply_skipped",
+                        serde_json::json!({
+                            "path": path.display().to_string(),
+                            "reason": "disabled_folder",
+                        }),
+                    );
+                    continue;
+                }
                 state.borrow_mut().library.insert_hash(result.path, hash);
                 crate::bench_event!(
                     "hash.apply",
