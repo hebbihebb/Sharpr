@@ -282,15 +282,13 @@ impl FilmstripPane {
 
             let open_button = gtk4::Button::with_label("Open in Default Viewer");
             let reveal_button = gtk4::Button::with_label("Show in File Manager");
+            let copy_button = gtk4::Button::with_label("Copy to Clipboard");
             open_button.set_halign(gtk4::Align::Fill);
             reveal_button.set_halign(gtk4::Align::Fill);
+            copy_button.set_halign(gtk4::Align::Fill);
             popover_box.append(&open_button);
             popover_box.append(&reveal_button);
-            let trash_button = gtk4::Button::with_label("Move to Trash");
-            trash_button.set_halign(gtk4::Align::Fill);
-            trash_button.add_css_class("destructive-action");
-            trash_button.set_visible(false);
-            popover_box.append(&trash_button);
+            popover_box.append(&copy_button);
 
             let separator = gtk4::Separator::new(gtk4::Orientation::Horizontal);
             popover_box.append(&separator);
@@ -301,8 +299,15 @@ impl FilmstripPane {
 
             let remove_from_collection_button = gtk4::Button::with_label("Remove from Collection");
             remove_from_collection_button.set_halign(gtk4::Align::Fill);
-            remove_from_collection_button.set_visible(false);
             popover_box.append(&remove_from_collection_button);
+
+            let separator = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+            popover_box.append(&separator);
+
+            let trash_button = gtk4::Button::with_label("Move to Trash");
+            trash_button.set_halign(gtk4::Align::Fill);
+            trash_button.add_css_class("destructive-action");
+            popover_box.append(&trash_button);
 
             popover.set_child(Some(&popover_box));
 
@@ -401,7 +406,26 @@ impl FilmstripPane {
             });
 
             let list_item_weak = list_item.downgrade();
+            let item_box_weak = item_box.downgrade();
+            let popover_weak_copy = popover.downgrade();
+            copy_button.connect_clicked(move |_| {
+                let Some(list_item) = list_item_weak.upgrade() else {
+                    return;
+                };
+                let Some(item_box) = item_box_weak.upgrade() else {
+                    return;
+                };
+                if let Some(p) = popover_weak_copy.upgrade() {
+                    p.popdown();
+                }
+                if let Some(path) = list_item_path(&list_item) {
+                    copy_image_to_clipboard(&path, item_box.upcast_ref::<gtk4::Widget>());
+                }
+            });
+
+            let list_item_weak = list_item.downgrade();
             let widget_weak_trash = widget_weak_setup.clone();
+            let popover_weak_trash = popover.downgrade();
             trash_button.connect_clicked(move |_| {
                 let Some(list_item) = list_item_weak.upgrade() else {
                     return;
@@ -409,6 +433,9 @@ impl FilmstripPane {
                 let Some(widget) = widget_weak_trash.upgrade() else {
                     return;
                 };
+                if let Some(p) = popover_weak_trash.upgrade() {
+                    p.popdown();
+                }
                 if let Some(path) = list_item_path(&list_item) {
                     widget.emit_trash_requested(path);
                 }
@@ -454,7 +481,7 @@ impl FilmstripPane {
                 widget.emit_remove_from_collection_requested(paths);
             });
 
-            let trash_button_weak = trash_button.downgrade();
+            let add_btn_weak = add_to_collection_button.downgrade();
             let remove_btn_weak = remove_from_collection_button.downgrade();
             let widget_weak_gesture = widget_weak_setup.clone();
             let list_item_weak = list_item.downgrade();
@@ -468,21 +495,23 @@ impl FilmstripPane {
                 }
 
                 if let Some(widget) = widget_weak_gesture.upgrade() {
-                    let (is_virtual, active_collection) = widget
+                    let (has_library_index, active_collection) = widget
                         .imp()
                         .state
                         .borrow()
                         .as_ref()
                         .map(|s| {
                             let s = s.borrow();
-                            (s.library.current_folder.is_none(), s.active_collection)
+                            (s.library_index.is_some(), s.active_collection)
                         })
                         .unwrap_or((false, None));
-                    if let Some(btn) = trash_button_weak.upgrade() {
-                        btn.set_visible(is_virtual && active_collection.is_none());
+                    if let Some(btn) = add_btn_weak.upgrade() {
+                        btn.set_sensitive(has_library_index);
                     }
                     if let Some(btn) = remove_btn_weak.upgrade() {
-                        btn.set_visible(active_collection.is_some());
+                        let in_collection = active_collection.is_some();
+                        btn.set_visible(in_collection);
+                        btn.set_sensitive(in_collection);
                     }
                 }
 
@@ -1141,6 +1170,13 @@ fn list_item_path(list_item: &gtk4::ListItem) -> Option<PathBuf> {
 fn launch_default_for_path(path: &Path) {
     let uri = gio::File::for_path(path).uri();
     let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+}
+
+fn copy_image_to_clipboard(path: &Path, widget: &gtk4::Widget) {
+    let file = gio::File::for_path(path);
+    if let Ok(texture) = gdk4::Texture::from_file(&file) {
+        widget.clipboard().set_texture(&texture);
+    }
 }
 
 fn reveal_in_file_manager(path: &Path) {

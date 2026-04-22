@@ -304,6 +304,18 @@ fn start_metadata_indexer(
 }
 
 fn load_virtual_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf]) {
+    load_virtual_async_with_collection(state, paths, None);
+}
+
+fn load_collection_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf], collection_id: i64) {
+    load_virtual_async_with_collection(state, paths, Some(collection_id));
+}
+
+fn load_virtual_async_with_collection(
+    state: &Rc<RefCell<AppState>>,
+    paths: &[PathBuf],
+    active_collection: Option<i64>,
+) {
     let paths: Vec<PathBuf> = {
         let st = state.borrow();
         paths
@@ -312,7 +324,11 @@ fn load_virtual_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf]) {
             .cloned()
             .collect()
     };
-    let pending = state.borrow_mut().library.load_virtual(&paths);
+    let pending = {
+        let mut st = state.borrow_mut();
+        st.active_collection = active_collection;
+        st.library.load_virtual(&paths)
+    };
     if pending.is_empty() {
         return;
     }
@@ -1604,10 +1620,9 @@ impl SharprWindow {
                 let started = std::time::Instant::now();
                 {
                     let mut s = state_c.borrow_mut();
-                    s.active_collection = Some(id);
                     s.selected_paths.clear();
                 }
-                load_virtual_async(&state_c, &paths);
+                load_collection_async(&state_c, &paths, id);
                 crate::bench_event!(
                     "collection.load",
                     serde_json::json!({
@@ -1743,7 +1758,7 @@ impl SharprWindow {
                         // If we're viewing this collection, append newly added paths.
                         if state_c.borrow().active_collection == Some(id) {
                             let all_paths = idx.collection_paths(id).unwrap_or_default();
-                            load_virtual_async(&state_c, &all_paths);
+                            load_collection_async(&state_c, &all_paths, id);
                             filmstrip_c.refresh_virtual();
                             let first = state_c
                                 .borrow()
@@ -2421,7 +2436,7 @@ impl SharprWindow {
                             })
                         );
                         let remaining = idx.collection_paths(id).unwrap_or_default();
-                        load_virtual_async(&state_c, &remaining);
+                        load_collection_async(&state_c, &remaining, id);
                         state_c.borrow_mut().selected_paths.clear();
                         filmstrip_c.refresh_virtual();
                         let first = state_c
