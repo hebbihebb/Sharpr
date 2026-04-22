@@ -4,29 +4,41 @@ Sharpr is a fast, native image library viewer for GNOME.
 
 ## Setting Up AI Upscaling
 
-Sharpr can upscale images using **RealESRGAN-NCNN-Vulkan**, a free open-source tool that runs entirely on your GPU. You need to download and set it up once.
+Sharpr supports three upscale backends. Choose one in **Preferences → Upscale backend**:
 
-### Step 1 — Download RealESRGAN-NCNN-Vulkan
+| Backend | Requires | Best for |
+|---|---|---|
+| **CLI** (default) | RealESRGAN-NCNN-Vulkan binary | Fastest GPU upscaling, no setup beyond the binary |
+| **ONNX** | Nothing — models download on demand | No external tools; works without a GPU |
+| **ComfyUI** | A running ComfyUI server | Custom workflows, your own model library |
 
-Go to the releases page and download the Linux build (zip or tar.gz):
+### CLI backend — RealESRGAN-NCNN-Vulkan
+
+**Step 1 — Download**
 
 [RealESRGAN-NCNN-Vulkan releases](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan/releases)
 
-### Step 2 — Extract the archive
+Download the Linux build and extract it to a permanent location, for example `~/.local/share/realesrgan/`. The folder must contain the binary and a `models/` subfolder with the `.bin` and `.param` files.
 
-Extract the downloaded archive to a permanent location, for example:
+**Step 2 — Set the binary path**
 
-`~/.local/share/realesrgan/`
-
-The folder should contain the `realesrgan-ncnn-vulkan` binary and a `models/` subfolder with the `.bin` and `.param` model files.
-
-### Step 3 — Set the binary path in Preferences
-
-Open Sharpr → menu **(⋮)** → **Preferences** → paste the full path to the binary in the **Upscaler binary** field, for example:
+Open **Preferences** and paste the full path into the **Upscaler binary** field:
 
 `/home/yourname/.local/share/realesrgan/realesrgan-ncnn-vulkan`
 
-Save Preferences. The **Upscale** action in the viewer is now available.
+### ONNX backend — Swin2SR
+
+Select **ONNX** as the backend in Preferences and choose a model:
+
+- **Lightweight ×2** (8 MB) — fast, good general quality
+- **Compressed ×4** (55 MB) — optimised for compressed or low-quality source images
+- **Realworld ×4** (55 MB) — highest quality for photographs
+
+The model file is downloaded automatically on first use and stored in `~/.local/share/sharpr/models/`. No GPU required; inference runs on CPU via ONNX Runtime. Transparency (alpha channel) is preserved.
+
+### ComfyUI backend
+
+Start your local ComfyUI server, then open **Preferences**, select **ComfyUI** as the backend, and enter the server URL (default: `http://127.0.0.1:8188`). Use **Test Connection** to verify Sharpr can reach it. Sharpr uploads the image, runs a RealESRGAN ×4 workflow, and downloads the result automatically.
 
 ## Library
 
@@ -73,8 +85,8 @@ The **Duplicates** section uses perceptual hashing (dHash) to find visually simi
 
 Use the **View menu (⋮)** to rotate an image 90° clockwise or counter-clockwise, or to flip it horizontally or vertically. Changes are applied in memory and written back to the original file when you press **Save Edit**. Press **Discard** to revert.
 
-The **Upscale** action runs AI upscaling via RealESRGAN-NCNN-Vulkan when the tool is installed. A before/after comparison slider is shown so you can inspect the result before committing. Set the upscaler binary path in Preferences.
+The **Upscale** action runs AI upscaling using whichever backend is configured in Preferences (CLI, ONNX, or ComfyUI). A before/after comparison slider lets you inspect the result before committing or discarding.
 
 ## Preferences
 
-Open **Preferences** from the menu (⋮) to adjust the thumbnail cache size, set the path to the upscaler binary, and configure other options.
+Open **Preferences** from the menu (⋮) to adjust the thumbnail cache size, choose the upscale backend, and configure other options.
