@@ -1,92 +1,102 @@
 # Sharpr UI/UX Review
 
 ## Summary
-Sharpr reads as a GNOME-native image library browser with quality filtering and lightweight management tools. The core three-pane structure is understandable: folders and smart views on the left, thumbnails in the middle, preview on the right. The app looks more like a management console than a viewer, which is acceptable for large compressed-image libraries but risky if viewing is supposed to be the primary action. The current UI is clean at a component level, but the product direction already looks crowded: folders, smart folders, quality scoring, tags, collections, search, preview metadata, and upscaling all compete for attention. AI features are visible mainly through quality scoring and an upscale action, but the workflow is not self-explanatory from the screen alone. The app should not chase Lightroom-style depth; its strength is fast triage of messy image folders. The strongest direction is a focused browser for finding, inspecting, filtering, and improving compressed images, with AI tools kept contextual and optional.
+Sharpr is not just a viewer; the code shows a folder-backed image triage and curation tool with persistent indexing, disabled folders, thumbnail workers, perceptual duplicate detection, tags, collections, quality scoring, basic transforms, and three AI upscale backends. The three-pane UI is a strong foundation, but the product is already carrying too many concepts for its first screen. The main problem is not missing functionality; it is that important functionality is either overexposed in the sidebar or buried in menus, context menus, and keyboard shortcuts. The screenshots make upscaling and quality scoring look cryptic, while the code shows a much more complete but heavy workflow behind them. The app is drifting from "fast GNOME image library viewer" toward "photo manager plus AI lab plus lightweight editor." That direction is risky because the target use case is browsing and managing large compressed-image collections, not full digital asset management. The product should keep its powerful internals, but the default UX needs to become calmer, denser, and more explicit about workflows.
 
 ## First Impressions
-The first read is "image library triage tool", not generic image viewer. That is a good niche. The folder list, smart folders, quality categories, collections, and thumbnail strip make the app feel built for sorting through many files rather than editing one image.
+The first screen says "library manager", not "image viewer". That is acceptable for the stated use case, but the app immediately presents folders, smart folders, quality buckets, collections, tags, search, duplicates, preview metadata, and upscaling hints. A new user can understand the broad shape, but not the priority.
 
-The purpose is mostly understandable, but the hierarchy is too busy for a first launch. The left sidebar exposes too many concepts at once: physical folders, smart folders, quality buckets, collections, search, tags, and duplicates. None of these are individually wrong, but together they make the app look larger and more complicated than the primary use case requires.
+The actual implementation is more capable than the screenshot suggests. There are context-menu actions for opening externally, revealing in the file manager, copying, trashing, and collection management. There are keyboard shortcuts for navigation, fullscreen, metadata, trash, tags, and zoom. There is a real before/after comparison view for upscaling. None of that is obvious from the default screen.
 
-The preview area is visually dominant, which is good. The selected image is clear. The floating metadata chips are useful, but they currently feel like product-specific jargon: "IQ 55%", "Fair", and the five-bar indicator need context somewhere, especially because users will not know whether this is objective quality, compression damage, resolution quality, aesthetic rating, or AI confidence.
+The UI currently makes the wrong things visible. Quality classes and collections get permanent sidebar space, while core selected-image actions are hidden behind right-click or the main menu. For image triage, delete, reveal, compare, tag, open externally, and upscale are primary actions.
 
 ## UI/UX Evaluation
-The three-pane layout is the right base for this product. Sidebar navigation plus thumbnail browser plus large preview matches the job: browse many images quickly, inspect one image deeply, and move through collections without opening a separate viewer.
+The three-pane structure is the right base: sidebar for sources and smart views, filmstrip for candidates, viewer for inspection. The split view and adaptive breakpoints fit GNOME patterns, and the app already handles narrow windows by collapsing sidebars. That is a solid structural decision.
 
-Spacing is generous and GNOME-like, but the middle thumbnail column is too wide for a list and too narrow for a serious grid. It shows large thumbnails with filenames, but it wastes vertical capacity. For large libraries, this becomes a slow browsing surface because the user sees only a few items at once. A density control or real grid/list toggle matters more here than more features.
+The filmstrip is too low-density for large libraries. It uses a virtualized `GtkListView` and background thumbnail scheduling, so the implementation is not naive. The UX still shows only a handful of images at once because each row uses a large 160px thumbnail plus filename. That is good for slow visual review, bad for scanning thousands of screenshots, wallpapers, or web images.
 
-The left sidebar has weak information hierarchy. "Folders", "Smart Folders", "Quality", and "Collections" are clear section labels, but the screen gives them nearly equal weight. Quality categories such as Excellent, Good, Fair, Poor, and Needs Upscale look like navigation destinations, not filters. If they are filters, they should behave and look like filters. If they are saved smart views, they need counts and clearer grouping.
+The sidebar hierarchy is overloaded. "Folders", "Smart Folders", "Quality", and "Collections" are all permanent sections. Quality buckets are implemented as virtual views, not just labels, but they behave like navigation items without counts. Collections have counts; quality and smart folders mostly do not. This inconsistency makes the sidebar feel unfinished even though the backend is real.
 
-The top header is sparse but slightly ambiguous. "Photos" in the thumbnail pane does not explain whether this is all photos, the selected folder, or a mode. "Preview" is accurate but redundant when the right pane is obviously a preview. The menu and close buttons are visually clear, but the app's most important actions are hidden. For this product, actions like compare, reveal file, tag, delete, copy path, open externally, and upscale should be discoverable from the selected image context, not buried in a menu.
+The preview pane has usable zoom behavior in code: fit, 1:1, Ctrl+scroll, Ctrl+0, panning, and a zoom OSD. The screenshot does not reveal this. The main menu contains fit/1:1, and there is a zoom button path in the viewer, but the visible header does not communicate enough. A viewer must make zoom state and fit mode obvious because quality judgment depends on it.
 
-The bottom overlay chips are visually strong, but they compete with the image. The left chip "1080p · webp" plus a plus button is cryptic. A plus symbol next to format/resolution suggests adding something, but it is not clear whether it adds to collection, starts upscale, creates variant, or opens actions. The right chip is better because it groups resolution, format, size, and quality, but it is large enough to obscure image content and feels like a status widget rather than a clean metadata readout.
+The metadata overlay is useful but too jargon-heavy. The code names it `IQ`, computes it from long edge, megapixels, file size per pixel, and format, and gives a tooltip reason. That is not general "image quality"; it is technical suitability and compression/resolution scoring. Calling it "IQ" makes it feel like opaque AI scoring when it is actually a deterministic heuristic.
 
-The light theme exposes more problems than the dark theme. The image preview sits in a large white canvas, making empty space dominate the view and reducing the sense that this is an image-focused app. Dark mode feels more natural for image inspection. Light mode needs a more deliberate neutral preview background, likely not pure white.
+The app has basic editing: rotate, flip, save edit, discard edit. This is product-risky. It is useful, but it pushes Sharpr toward editor territory. These controls are currently tucked into the menu, which is good, but the app must keep them framed as lossless/simple file operations, not editing.
 
-GNOME alignment is mostly good: sidebar, headerbar, rounded controls, restrained icons, and preference for simple surfaces. The biggest mismatch is product complexity. GNOME apps tend to hide advanced behavior until needed. Sharpr currently presents advanced library concepts up front.
+GNOME alignment is mixed. The widgets and layout are GNOME-native, but the product exposure is not. GNOME-style apps usually avoid showing every internal capability in the primary navigation. Sharpr should keep the capabilities but reveal them contextually.
 
 ## Feature Scope Analysis
-Core features are folder browsing, thumbnail scanning, large preview, file metadata, search, duplicate detection, basic collections, and quality filtering. These all support the stated use case of managing large compressed-image collections.
+Core features should be folder browsing, fast thumbnail loading, large preview, zoom/pan, metadata, search, duplicate detection, trash/reveal/open, and lightweight tagging. These directly support the use case of managing messy compressed-image libraries.
 
-Quality scoring can be core if it is framed as compression/technical quality, not general image quality. The label "IQ" is a problem. It sounds proprietary and vague. Use clearer language such as "Quality 55%" or "Compression quality: Fair" if that is what it means.
+Persistent indexing is justified. The code uses SQLite for image metadata, ignored folders, quality class, perceptual hashes, and collections. This is the right infrastructure for large libraries, but it should remain invisible except through speed, counts, and reliable smart views.
 
-Upscaling should be an advanced contextual action, not a primary navigation category. "Needs Upscale" in the sidebar is useful as a smart folder, but it also makes the app feel like an AI upscaler first. The app should let users ignore AI completely without feeling like they are using half a product.
+Quality scoring is useful, but its current product framing is wrong. The scorer rewards resolution, megapixels, bytes-per-pixel, and format. That is a "technical quality / upscale candidate" signal, not an aesthetic or objective quality score. The UI should stop using "IQ" and label it as "Technical quality" or "Resolution quality".
 
-Tags and collections are useful but dangerous. If both exist, they must have sharply different purposes. Tags are flexible metadata. Collections are curated sets. If the UI does not explain that through behavior, users will treat them as duplicate organizational systems.
+AI tagging is better scoped than it first appears. The star button in the tag editor suggests tags locally and requires acceptance. That is the right pattern: optional, local, and subordinate to manual tags. It should not be elevated into main navigation.
 
-Comparison tools are likely justified, but only if focused on before/after and duplicate/near-duplicate decisions. Do not build a general compare workspace. The product needs quick "is this better than that?" decisions, not a full review suite.
+AI upscaling is feature-complete enough to be a real workflow: CLI RealESRGAN, ONNX Swin2SR with model downloads, optional ComfyUI, scale selection, progress, output path handling, and before/after comparison. The risk is that this is large enough to become its own product inside Sharpr. Keep it as "improve selected image", not "batch AI studio".
 
-The current scope is close to overbuilt. The visible concepts already include enough surface area for an entire photo manager. The app should avoid adding editing, ratings, albums, timeline views, map views, face/person features, color correction, batch transforms, and DAM-style metadata depth.
+Collections are useful but secondary. The implementation supports create, rename, delete, drag/drop, add/remove, counts, and collection virtual views. That is solid, but exposing collections permanently before a user has created or used them makes the app feel heavier than it needs to.
+
+Tags and collections overlap as organization systems. The distinction is technically clear: tags are searchable metadata, collections are curated sets. The UI needs to make that distinction behavioral and visible, or users will not understand why both exist.
 
 ## Workflow Analysis
-Browsing is structurally sound but too low-density. Large previews in the thumbnail column make sense for visual triage, but the app needs faster scanning modes. A user managing thousands of screenshots or web images needs to see dozens of items at once, jump by folder, and filter without losing context.
+Browsing has good architecture and weak density. Background thumbnail workers, persistent cache, preloading, and virtual list rendering are the right technical choices. The missing UX piece is a compact grid or density selector. The current filmstrip works for preview-driven browsing, not for high-volume curation.
 
-Viewing is the strongest workflow. Selecting a thumbnail and seeing a large preview is immediate. The preview pane should provide obvious image navigation, zoom behavior, fit modes, and keyboard affordances. From the screenshots, those controls are not discoverable.
+Viewing is strong but under-signposted. The code supports panning, fit, 1:1, zoom OSD, orientation handling, metadata loading on a background thread, prefetching adjacent images, and keyboard navigation. The UI should surface these affordances with a small viewer toolbar or clearer menu state.
 
-Comparing is not visible enough to evaluate as a complete workflow. If comparison exists, it should be reachable from the selected image and from duplicate/quality views. The expected flow is select image, compare with original/upscaled/duplicate candidate, accept or reject. Anything heavier will slow the product down.
+Search is tag-centered, not general file/library search. The placeholder says "Search tags…", and the code searches tag paths. That is coherent if Sharpr's search means tag search, but the sidebar label "Search" is too broad. Rename it to "Tag Search" or add filename search.
 
-Upscaling is hinted at but unclear. "Needs Upscale" and the plus button suggest an upscale path, but the screen does not explain what will happen: which model, output folder, overwrite behavior, queue status, or before/after review. For a destructive or expensive operation, the workflow needs more explicit staging.
+Duplicate detection is useful but depends on hashes being available. The app warns users to browse the library first because hashes are computed as thumbnails load. That is a workflow smell. If duplicate detection is a sidebar feature, it should either schedule missing hashes itself or clearly show "indexing required" progress.
 
-File management actions are underexposed. For this audience, delete, move, reveal in files, copy, rename, and open externally are not secondary luxuries. They are part of triage. If these are only in a menu, the app will feel like a viewer pretending to be a manager.
+Upscaling is implemented as a serious modal workflow with backend/model/scale choices and save/discard comparison. This is powerful but too much detail at action time. Most users need a default "Upscale" path first, with advanced backend choices in preferences. The dialog should not make casual users think they need to understand CLI, ONNX, ComfyUI, models, and scale before improving one image.
+
+File management actions exist but are hidden. Right-click on thumbnails exposes open, reveal, copy, add/remove collection, and trash. Delete also works from the keyboard. This is functional but undiscoverable. A selected-image action bar or popover would make the app feel like a manager instead of a viewer with secret management features.
 
 ## Edge Cases
-Large libraries will stress the current thumbnail column. Seeing five or six items at a time is not enough. The app needs virtualization, progressive loading, persistent indexes, visible counts, quick filters, and a compact grid mode.
+Large libraries are partially handled well. SQLite indexing, thumbnail workers, visible/preload queues, operation indicators, disabled folder filtering, and cached metadata are all appropriate. The UI still needs result counts, indexing state, and denser browsing to make those internals visible as confidence rather than mystery.
 
-Large images need predictable zoom and memory behavior. The UI should make it obvious whether the preview is fit-to-window, actual size, or scaled. Without this, quality review becomes unreliable because users cannot tell whether blur is in the file or in the viewer scaling.
+Large images are technically considered. The viewer decodes off-thread, stores RGBA, supports fit/1:1/zoom/pan, and prefetches adjacent images. The UX risk is memory and feedback: users need to know when the image is still loading and when they are seeing scaled versus actual pixels.
 
-Slow hardware makes AI and quality analysis risky. Background jobs must be explicitly queued and cancellable, with visible progress that does not block browsing. The UI should never imply that AI analysis is required before basic browsing works.
+Slow hardware will expose the AI scope problem. ONNX, ComfyUI, RealESRGAN, smart tagging, hashing, metadata indexing, and thumbnail generation all compete for resources. The shared operation indicator helps, but AI features should never block basic browsing or make the default app feel computationally heavy.
 
-Users who do not care about AI features should be able to use the app as a fast image browser without seeing constant AI terminology. Quality and upscale views should be collapsible or disabled. AI features should not occupy prime navigation space by default unless a library has actually been analyzed.
+Users who do not care about AI should be able to ignore it completely. Today they still see "Needs Upscale", "IQ", an "AI Upscale" menu section, and smart tag affordances if the model exists. These should be hidden or collapsed unless analysis/upscale is intentionally used.
 
-Users focused only on AI features need a tighter path than the current screen suggests. They need an "images that would benefit from upscale" queue, before/after comparison, output settings, and batch review. They do not need all library organization features visible while doing that job.
+Users focused on AI upscaling have the opposite problem: the workflow is powerful but scattered across preferences, the main menu, a modal dialog, an operation indicator, and a comparison view. They need a clean queue/review path if batch upscaling becomes a real goal. Until then, keep it single-image and contextual.
 
 ## Product Direction
-The sustainable direction is not "GNOME Lightroom with AI". That will collapse under scope, performance, and UX complexity. The sustainable direction is "fast GNOME image triage for messy folders, with optional quality analysis and upscaling."
+Sharpr should not become Lightroom. It already has tags, collections, quality classes, duplicates, transforms, smart tagging, multiple upscale backends, and persistent indexing. Adding ratings, albums, timelines, EXIF editing, face/person recognition, map views, or color editing would make the app incoherent.
 
-Sharpr should simplify the default experience and make advanced views conditional. Physical folders, thumbnails, and preview should be the main product. Smart folders, quality buckets, collections, tags, duplicates, and upscaling should appear as supporting tools, not equal peers.
+The best direction is "fast GNOME image triage for messy folders, with optional technical-quality analysis and image improvement." That is specific and defensible. It matches the codebase better than a plain viewer and avoids the trap of becoming a full photo manager.
 
-The app does not need to be split into separate applications yet. It does need internal product boundaries. Core browsing should work without AI. AI improvement should be a mode or workflow. Library organization should remain lightweight.
+The app should not be split yet. The code can support modular workflows inside one app. The product should be split into modes or progressive surfaces: Browse, Organize, Analyze, Improve. Do not put all four on screen at equal weight.
 
-If comparison and upscaling grow much further, they should become a focused workspace inside the app rather than more sidebar entries. A separate tool is only justified if upscaling becomes batch-processing software with models, presets, queues, and export management as the main identity.
+AI should be contextual, not architectural identity. Smart tags and upscaling are useful because they support curation. If AI becomes the app's main identity, Sharpr will need far more model management, batch processing, error handling, previews, and export controls than the current UI can absorb.
 
 ## Recommendations
-Remove visible concepts that are not ready to earn their space. Do not show empty or low-value sections by default. Hide collections unless the user creates one. Hide quality buckets until analysis exists. Do not expose AI terminology in the base navigation.
+Remove the term "IQ" from the UI. Replace it with "Quality", "Technical quality", or "Upscale score". The tooltip can explain the formula in plain language: resolution, file size per pixel, and format.
 
-Simplify the sidebar. Default it to Folders, Search, and maybe Duplicates. Move Tags, Quality, Needs Upscale, and Collections behind collapsible sections or an "Organize" / "Analyze" mode. Add counts consistently if sidebar entries represent filtered result sets.
+Remove permanent visibility for empty or inactive advanced sections. Hide Collections until one exists or the user creates one. Collapse Quality by default until metadata analysis has produced usable results. Keep Smart Folders, but do not make every smart capability look equally important.
 
-Move upscaling to an advanced contextual workflow. The selected image should have a clear "Upscale" action with a confirmation/options sheet, queue feedback, and before/after comparison. The sidebar "Needs Upscale" view can stay, but only as an analyzed smart view.
+Simplify the sidebar. Start with Folders, Search, Duplicates, and optional collapsed sections for Quality and Collections. Add counts to every virtual view that can compute them. If a view requires indexing or hashes, show that state directly in the row or the resulting empty view.
 
-Keep the three-pane layout, dark-theme image inspection, large preview, smart folder concept, duplicate detection, and basic metadata overlay. These are aligned with the product.
+Move core selected-image actions out of right-click-only access. Add a compact contextual action surface for reveal, open externally, trash, tag, add to collection, compare, and upscale. Keep destructive actions confirmed or visually distinct.
 
-Add a compact grid mode for browsing large libraries. Add visible zoom/fit controls in the preview. Add clear selected-image actions: reveal in folder, delete, tag, add to collection, compare, upscale, and open externally. Add a plain-language explanation of quality scoring in a tooltip, popover, or first-run analysis prompt.
+Simplify the upscale dialog. Use the saved/default backend and model for the primary flow. Put backend/model details behind an expander or "Advanced" section. The main decision should be scale and output behavior, not backend architecture.
+
+Keep the three-pane layout, persistent index, disabled folder support, background thumbnail workers, metadata overlay, duplicate detection, tag search, collection internals, and before/after comparison. These are the product's real strengths.
+
+Add a compact grid mode or density control. This is the highest-value UI addition for large libraries. It does more for the stated use case than another AI backend or another metadata category.
+
+Add explicit empty/loading states for smart views. Duplicates should say whether hashes are missing, scanning, or no duplicates found. Quality views should say whether metadata is indexed or being scanned. Search should say that it searches tags unless filename search is added.
 
 ## Top Priorities
 - Top 3 problems
-- The sidebar exposes too many product concepts at once, making the app feel unfocused.
-- Browsing density is too low for large image libraries.
-- AI/quality/upscale features are visible but not clearly explained as workflows.
+- The default UI exposes advanced product concepts before core triage actions.
+- Browsing density is too low for the large-library use case despite good virtualization internals.
+- AI/upscale/quality workflows are technically substantial but presented with unclear labels and too much hidden state.
 
 - Top 3 improvements
-- Make the default UI a focused folder browser with preview, search, and essential file actions.
-- Add compact grid/list browsing and explicit preview zoom/fit controls.
-- Turn quality analysis and upscaling into optional advanced workflows with clear queue, output, and comparison states.
+- Reframe the default app around fast browse, preview, search, and file actions; move advanced organization and analysis behind progressive surfaces.
+- Add compact grid/density controls and consistent counts/status for smart views.
+- Rename and explain quality scoring, then simplify upscaling into a default contextual action with advanced backend details hidden.
