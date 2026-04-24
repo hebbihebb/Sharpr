@@ -510,7 +510,6 @@ impl ViewerPane {
                                 "height": h,
                             }),
                         );
-                        *imp.current_rgba.borrow_mut() = Some((bytes.clone(), w, h));
                         if let Some(ref rc) = *imp.state.borrow() {
                             rc.borrow_mut().library.insert_preview(
                                 result.path.clone(),
@@ -610,7 +609,6 @@ impl ViewerPane {
                     "duration_ms": 0,
                 }),
             );
-            *imp.current_rgba.borrow_mut() = Some((bytes.clone(), w, h));
             let gbytes = glib::Bytes::from_owned(bytes);
             let texture = gdk4::MemoryTexture::new(
                 w as i32,
@@ -661,7 +659,6 @@ impl ViewerPane {
                     "duration_ms": 0,
                 }),
             );
-            *imp.current_rgba.borrow_mut() = Some((bytes.clone(), w, h));
             if let Some(ref rc) = *imp.state.borrow() {
                 rc.borrow_mut()
                     .library
@@ -949,15 +946,32 @@ impl ViewerPane {
         self.toggle_zoom_mode();
     }
 
+    /// Return the current image's RGBA pixels, checking the in-memory buffer
+    /// first and falling back to the preview LRU cache. Returns `None` when
+    /// the image is not in either location (e.g. oversized, evicted, or not yet loaded).
+    fn current_rgba_or_cached(&self) -> Option<(Vec<u8>, u32, u32)> {
+        let imp = self.imp();
+        if let Some(v) = imp.current_rgba.borrow().clone() {
+            return Some(v);
+        }
+        let path = imp.current_path.borrow().clone()?;
+        imp.state
+            .borrow()
+            .as_ref()
+            .and_then(|rc| rc.borrow().library.cached_preview(&path))
+    }
+
     /// Apply an in-memory transform to the currently displayed image.
     /// `op` is one of: `"rotate-cw"`, `"rotate-ccw"`, `"flip-h"`, `"flip-v"`.
-    /// If no current RGBA buffer is set, does nothing.
+    /// Falls back to the preview cache when the in-memory buffer is absent.
     pub fn apply_transform(&self, op: &str) {
         use gdk4::{MemoryFormat, MemoryTexture};
         use image::imageops;
 
         let imp = self.imp();
-        let Some((rgba_bytes, w, h)) = imp.current_rgba.borrow_mut().take() else {
+        // Take the in-memory buffer if available; otherwise load from preview cache.
+        let rgba_from_cache = imp.current_rgba.borrow_mut().take().or_else(|| self.current_rgba_or_cached());
+        let Some((rgba_bytes, w, h)) = rgba_from_cache else {
             return;
         };
         if w == 0 || h == 0 {
@@ -1009,7 +1023,7 @@ impl ViewerPane {
             Some(p) => p,
             None => return,
         };
-        let Some((rgba, w, h)) = imp.current_rgba.borrow().clone() else {
+        let Some((rgba, w, h)) = self.current_rgba_or_cached() else {
             return;
         };
         if w == 0 || h == 0 {
@@ -1194,7 +1208,7 @@ impl ViewerPane {
             };
             let imp = viewer.imp();
 
-            let Some((rgba, w, h)) = imp.current_rgba.borrow().clone() else {
+            let Some((rgba, w, h)) = viewer.current_rgba_or_cached() else {
                 return;
             };
 
