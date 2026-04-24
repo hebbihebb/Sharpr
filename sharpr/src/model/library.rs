@@ -62,16 +62,21 @@ pub struct LibraryManager {
     cache_order: Vec<PathBuf>,
     prefetch_cache: FxHashMap<PathBuf, (Vec<u8>, u32, u32)>,
     prefetch_order: Vec<PathBuf>,
+    prefetch_cache_bytes: usize,
     prefetch_in_flight: HashSet<PathBuf>,
     preview_cache: FxHashMap<PathBuf, (Vec<u8>, u32, u32)>,
     preview_order: Vec<PathBuf>,
+    preview_cache_bytes: usize,
     thumbnail_cache_max: usize,
     metadata_cache: FxHashMap<PathBuf, CachedImageData>,
     indexed_library_paths: Vec<PathBuf>,
 }
 
 impl LibraryManager {
-    const MAX_PREVIEW_CACHE: usize = 3;
+    /// Byte budget for the decoded-preview LRU cache (~128 MiB).
+    const PREVIEW_CACHE_BUDGET: usize = 128 * 1024 * 1024;
+    /// Byte budget for the prefetch LRU cache (~64 MiB).
+    const PREFETCH_CACHE_BUDGET: usize = 64 * 1024 * 1024;
 
     pub fn new() -> Self {
         Self {
@@ -87,9 +92,11 @@ impl LibraryManager {
             cache_order: Vec::new(),
             prefetch_cache: FxHashMap::default(),
             prefetch_order: Vec::new(),
+            prefetch_cache_bytes: 0,
             prefetch_in_flight: HashSet::new(),
             preview_cache: FxHashMap::default(),
             preview_order: Vec::new(),
+            preview_cache_bytes: 0,
             thumbnail_cache_max: 500,
             metadata_cache: FxHashMap::default(),
             indexed_library_paths: Vec::new(),
@@ -118,6 +125,7 @@ impl LibraryManager {
         self.active_thumbnail_cache.clear();
         self.prefetch_cache.clear();
         self.prefetch_order.clear();
+        self.prefetch_cache_bytes = 0;
         self.prefetch_in_flight.clear();
         if let (Some(folder), Some(idx)) = (self.current_folder.as_ref(), self.selected_index) {
             self.folder_history.insert(folder.clone(), idx);
@@ -317,7 +325,11 @@ impl LibraryManager {
         if let Some(pos) = self.cache_order.iter().position(|p| p == path) {
             self.cache_order.remove(pos);
         }
-        self.preview_cache.remove(path);
+        if let Some((bytes, w, h)) = self.preview_cache.remove(path) {
+            self.preview_cache_bytes =
+                self.preview_cache_bytes.saturating_sub(Self::entry_bytes(w, h));
+            drop(bytes);
+        }
         if let Some(pos) = self.preview_order.iter().position(|p| p == path) {
             self.preview_order.remove(pos);
         }
@@ -337,12 +349,20 @@ impl LibraryManager {
             self.cache_order.remove(pos);
         }
 
-        self.preview_cache.remove(path);
+        if let Some((bytes, w, h)) = self.preview_cache.remove(path) {
+            self.preview_cache_bytes =
+                self.preview_cache_bytes.saturating_sub(Self::entry_bytes(w, h));
+            drop(bytes);
+        }
         if let Some(pos) = self.preview_order.iter().position(|p| p == path) {
             self.preview_order.remove(pos);
         }
 
-        self.prefetch_cache.remove(path);
+        if let Some((bytes, w, h)) = self.prefetch_cache.remove(path) {
+            self.prefetch_cache_bytes =
+                self.prefetch_cache_bytes.saturating_sub(Self::entry_bytes(w, h));
+            drop(bytes);
+        }
         if let Some(pos) = self.prefetch_order.iter().position(|p| p == path) {
             self.prefetch_order.remove(pos);
         }
@@ -427,23 +447,40 @@ impl LibraryManager {
         self.prefetch_cache.contains_key(path) || self.prefetch_in_flight.contains(path)
     }
 
+    /// Byte footprint of one RGBA cache entry.
+    fn entry_bytes(width: u32, height: u32) -> usize {
+        width as usize * height as usize * 4
+    }
+
     /// Mark a path as having a prefetch decode in flight.
     pub fn mark_prefetch_in_flight(&mut self, path: PathBuf) {
         self.prefetch_in_flight.insert(path);
     }
 
-    /// Store completed prefetch bytes. Evicts oldest if cache exceeds 3 entries.
+    /// Store completed prefetch bytes. Evicts LRU entries to stay within the
+    /// byte budget. Oversized single images are not cached but still decode fine.
     pub fn insert_prefetch(&mut self, path: PathBuf, bytes: Vec<u8>, width: u32, height: u32) {
         self.prefetch_in_flight.remove(&path);
         if self.prefetch_cache.contains_key(&path) {
             return;
         }
-        if self.prefetch_order.len() >= 3 {
-            let oldest = self.prefetch_order.remove(0);
-            self.prefetch_cache.remove(&oldest);
+        let entry_size = Self::entry_bytes(width, height);
+        if entry_size > Self::PREFETCH_CACHE_BUDGET {
+            return;
         }
-        self.prefetch_cache
-            .insert(path.clone(), (bytes, width, height));
+        while self.prefetch_cache_bytes + entry_size > Self::PREFETCH_CACHE_BUDGET {
+            let Some(oldest) = self.prefetch_order.first().cloned() else {
+                break;
+            };
+            self.prefetch_order.remove(0);
+            if let Some((evicted, ew, eh)) = self.prefetch_cache.remove(&oldest) {
+                self.prefetch_cache_bytes =
+                    self.prefetch_cache_bytes.saturating_sub(Self::entry_bytes(ew, eh));
+                drop(evicted);
+            }
+        }
+        self.prefetch_cache_bytes += entry_size;
+        self.prefetch_cache.insert(path.clone(), (bytes, width, height));
         self.prefetch_order.push(path);
     }
 
@@ -453,7 +490,12 @@ impl LibraryManager {
         if let Some(pos) = self.prefetch_order.iter().position(|p| p == path) {
             self.prefetch_order.remove(pos);
         }
-        self.prefetch_cache.remove(path)
+        if let Some((bytes, w, h)) = self.prefetch_cache.remove(path) {
+            self.prefetch_cache_bytes =
+                self.prefetch_cache_bytes.saturating_sub(Self::entry_bytes(w, h));
+            return Some((bytes, w, h));
+        }
+        None
     }
 
     /// Return a cloned decoded preview buffer, if present.
@@ -462,19 +504,41 @@ impl LibraryManager {
     }
 
     /// Insert decoded preview bytes into the preview LRU cache.
+    /// Evicts LRU entries to stay within the byte budget.
+    /// Oversized single images are not cached (they still display as the current image).
     pub fn insert_preview(&mut self, path: PathBuf, bytes: Vec<u8>, width: u32, height: u32) {
-        if self.preview_cache.contains_key(&path) {
+        let entry_size = Self::entry_bytes(width, height);
+        if entry_size > Self::PREVIEW_CACHE_BUDGET {
+            return;
+        }
+        // Remove existing entry first so its bytes are freed before re-inserting.
+        if let Some((old_bytes, ow, oh)) = self.preview_cache.remove(&path) {
+            self.preview_cache_bytes =
+                self.preview_cache_bytes.saturating_sub(Self::entry_bytes(ow, oh));
             if let Some(pos) = self.preview_order.iter().position(|p| p == &path) {
                 self.preview_order.remove(pos);
             }
-        } else if self.preview_order.len() >= Self::MAX_PREVIEW_CACHE {
-            let oldest = self.preview_order.remove(0);
-            self.preview_cache.remove(&oldest);
+            drop(old_bytes);
         }
-
-        self.preview_cache
-            .insert(path.clone(), (bytes, width, height));
+        while self.preview_cache_bytes + entry_size > Self::PREVIEW_CACHE_BUDGET {
+            let Some(oldest) = self.preview_order.first().cloned() else {
+                break;
+            };
+            self.preview_order.remove(0);
+            if let Some((evicted, ew, eh)) = self.preview_cache.remove(&oldest) {
+                self.preview_cache_bytes =
+                    self.preview_cache_bytes.saturating_sub(Self::entry_bytes(ew, eh));
+                drop(evicted);
+            }
+        }
+        self.preview_cache_bytes += entry_size;
+        self.preview_cache.insert(path.clone(), (bytes, width, height));
         self.preview_order.push(path);
+    }
+
+    /// Approximate bytes used by the preview and prefetch caches (for debugging).
+    pub fn cache_stats(&self) -> (usize, usize) {
+        (self.preview_cache_bytes, self.prefetch_cache_bytes)
     }
 
     /// Populate the store from an arbitrary list of paths (virtual view).
@@ -488,9 +552,11 @@ impl LibraryManager {
         self.active_thumbnail_cache.clear();
         self.prefetch_cache.clear();
         self.prefetch_order.clear();
+        self.prefetch_cache_bytes = 0;
         self.prefetch_in_flight.clear();
         self.preview_cache.clear();
         self.preview_order.clear();
+        self.preview_cache_bytes = 0;
         self.selected_index = None;
         self.current_folder = None;
         let mut metadata_pending = Vec::new();
@@ -936,5 +1002,68 @@ mod tests {
         assert!(entries[1].file_size > 0);
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preview_cache_evicts_lru_when_budget_exceeded() {
+        let mut mgr = LibraryManager::new();
+        // Use 1-byte-per-pixel stand-ins: 4000×4000 = 64 MiB each, budget 128 MiB.
+        let a = PathBuf::from("/a.jpg");
+        let b = PathBuf::from("/b.jpg");
+        let c = PathBuf::from("/c.jpg");
+        let bytes_64mib = vec![0u8; 4000 * 4000 * 4];
+        mgr.insert_preview(a.clone(), bytes_64mib.clone(), 4000, 4000);
+        mgr.insert_preview(b.clone(), bytes_64mib.clone(), 4000, 4000);
+        let (used, _) = mgr.cache_stats();
+        assert_eq!(used, 2 * 4000 * 4000 * 4);
+        // Adding c (64 MiB) would exceed 128 MiB budget — evicts a (oldest).
+        mgr.insert_preview(c.clone(), bytes_64mib.clone(), 4000, 4000);
+        assert!(mgr.cached_preview(&a).is_none(), "a should have been evicted");
+        assert!(mgr.cached_preview(&b).is_some());
+        assert!(mgr.cached_preview(&c).is_some());
+        let (used, _) = mgr.cache_stats();
+        assert_eq!(used, 2 * 4000 * 4000 * 4);
+    }
+
+    #[test]
+    fn oversized_preview_not_cached() {
+        let mut mgr = LibraryManager::new();
+        // 8000×8000 RGBA = 256 MiB > budget; should be silently dropped.
+        let path = PathBuf::from("/huge.tif");
+        let oversized = vec![0u8; 8000 * 8000 * 4];
+        mgr.insert_preview(path.clone(), oversized, 8000, 8000);
+        assert!(mgr.cached_preview(&path).is_none());
+        let (used, _) = mgr.cache_stats();
+        assert_eq!(used, 0);
+    }
+
+    #[test]
+    fn prefetch_cache_evicts_lru_when_budget_exceeded() {
+        let mut mgr = LibraryManager::new();
+        // 32 MiB each, budget 64 MiB.
+        let a = PathBuf::from("/a.jpg");
+        let b = PathBuf::from("/b.jpg");
+        let c = PathBuf::from("/c.jpg");
+        let bytes_32mib = vec![0u8; 2828 * 2828 * 4]; // ≈32 MiB
+        let (w, h) = (2828u32, 2828u32);
+        mgr.insert_prefetch(a.clone(), bytes_32mib.clone(), w, h);
+        mgr.insert_prefetch(b.clone(), bytes_32mib.clone(), w, h);
+        // c should evict a.
+        mgr.insert_prefetch(c.clone(), bytes_32mib.clone(), w, h);
+        assert!(mgr.take_prefetch(&a).is_none(), "a should have been evicted");
+        assert!(mgr.take_prefetch(&b).is_some());
+        assert!(mgr.take_prefetch(&c).is_some());
+    }
+
+    #[test]
+    fn take_prefetch_decrements_byte_count() {
+        let mut mgr = LibraryManager::new();
+        let path = PathBuf::from("/img.jpg");
+        mgr.insert_prefetch(path.clone(), vec![0u8; 100 * 100 * 4], 100, 100);
+        let (_, pre) = mgr.cache_stats();
+        assert_eq!(pre, 100 * 100 * 4);
+        let _ = mgr.take_prefetch(&path);
+        let (_, post) = mgr.cache_stats();
+        assert_eq!(post, 0);
     }
 }
