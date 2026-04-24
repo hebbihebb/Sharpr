@@ -2,8 +2,6 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Once};
-use std::time::Instant;
-
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
@@ -90,6 +88,8 @@ mod imp {
         /// Async callbacks capture the value at dispatch time and discard their
         /// result if it no longer matches (i.e. a newer load was requested).
         pub load_gen: Cell<u64>,
+        /// Handle for submitting decode requests to the shared preview worker pool.
+        pub preview_handle: RefCell<Option<crate::image_pipeline::worker::PreviewHandle>>,
     }
 
     impl Default for ViewerPane {
@@ -271,6 +271,7 @@ mod imp {
                 drag_origin: Cell::new(None),
                 drag_adjustments: Cell::new((0.0, 0.0)),
                 load_gen: Cell::new(0),
+                preview_handle: RefCell::new(None),
             }
         }
     }
@@ -470,6 +471,81 @@ impl ViewerPane {
     // Image loading (async via background thread + idle callback)
     // -----------------------------------------------------------------------
 
+    /// Wire the shared preview worker pool to this viewer.
+    /// Call once from the window setup, before any images are loaded.
+    /// `result_rx` is drained on the GTK main thread; stale results (whose
+    /// generation no longer matches `load_gen`) are silently discarded.
+    pub fn set_preview_worker(
+        &self,
+        handle: crate::image_pipeline::worker::PreviewHandle,
+        result_rx: async_channel::Receiver<crate::image_pipeline::worker::PreviewResult>,
+    ) {
+        *self.imp().preview_handle.borrow_mut() = Some(handle);
+
+        let widget_weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(result) = result_rx.recv().await {
+                let Some(viewer) = widget_weak.upgrade() else {
+                    break;
+                };
+                let imp = viewer.imp();
+                if result.gen != imp.load_gen.get() {
+                    continue;
+                }
+                imp.spinner.stop();
+                imp.spinner.set_visible(false);
+                match result.image {
+                    Ok(crate::image_pipeline::PreviewImage {
+                        rgba: bytes,
+                        width: w,
+                        height: h,
+                        ..
+                    }) => {
+                        crate::bench_event!(
+                            "viewer.load.finish",
+                            serde_json::json!({
+                                "path": result.path.display().to_string(),
+                                "source": "decode",
+                                "width": w,
+                                "height": h,
+                            }),
+                        );
+                        *imp.current_rgba.borrow_mut() = Some((bytes.clone(), w, h));
+                        if let Some(ref rc) = *imp.state.borrow() {
+                            rc.borrow_mut().library.insert_preview(
+                                result.path.clone(),
+                                bytes.clone(),
+                                w,
+                                h,
+                            );
+                        }
+                        let gbytes = glib::Bytes::from_owned(bytes);
+                        let texture = gdk4::MemoryTexture::new(
+                            w as i32,
+                            h as i32,
+                            gdk4::MemoryFormat::R8g8b8a8,
+                            &gbytes,
+                            (w * 4) as usize,
+                        );
+                        imp.picture
+                            .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
+                        viewer.reset_zoom();
+                    }
+                    Err(_) => {
+                        crate::bench_event!(
+                            "viewer.load.fail",
+                            serde_json::json!({
+                                "path": result.path.display().to_string(),
+                            }),
+                        );
+                        *imp.current_rgba.borrow_mut() = None;
+                        imp.picture.set_paintable(None::<&gdk4::Paintable>);
+                    }
+                }
+            }
+        });
+    }
+
     /// Clear the viewer (called when the folder changes).
     pub fn clear(&self) {
         let imp = self.imp();
@@ -623,32 +699,15 @@ impl ViewerPane {
             return;
         }
 
-        // ── Slow path: show spinner and decode in background (unchanged). ───────
+        // ── Slow path: submit to the bounded preview worker pool. ──────────────
         imp.spinner.start();
         imp.spinner.set_visible(true);
 
-        // Channel for decoded pixel data: (rgba_bytes, width, height)
-        let (pixel_tx, pixel_rx) =
-            async_channel::bounded::<Option<crate::image_pipeline::PreviewImage>>(1);
-
-        // Spawn background decode thread.
-        let path_decode = path.clone();
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            let decoded = crate::image_pipeline::decode_preview(
-                &path_decode,
-                crate::image_pipeline::PreviewDecodeMode::Viewer,
-            )
-            .ok();
-            crate::bench_event!(
-                "viewer.decode.finish",
-                serde_json::json!({
-                    "path": path_decode.display().to_string(),
-                    "duration_ms": crate::bench::duration_ms(started),
-                }),
-            );
-            let _ = pixel_tx.send_blocking(decoded);
-        });
+        // Send the decode request to the shared worker pool. Results are drained
+        // by the persistent loop installed in set_preview_worker().
+        if let Some(ref handle) = *imp.preview_handle.borrow() {
+            handle.request(path.clone(), load_gen);
+        }
 
         // Spawn background metadata thread.
         // Uses the same async-channel + spawn_local pattern so no Send requirement
@@ -668,70 +727,6 @@ impl ViewerPane {
                     viewer.imp().metadata_chip.update_metadata(&metadata);
                     viewer.update_quality_indicator(&metadata);
                     viewer.refresh_tag_summary();
-                }
-            }
-        });
-
-        // Receive decoded pixels on the main thread.
-        let widget_weak = self.downgrade();
-        glib::MainContext::default().spawn_local(async move {
-            let Ok(maybe_pixels) = pixel_rx.recv().await else {
-                return;
-            };
-            let Some(viewer) = widget_weak.upgrade() else {
-                return;
-            };
-            if viewer.imp().load_gen.get() != load_gen {
-                return;
-            }
-            let imp = viewer.imp();
-            imp.spinner.stop();
-            imp.spinner.set_visible(false);
-
-            match maybe_pixels {
-                Some(crate::image_pipeline::PreviewImage {
-                    rgba: bytes,
-                    width: w,
-                    height: h,
-                    ..
-                }) => {
-                    crate::bench_event!(
-                        "viewer.load.finish",
-                        serde_json::json!({
-                            "path": path.display().to_string(),
-                            "source": "decode",
-                            "width": w,
-                            "height": h,
-                        }),
-                    );
-                    *imp.current_rgba.borrow_mut() = Some((bytes.clone(), w, h));
-                    if let Some(ref rc) = *imp.state.borrow() {
-                        rc.borrow_mut()
-                            .library
-                            .insert_preview(path.clone(), bytes.clone(), w, h);
-                    }
-                    let gbytes = glib::Bytes::from_owned(bytes);
-                    let texture = gdk4::MemoryTexture::new(
-                        w as i32,
-                        h as i32,
-                        gdk4::MemoryFormat::R8g8b8a8,
-                        &gbytes,
-                        (w * 4) as usize,
-                    );
-                    imp.picture
-                        .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
-                    viewer.reset_zoom();
-                }
-                None => {
-                    crate::bench_event!(
-                        "viewer.load.fail",
-                        serde_json::json!({
-                            "path": path.display().to_string(),
-                        }),
-                    );
-                    // Decode failed — clear to blank.
-                    *imp.current_rgba.borrow_mut() = None;
-                    imp.picture.set_paintable(None::<&gdk4::Paintable>);
                 }
             }
         });
