@@ -1,102 +1,274 @@
-# Sharpr UI/UX Review
+# Sharpr Architecture and UX Audit
 
-## Summary
-Sharpr is not just a viewer; the code shows a folder-backed image triage and curation tool with persistent indexing, disabled folders, thumbnail workers, perceptual duplicate detection, tags, collections, quality scoring, basic transforms, and three AI upscale backends. The three-pane UI is a strong foundation, but the product is already carrying too many concepts for its first screen. The main problem is not missing functionality; it is that important functionality is either overexposed in the sidebar or buried in menus, context menus, and keyboard shortcuts. The screenshots make upscaling and quality scoring look cryptic, while the code shows a much more complete but heavy workflow behind them. The app is drifting from "fast GNOME image library viewer" toward "photo manager plus AI lab plus lightweight editor." That direction is risky because the target use case is browsing and managing large compressed-image collections, not full digital asset management. The product should keep its powerful internals, but the default UX needs to become calmer, denser, and more explicit about workflows.
+This audit treats Sharpr as a GNOME-native image library viewer whose first job is fast, predictable triage across large folders and libraries. The existing report is directionally right about scope drift, but it needs sharper technical prioritization and a few corrections based on the current code.
 
-## First Impressions
-The first screen says "library manager", not "image viewer". That is acceptable for the stated use case, but the app immediately presents folders, smart folders, quality buckets, collections, tags, search, duplicates, preview metadata, and upscaling hints. A new user can understand the broad shape, but not the priority.
+## 1. Validation of the Existing Report
 
-The actual implementation is more capable than the screenshot suggests. There are context-menu actions for opening externally, revealing in the file manager, copying, trashing, and collection management. There are keyboard shortcuts for navigation, fullscreen, metadata, trash, tags, and zoom. There is a real before/after comparison view for upscaling. None of that is obvious from the default screen.
+### Scope Drift Toward an AI Lab
 
-The UI currently makes the wrong things visible. Quality classes and collections get permanent sidebar space, while core selected-image actions are hidden behind right-click or the main menu. For image triage, delete, reveal, compare, tag, open externally, and upscale are primary actions.
+**Verdict: correct and well-prioritized.**
 
-## UI/UX Evaluation
-The three-pane structure is the right base: sidebar for sources and smart views, filmstrip for candidates, viewer for inspection. The split view and adaptive breakpoints fit GNOME patterns, and the app already handles narrow windows by collapsing sidebars. That is a solid structural decision.
+Sharpr is currently becoming a hybrid of fast viewer, photo manager, quality classifier, duplicate finder, smart tagger, and AI upscaling workbench. The strongest contradiction is in the upscale surface: `src/upscale/` contains CLI, ONNX, and ComfyUI backends, model downloads, tiling, comparison UI, output format controls, GPU/tile settings, and preferences. That is a large product surface for a feature that does not improve the core navigation loop.
 
-The filmstrip is too low-density for large libraries. It uses a virtualized `GtkListView` and background thumbnail scheduling, so the implementation is not naive. The UX still shows only a handful of images at once because each row uses a large 160px thumbnail plus filename. That is good for slow visual review, bad for scanning thousands of screenshots, wallpapers, or web images.
+The report is right that this risks burying the main value proposition. It is incomplete because smart tags, quality folders, duplicate views, collections, and metadata overlays also compete with the same interaction budget. Upscaling is the clearest offender, but not the only source of scope pressure.
 
-The sidebar hierarchy is overloaded. "Folders", "Smart Folders", "Quality", and "Collections" are all permanent sections. Quality buckets are implemented as virtual views, not just labels, but they behave like navigation items without counts. Collections have counts; quality and smart folders mostly do not. This inconsistency makes the sidebar feel unfinished even though the backend is real.
+### Large Image Handling and Prefetching
 
-The preview pane has usable zoom behavior in code: fit, 1:1, Ctrl+scroll, Ctrl+0, panning, and a zoom OSD. The screenshot does not reveal this. The main menu contains fit/1:1, and there is a zoom button path in the viewer, but the visible header does not communicate enough. A viewer must make zoom state and fit mode obvious because quality judgment depends on it.
+**Verdict: correct but incomplete.**
 
-The metadata overlay is useful but too jargon-heavy. The code names it `IQ`, computes it from long edge, megapixels, file size per pixel, and format, and gives a tooltip reason. That is not general "image quality"; it is technical suitability and compression/resolution scoring. Calling it "IQ" makes it feel like opaque AI scoring when it is actually a deterministic heuristic.
+The code does consider large images. `src/ui/viewer.rs` first attempts embedded previews through EXIF metadata, then uses turbojpeg scaled decode for JPEGs, and falls back to full `image` crate decode. That is a better implementation than a naive full-resolution decode path.
 
-The app has basic editing: rotate, flip, save edit, discard edit. This is product-risky. It is useful, but it pushes Sharpr toward editor territory. These controls are currently tucked into the menu, which is good, but the app must keep them framed as lossless/simple file operations, not editing.
+The problem is that the memory model is still wrong for a viewer. `LibraryManager` stores decoded RGBA buffers in both `prefetch_cache` and `preview_cache`, while `ViewerPane` also stores `current_rgba`. Loading from cache clones those buffers before creating `gdk4::MemoryTexture`. Even when JPEGs are downscaled, this is still uncompressed pixel memory. PNG, WebP, TIFF, AVIF, and fallback paths can still become full decoded RGBA.
 
-GNOME alignment is mixed. The widgets and layout are GNOME-native, but the product exposure is not. GNOME-style apps usually avoid showing every internal capability in the primary navigation. Sharpr should keep the capabilities but reveal them contextually.
+There is also a correctness issue the report missed: `prefetch_decode` in `src/ui/window.rs` uses `image::decode().into_rgba8()` without the viewer's EXIF-orientation and JPEG-scaled-preview logic. A prefetched image can therefore display differently from a non-prefetched image, and that decoded result is promoted into `preview_cache`.
 
-## Feature Scope Analysis
-Core features should be folder browsing, fast thumbnail loading, large preview, zoom/pan, metadata, search, duplicate detection, trash/reveal/open, and lightweight tagging. These directly support the use case of managing messy compressed-image libraries.
+### Thread Spawning
 
-Persistent indexing is justified. The code uses SQLite for image metadata, ignored folders, quality class, perceptual hashes, and collections. This is the right infrastructure for large libraries, but it should remain invisible except through speed, counts, and reliable smart views.
+**Verdict: partly correct, partly overstated.**
 
-Quality scoring is useful, but its current product framing is wrong. The scorer rewards resolution, megapixels, bytes-per-pixel, and format. That is a "technical quality / upscale candidate" signal, not an aesthetic or objective quality score. The UI should stop using "IQ" and label it as "Technical quality" or "Resolution quality".
+The thumbnail pipeline is not the problem described by the report. `src/thumbnails/worker.rs` already uses long-lived visible and preload worker pools, generation checks, and in-flight path deduplication.
 
-AI tagging is better scoped than it first appears. The star button in the tag editor suggests tags locally and requires acceptance. That is the right pattern: optional, local, and subordinate to manual tags. It should not be elevated into main navigation.
+The viewer pipeline is still a problem. `ViewerPane::load_image` spawns one OS thread for image decode and another for metadata on each slow-path image load. The upscale comparison viewer also spawns per-image decode threads. Prefetch uses Rayon, which bounds the global pool but does not cancel stale decode work once a request has started. During rapid keyboard navigation, this can waste CPU and memory bandwidth on images the user will never see.
 
-AI upscaling is feature-complete enough to be a real workflow: CLI RealESRGAN, ONNX Swin2SR with model downloads, optional ComfyUI, scale selection, progress, output path handling, and before/after comparison. The risk is that this is large enough to become its own product inside Sharpr. Keep it as "improve selected image", not "batch AI studio".
+### Rotate and Flip
 
-Collections are useful but secondary. The implementation supports create, rename, delete, drag/drop, add/remove, counts, and collection virtual views. That is solid, but exposing collections permanently before a user has created or used them makes the app feel heavier than it needs to.
+**Verdict: misleading as stated.**
 
-Tags and collections overlap as organization systems. The distinction is technically clear: tags are searchable metadata, collections are curated sets. The UI needs to make that distinction behavioral and visible, or users will not understand why both exist.
+Basic orientation handling is core for image triage, but destructive rotate/flip editing is not the same thing as lossless orientation correction. Sharpr currently applies transforms to decoded RGBA and writes pixels back to disk in `save_edit_pixels`, re-encoding JPEGs. That is risky for a viewer because it turns a lightweight viewing action into destructive image editing with quality loss.
 
-## Workflow Analysis
-Browsing has good architecture and weak density. Background thumbnail workers, persistent cache, preloading, and virtual list rendering are the right technical choices. The missing UX piece is a compact grid or density selector. The current filmstrip works for preview-driven browsing, not for high-volume curation.
+The right feature is non-destructive orientation display plus explicit, safe save/export paths. Lossless JPEG rotation or metadata orientation correction can be considered later, but casual in-place re-encoding should not be central to v1.0.
 
-Viewing is strong but under-signposted. The code supports panning, fit, 1:1, zoom OSD, orientation handling, metadata loading on a background thread, prefetching adjacent images, and keyboard navigation. The UI should surface these affordances with a small viewer toolbar or clearer menu state.
+### Upscale Versus Downscale
 
-Search is tag-centered, not general file/library search. The placeholder says "Search tags…", and the code searches tag paths. That is coherent if Sharpr's search means tag search, but the sidebar label "Search" is too broad. Rename it to "Tag Search" or add filename search.
+**Verdict: mostly correct, but the recommendation should be narrowed.**
 
-Duplicate detection is useful but depends on hashes being available. The app warns users to browse the library first because hashes are computed as thumbnails load. That is a workflow smell. If duplicate detection is a sidebar feature, it should either schedule missing hashes itself or clearly show "indexing required" progress.
+The app has a heavy AI upscaling system and no simple export/resize workflow. That is backwards for a triage product. However, "batch downscaling" should not become a full image-processing suite. The core workflow should be: select images, export copies, choose max edge or preset, choose JPEG/WebP/PNG and quality, preserve/copy metadata intentionally.
 
-Upscaling is implemented as a serious modal workflow with backend/model/scale choices and save/discard comparison. This is powerful but too much detail at action time. Most users need a default "Upscale" path first, with advanced backend choices in preferences. The dialog should not make casual users think they need to understand CLI, ONNX, ComfyUI, models, and scale before improving one image.
+Downscaling/export should be core because it completes the triage loop. AI upscaling should be optional and isolated.
 
-File management actions exist but are hidden. Right-click on thumbnails exposes open, reveal, copy, add/remove collection, and trash. Delete also works from the keyboard. This is functional but undiscoverable. A selected-image action bar or popover would make the app feel like a manager instead of a viewer with secret management features.
+## 2. Correct Architecture for Sharpr
 
-## Edge Cases
-Large libraries are partially handled well. SQLite indexing, thumbnail workers, visible/preload queues, operation indicators, disabled folder filtering, and cached metadata are all appropriate. The UI still needs result counts, indexing state, and denser browsing to make those internals visible as confidence rather than mystery.
+Sharpr should be a **fast viewer with focused export**, not a processing tool. Processing features are allowed only when they do not compete with navigation responsiveness.
 
-Large images are technically considered. The viewer decodes off-thread, stores RGBA, supports fit/1:1/zoom/pan, and prefetches adjacent images. The UX risk is memory and feedback: users need to know when the image is still loading and when they are seeing scaled versus actual pixels.
+### Image Loading Pipeline
 
-Slow hardware will expose the AI scope problem. ONNX, ComfyUI, RealESRGAN, smart tagging, hashing, metadata indexing, and thumbnail generation all compete for resources. The shared operation indicator helps, but AI features should never block basic browsing or make the default app feel computationally heavy.
+Use one coherent decode pipeline for on-screen previews, prefetch, and comparison:
 
-Users who do not care about AI should be able to ignore it completely. Today they still see "Needs Upscale", "IQ", an "AI Upscale" menu section, and smart tag affordances if the model exists. These should be hidden or collapsed unless analysis/upscale is intentionally used.
+1. Main thread receives selected path and increments a viewer generation.
+2. UI immediately shows the last frame or a lightweight loading state; it does not clear to blank unless the new image fails.
+3. A bounded preview worker accepts a `PreviewRequest { path, generation, target_kind }`.
+4. Worker chooses source in this order:
+   - Valid cached preview texture or decoded preview for the same file signature.
+   - Embedded preview large enough for the viewport.
+   - JPEG scaled decode through turbojpeg.
+   - Format-specific full decode only when unavoidable.
+5. Worker applies EXIF orientation in every path, including prefetch.
+6. Worker returns either a display-sized preview or a full-resolution decode only for explicit 1:1 inspection.
+7. Main thread discards stale generation results before creating GTK paintables.
 
-Users focused on AI upscaling have the opposite problem: the workflow is powerful but scattered across preferences, the main menu, a modal dialog, an operation indicator, and a comparison view. They need a clean queue/review path if batch upscaling becomes a real goal. Until then, keep it single-image and contextual.
+The current split between `decode_image_rgba`, `prefetch_decode`, thumbnail decode, and comparison decode should be collapsed into shared image-pipeline code. The current duplication is already producing inconsistent behavior.
 
-## Product Direction
-Sharpr should not become Lightroom. It already has tags, collections, quality classes, duplicates, transforms, smart tagging, multiple upscale backends, and persistent indexing. Adding ratings, albums, timelines, EXIF editing, face/person recognition, map views, or color editing would make the app incoherent.
+### Caching Strategy
 
-The best direction is "fast GNOME image triage for messy folders, with optional technical-quality analysis and image improvement." That is specific and defensible. It matches the codebase better than a plain viewer and avoids the trap of becoming a full photo manager.
+Cache by intent, not by convenience:
 
-The app should not be split yet. The code can support modular workflows inside one app. The product should be split into modes or progressive surfaces: Browse, Organize, Analyze, Improve. Do not put all four on screen at equal weight.
+- **Disk thumbnail cache:** keep. It is valuable and bounded by file count rather than peak RAM. Continue using GNOME/freedesktop thumbnails when available.
+- **In-memory thumbnail cache:** keep, but bound by approximate bytes as well as count. `500` textures is not always cheap if thumbnails become wide panoramas.
+- **Preview cache:** keep only small, display-oriented previews and bound it by bytes. A good default is a 128-256 MiB preview budget with LRU eviction.
+- **Full-resolution cache:** do not maintain a general full-res RGBA cache. Hold at most the currently inspected full-resolution buffer, and only while 1:1 or edit/export needs it.
+- **Prefetch cache:** prefetch decoded display previews or warm file metadata, not arbitrary full decoded RGBA. Prefetch should have a tiny budget and should be canceled or ignored aggressively.
+- **Metadata cache:** keep lightweight metadata and dimensions. Persist stable metadata in SQLite where possible.
 
-AI should be contextual, not architectural identity. Smart tags and upscaling are useful because they support curation. If AI becomes the app's main identity, Sharpr will need far more model management, batch processing, error handling, previews, and export controls than the current UI can absorb.
+Do not store multiple cloned `Vec<u8>` copies for the same image. If decoded pixel memory must cross threads, transfer ownership once and avoid retaining both the source vector and a cache clone after the texture is built.
 
-## Recommendations
-Remove the term "IQ" from the UI. Replace it with "Quality", "Technical quality", or "Upscale score". The tooltip can explain the formula in plain language: resolution, file size per pixel, and format.
+### Threading Model
 
-Remove permanent visibility for empty or inactive advanced sections. Hide Collections until one exists or the user creates one. Collapse Quality by default until metadata analysis has produced usable results. Keep Smart Folders, but do not make every smart capability look equally important.
+Sharpr already has the right broad pattern: GTK objects stay on the main thread, work goes to background threads, and results return through channels.
 
-Simplify the sidebar. Start with Folders, Search, Duplicates, and optional collapsed sections for Quality and Collections. Add counts to every virtual view that can compute them. If a view requires indexing or hashes, show that state directly in the row or the resulting empty view.
+The missing piece is a single bounded job model for previews:
 
-Move core selected-image actions out of right-click-only access. Add a compact contextual action surface for reveal, open externally, trash, tag, add to collection, compare, and upscale. Keep destructive actions confirmed or visually distinct.
+- Thumbnail generation remains on its visible/preload worker pools.
+- Preview decode gets its own small pool, usually 1-2 workers, because preview decode is latency-sensitive and memory-heavy.
+- Metadata extraction should be folded into the preview job when it touches the same file, or handled by a low-priority metadata pool.
+- Prefetch requests should be generation-aware and distance-aware. New navigation should make older prefetch work irrelevant.
+- AI jobs should run through the operation queue with explicit resource isolation. They must not consume the same workers used for preview decode.
 
-Simplify the upscale dialog. Use the saved/default backend and model for the primary flow. Put backend/model details behind an expander or "Advanced" section. The main decision should be scale and output behavior, not backend architecture.
+Do not add an async runtime. The existing Rust thread/channel model is enough; it just needs clearer ownership and bounded queues.
 
-Keep the three-pane layout, persistent index, disabled folder support, background thumbnail workers, metadata overlay, duplicate detection, tag search, collection internals, and before/after comparison. These are the product's real strengths.
+### UI and Processing Separation
 
-Add a compact grid mode or density control. This is the highest-value UI addition for large libraries. It does more for the stated use case than another AI backend or another metadata category.
+The viewer should own interaction state, not image-processing policy. `src/ui/viewer.rs` currently owns decode details, edit transforms, upscale flow, progress UI, comparison state, tag UI, and metadata display. That makes the central viewer module too expensive to reason about.
 
-Add explicit empty/loading states for smart views. Duplicates should say whether hashes are missing, scanning, or no duplicates found. Quality views should say whether metadata is indexed or being scanned. Search should say that it searches tags unless filename search is added.
+Move reusable decode/export logic into focused non-UI modules. UI modules should issue jobs, render states, and respond to results. Processing modules should never know about GTK widgets.
 
-## Top Priorities
-- Top 3 problems
-- The default UI exposes advanced product concepts before core triage actions.
-- Browsing density is too low for the large-library use case despite good virtualization internals.
-- AI/upscale/quality workflows are technically substantial but presented with unclear labels and too much hidden state.
+## 3. Feature Scope Decision
 
-- Top 3 improvements
-- Reframe the default app around fast browse, preview, search, and file actions; move advanced organization and analysis behind progressive surfaces.
-- Add compact grid/density controls and consistent counts/status for smart views.
-- Rename and explain quality scoring, then simplify upscaling into a default contextual action with advanced backend details hidden.
+Sharpr should be primarily **a fast viewer and triage tool with focused export**.
+
+### AI Upscaling
+
+AI upscaling should be an **optional module**, not core. It may remain in the repository if it is clearly isolated, disabled by default in the primary workflow, and unable to steal CPU/GPU/memory from navigation. The UI should expose it as an advanced action for a selected image, not as a first-class organizing concept.
+
+The ONNX and ComfyUI backends are especially heavy for v1.0. The maintainable v1.0 choice is either:
+
+- keep only external CLI integration behind an advanced preference, or
+- move the whole feature behind a compile-time or plugin-style boundary.
+
+### Downscaling and Export
+
+Downscaling/export should be **core**. It directly follows from triage: pick images, make copies suitable for sharing, upload, review, or delivery.
+
+The right v1.0 scope is intentionally small:
+
+- export selected image or selected set;
+- max edge presets such as 1920, 2560, original;
+- JPEG/WebP/PNG output;
+- quality control for lossy formats;
+- destination folder;
+- no in-place overwrite by default.
+
+This gives users real daily value without turning Sharpr into an editor.
+
+## 4. Top Risks
+
+### 1. Memory Blowups During Navigation
+
+This surfaces with high-megapixel images, panoramas, non-JPEG formats, or rapid navigation. The current design can hold current pixels, preview cache entries, prefetched entries, channel payloads, and texture-owned bytes at once. Because these are uncompressed RGBA buffers, small cache counts still produce large memory spikes.
+
+The fix is byte-budgeted caches and display-preview-first decoding.
+
+### 2. Stale Background Work Competing With Visible Work
+
+This surfaces when users hold arrow keys, scroll quickly, or open a large virtual view. Thumbnail workers have generation checks, but viewer decode threads and Rayon prefetch jobs can still complete work for images the user has already skipped. That creates UI latency and unpredictable CPU usage.
+
+The fix is a bounded preview queue with generation discard before expensive work where possible, plus a strict separation between visible decode and speculative prefetch.
+
+### 3. Product Surface Outgrowing the Core Viewer
+
+This surfaces as more menu items, preferences, states, and edge cases pile into `viewer.rs` and `window.rs`. Upscaling, editing, tags, quality, duplicates, collections, and export all want to touch selection, caches, disabled folders, file invalidation, and progress. Without stronger boundaries, every feature will make navigation behavior more fragile.
+
+The fix is to make fast viewing the architectural center and force optional features through narrow job and result interfaces.
+
+## 5. Refined Final Report
+
+### A. Critical Issues
+
+#### 1. Decoded RGBA Caching Is the Wrong Memory Architecture
+
+**What is wrong:** `LibraryManager` caches decoded RGBA in `prefetch_cache` and `preview_cache`, and `ViewerPane` separately stores `current_rgba`. Loading from these caches clones pixel buffers before creating textures.
+
+**Why it matters:** A viewer must have predictable memory use. Uncompressed pixel buffers scale with dimensions, not file size. A few large images can consume hundreds of MiB, and temporary clones raise peak memory further.
+
+**What to do instead:** Cache display-sized previews with a byte budget. Keep only the current full-resolution buffer when explicitly needed for 1:1 or export/edit. Replace count-only cache limits with approximate-memory limits.
+
+#### 2. Prefetch Uses a Different Decode Path Than the Viewer
+
+**What is wrong:** `prefetch_decode` does not apply the same EXIF orientation, embedded-preview selection, or JPEG scaled decode policy as `decode_image_rgba`.
+
+**Why it matters:** The same file can display differently depending on timing. A prefetched result can also poison `preview_cache`, making the wrong display persistent until invalidation.
+
+**What to do instead:** Create one shared preview decode function used by direct load, prefetch, comparison, and eventually export preview generation.
+
+#### 3. Viewer Decode Work Is Not Bounded as a First-Class Pipeline
+
+**What is wrong:** Slow-path viewer loads spawn per-request OS threads for decode and metadata. Prefetch uses Rayon but does not cancel started work.
+
+**Why it matters:** Rapid navigation can create stale CPU and memory pressure exactly when the user expects the app to feel most responsive.
+
+**What to do instead:** Add a small bounded preview worker pool with generation-aware requests, queue replacement for stale paths, and separate low-priority prefetch.
+
+### B. High Priority
+
+#### 4. AI Upscaling Is Too Central for the Product Goal
+
+**What is wrong:** Upscaling has multiple backends, model management, preferences, comparison UI, and output controls embedded in the main app workflow.
+
+**Why it matters:** It adds dependencies, settings, failure modes, and resource contention while not improving browse latency or triage speed.
+
+**What to do instead:** Treat AI upscaling as an optional advanced module or external integration. Keep it out of the primary navigation surfaces and isolate its jobs from preview workers.
+
+#### 5. Missing Export/Resize Workflow
+
+**What is wrong:** Sharpr can run AI super-resolution but cannot perform a simple, predictable export to smaller files.
+
+**Why it matters:** Export is a natural completion step for triage. Without it, users can select and inspect images but not easily produce usable delivery copies.
+
+**What to do instead:** Add a focused export workflow: selected images, max edge, output format, quality, destination, and copy-vs-overwrite safety.
+
+#### 6. File Scanning and Metadata Hydration Can Still Block Perceived Startup
+
+**What is wrong:** Direct folder scanning still calls filesystem metadata and `image::image_dimensions` across every file in the raw path. Indexed loading improves this, but fallback behavior remains important.
+
+**Why it matters:** On large folders, network mounts, slow disks, or corrupt files, initial population can become slow before the user gets useful UI.
+
+**What to do instead:** Prefer indexed rows immediately, then reconcile asynchronously. In raw fallback, populate path/name/file-size first, then hydrate dimensions and quality in background batches.
+
+### C. Medium Improvements
+
+#### 7. Error Reporting Is Too Silent in Decode Paths
+
+**What is wrong:** Many image paths use `Option` and `.ok()?`, losing the reason for failure.
+
+**Why it matters:** Unsupported formats, corrupt files, permission errors, and decoder failures all become blank output or missing thumbnails. That hurts trust at scale.
+
+**What to do instead:** Return typed or at least string errors from decode workers. Log structured failures and show a compact viewer error state for the selected image.
+
+#### 8. Destructive Rotate/Flip Is Product-Risky
+
+**What is wrong:** In-memory transforms can be saved back to the source file, re-encoding JPEGs.
+
+**Why it matters:** A viewer should not make lossy destructive edits feel casual. This can degrade original files and complicate metadata correctness.
+
+**What to do instead:** Keep display orientation automatic. Move destructive transforms into export or an explicit edit mode. If in-place orientation is kept, prefer lossless/metadata-safe operations where possible.
+
+#### 9. Viewer and Window Modules Carry Too Much Behavior
+
+**What is wrong:** `viewer.rs` and `window.rs` coordinate decode, prefetch, metadata, tags, edits, upscale, actions, and virtual views.
+
+**Why it matters:** The app becomes harder to maintain because unrelated features share state and invalidation paths.
+
+**What to do instead:** Extract image pipeline, export, and optional processing jobs into non-UI modules with narrow request/result types.
+
+### D. Low / Optional
+
+#### 10. Scaling Filter Choice Is Not a Core Preference
+
+**What is wrong:** The earlier report suggested exposing interpolation choices because `Lanczos3` is hardcoded in upscale finalization.
+
+**Why it matters:** This matters for specialized pixel art or screenshots, but it is not central to a v1.0 triage viewer.
+
+**What to do instead:** Use sane defaults for viewer previews and export. Add filter selection only if export becomes important for graphic assets, not as a general preference.
+
+#### 11. Smart Tags and Quality Views Need Product Restraint
+
+**What is wrong:** Smart tags and quality classification can be useful, but they also introduce models, background work, and extra navigation concepts.
+
+**Why it matters:** They compete with the fast triage loop if surfaced too aggressively.
+
+**What to do instead:** Keep them opt-in, progress-visible, cancelable, and respectful of disabled folders. Do not let them block folder open or image navigation.
+
+### E. Rejected / Overstated Findings
+
+#### "All Threading Is Broken"
+
+Rejected. The thumbnail subsystem already has a sensible pool model with generation checks and deduplication. The issue is specifically the viewer/full-preview pipeline and stale speculative work.
+
+#### "Large Images Are Ignored"
+
+Rejected. The viewer attempts embedded previews and scaled JPEG decode. The real issue is inconsistent reuse of that logic and caching decoded pixel buffers without a byte budget.
+
+#### "Rotate/Flip Should Simply Be Removed"
+
+Overstated. Orientation correctness is core. What should be rejected is casual destructive in-place pixel re-encoding inside a viewer workflow.
+
+#### "AI Upscaling Must Be Deleted"
+
+Overstated as an engineering mandate, but correct as a product warning. It can survive only if isolated as optional advanced processing. It should not shape the app's core architecture or primary UI.
+
+## 6. Final Verdict
+
+Sharpr is currently becoming a broad image-management and AI-processing application. That direction will make it slower, harder to reason about, and less trustworthy for the core use case.
+
+Sharpr should become a fast GNOME image triage viewer with reliable thumbnails, low-latency preview navigation, lightweight organization, and focused export.
+
+The single most important change is to replace the ad hoc decoded-RGBA viewer/prefetch caches with one bounded, generation-aware preview pipeline that applies the same decode, orientation, cache, and stale-result rules everywhere.
