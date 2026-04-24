@@ -74,9 +74,7 @@ struct PrefetchRequest {
 
 struct PrefetchResult {
     request: PrefetchRequest,
-    bytes: Vec<u8>,
-    width: u32,
-    height: u32,
+    image: crate::image_pipeline::PreviewImage,
 }
 
 struct ThumbnailOpState {
@@ -128,18 +126,13 @@ fn trigger_prefetch(state: &Rc<RefCell<AppState>>, index: u32) {
     let tx_drain = tx.clone();
     glib::MainContext::default().spawn_local(async move {
         while let Ok(result) = rx.recv().await {
-            let PrefetchResult {
-                request,
-                bytes,
-                width,
-                height,
-            } = result;
+            let PrefetchResult { request, image } = result;
             {
                 state_drain.borrow_mut().library.insert_prefetch(
                     request.path.clone(),
-                    bytes,
-                    width,
-                    height,
+                    image.rgba,
+                    image.width,
+                    image.height,
                 );
             }
 
@@ -201,26 +194,13 @@ fn queue_prefetch(
     };
     let tx = tx.clone();
     rayon::spawn(move || {
-        if let Some((bytes, width, height)) = prefetch_decode(&request.path) {
-            let _ = tx.send_blocking(PrefetchResult {
-                request,
-                bytes,
-                width,
-                height,
-            });
+        if let Ok(image) = crate::image_pipeline::decode_preview(
+            &request.path,
+            crate::image_pipeline::PreviewDecodeMode::Prefetch,
+        ) {
+            let _ = tx.send_blocking(PrefetchResult { request, image });
         }
     });
-}
-
-fn prefetch_decode(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)> {
-    let file = std::fs::File::open(path).ok()?;
-    let reader = image::ImageReader::new(std::io::BufReader::new(file))
-        .with_guessed_format()
-        .ok()?;
-    let img = reader.decode().ok()?;
-    let rgba = img.into_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
-    Some((rgba.into_raw(), w, h))
 }
 
 fn start_metadata_indexer(
