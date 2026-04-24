@@ -8,7 +8,6 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 
-use crate::metadata::orientation::apply_exif_orientation;
 use crate::quality::{scorer, QualityScore};
 use crate::tags::TagDatabase;
 use crate::ui::metadata_chip::MetadataChip;
@@ -629,13 +628,18 @@ impl ViewerPane {
         imp.spinner.set_visible(true);
 
         // Channel for decoded pixel data: (rgba_bytes, width, height)
-        let (pixel_tx, pixel_rx) = async_channel::bounded::<Option<(Vec<u8>, u32, u32)>>(1);
+        let (pixel_tx, pixel_rx) =
+            async_channel::bounded::<Option<crate::image_pipeline::PreviewImage>>(1);
 
         // Spawn background decode thread.
         let path_decode = path.clone();
         std::thread::spawn(move || {
             let started = Instant::now();
-            let decoded = decode_image_rgba(&path_decode);
+            let decoded = crate::image_pipeline::decode_preview(
+                &path_decode,
+                crate::image_pipeline::PreviewDecodeMode::Viewer,
+            )
+            .ok();
             crate::bench_event!(
                 "viewer.decode.finish",
                 serde_json::json!({
@@ -685,7 +689,12 @@ impl ViewerPane {
             imp.spinner.set_visible(false);
 
             match maybe_pixels {
-                Some((bytes, w, h)) => {
+                Some(crate::image_pipeline::PreviewImage {
+                    rgba: bytes,
+                    width: w,
+                    height: h,
+                    ..
+                }) => {
                     crate::bench_event!(
                         "viewer.load.finish",
                         serde_json::json!({
@@ -1683,59 +1692,6 @@ impl ViewerPane {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pure-Rust image decode (runs on background thread — no GTK calls)
-// ---------------------------------------------------------------------------
-
-fn decode_image_rgba(path: &PathBuf) -> Option<(Vec<u8>, u32, u32)> {
-    use image::ImageReader;
-    use std::fs::File;
-    use std::io::BufReader;
-
-    const MIN_PREVIEW_LONG_EDGE: u32 = 1024;
-
-    let metadata = {
-        let _guard = crate::metadata::exif::rexiv2_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        rexiv2::Metadata::new_from_path(path)
-    };
-
-    if let Ok(metadata) = metadata {
-        let mut previews = metadata.get_preview_images().unwrap_or_default();
-        previews.sort_by_key(|preview| preview.get_width().max(preview.get_height()));
-
-        if let Some(preview) = previews.into_iter().rev().find(|preview| {
-            preview.get_width().max(preview.get_height()) >= MIN_PREVIEW_LONG_EDGE
-                && matches!(preview.get_media_type(), Ok(rexiv2::MediaType::Jpeg))
-        }) {
-            if let Ok(img) = image::load_from_memory_with_format(
-                &preview.get_data().ok()?,
-                image::ImageFormat::Jpeg,
-            ) {
-                let rgba = apply_exif_orientation(img, path).into_rgba8();
-                let (w, h) = (rgba.width(), rgba.height());
-                return Some((rgba.into_raw(), w, h));
-            }
-        }
-    }
-
-    if is_jpeg_path(path) {
-        if let Some(decoded) = decode_jpeg_rgba_scaled(path) {
-            return Some(decoded);
-        }
-    }
-
-    let file = File::open(path).ok()?;
-    let reader = ImageReader::new(BufReader::new(file))
-        .with_guessed_format()
-        .ok()?;
-    let img = apply_exif_orientation(reader.decode().ok()?, path);
-    let rgba = img.into_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
-    Some((rgba.into_raw(), w, h))
-}
-
 fn save_edit_pixels(
     path: &std::path::Path,
     ext: &str,
@@ -1853,76 +1809,6 @@ fn unique_temp_path(path: &std::path::Path) -> Result<PathBuf, String> {
     }
 
     Err("could not create a unique temporary save path".to_string())
-}
-
-fn is_jpeg_path(path: &std::path::Path) -> bool {
-    let by_extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "jpg" | "jpeg"))
-        .unwrap_or(false);
-    if by_extension {
-        return true;
-    }
-
-    let mut file = std::fs::File::open(path).ok();
-    let Some(file) = file.as_mut() else {
-        return false;
-    };
-    let mut magic = [0u8; 2];
-    std::io::Read::read_exact(file, &mut magic).is_ok() && magic == [0xFF, 0xD8]
-}
-
-fn decode_jpeg_rgba_scaled(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)> {
-    const MIN_VIEWER_LONG_EDGE: usize = 1280;
-
-    let jpeg_data = std::fs::read(path).ok()?;
-    let mut decompressor = turbojpeg::Decompressor::new().ok()?;
-    let header = decompressor.read_header(&jpeg_data).ok()?;
-    let scale = choose_jpeg_scale_factor(&header, MIN_VIEWER_LONG_EDGE);
-    let scaled = header.scaled(scale);
-    let pitch = scaled.width * turbojpeg::PixelFormat::RGBA.size();
-    let mut image = turbojpeg::Image {
-        pixels: vec![0; pitch * scaled.height],
-        width: scaled.width,
-        pitch,
-        height: scaled.height,
-        format: turbojpeg::PixelFormat::RGBA,
-    };
-
-    decompressor.set_scaling_factor(scale).ok()?;
-    decompressor
-        .decompress(&jpeg_data, image.as_deref_mut())
-        .ok()?;
-
-    let rgba = image::RgbaImage::from_raw(scaled.width as u32, scaled.height as u32, image.pixels)?;
-    let img = apply_exif_orientation(image::DynamicImage::ImageRgba8(rgba), path).into_rgba8();
-    let (width, height) = (img.width(), img.height());
-    Some((img.into_raw(), width, height))
-}
-
-fn choose_jpeg_scale_factor(
-    header: &turbojpeg::DecompressHeader,
-    min_long_edge: usize,
-) -> turbojpeg::ScalingFactor {
-    if header.is_lossless {
-        return turbojpeg::ScalingFactor::ONE;
-    }
-
-    let candidates = [
-        turbojpeg::ScalingFactor::ONE_EIGHTH,
-        turbojpeg::ScalingFactor::ONE_QUARTER,
-        turbojpeg::ScalingFactor::ONE_HALF,
-    ];
-
-    for factor in candidates {
-        let scaled = header.scaled(factor);
-        if scaled.width.max(scaled.height) >= min_long_edge {
-            return factor;
-        }
-    }
-
-    turbojpeg::ScalingFactor::ONE
 }
 
 fn output_path_for_upscale(
