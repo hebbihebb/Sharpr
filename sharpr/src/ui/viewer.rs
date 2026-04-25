@@ -1052,7 +1052,7 @@ impl ViewerPane {
             dialog.set_response_appearance("save", libadwaita::ResponseAppearance::Suggested);
 
             let viewer_weak = self.downgrade();
-            dialog.choose(self, None::<&gtk4::gio::Cancellable>, move |response| {
+            dialog.connect_response(None, move |_, response| {
                 if response != "save" {
                     return;
                 }
@@ -1061,6 +1061,10 @@ impl ViewerPane {
                 };
                 viewer.finish_save_edit(path.clone(), rgba.clone(), w, h);
             });
+            let parent_window = self
+                .root()
+                .and_then(|r| r.downcast::<gtk4::Window>().ok());
+            dialog.present(parent_window.as_ref());
             return;
         }
 
