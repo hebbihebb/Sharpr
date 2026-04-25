@@ -283,6 +283,55 @@ fn start_metadata_indexer(
     });
 }
 
+fn start_raw_dimension_hydrator(
+    paths: Vec<PathBuf>,
+    folder: PathBuf,
+    state: Rc<RefCell<AppState>>,
+) {
+    if paths.is_empty() {
+        return;
+    }
+    crate::bench_event!(
+        "folder.raw_scan.hydrate.start",
+        serde_json::json!({
+            "folder": folder.display().to_string(),
+            "count": paths.len(),
+        }),
+    );
+    let (tx, rx) = async_channel::unbounded::<MetadataIndexResult>();
+    let folder_worker = folder.clone();
+    rayon::spawn(move || {
+        let started = Instant::now();
+        let total = paths.len();
+        let mut completed = 0usize;
+        for path in paths {
+            if let Ok((width, height)) = image::image_dimensions(&path) {
+                completed += 1;
+                let _ = tx.send_blocking(MetadataIndexResult { path, width, height });
+            }
+        }
+        crate::bench_event!(
+            "folder.raw_scan.hydrate.finish",
+            serde_json::json!({
+                "folder": folder_worker.display().to_string(),
+                "completed": completed,
+                "total": total,
+                "duration_ms": crate::bench::duration_ms(started),
+            }),
+        );
+    });
+
+    glib::MainContext::default().spawn_local(async move {
+        while let Ok(result) = rx.recv().await {
+            let mut st = state.borrow_mut();
+            if st.library.current_folder.as_deref() == Some(folder.as_path()) {
+                st.library
+                    .update_entry_metadata(&result.path, result.width, result.height);
+            }
+        }
+    });
+}
+
 fn load_virtual_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf]) {
     load_virtual_async_with_collection(state, paths, None);
 }
@@ -851,6 +900,7 @@ impl SharprWindow {
                     }
 
                     let mut metadata_pending = Vec::new();
+                    let mut raw_hydration_paths: Vec<PathBuf> = Vec::new();
                     let mut got_cached = false;
 
                     // Load the first result into the store.
@@ -907,18 +957,25 @@ impl SharprWindow {
                                 for (index, raw) in raw_entries.into_iter().enumerate() {
                                     let entry = ImageEntry::new(raw.path.clone());
                                     entry.set_file_size(raw.file_size);
-                                    entry.set_dimensions(raw.width, raw.height);
                                     if let Some(texture) = st.library.cached_thumbnail(&raw.path) {
                                         entry.set_thumbnail(Some(texture));
                                     }
                                     st.library
                                         .path_to_index
                                         .insert(raw.path.clone(), index as u32);
+                                    raw_hydration_paths.push(raw.path.clone());
                                     st.library.all_known_paths.insert(raw.path);
                                     new_entries.push(entry);
                                 }
                                 let entry_count = new_entries.len();
                                 st.library.store.splice(0, 0, &new_entries);
+                                crate::bench_event!(
+                                    "folder.raw_scan.fast_populate",
+                                    serde_json::json!({
+                                        "path": path_rx.display().to_string(),
+                                        "entry_count": entry_count,
+                                    }),
+                                );
                                 entry_count
                             }
                         };
@@ -1086,6 +1143,12 @@ impl SharprWindow {
                             state_rx.clone(),
                         );
                     }
+
+                    start_raw_dimension_hydrator(
+                        raw_hydration_paths,
+                        path_rx.clone(),
+                        state_rx.clone(),
+                    );
                 });
             })
         };

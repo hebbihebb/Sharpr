@@ -170,15 +170,14 @@ impl LibraryManager {
                 let meta = std::fs::metadata(&path).ok();
                 let file_size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                 let modified = meta.and_then(|m| m.modified().ok());
-                let (width, height) = image::image_dimensions(&path).unwrap_or((0, 0));
 
                 RawImageEntry {
                     path,
                     filename,
                     file_size,
                     modified,
-                    width,
-                    height,
+                    width: 0,
+                    height: 0,
                 }
             })
             .collect()
@@ -974,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_folder_raw_returns_sorted_plain_entries_with_metadata() {
+    fn scan_folder_raw_returns_sorted_plain_entries_without_dimensions() {
         let root = temp_path("raw-scan");
         std::fs::create_dir_all(&root).unwrap();
 
@@ -991,14 +990,14 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].path, img_a);
         assert_eq!(entries[0].filename, "a.JPG");
-        assert_eq!(entries[0].width, 640);
-        assert_eq!(entries[0].height, 480);
+        assert_eq!(entries[0].width, 0);
+        assert_eq!(entries[0].height, 0);
         assert!(entries[0].file_size > 0);
 
         assert_eq!(entries[1].path, img_b);
         assert_eq!(entries[1].filename, "B.bmp");
-        assert_eq!(entries[1].width, 320);
-        assert_eq!(entries[1].height, 200);
+        assert_eq!(entries[1].width, 0);
+        assert_eq!(entries[1].height, 0);
         assert!(entries[1].file_size > 0);
 
         std::fs::remove_dir_all(root).unwrap();
