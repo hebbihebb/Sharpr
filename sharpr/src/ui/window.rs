@@ -504,6 +504,7 @@ mod imp {
         pub viewer: RefCell<Option<ViewerPane>>,
         pub thumbnail_worker: RefCell<Option<ThumbnailWorker>>,
         pub preview_worker: RefCell<Option<crate::image_pipeline::worker::PreviewWorker>>,
+        pub metadata_worker: RefCell<Option<crate::image_pipeline::worker::MetadataWorker>>,
         // Cloned receiver so the async task can hold it.
         pub result_rx: RefCell<Option<Receiver<ThumbnailResult>>>,
         pub hash_result_rx: RefCell<Option<Receiver<HashResult>>>,
@@ -519,6 +520,7 @@ mod imp {
                 viewer: RefCell::new(None),
                 thumbnail_worker: RefCell::new(None),
                 preview_worker: RefCell::new(None),
+                metadata_worker: RefCell::new(None),
                 result_rx: RefCell::new(None),
                 hash_result_rx: RefCell::new(None),
                 thumbnail_ops: RefCell::new(HashMap::new()),
@@ -668,6 +670,10 @@ impl SharprWindow {
             crate::image_pipeline::worker::PreviewWorker::spawn();
         *self.imp().preview_worker.borrow_mut() = Some(preview_worker);
 
+        let (metadata_worker, metadata_result_rx) =
+            crate::image_pipeline::worker::MetadataWorker::spawn();
+        *self.imp().metadata_worker.borrow_mut() = Some(metadata_worker);
+
         let state = self.imp().state.clone();
         let (ops_queue, ops_rx) = crate::ops::queue::new_queue();
         state.borrow_mut().ops = ops_queue;
@@ -720,6 +726,10 @@ impl SharprWindow {
 
         if let Some(worker) = self.imp().preview_worker.borrow().as_ref() {
             viewer.set_preview_worker(worker.handle(), preview_result_rx);
+        }
+
+        if let Some(worker) = self.imp().metadata_worker.borrow().as_ref() {
+            viewer.set_metadata_worker(worker.handle(), metadata_result_rx);
         }
 
         let suppress_search_restore = Rc::new(Cell::new(false));

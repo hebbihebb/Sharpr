@@ -92,6 +92,8 @@ mod imp {
         pub load_gen: Cell<u64>,
         /// Handle for submitting decode requests to the shared preview worker pool.
         pub preview_handle: RefCell<Option<crate::image_pipeline::worker::PreviewHandle>>,
+        /// Handle for submitting metadata load requests to the shared metadata worker.
+        pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
     }
 
     impl Default for ViewerPane {
@@ -283,6 +285,7 @@ mod imp {
                 drag_adjustments: Cell::new((0.0, 0.0)),
                 load_gen: Cell::new(0),
                 preview_handle: RefCell::new(None),
+                metadata_handle: RefCell::new(None),
             }
         }
     }
@@ -569,6 +572,32 @@ impl ViewerPane {
         });
     }
 
+    /// Call once from window setup. Metadata results are drained on the GTK
+    /// main thread; stale results are discarded by generation comparison.
+    pub fn set_metadata_worker(
+        &self,
+        handle: crate::image_pipeline::worker::MetadataHandle,
+        result_rx: async_channel::Receiver<crate::image_pipeline::worker::MetadataResult>,
+    ) {
+        *self.imp().metadata_handle.borrow_mut() = Some(handle);
+
+        let widget_weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(result) = result_rx.recv().await {
+                let Some(viewer) = widget_weak.upgrade() else {
+                    break;
+                };
+                let imp = viewer.imp();
+                if result.gen != imp.load_gen.get() {
+                    continue;
+                }
+                imp.metadata_chip.update_metadata(&result.metadata);
+                viewer.update_quality_indicator(&result.metadata);
+                viewer.refresh_tag_summary();
+            }
+        });
+    }
+
     /// Clear the viewer (called when the folder changes).
     pub fn clear(&self) {
         let imp = self.imp();
@@ -646,24 +675,10 @@ impl ViewerPane {
             imp.picture
                 .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
             self.reset_zoom();
-            // Metadata still loads async (fast, doesn't affect display).
-            let path_meta = path.clone();
-            let (meta_tx, meta_rx) = async_channel::bounded::<crate::metadata::ImageMetadata>(1);
-            std::thread::spawn(move || {
-                let _ = meta_tx.send_blocking(crate::metadata::ImageMetadata::load(&path_meta));
-            });
-            let widget_weak = self.downgrade();
-            glib::MainContext::default().spawn_local(async move {
-                if let Ok(meta) = meta_rx.recv().await {
-                    if let Some(v) = widget_weak.upgrade() {
-                        if v.imp().load_gen.get() == load_gen {
-                            v.imp().metadata_chip.update_metadata(&meta);
-                            v.update_quality_indicator(&meta);
-                            v.refresh_tag_summary();
-                        }
-                    }
-                }
-            });
+            // Metadata loads via the shared worker; result drains in set_metadata_worker loop.
+            if let Some(ref handle) = *imp.metadata_handle.borrow() {
+                handle.request(path.clone(), load_gen);
+            }
             return;
         }
 
@@ -701,24 +716,10 @@ impl ViewerPane {
             imp.picture
                 .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
             self.reset_zoom();
-            // Metadata still loads async (fast, doesn't affect display).
-            let path_meta = path.clone();
-            let (meta_tx, meta_rx) = async_channel::bounded::<crate::metadata::ImageMetadata>(1);
-            std::thread::spawn(move || {
-                let _ = meta_tx.send_blocking(crate::metadata::ImageMetadata::load(&path_meta));
-            });
-            let widget_weak = self.downgrade();
-            glib::MainContext::default().spawn_local(async move {
-                if let Ok(meta) = meta_rx.recv().await {
-                    if let Some(v) = widget_weak.upgrade() {
-                        if v.imp().load_gen.get() == load_gen {
-                            v.imp().metadata_chip.update_metadata(&meta);
-                            v.update_quality_indicator(&meta);
-                            v.refresh_tag_summary();
-                        }
-                    }
-                }
-            });
+            // Metadata loads via the shared worker; result drains in set_metadata_worker loop.
+            if let Some(ref handle) = *imp.metadata_handle.borrow() {
+                handle.request(path.clone(), load_gen);
+            }
             return;
         }
 
@@ -732,27 +733,10 @@ impl ViewerPane {
             handle.request(path.clone(), load_gen);
         }
 
-        // Spawn background metadata thread.
-        // Uses the same async-channel + spawn_local pattern so no Send requirement
-        // is placed on the widget reference.
-        let path_meta = path.clone();
-        let (meta_tx, meta_rx) = async_channel::bounded::<crate::metadata::ImageMetadata>(1);
-        std::thread::spawn(move || {
-            let _ = meta_tx.send_blocking(crate::metadata::ImageMetadata::load(&path_meta));
-        });
-        let widget_weak_meta = self.downgrade();
-        glib::MainContext::default().spawn_local(async move {
-            if let Ok(metadata) = meta_rx.recv().await {
-                if let Some(viewer) = widget_weak_meta.upgrade() {
-                    if viewer.imp().load_gen.get() != load_gen {
-                        return;
-                    }
-                    viewer.imp().metadata_chip.update_metadata(&metadata);
-                    viewer.update_quality_indicator(&metadata);
-                    viewer.refresh_tag_summary();
-                }
-            }
-        });
+        // Metadata loads via the shared worker; result drains in set_metadata_worker loop.
+        if let Some(ref handle) = *imp.metadata_handle.borrow() {
+            handle.request(path.clone(), load_gen);
+        }
     }
 
     // -----------------------------------------------------------------------
