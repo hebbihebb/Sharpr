@@ -1,3 +1,11 @@
+//! Export pipeline for writing user-visible copies without overwriting sources.
+//! `export_image` decodes the source with EXIF orientation applied, optionally
+//! downscales with Lanczos3, then writes into the destination directory.
+//! Supported output formats are JPEG, PNG, and WebP; WebP is always lossless in
+//! the current implementation.
+//! `unique_output_path` guarantees that exports never overwrite an existing
+//! file in the destination folder.
+
 use std::path::{Path, PathBuf};
 
 use image::imageops::FilterType;

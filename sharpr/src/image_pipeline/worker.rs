@@ -1,3 +1,12 @@
+//! Background workers for the shared image pipeline.
+//! `PreviewWorker` runs a pool of 2 decode threads over an unbounded request
+//! channel and skips stale generations both before and after decode work.
+//! `MetadataWorker` runs a single EXIF metadata thread and applies the same
+//! generation-aware stale-result filtering.
+//! Spawn both once at window startup, store them in `SharprWindow::imp`, and
+//! wire their handles into the viewer via `set_preview_worker` and
+//! `set_metadata_worker`.
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

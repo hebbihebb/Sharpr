@@ -1,3 +1,11 @@
+//! Shared preview decode pipeline for viewer loads and prefetch work.
+//! It tries three decode strategies in priority order: embedded EXIF preview,
+//! turbojpeg scaled JPEG decode, then a full `image::ImageReader` fallback.
+//! EXIF orientation is applied consistently in all three paths before pixels
+//! are returned to the caller.
+//! Callers should use `decode_preview(path, mode)` and handle
+//! `PreviewDecodeError` variants to decide how the UI should recover.
+
 pub mod worker;
 
 use std::fs::File;
