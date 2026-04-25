@@ -2,6 +2,7 @@ mod app;
 mod bench;
 mod config;
 mod duplicates;
+mod export;
 mod image_pipeline;
 mod library_index;
 mod metadata;
