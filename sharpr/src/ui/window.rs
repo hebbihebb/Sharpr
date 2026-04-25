@@ -2993,6 +2993,10 @@ impl SharprWindow {
         transform_section.append(Some("Flip Vertical"), Some("win.flip-v"));
         menu.append_section(Some("Rotate & Flip"), &transform_section);
 
+        let export_section = gio::Menu::new();
+        export_section.append(Some("Export…"), Some("win.export"));
+        menu.append_section(Some("Export"), &export_section);
+
         let upscale_section = gio::Menu::new();
         upscale_section.append(Some("Upscale Image…"), Some("win.upscale"));
         menu.append_section(Some("AI Upscale"), &upscale_section);
@@ -3423,6 +3427,204 @@ impl SharprWindow {
             });
         }
         self.add_action(&upscale_action);
+
+        let export_action = gio::SimpleAction::new("export", None);
+        {
+            let state_c = state.clone();
+            let window_weak = self.downgrade();
+            export_action.connect_activate(move |_, _| {
+                let Some(win) = window_weak.upgrade() else { return };
+
+                let sources: Vec<PathBuf> = {
+                    let st = state_c.borrow();
+                    if !st.selected_paths.is_empty() {
+                        let mut v: Vec<PathBuf> = st.selected_paths.iter().cloned().collect();
+                        v.sort();
+                        v
+                    } else if let Some(entry) = st.library.selected_entry() {
+                        vec![entry.path()]
+                    } else {
+                        return;
+                    }
+                };
+
+                let dialog = libadwaita::AlertDialog::new(Some("Export Images"), None);
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("export", "Export");
+                dialog.set_default_response(Some("export"));
+                dialog.set_close_response("cancel");
+                dialog.set_response_appearance(
+                    "export",
+                    libadwaita::ResponseAppearance::Suggested,
+                );
+
+                let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+                content.set_margin_top(6);
+                content.set_margin_bottom(6);
+
+                let dest_path_label = gtk4::Label::new(Some("No folder selected"));
+                dest_path_label.set_halign(gtk4::Align::Start);
+                dest_path_label.set_hexpand(true);
+                let choose_btn = gtk4::Button::with_label("Choose Folder…");
+                let dest_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+                dest_row.set_margin_bottom(4);
+                dest_row.append(&dest_path_label);
+                dest_row.append(&choose_btn);
+                content.append(&dest_row);
+
+                let edge_drop = gtk4::DropDown::from_strings(&["Original", "1920px", "2560px"]);
+                let fmt_drop = gtk4::DropDown::from_strings(&["JPEG", "WebP", "PNG"]);
+
+                let edge_label = gtk4::Label::new(Some("Max size"));
+                edge_label.set_halign(gtk4::Align::Start);
+                content.append(&edge_label);
+                content.append(&edge_drop);
+
+                let fmt_label = gtk4::Label::new(Some("Format"));
+                fmt_label.set_halign(gtk4::Align::Start);
+                content.append(&fmt_label);
+                content.append(&fmt_drop);
+
+                let quality_label = gtk4::Label::new(Some("Quality (1–100)"));
+                quality_label.set_halign(gtk4::Align::Start);
+                let quality_spin = gtk4::SpinButton::with_range(1.0, 100.0, 1.0);
+                quality_spin.set_value(85.0);
+                content.append(&quality_label);
+                content.append(&quality_spin);
+
+                {
+                    let ql = quality_label.clone();
+                    let qs = quality_spin.clone();
+                    fmt_drop.connect_selected_notify(move |drop| {
+                        let visible = drop.selected() == 0;
+                        ql.set_visible(visible);
+                        qs.set_visible(visible);
+                    });
+                }
+
+                let chosen_dest: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
+                {
+                    let chosen = chosen_dest.clone();
+                    let lbl = dest_path_label.clone();
+                    let win_weak2 = win.downgrade();
+                    choose_btn.connect_clicked(move |_| {
+                        let file_dialog = gtk4::FileDialog::new();
+                        file_dialog.set_title("Choose Export Destination");
+                        let chosen_c = chosen.clone();
+                        let lbl_c = lbl.clone();
+                        let parent = win_weak2.upgrade().map(|w| w.upcast::<gtk4::Window>());
+                        file_dialog.select_folder(
+                            parent.as_ref(),
+                            None::<&gio::Cancellable>,
+                            move |result| {
+                                if let Ok(f) = result {
+                                    if let Some(path) = f.path() {
+                                        *chosen_c.borrow_mut() = Some(path.clone());
+                                        lbl_c.set_label(
+                                            path.file_name()
+                                                .map(|n| n.to_string_lossy().into_owned())
+                                                .unwrap_or_else(|| path.display().to_string())
+                                                .as_str(),
+                                        );
+                                    }
+                                }
+                            },
+                        );
+                    });
+                }
+
+                dialog.set_extra_child(Some(&content));
+
+                let state_cc = state_c.clone();
+                let win_weak3 = win.downgrade();
+                dialog.connect_response(None, move |_, response| {
+                    if response != "export" {
+                        return;
+                    }
+                    let dest = match chosen_dest.borrow().clone() {
+                        Some(p) => p,
+                        None => {
+                            if let Some(w) = win_weak3.upgrade() {
+                                w.add_toast(libadwaita::Toast::new(
+                                    "Choose a destination folder first",
+                                ));
+                            }
+                            return;
+                        }
+                    };
+
+                    let max_edge = match edge_drop.selected() {
+                        1 => Some(1920u32),
+                        2 => Some(2560u32),
+                        _ => None,
+                    };
+                    let format = match fmt_drop.selected() {
+                        1 => crate::export::ExportFormat::Webp,
+                        2 => crate::export::ExportFormat::Png,
+                        _ => crate::export::ExportFormat::Jpeg,
+                    };
+                    let quality = quality_spin.value() as u8;
+
+                    let config = crate::export::ExportConfig {
+                        destination: dest,
+                        max_edge,
+                        format,
+                        quality,
+                    };
+
+                    let total = sources.len();
+                    let op = state_cc.borrow().ops.add(format!("Exporting {total} image(s)"));
+                    let win_export = win_weak3.clone();
+                    let sources_export = sources.clone();
+
+                    let (tx, rx) = async_channel::unbounded::<Result<(), String>>();
+                    rayon::spawn(move || {
+                        for source in &sources_export {
+                            let result = crate::export::export_image(source, &config)
+                                .map(|_| ())
+                                .map_err(|e| format!("{}: {e}", source.display()));
+                            let _ = tx.send_blocking(result);
+                        }
+                    });
+
+                    glib::MainContext::default().spawn_local(async move {
+                        let mut ok = 0usize;
+                        let mut failed = 0usize;
+                        while let Ok(result) = rx.recv().await {
+                            match result {
+                                Ok(()) => ok += 1,
+                                Err(e) => {
+                                    failed += 1;
+                                    eprintln!("export error: {e}");
+                                }
+                            }
+                            let done = ok + failed;
+                            op.progress(Some(done as f32 / total as f32));
+                        }
+                        if failed == 0 {
+                            op.complete();
+                            let msg = if ok == 1 {
+                                "Image exported".to_string()
+                            } else {
+                                format!("{ok} images exported")
+                            };
+                            if let Some(w) = win_export.upgrade() {
+                                w.add_toast(libadwaita::Toast::new(&msg));
+                            }
+                        } else {
+                            let msg = format!("{ok}/{total} exported, {failed} failed");
+                            op.fail(msg.clone());
+                            if let Some(w) = win_export.upgrade() {
+                                w.add_toast(libadwaita::Toast::new(&msg));
+                            }
+                        }
+                    });
+                });
+
+                dialog.present(Some(&win));
+            });
+        }
+        self.add_action(&export_action);
     }
 
     /// Build the viewer header bar.
