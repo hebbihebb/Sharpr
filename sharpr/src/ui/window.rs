@@ -1016,6 +1016,14 @@ impl SharprWindow {
                             "image_count": thumb_total,
                         }),
                     );
+                    let (preview_bytes, prefetch_bytes) = state_rx.borrow().library.cache_stats();
+                    crate::bench_event!(
+                        "viewer.cache.stats",
+                        serde_json::json!({
+                            "preview_bytes": preview_bytes,
+                            "prefetch_bytes": prefetch_bytes,
+                        }),
+                    );
                     let thumb_op = if thumb_total > 0 {
                         Some(
                             state_rx
