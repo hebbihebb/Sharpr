@@ -611,3 +611,49 @@ The tasks are ordered by dependency and risk. Do them in order unless a task exp
 15. Add image pipeline documentation.
 
 The first four tasks should be treated as the stability foundation. Export work should wait until the decode pipeline is shared, so export does not create a third independent image-loading path.
+
+## Milestone 6: Unified Convert Workflow
+
+### Task 16: Unify Export and AI Upscale Into a Single Convert Flow
+
+**Priority:** High
+
+**Goal:** Replace the separate Export and AI Upscale actions with a single Convert dialog that handles both downscaling and AI upscaling, and routes single-image conversions through the existing before/after comparison view before saving.
+
+**Problem:** Export and AI upscale are complementary operations — both transform an image and write a new file — but today they live in separate menus with separate dialogs, separate progress tracking, and separate output handling. The AI upscale path already has a before/after comparison view that lets the user inspect the result before committing; the export path bypasses this entirely. Users wanting to downscale a single image for delivery get no preview, while users wanting to upscale do. The two UI surfaces also create confusion about which action to use and where to find it.
+
+**Primary files:**
+
+- `src/ui/window.rs` — replace `win.export` and `win.upscale` actions with `win.convert`
+- `src/ui/convert_dialog.rs` (new) — unified dialog
+- `src/export/mod.rs` — reuse existing backend
+- `src/upscale/runner.rs` — reuse existing backend
+- `src/ui/viewer.rs` — route single-image convert result through `commit_upscale` / before-after comparison
+
+**Implementation outline:**
+
+1. Add a `win.convert` action and a **Convert…** menu item. Keep `win.export` and `win.upscale` as internal implementation detail or remove them; do not expose both in the menu alongside Convert.
+2. The Convert dialog presents:
+   - **Direction**: Downscale / AI Upscale (radio or segmented control)
+   - **Downscale options**: max edge presets (1920, 2560, Original), format (JPEG, WebP, PNG), quality
+   - **AI Upscale options**: scale factor, the existing Advanced expander for backend/model (collapsed by default)
+   - **Destination**: for multi-image batch only — a folder chooser
+3. **Single-image path**: after the user confirms, run the conversion and show the result in the before/after comparison view (the existing `BeforeAfterViewer`). The Commit / Discard header buttons let the user accept or reject before anything is written to disk.
+4. **Multi-image batch path**: runs without comparison (comparing 50 images is impractical), writes directly to the chosen destination folder, reports progress through `ops::queue`, shows completion/failure toasts.
+5. Source set follows the existing rule: `selected_paths` if non-empty, otherwise the current image.
+6. Do not break the existing before/after comparison flow for AI upscale — reuse it.
+
+**Acceptance criteria:**
+
+- A single Convert menu item replaces the separate Export and Upscale items in the primary menu.
+- Single-image downscale goes through the comparison view before saving, matching the single-image upscale experience.
+- Multi-image batch writes directly to a destination folder with progress reporting.
+- No source file is overwritten.
+- All existing upscale and export functionality remains reachable through the unified dialog.
+
+**Verification:**
+
+- `cd sharpr && cargo build` — clean build.
+- Manual test: single-image downscale → confirm comparison view appears → Commit writes the file, Discard discards it.
+- Manual test: multi-image selection → Convert → confirm batch writes to destination without comparison.
+- Manual test: single-image AI upscale → confirm existing comparison flow still works unchanged.
