@@ -104,6 +104,37 @@ pub fn build_preferences_window(
     smart_group.add(&smart_model_row);
     library_page.add(&smart_group);
 
+    let advanced_group = libadwaita::PreferencesGroup::new();
+    advanced_group.set_title("Advanced");
+
+    let show_upscale_row = libadwaita::SwitchRow::new();
+    show_upscale_row.set_title("Show AI Upscale");
+    show_upscale_row.set_subtitle("Expose AI upscaling in the main menu");
+    show_upscale_row.set_active(settings.show_upscale_ui);
+
+    {
+        let parent_c = parent.clone();
+        show_upscale_row.connect_active_notify(move |row| {
+            let enabled = row.is_active();
+            {
+                parent_c
+                    .app_state()
+                    .borrow_mut()
+                    .settings
+                    .set_show_upscale_ui(enabled);
+            }
+
+            if let Some(action) = parent_c.lookup_action("upscale") {
+                if let Ok(action) = action.downcast::<gio::SimpleAction>() {
+                    action.set_enabled(enabled);
+                }
+            }
+        });
+    }
+
+    advanced_group.add(&show_upscale_row);
+    library_page.add(&advanced_group);
+
     window.add(&library_page);
 
     let upscaler_page = libadwaita::PreferencesPage::new();

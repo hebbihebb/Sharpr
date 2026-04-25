@@ -61,6 +61,11 @@
       <summary>Smart tagger model</summary>
       <description>The ONNX model used for smart tagging.</description>
     </key>
+    <key name="show-upscale-ui" type="b">
+      <default>false</default>
+      <summary>Show AI upscale in the primary UI</summary>
+      <description>Whether the main menu exposes the AI upscale action.</description>
+    </key>
     <key name="upscale-backend" type="s">
       <default>"cli"</default>
       <summary>Active upscale backend</summary>

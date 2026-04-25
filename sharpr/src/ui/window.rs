@@ -3111,12 +3111,16 @@ impl SharprWindow {
         }
 
         let upscale_action = gio::SimpleAction::new("upscale", None);
+        upscale_action.set_enabled(state.borrow().settings.show_upscale_ui);
         {
             let state_c = state.clone();
             let banner_c = upscale_banner.clone();
             let viewer_weak = viewer.downgrade();
             let action_weak = upscale_action.downgrade();
             upscale_action.connect_activate(move |_action, _| {
+                if !state_c.borrow().settings.show_upscale_ui {
+                    return;
+                }
                 let Some(viewer) = viewer_weak.upgrade() else { return };
 
                 // For CLI, lazily detect the binary once.

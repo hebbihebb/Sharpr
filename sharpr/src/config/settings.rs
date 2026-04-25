@@ -33,6 +33,8 @@ pub struct AppSettings {
     pub thumbnail_cache_max: i32,
     /// The smart tagger ONNX model to use.
     pub smart_tagger_model: String,
+    /// Whether the AI upscale entry point is exposed in the primary UI.
+    pub show_upscale_ui: bool,
     /// Active upscale backend: "cli", "onnx", or "comfyui".
     pub upscale_backend: String,
     /// ONNX upscale model: "swin2sr-compressed-x4" or "swin2sr-real-x4".
@@ -60,6 +62,7 @@ impl std::fmt::Debug for AppSettings {
             .field("upscaler_tile_size", &self.upscaler_tile_size)
             .field("upscaler_gpu_id", &self.upscaler_gpu_id)
             .field("thumbnail_cache_max", &self.thumbnail_cache_max)
+            .field("show_upscale_ui", &self.show_upscale_ui)
             .field("upscale_backend", &self.upscale_backend)
             .field("onnx_upscale_model", &self.onnx_upscale_model)
             .field("comfyui_url", &self.comfyui_url)
@@ -85,6 +88,7 @@ impl Default for AppSettings {
             upscaler_gpu_id: -1,
             thumbnail_cache_max: 500,
             smart_tagger_model: "resnet50-v1-7".into(),
+            show_upscale_ui: false,
             upscale_backend: "cli".into(),
             onnx_upscale_model: "swin2sr-lightweight-x2".into(),
             comfyui_url: "http://127.0.0.1:8188".into(),
@@ -127,6 +131,7 @@ impl AppSettings {
             "resnet152-v1-7" => "resnet152-v1-7".to_string(),
             _ => "resnet50-v1-7".to_string(),
         };
+        let show_upscale_ui = settings.boolean("show-upscale-ui");
         let upscale_backend = match settings.string("upscale-backend").as_str() {
             "onnx" => "onnx".to_string(),
             _ => "cli".to_string(),
@@ -161,6 +166,7 @@ impl AppSettings {
             upscaler_gpu_id,
             thumbnail_cache_max,
             smart_tagger_model,
+            show_upscale_ui,
             upscale_backend,
             onnx_upscale_model,
             comfyui_url,
@@ -237,6 +243,9 @@ impl AppSettings {
             _ => "resnet50-v1-7",
         };
         let _ = self.settings.set_string("smart-tagger-model", model);
+        let _ = self
+            .settings
+            .set_boolean("show-upscale-ui", self.show_upscale_ui);
         let backend = match self.upscale_backend.as_str() {
             "onnx" => "onnx",
             "comfyui" => "comfyui",
@@ -383,6 +392,11 @@ impl AppSettings {
         let _ = self
             .settings
             .set_string("smart-tagger-model", &self.smart_tagger_model);
+    }
+
+    pub fn set_show_upscale_ui(&mut self, value: bool) {
+        self.show_upscale_ui = value;
+        let _ = self.settings.set_boolean("show-upscale-ui", value);
     }
 }
 
