@@ -980,7 +980,8 @@ impl ViewerPane {
 
         let imp = self.imp();
         // Take the in-memory buffer if available; otherwise load from preview cache.
-        let rgba_from_cache = imp.current_rgba.borrow_mut().take().or_else(|| self.current_rgba_or_cached());
+        let rgba_from_cache = imp.current_rgba.borrow_mut().take();
+        let rgba_from_cache = rgba_from_cache.or_else(|| self.current_rgba_or_cached());
         let Some((rgba_bytes, w, h)) = rgba_from_cache else {
             return;
         };
