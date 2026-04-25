@@ -94,6 +94,8 @@ mod imp {
         pub preview_handle: RefCell<Option<crate::image_pipeline::worker::PreviewHandle>>,
         /// Handle for submitting metadata load requests to the shared metadata worker.
         pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
+        /// Called after a successful edit save so the filmstrip can refresh thumbnails.
+        pub post_save_cb: RefCell<Option<Box<dyn Fn()>>>,
     }
 
     impl Default for ViewerPane {
@@ -286,6 +288,7 @@ mod imp {
                 load_gen: Cell::new(0),
                 preview_handle: RefCell::new(None),
                 metadata_handle: RefCell::new(None),
+                post_save_cb: RefCell::new(None),
             }
         }
     }
@@ -598,6 +601,12 @@ impl ViewerPane {
         });
     }
 
+    /// Register a callback invoked after a successful edit save.
+    /// Used by the window to trigger filmstrip thumbnail refresh.
+    pub fn set_post_save_callback(&self, cb: impl Fn() + 'static) {
+        *self.imp().post_save_cb.borrow_mut() = Some(Box::new(cb));
+    }
+
     /// Clear the viewer (called when the folder changes).
     pub fn clear(&self) {
         let imp = self.imp();
@@ -638,6 +647,8 @@ impl ViewerPane {
         imp.pending_edit.set(false);
         Self::set_edit_buttons_visible_on(imp, false);
         self.restore_view_mode();
+        imp.spinner.stop();
+        imp.spinner.set_visible(false);
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
         imp.tag_osd.set_visible(false);
@@ -1096,6 +1107,9 @@ impl ViewerPane {
             }
             imp.pending_edit.set(false);
             Self::set_edit_buttons_visible_on(imp, false);
+            if let Some(ref cb) = *imp.post_save_cb.borrow() {
+                cb();
+            }
             self.load_image(saved_path);
         } else {
             eprintln!(

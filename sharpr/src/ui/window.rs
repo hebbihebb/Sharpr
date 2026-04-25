@@ -732,6 +732,13 @@ impl SharprWindow {
             viewer.set_metadata_worker(worker.handle(), metadata_result_rx);
         }
 
+        {
+            let filmstrip_ps = filmstrip.clone();
+            viewer.set_post_save_callback(move || {
+                filmstrip_ps.schedule_visible_thumbnails();
+            });
+        }
+
         let suppress_search_restore = Rc::new(Cell::new(false));
         let content_stack = gtk4::Stack::new();
         let toast_overlay = libadwaita::ToastOverlay::new();
