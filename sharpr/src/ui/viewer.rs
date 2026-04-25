@@ -73,7 +73,7 @@ mod imp {
         pub current_rgba: RefCell<Option<(Vec<u8>, u32, u32)>>,
         /// True when apply_transform() has been called and the result is unsaved.
         pub pending_edit: Cell<bool>,
-        /// "Save Edit" and "Discard Edit" buttons owned by the window header.
+        /// Edit Save/Discard buttons owned by the window header.
         pub edit_commit_btn: RefCell<Option<gtk4::Button>>,
         pub edit_discard_btn: RefCell<Option<gtk4::Button>>,
         /// Zoom/Fit toggle button in the header — stored so mode changes can
@@ -1025,8 +1025,8 @@ impl ViewerPane {
     }
 
     /// Write the current in-memory texture back to the source file on disk.
-    /// JPEG is re-encoded as RGB (lossy, unavoidable). PNG is lossless RGBA.
-    /// Other extensions fall back to PNG (with .png extension).
+    /// JPEG writes are gated because they require lossy re-encoding. PNG and
+    /// other lossless outputs save immediately.
     pub fn save_edit(&self) {
         let imp = self.imp();
         let path = match imp.current_path.borrow().clone() {
@@ -1040,6 +1040,43 @@ impl ViewerPane {
             return;
         }
 
+        if requires_jpeg_reencode_warning(&path) {
+            let dialog = libadwaita::AlertDialog::new(
+                Some("Save JPEG Edit?"),
+                Some("Saving will re-encode this JPEG, which may reduce quality. Save anyway?"),
+            );
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("save", "Save");
+            dialog.set_default_response(Some("save"));
+            dialog.set_close_response("cancel");
+            dialog.set_response_appearance("save", libadwaita::ResponseAppearance::Suggested);
+
+            let viewer_weak = self.downgrade();
+            dialog.choose(self, None::<&gtk4::gio::Cancellable>, move |response| {
+                if response != "save" {
+                    return;
+                }
+                let Some(viewer) = viewer_weak.upgrade() else {
+                    return;
+                };
+                viewer.finish_save_edit(path.clone(), rgba.clone(), w, h);
+            });
+            return;
+        }
+
+        self.finish_save_edit(path, rgba, w, h);
+    }
+
+    /// Reload the original file from disk, discarding the in-memory transform.
+    pub fn discard_edit(&self) {
+        let path = self.imp().current_path.borrow().clone();
+        if let Some(p) = path {
+            self.load_image(p); // load_image clears pending_edit and hides buttons
+        }
+    }
+
+    fn finish_save_edit(&self, path: PathBuf, rgba: Vec<u8>, w: u32, h: u32) {
+        let imp = self.imp();
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -1061,14 +1098,6 @@ impl ViewerPane {
                 path.display(),
                 result.err().unwrap_or_else(|| "unknown error".to_string())
             );
-        }
-    }
-
-    /// Reload the original file from disk, discarding the in-memory transform.
-    pub fn discard_edit(&self) {
-        let path = self.imp().current_path.borrow().clone();
-        if let Some(p) = path {
-            self.load_image(p); // load_image clears pending_edit and hides buttons
         }
     }
 
@@ -1780,6 +1809,15 @@ fn save_edit_pixels(
     }
 
     Ok(output_path)
+}
+
+fn requires_jpeg_reencode_warning(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|ext| ext.to_ascii_lowercase()),
+        Some(ext) if matches!(ext.as_str(), "jpg" | "jpeg")
+    )
 }
 
 fn copy_metadata_for_baked_pixels(

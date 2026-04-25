@@ -3665,14 +3665,14 @@ impl SharprWindow {
         discard_btn.set_visible(false);
         header.pack_end(&discard_btn);
 
-        let edit_commit_btn = gtk4::Button::with_label("Save Edit");
-        edit_commit_btn.set_tooltip_text(Some("Save the rotated/flipped image to disk"));
+        let edit_commit_btn = gtk4::Button::with_label("Save");
+        edit_commit_btn.set_tooltip_text(Some("Save rotated or flipped changes to disk"));
         edit_commit_btn.add_css_class("suggested-action");
         edit_commit_btn.set_visible(false);
         header.pack_end(&edit_commit_btn);
 
-        let edit_discard_btn = gtk4::Button::with_label("Discard Edit");
-        edit_discard_btn.set_tooltip_text(Some("Revert to the original image"));
+        let edit_discard_btn = gtk4::Button::with_label("Discard");
+        edit_discard_btn.set_tooltip_text(Some("Discard rotated or flipped changes"));
         edit_discard_btn.add_css_class("destructive-action");
         edit_discard_btn.set_visible(false);
         header.pack_end(&edit_discard_btn);

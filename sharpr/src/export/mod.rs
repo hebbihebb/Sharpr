@@ -25,6 +25,7 @@ pub struct ExportConfig {
     pub quality: u8,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ExportResult {
     pub source: PathBuf,
