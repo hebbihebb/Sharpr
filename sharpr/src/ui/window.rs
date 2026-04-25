@@ -3175,10 +3175,25 @@ impl SharprWindow {
                     content.set_margin_top(6);
                     content.set_margin_bottom(6);
 
+                    // ── Scale ────────────────────────────────────────────────
+                    let scale_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+                    let scale_label = gtk4::Label::new(Some("Scale"));
+                    scale_label.set_halign(gtk4::Align::Start);
+                    scale_box.append(&scale_label);
+                    let scale_dropdown =
+                        gtk4::DropDown::from_strings(&["Smart (auto)", "2×", "3×", "4×"]);
+                    scale_dropdown.set_selected(0);
+                    scale_box.append(&scale_dropdown);
+                    content.append(&scale_box);
+
+                    let advanced_expander = gtk4::Expander::new(Some("Advanced"));
+                    advanced_expander.set_expanded(false);
+                    let advanced_box = gtk4::Box::new(gtk4::Orientation::Vertical, 18);
+
                     // ── Backend selection ────────────────────────────────────
                     let backend_label = gtk4::Label::new(Some("Backend"));
                     backend_label.set_halign(gtk4::Align::Start);
-                    content.append(&backend_label);
+                    advanced_box.append(&backend_label);
 
                     let cli_btn = gtk4::CheckButton::with_label(
                         "CLI Upscaler (realesrgan, GPU-accelerated)",
@@ -3200,9 +3215,9 @@ impl SharprWindow {
                     } else {
                         cli_btn.set_active(true);
                     }
-                    content.append(&cli_btn);
-                    content.append(&onnx_btn);
-                    content.append(&comfyui_btn);
+                    advanced_box.append(&cli_btn);
+                    advanced_box.append(&onnx_btn);
+                    advanced_box.append(&comfyui_btn);
 
                     // ── Per-backend model sections (stack) ───────────────────
                     let backend_stack = gtk4::Stack::new();
@@ -3348,18 +3363,10 @@ impl SharprWindow {
                         UpscaleBackendKind::Onnx => "onnx",
                         _ => "cli",
                     });
-                    content.append(&backend_stack);
+                    advanced_box.append(&backend_stack);
 
-                    // ── Scale ────────────────────────────────────────────────
-                    let scale_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-                    let scale_label = gtk4::Label::new(Some("Scale"));
-                    scale_label.set_halign(gtk4::Align::Start);
-                    scale_box.append(&scale_label);
-                    let scale_dropdown =
-                        gtk4::DropDown::from_strings(&["Smart (auto)", "2×", "3×", "4×"]);
-                    scale_dropdown.set_selected(0);
-                    scale_box.append(&scale_dropdown);
-                    content.append(&scale_box);
+                    advanced_expander.set_child(Some(&advanced_box));
+                    content.append(&advanced_expander);
 
                     dialog.set_extra_child(Some(&content));
 
