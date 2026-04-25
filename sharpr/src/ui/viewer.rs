@@ -44,6 +44,8 @@ mod imp {
         pub tag_button: gtk4::Button,
         pub tag_add_button: gtk4::Button,
         pub spinner: gtk4::Spinner,
+        /// Shown briefly when a decode error prevents the image from loading.
+        pub error_label: gtk4::Label,
         /// OSD progress bar — shown during an upscale job, hidden otherwise.
         pub progress_bar: gtk4::ProgressBar,
         pub zoom_label: gtk4::Label,
@@ -114,6 +116,13 @@ mod imp {
             spinner.set_valign(gtk4::Align::Center);
             spinner.set_size_request(48, 48);
             spinner.set_visible(false);
+
+            let error_label = gtk4::Label::new(None);
+            error_label.add_css_class("osd");
+            error_label.set_halign(gtk4::Align::Center);
+            error_label.set_valign(gtk4::Align::Center);
+            error_label.set_wrap(true);
+            error_label.set_visible(false);
 
             let metadata_chip = MetadataChip::new();
             metadata_chip.set_halign(gtk4::Align::End);
@@ -215,6 +224,7 @@ mod imp {
             overlay.add_overlay(&tag_osd);
             overlay.add_overlay(&metadata_chip);
             overlay.add_overlay(&spinner);
+            overlay.add_overlay(&error_label);
             overlay.add_overlay(&progress_bar);
             overlay.add_overlay(&zoom_label);
 
@@ -240,6 +250,7 @@ mod imp {
                 tag_button,
                 tag_add_button,
                 spinner,
+                error_label,
                 progress_bar,
                 zoom_label,
                 zoom_hide_source: RefCell::new(None),
@@ -530,15 +541,28 @@ impl ViewerPane {
                             .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
                         viewer.reset_zoom();
                     }
-                    Err(_) => {
+                    Err(ref err) => {
                         crate::bench_event!(
                             "viewer.load.fail",
                             serde_json::json!({
                                 "path": result.path.display().to_string(),
+                                "reason": err.label(),
                             }),
                         );
                         *imp.current_rgba.borrow_mut() = None;
                         imp.picture.set_paintable(None::<&gdk4::Paintable>);
+                        let msg = match result.image {
+                            Err(crate::image_pipeline::PreviewDecodeError::OpenFailed) =>
+                                "Could not open file",
+                            Err(crate::image_pipeline::PreviewDecodeError::FormatDetectFailed) |
+                            Err(crate::image_pipeline::PreviewDecodeError::Unsupported) =>
+                                "Unsupported image format",
+                            Err(crate::image_pipeline::PreviewDecodeError::InvalidDimensions) =>
+                                "Image has invalid dimensions",
+                            _ => "Could not load image",
+                        };
+                        imp.error_label.set_text(msg);
+                        imp.error_label.set_visible(true);
                     }
                 }
             }
@@ -557,6 +581,7 @@ impl ViewerPane {
         self.set_quality_score(None);
         imp.spinner.stop();
         imp.spinner.set_visible(false);
+        imp.error_label.set_visible(false);
         self.reset_zoom();
         *imp.current_path.borrow_mut() = None;
         *imp.current_rgba.borrow_mut() = None;
@@ -587,6 +612,7 @@ impl ViewerPane {
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
         imp.tag_osd.set_visible(false);
+        imp.error_label.set_visible(false);
         self.set_quality_score(None);
         *imp.current_rgba.borrow_mut() = None;
         self.refresh_tag_summary();

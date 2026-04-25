@@ -30,9 +30,31 @@ pub struct PreviewImage {
     pub source: PreviewSource,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewDecodeError {
+    /// File could not be opened (missing, permission denied, I/O error).
+    OpenFailed,
+    /// Image format could not be detected from the file contents.
+    FormatDetectFailed,
+    /// Decoder reported an error (corrupt file, truncated data, etc.).
     DecodeFailed,
+    /// Format is recognised but not supported by any decode path.
+    Unsupported,
+    /// Decoded image reports zero width or height.
+    InvalidDimensions,
+}
+
+impl PreviewDecodeError {
+    /// Short human-readable label suitable for logging and bench events.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::OpenFailed => "open_failed",
+            Self::FormatDetectFailed => "format_detect_failed",
+            Self::DecodeFailed => "decode_failed",
+            Self::Unsupported => "unsupported",
+            Self::InvalidDimensions => "invalid_dimensions",
+        }
+    }
 }
 
 pub fn decode_preview(
@@ -69,17 +91,55 @@ pub fn decode_preview(
         }
     }
 
-    let file = File::open(path).map_err(|_| PreviewDecodeError::DecodeFailed)?;
+    let file = File::open(path).map_err(|e| {
+        crate::bench_event!(
+            "preview.decode.fail",
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "reason": "open_failed",
+                "error": e.to_string(),
+            }),
+        );
+        PreviewDecodeError::OpenFailed
+    })?;
     let reader = image::ImageReader::new(BufReader::new(file))
         .with_guessed_format()
-        .map_err(|_| PreviewDecodeError::DecodeFailed)?;
+        .map_err(|e| {
+            crate::bench_event!(
+                "preview.decode.fail",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "reason": "format_detect_failed",
+                    "error": e.to_string(),
+                }),
+            );
+            PreviewDecodeError::FormatDetectFailed
+        })?;
     let img = apply_exif_orientation(
-        reader
-            .decode()
-            .map_err(|_| PreviewDecodeError::DecodeFailed)?,
+        reader.decode().map_err(|e| {
+            crate::bench_event!(
+                "preview.decode.fail",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "reason": "decode_failed",
+                    "error": e.to_string(),
+                }),
+            );
+            PreviewDecodeError::DecodeFailed
+        })?,
         path,
     );
     let rgba = img.into_rgba8();
+    if rgba.width() == 0 || rgba.height() == 0 {
+        crate::bench_event!(
+            "preview.decode.fail",
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "reason": "invalid_dimensions",
+            }),
+        );
+        return Err(PreviewDecodeError::InvalidDimensions);
+    }
     let decoded = PreviewImage {
         width: rgba.width(),
         height: rgba.height(),
@@ -244,5 +304,28 @@ mod tests {
     fn choose_scale_keeps_lossless_at_full_size() {
         let factor = choose_jpeg_scale_factor_for_dims(6000, 4000, true, 1280);
         assert_eq!(factor, turbojpeg::ScalingFactor::ONE);
+    }
+
+    #[test]
+    fn decode_missing_file_returns_open_failed() {
+        let result = decode_preview(
+            std::path::Path::new("/nonexistent/does_not_exist.jpg"),
+            PreviewDecodeMode::Viewer,
+        );
+        assert!(matches!(result, Err(PreviewDecodeError::OpenFailed)));
+    }
+
+    #[test]
+    fn error_labels_are_distinct() {
+        let errors = [
+            PreviewDecodeError::OpenFailed,
+            PreviewDecodeError::FormatDetectFailed,
+            PreviewDecodeError::DecodeFailed,
+            PreviewDecodeError::Unsupported,
+            PreviewDecodeError::InvalidDimensions,
+        ];
+        let labels: Vec<_> = errors.iter().map(|e| e.label()).collect();
+        let unique: std::collections::HashSet<_> = labels.iter().collect();
+        assert_eq!(labels.len(), unique.len(), "all error labels must be distinct");
     }
 }
