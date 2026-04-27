@@ -79,22 +79,19 @@ fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
             sidebar.set_search_selected(false);
             sidebar.set_duplicates_selected(false);
             sidebar.set_tags_selected(false);
-            sidebar.set_quality_selected(None);
         }
         ViewScope::Duplicates => {
             sidebar.set_duplicates_selected(true);
             sidebar.set_search_selected(false);
             sidebar.set_tags_selected(false);
-            sidebar.set_quality_selected(None);
         }
         ViewScope::Search => {
             sidebar.set_search_selected(true);
             sidebar.set_duplicates_selected(false);
             sidebar.set_tags_selected(false);
-            sidebar.set_quality_selected(None);
         }
-        ViewScope::Quality(class) => {
-            sidebar.set_quality_selected(Some(*class));
+        ViewScope::Quality(_) => {
+            // Quality rows were removed from the sidebar; nothing to highlight.
             sidebar.set_search_selected(false);
             sidebar.set_duplicates_selected(false);
             sidebar.set_tags_selected(false);
@@ -103,7 +100,6 @@ fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
             sidebar.set_duplicates_selected(false);
             sidebar.set_search_selected(false);
             sidebar.set_tags_selected(false);
-            sidebar.set_quality_selected(None);
             sidebar.set_collection_selected(*id);
         }
     }
@@ -1459,7 +1455,6 @@ impl SharprWindow {
                 content_stack_c.set_visible_child_name("tags");
                 tag_browser.refresh();
                 sidebar_c.set_tags_selected(true);
-                sidebar_c.set_quality_selected(None);
             });
         }
 
@@ -1471,7 +1466,17 @@ impl SharprWindow {
             let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
             let window_weak = self.downgrade();
-            sidebar.connect_quality_selected(move |class| {
+            let quality_action =
+                gio::SimpleAction::new("scan-quality", Some(glib::VariantTy::STRING));
+            quality_action.connect_activate(move |_, param| {
+                let class = match param.and_then(|p| p.str()) {
+                    Some("Excellent") => crate::quality::QualityClass::Excellent,
+                    Some("Good") => crate::quality::QualityClass::Good,
+                    Some("Fair") => crate::quality::QualityClass::Fair,
+                    Some("Poor") => crate::quality::QualityClass::Poor,
+                    Some("Needs Upscale") => crate::quality::QualityClass::NeedsUpscale,
+                    _ => return,
+                };
                 let expected_gen = window_weak.upgrade().and_then(|win| {
                     let gen = win.bump_thumbnail_generation("smart.quality");
                     win.complete_thumbnail_ops();
@@ -1622,6 +1627,7 @@ impl SharprWindow {
                     op.complete();
                 });
             });
+            self.add_action(&quality_action);
         }
 
         // Helper: refresh the sidebar collection list from the DB.
@@ -2141,7 +2147,6 @@ impl SharprWindow {
                 content_stack.set_visible_child_name("viewer");
                 sidebar_c.set_search_selected(!text.trim().is_empty());
                 sidebar_c.set_tags_selected(false);
-                sidebar_c.set_quality_selected(None);
                 filmstrip_c.show_autocomplete(vec![]);
 
                 if let Some(source_id) = pending_search.take() {
@@ -2297,7 +2302,6 @@ impl SharprWindow {
                 }
                 sidebar_c.set_search_selected(false);
                 sidebar_c.set_tags_selected(false);
-                sidebar_c.set_quality_selected(None);
                 if !matches!(state_c.borrow().scope, ViewScope::Folder(_)) {
                     // Extract last_folder in a separate let so the Ref<AppState> temporary
                     // is dropped at the semicolon — not held alive through the if let body
@@ -2319,7 +2323,6 @@ impl SharprWindow {
             tag_browser.connect_tag_activated(move |tag| {
                 content_stack_c.set_visible_child_name("viewer");
                 sidebar_c.set_tags_selected(false);
-                sidebar_c.set_quality_selected(None);
                 filmstrip_c.emit_search_activate(tag);
             });
         }
@@ -3038,6 +3041,17 @@ impl SharprWindow {
         let convert_section = gio::Menu::new();
         convert_section.append(Some("Convert…"), Some("win.convert"));
         menu.append_section(Some("Convert"), &convert_section);
+
+        let quality_section = gio::Menu::new();
+        quality_section.append(Some("Excellent"), Some("win.scan-quality::Excellent"));
+        quality_section.append(Some("Good"), Some("win.scan-quality::Good"));
+        quality_section.append(Some("Fair"), Some("win.scan-quality::Fair"));
+        quality_section.append(Some("Poor"), Some("win.scan-quality::Poor"));
+        quality_section.append(
+            Some("Needs Upscale"),
+            Some("win.scan-quality::Needs Upscale"),
+        );
+        menu.append_section(Some("Quality Filter"), &quality_section);
 
         let app_section = gio::Menu::new();
         app_section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));

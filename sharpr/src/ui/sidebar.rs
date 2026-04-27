@@ -9,14 +9,12 @@ use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 
 use crate::library_index::Collection;
-use crate::quality::QualityClass;
 use crate::ui::window::AppState;
 
 type FolderSelectedCallback = Box<dyn Fn(PathBuf) + 'static>;
 type DuplicatesSelectedCallback = Box<dyn Fn() + 'static>;
 type TagsSelectedCallback = Box<dyn Fn() + 'static>;
 type SearchActivatedCallback = Box<dyn Fn() + 'static>;
-type QualitySelectedCallback = Box<dyn Fn(QualityClass) + 'static>;
 type FolderIgnoredChangedCallback = Box<dyn Fn(PathBuf, bool) + 'static>;
 type CollectionSelectedCallback = Box<dyn Fn(i64) + 'static>;
 type CollectionAddRequestedCallback = Box<dyn Fn() + 'static>;
@@ -34,7 +32,6 @@ enum SmartFolderSelection {
     Duplicates,
     Tags,
     Search,
-    Quality(QualityClass),
 }
 
 mod imp {
@@ -44,21 +41,14 @@ mod imp {
         pub toolbar_view: libadwaita::ToolbarView,
         pub list_box: gtk4::ListBox,
         pub smart_list: gtk4::ListBox,
-        pub quality_list: gtk4::ListBox,
         pub collection_list: gtk4::ListBox,
         pub duplicates_row: gtk4::ListBoxRow,
         pub tags_row: gtk4::ListBoxRow,
         pub search_row: gtk4::ListBoxRow,
-        pub excellent_row: gtk4::ListBoxRow,
-        pub good_row: gtk4::ListBoxRow,
-        pub fair_row: gtk4::ListBoxRow,
-        pub poor_row: gtk4::ListBoxRow,
-        pub needs_upscale_row: gtk4::ListBoxRow,
         pub folder_selected_cb: RefCell<Option<FolderSelectedCallback>>,
         pub duplicates_selected_cb: RefCell<Option<DuplicatesSelectedCallback>>,
         pub tags_selected_cb: RefCell<Option<TagsSelectedCallback>>,
         pub search_activated_cb: RefCell<Option<SearchActivatedCallback>>,
-        pub quality_selected_cb: RefCell<Option<QualitySelectedCallback>>,
         pub folder_ignored_changed_cb: RefCell<Option<FolderIgnoredChangedCallback>>,
         pub collection_selected_cb: RefCell<Option<CollectionSelectedCallback>>,
         pub collection_add_requested_cb: RefCell<Option<CollectionAddRequestedCallback>>,
@@ -76,21 +66,14 @@ mod imp {
                 toolbar_view: libadwaita::ToolbarView::new(),
                 list_box: gtk4::ListBox::new(),
                 smart_list: gtk4::ListBox::new(),
-                quality_list: gtk4::ListBox::new(),
                 collection_list: gtk4::ListBox::new(),
                 duplicates_row: gtk4::ListBoxRow::new(),
                 tags_row: gtk4::ListBoxRow::new(),
                 search_row: gtk4::ListBoxRow::new(),
-                excellent_row: gtk4::ListBoxRow::new(),
-                good_row: gtk4::ListBoxRow::new(),
-                fair_row: gtk4::ListBoxRow::new(),
-                poor_row: gtk4::ListBoxRow::new(),
-                needs_upscale_row: gtk4::ListBoxRow::new(),
                 folder_selected_cb: RefCell::new(None),
                 duplicates_selected_cb: RefCell::new(None),
                 tags_selected_cb: RefCell::new(None),
                 search_activated_cb: RefCell::new(None),
-                quality_selected_cb: RefCell::new(None),
                 folder_ignored_changed_cb: RefCell::new(None),
                 collection_selected_cb: RefCell::new(None),
                 collection_add_requested_cb: RefCell::new(None),
@@ -221,53 +204,19 @@ impl SidebarPane {
         scroll.set_child(Some(&imp.list_box));
 
         let smart_label = section_label("Smart Folders");
-        let quality_label = section_label("Quality");
         let folders_label = section_label("Folders");
 
         imp.smart_list.add_css_class("navigation-sidebar");
         imp.smart_list
             .set_selection_mode(gtk4::SelectionMode::Single);
-        imp.quality_list.add_css_class("navigation-sidebar");
-        imp.quality_list
-            .set_selection_mode(gtk4::SelectionMode::Single);
 
         configure_smart_row(&imp.duplicates_row, "edit-find-symbolic", "Duplicates");
         configure_smart_row(&imp.tags_row, "bookmark-new-symbolic", "Tags");
         configure_smart_row(&imp.search_row, "system-search-symbolic", "Search");
-        configure_smart_row(
-            &imp.excellent_row,
-            "object-select-symbolic",
-            QualityClass::Excellent.label(),
-        );
-        configure_smart_row(
-            &imp.good_row,
-            "starred-symbolic",
-            QualityClass::Good.label(),
-        );
-        configure_smart_row(
-            &imp.fair_row,
-            "image-x-generic-symbolic",
-            QualityClass::Fair.label(),
-        );
-        configure_smart_row(
-            &imp.poor_row,
-            "dialog-warning-symbolic",
-            QualityClass::Poor.label(),
-        );
-        configure_smart_row(
-            &imp.needs_upscale_row,
-            "zoom-in-symbolic",
-            QualityClass::NeedsUpscale.label(),
-        );
 
         imp.smart_list.append(&imp.duplicates_row);
         imp.smart_list.append(&imp.tags_row);
         imp.smart_list.append(&imp.search_row);
-        imp.quality_list.append(&imp.excellent_row);
-        imp.quality_list.append(&imp.good_row);
-        imp.quality_list.append(&imp.fair_row);
-        imp.quality_list.append(&imp.poor_row);
-        imp.quality_list.append(&imp.needs_upscale_row);
 
         let widget_weak = self.downgrade();
         imp.smart_list.connect_selected_rows_changed(move |list| {
@@ -280,7 +229,6 @@ impl SidebarPane {
             let Some(row) = list.selected_row() else {
                 return;
             };
-            widget.clear_quality_selection();
             widget.clear_folder_selection();
             widget.clear_collection_selection();
             if row == widget.imp().duplicates_row {
@@ -290,34 +238,6 @@ impl SidebarPane {
             } else if row == widget.imp().search_row {
                 widget.emit_search_activated();
             }
-        });
-
-        let widget_weak = self.downgrade();
-        imp.quality_list.connect_selected_rows_changed(move |list| {
-            let Some(widget) = widget_weak.upgrade() else {
-                return;
-            };
-            if widget.imp().suppress_smart_signal.get() {
-                return;
-            }
-            let Some(row) = list.selected_row() else {
-                return;
-            };
-            widget.clear_smart_list_selection();
-            widget.clear_folder_selection();
-            widget.clear_collection_selection();
-            let class = if row == widget.imp().excellent_row {
-                QualityClass::Excellent
-            } else if row == widget.imp().good_row {
-                QualityClass::Good
-            } else if row == widget.imp().fair_row {
-                QualityClass::Fair
-            } else if row == widget.imp().poor_row {
-                QualityClass::Poor
-            } else {
-                QualityClass::NeedsUpscale
-            };
-            widget.emit_quality_selected(class);
         });
 
         // Collections section header: label + "New Collection" + button
@@ -361,7 +281,6 @@ impl SidebarPane {
                 };
                 widget.clear_folder_selection();
                 widget.clear_smart_list_selection();
-                widget.clear_quality_selection();
                 widget.emit_collection_selected(coll_row.collection_id());
             });
 
@@ -370,8 +289,6 @@ impl SidebarPane {
         vbox.append(&scroll);
         vbox.append(&smart_label);
         vbox.append(&imp.smart_list);
-        vbox.append(&quality_label);
-        vbox.append(&imp.quality_list);
         vbox.append(&collections_header);
         vbox.append(&imp.collection_list);
 
@@ -445,10 +362,6 @@ impl SidebarPane {
         *self.imp().search_activated_cb.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_quality_selected<F: Fn(QualityClass) + 'static>(&self, f: F) {
-        *self.imp().quality_selected_cb.borrow_mut() = Some(Box::new(f));
-    }
-
     pub fn connect_folder_ignored_changed<F: Fn(PathBuf, bool) + 'static>(&self, f: F) {
         *self.imp().folder_ignored_changed_cb.borrow_mut() = Some(Box::new(f));
     }
@@ -512,20 +425,6 @@ impl SidebarPane {
         }
     }
 
-    pub fn set_quality_selected(&self, class: Option<QualityClass>) {
-        match class {
-            Some(class) => self.set_smart_selection(SmartFolderSelection::Quality(class)),
-            None => {
-                if matches!(
-                    self.current_smart_selection(),
-                    SmartFolderSelection::Quality(_)
-                ) {
-                    self.set_smart_selection(SmartFolderSelection::None);
-                }
-            }
-        }
-    }
-
     pub fn select_folder(&self, path: &Path) {
         self.clear_smart_selection();
 
@@ -560,45 +459,24 @@ impl SidebarPane {
         self.imp().suppress_smart_signal.set(false);
     }
 
-    fn clear_quality_selection(&self) {
-        self.imp().suppress_smart_signal.set(true);
-        self.imp().quality_list.unselect_all();
-        self.imp().suppress_smart_signal.set(false);
-    }
-
     fn set_smart_selection(&self, selection: SmartFolderSelection) {
         self.imp().suppress_smart_signal.set(true);
         match selection {
             SmartFolderSelection::None => {
                 self.imp().smart_list.unselect_all();
-                self.imp().quality_list.unselect_all();
             }
             SmartFolderSelection::Duplicates => {
                 self.imp()
                     .smart_list
                     .select_row(Some(&self.imp().duplicates_row));
-                self.imp().quality_list.unselect_all();
             }
             SmartFolderSelection::Tags => {
                 self.imp().smart_list.select_row(Some(&self.imp().tags_row));
-                self.imp().quality_list.unselect_all();
             }
             SmartFolderSelection::Search => {
                 self.imp()
                     .smart_list
                     .select_row(Some(&self.imp().search_row));
-                self.imp().quality_list.unselect_all();
-            }
-            SmartFolderSelection::Quality(class) => {
-                self.imp().smart_list.unselect_all();
-                let row = match class {
-                    QualityClass::Excellent => &self.imp().excellent_row,
-                    QualityClass::Good => &self.imp().good_row,
-                    QualityClass::Fair => &self.imp().fair_row,
-                    QualityClass::Poor => &self.imp().poor_row,
-                    QualityClass::NeedsUpscale => &self.imp().needs_upscale_row,
-                };
-                self.imp().quality_list.select_row(Some(row));
             }
         }
         self.imp().suppress_smart_signal.set(false);
@@ -614,23 +492,6 @@ impl SidebarPane {
             }
             if row == self.imp().search_row {
                 return SmartFolderSelection::Search;
-            }
-        }
-        if let Some(row) = self.imp().quality_list.selected_row() {
-            if row == self.imp().excellent_row {
-                return SmartFolderSelection::Quality(QualityClass::Excellent);
-            }
-            if row == self.imp().good_row {
-                return SmartFolderSelection::Quality(QualityClass::Good);
-            }
-            if row == self.imp().fair_row {
-                return SmartFolderSelection::Quality(QualityClass::Fair);
-            }
-            if row == self.imp().poor_row {
-                return SmartFolderSelection::Quality(QualityClass::Poor);
-            }
-            if row == self.imp().needs_upscale_row {
-                return SmartFolderSelection::Quality(QualityClass::NeedsUpscale);
             }
         }
         SmartFolderSelection::None
@@ -657,12 +518,6 @@ impl SidebarPane {
     fn emit_search_activated(&self) {
         if let Some(cb) = self.imp().search_activated_cb.borrow().as_ref() {
             cb();
-        }
-    }
-
-    fn emit_quality_selected(&self, class: QualityClass) {
-        if let Some(cb) = self.imp().quality_selected_cb.borrow().as_ref() {
-            cb(class);
         }
     }
 
