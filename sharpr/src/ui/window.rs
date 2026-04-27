@@ -2023,6 +2023,7 @@ impl SharprWindow {
 
         let filmstrip_col = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         filmstrip_col.append(&filter_bar);
+        filmstrip.set_vexpand(true);
         filmstrip_col.append(&filmstrip);
         let filmstrip_page = libadwaita::NavigationPage::builder()
             .title("Photos")
