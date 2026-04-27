@@ -25,6 +25,7 @@ type AddToCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type RemoveFromCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type SortOrderChangedCallback = Box<dyn Fn(SortOrder) + 'static>;
 type QualityFilterChangedCallback = Box<dyn Fn(Option<QualityClass>) + 'static>;
+type SaveSearchAsCollectionCallback = Box<dyn Fn(&str) + 'static>;
 
 const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
 const BUFFER_ROWS: u32 = 2000;
@@ -39,6 +40,7 @@ mod imp {
         pub root_box: gtk4::Box,
         pub search_bar: gtk4::SearchBar,
         pub search_entry: gtk4::SearchEntry,
+        pub save_search_btn: gtk4::Button,
         pub suggestions_popover: gtk4::Popover,
         pub suggestions_list: gtk4::ListBox,
         pub scroll: gtk4::ScrolledWindow,
@@ -54,6 +56,7 @@ mod imp {
             RefCell<Option<RemoveFromCollectionRequestedCallback>>,
         pub sort_order_changed_cb: RefCell<Option<SortOrderChangedCallback>>,
         pub quality_filter_changed_cb: RefCell<Option<QualityFilterChangedCallback>>,
+        pub save_search_as_collection_cb: RefCell<Option<SaveSearchAsCollectionCallback>>,
         pub quality_radios: RefCell<Vec<(gtk4::CheckButton, Option<QualityClass>)>>,
         pub sort_btn: RefCell<Option<gtk4::MenuButton>>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
@@ -76,6 +79,11 @@ mod imp {
 
             let search_bar = gtk4::SearchBar::new();
             let search_entry = gtk4::SearchEntry::new();
+            let save_search_btn = {
+                let b = gtk4::Button::from_icon_name("bookmark-new-symbolic");
+                b.set_visible(false);
+                b
+            };
             let suggestions_list = gtk4::ListBox::new();
             let suggestions_popover = gtk4::Popover::new();
 
@@ -84,6 +92,7 @@ mod imp {
                 root_box: gtk4::Box::new(gtk4::Orientation::Vertical, 0),
                 search_bar,
                 search_entry,
+                save_search_btn,
                 suggestions_popover,
                 suggestions_list,
                 scroll: gtk4::ScrolledWindow::new(),
@@ -98,6 +107,7 @@ mod imp {
                 remove_from_collection_requested_cb: RefCell::new(None),
                 sort_order_changed_cb: RefCell::new(None),
                 quality_filter_changed_cb: RefCell::new(None),
+                save_search_as_collection_cb: RefCell::new(None),
                 quality_radios: RefCell::new(Vec::new()),
                 sort_btn: RefCell::new(None),
                 state: RefCell::new(None),
@@ -244,7 +254,14 @@ impl FilmstripPane {
         self.install_css();
 
         imp.search_entry.set_placeholder_text(Some("Search tags…"));
-        imp.search_bar.set_child(Some(&imp.search_entry));
+        let search_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+        search_row.append(&imp.search_entry);
+        imp.save_search_btn.add_css_class("flat");
+        imp.save_search_btn.set_valign(gtk4::Align::Center);
+        imp.save_search_btn
+            .set_tooltip_text(Some("Save search as Collection"));
+        search_row.append(&imp.save_search_btn);
+        imp.search_bar.set_child(Some(&search_row));
         imp.search_bar.set_show_close_button(true);
         imp.search_bar.connect_entry(&imp.search_entry);
 
@@ -541,7 +558,10 @@ impl FilmstripPane {
                         .as_ref()
                         .map(|s| {
                             let s = s.borrow();
-                            (s.library_index.is_some(), matches!(s.scope, ViewScope::Collection(_)))
+                            (
+                                s.library_index.is_some(),
+                                matches!(s.scope, ViewScope::Collection(_)),
+                            )
                         })
                         .unwrap_or((false, false));
                     if let Some(btn) = add_btn_weak.upgrade() {
@@ -729,6 +749,13 @@ impl FilmstripPane {
             }
         });
 
+        let btn_weak = imp.save_search_btn.downgrade();
+        imp.search_entry.connect_search_changed(move |entry| {
+            if let Some(btn) = btn_weak.upgrade() {
+                btn.set_visible(!entry.text().is_empty());
+            }
+        });
+
         let widget_weak = self.downgrade();
         imp.search_entry.connect_activate(move |entry| {
             if let Some(widget) = widget_weak.upgrade() {
@@ -746,6 +773,25 @@ impl FilmstripPane {
                     }
                 }
             });
+
+        let btn_weak = imp.save_search_btn.downgrade();
+        imp.search_bar
+            .connect_search_mode_enabled_notify(move |bar| {
+                if let Some(btn) = btn_weak.upgrade() {
+                    if !bar.is_search_mode() {
+                        btn.set_visible(false);
+                    }
+                }
+            });
+
+        let widget_weak = self.downgrade();
+        imp.save_search_btn.connect_clicked(move |_| {
+            let Some(widget) = widget_weak.upgrade() else {
+                return;
+            };
+            let query = widget.imp().search_entry.text().to_string();
+            widget.emit_save_search_as_collection(&query);
+        });
 
         let search_entry = imp.search_entry.clone();
         imp.suggestions_list.connect_row_activated(move |_, row| {
@@ -1090,6 +1136,10 @@ impl FilmstripPane {
         *self.imp().quality_filter_changed_cb.borrow_mut() = Some(Box::new(cb));
     }
 
+    pub fn connect_save_search_as_collection<F: Fn(&str) + 'static>(&self, f: F) {
+        *self.imp().save_search_as_collection_cb.borrow_mut() = Some(Box::new(f));
+    }
+
     /// Resets the quality filter radio to "All Quality" without emitting the callback.
     pub fn reset_quality_filter(&self) {
         if let Some((all_radio, _)) = self.imp().quality_radios.borrow().first() {
@@ -1142,6 +1192,12 @@ impl FilmstripPane {
     pub fn emit_search_activate(&self, text: &str) {
         if let Some(cb) = self.imp().search_activate_cb.borrow().as_ref() {
             cb(text);
+        }
+    }
+
+    fn emit_save_search_as_collection(&self, query: &str) {
+        if let Some(cb) = self.imp().save_search_as_collection_cb.borrow().as_ref() {
+            cb(query);
         }
     }
 

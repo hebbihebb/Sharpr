@@ -87,21 +87,40 @@ impl TagDatabase {
     }
 
     pub fn search_paths(&self, query: &str) -> Vec<PathBuf> {
+        let terms = normalized_query_terms(query);
+        if terms.is_empty() {
+            return vec![];
+        }
         let Ok(conn) = self.conn.lock() else {
             return vec![];
         };
-        let pattern = format!("%{}%", query.to_lowercase());
-        let mut stmt = match conn.prepare("SELECT DISTINCT path FROM file_tags WHERE tag LIKE ?1") {
-            Ok(stmt) => stmt,
-            Err(_) => return vec![],
-        };
-        let rows = match stmt.query_map(params![pattern], |row| row.get::<_, String>(0)) {
-            Ok(rows) => rows,
-            Err(_) => return vec![],
-        };
-        let paths: Vec<PathBuf> = rows.filter_map(|r| r.ok()).map(PathBuf::from).collect();
-        drop(stmt);
-        prune_missing_paths(&conn, paths)
+        let mut matching_paths: Option<Vec<PathBuf>> = None;
+        for term in &terms {
+            let pattern = format!("%{term}%");
+            let mut stmt =
+                match conn.prepare("SELECT DISTINCT path FROM file_tags WHERE tag LIKE ?1") {
+                    Ok(stmt) => stmt,
+                    Err(_) => return vec![],
+                };
+            let rows = match stmt.query_map(params![pattern], |row| row.get::<_, String>(0)) {
+                Ok(rows) => rows,
+                Err(_) => return vec![],
+            };
+            let paths: Vec<PathBuf> = rows.filter_map(|r| r.ok()).map(PathBuf::from).collect();
+            drop(stmt);
+            let paths = prune_missing_paths(&conn, paths);
+            matching_paths = Some(match matching_paths {
+                Some(current) => current
+                    .into_iter()
+                    .filter(|path| paths.contains(path))
+                    .collect(),
+                None => paths,
+            });
+            if matching_paths.as_ref().is_some_and(Vec::is_empty) {
+                return vec![];
+            }
+        }
+        matching_paths.unwrap_or_default()
     }
 
     pub fn autocomplete(&self, prefix: &str, limit: usize) -> Vec<String> {
@@ -232,10 +251,8 @@ impl TagDatabase {
             Ok(stmt) => stmt,
             Err(_) => return vec![],
         };
-        let mut params_vec: Vec<&dyn rusqlite::ToSql> = tags
-            .iter()
-            .map(|tag| tag as &dyn rusqlite::ToSql)
-            .collect();
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> =
+            tags.iter().map(|tag| tag as &dyn rusqlite::ToSql).collect();
         let tag_count = tags.len() as i64;
         params_vec.push(&tag_count);
         let rows = match stmt.query_map(params_vec.as_slice(), |row| row.get::<_, String>(0)) {
@@ -377,6 +394,14 @@ fn normalize_tag(tag: &str) -> String {
     tag.trim().to_lowercase()
 }
 
+fn normalized_query_terms(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(normalize_tag)
+        .filter(|term| !term.is_empty())
+        .collect()
+}
+
 fn normalized_unique_tags(tags: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for tag in tags {
@@ -446,6 +471,30 @@ mod tests {
     }
 
     #[test]
+    fn search_paths_matches_all_query_terms_across_tags() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let root = temp_path("search-terms");
+        std::fs::create_dir_all(&root).unwrap();
+        let a = root.join("a.jpg");
+        let b = root.join("b.jpg");
+        let c = root.join("c.jpg");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        std::fs::write(&c, b"c").unwrap();
+
+        db.add_tag(&a, "people");
+        db.add_tag(&a, "model");
+        db.add_tag(&b, "people");
+        db.add_tag(&b, "portrait");
+        db.add_tag(&c, "people model");
+
+        assert_eq!(db.search_paths("people model"), vec![a.clone(), c.clone()]);
+        assert_eq!(db.search_paths("people portrait"), vec![b.clone()]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn paths_for_all_tags_requires_full_intersection() {
         let db = TagDatabase::open_in_memory().unwrap();
         let root = temp_path("all-tags");
@@ -482,7 +531,9 @@ mod tests {
         );
 
         db.replace_tag_in_paths(&[a.clone(), b.clone()], "model", "portrait");
-        assert!(db.paths_for_all_tags(&["people".into(), "model".into()]).is_empty());
+        assert!(db
+            .paths_for_all_tags(&["people".into(), "model".into()])
+            .is_empty());
         assert_eq!(
             db.paths_for_all_tags(&["people".into(), "portrait".into()]),
             vec![a.clone(), b.clone()]

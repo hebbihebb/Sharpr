@@ -9,6 +9,7 @@ use gtk4::subclass::prelude::*;
 use crate::tags::TagDatabase;
 
 type TagActivatedCallback = Box<dyn Fn(&str) + 'static>;
+type TagCreateCollectionCallback = Box<dyn Fn(&str) + 'static>;
 
 mod imp {
     use super::*;
@@ -18,6 +19,7 @@ mod imp {
         pub content_box: gtk4::Box,
         pub tags: RefCell<Option<Arc<TagDatabase>>>,
         pub tag_activated_cb: RefCell<Option<TagActivatedCallback>>,
+        pub tag_create_collection_cb: RefCell<Option<TagCreateCollectionCallback>>,
     }
 
     impl Default for TagBrowser {
@@ -30,6 +32,7 @@ mod imp {
                 content_box: gtk4::Box::new(gtk4::Orientation::Vertical, 0),
                 tags: RefCell::new(None),
                 tag_activated_cb: RefCell::new(None),
+                tag_create_collection_cb: RefCell::new(None),
             }
         }
     }
@@ -171,6 +174,53 @@ impl TagBrowser {
                     widget.emit_tag_activated(&tag_for_activate);
                 });
 
+                let gesture = gtk4::GestureClick::new();
+                gesture.set_button(3);
+                let tag_for_collection = tag.clone();
+                let button_weak = name_button.downgrade();
+                let widget_weak = self.downgrade();
+                gesture.connect_released(move |_, _, x, y| {
+                    let Some(button) = button_weak.upgrade() else {
+                        return;
+                    };
+                    let Some(widget) = widget_weak.upgrade() else {
+                        return;
+                    };
+                    let popover = gtk4::Popover::new();
+                    popover.set_autohide(true);
+                    popover.set_has_arrow(true);
+                    let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+                    popover.set_pointing_to(Some(&rect));
+                    let create_button = gtk4::Button::with_label("Create Collection");
+                    create_button.add_css_class("flat");
+                    let popover_weak = popover.downgrade();
+                    let widget_weak = widget.downgrade();
+                    let tag = tag_for_collection.clone();
+                    create_button.connect_clicked(move |_| {
+                        let Some(widget) = widget_weak.upgrade() else {
+                            return;
+                        };
+                        widget.emit_tag_create_collection_requested(&tag);
+                        if let Some(popover) = popover_weak.upgrade() {
+                            popover.popdown();
+                        }
+                    });
+                    popover.set_child(Some(&create_button));
+                    popover.set_parent(&button);
+                    popover.popup();
+                });
+                name_button.add_controller(gesture);
+
+                let drag_source = gtk4::DragSource::new();
+                drag_source.set_actions(gdk4::DragAction::COPY);
+                let tag_for_drag = tag.clone();
+                drag_source.connect_prepare(move |_, _, _| {
+                    Some(gdk4::ContentProvider::for_value(
+                        &format!("tag:{tag_for_drag}").to_value(),
+                    ))
+                });
+                name_button.add_controller(drag_source);
+
                 let widget_weak = self.downgrade();
                 let tag_for_delete = tag.clone();
                 delete_button.connect_clicked(move |_| {
@@ -198,8 +248,18 @@ impl TagBrowser {
         *self.imp().tag_activated_cb.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_tag_create_collection_requested<F: Fn(&str) + 'static>(&self, f: F) {
+        *self.imp().tag_create_collection_cb.borrow_mut() = Some(Box::new(f));
+    }
+
     fn emit_tag_activated(&self, tag: &str) {
         if let Some(cb) = self.imp().tag_activated_cb.borrow().as_ref() {
+            cb(tag);
+        }
+    }
+
+    fn emit_tag_create_collection_requested(&self, tag: &str) {
+        if let Some(cb) = self.imp().tag_create_collection_cb.borrow().as_ref() {
             cb(tag);
         }
     }

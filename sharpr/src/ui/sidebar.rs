@@ -22,6 +22,7 @@ type CollectionMoveRequestedCallback = Box<dyn Fn(i64) + 'static>;
 type CollectionReparentRequestedCallback = Box<dyn Fn(i64, i64) + 'static>;
 type CollectionDeleteRequestedCallback = Box<dyn Fn(i64) + 'static>;
 type DropPathsToCollectionCallback = Box<dyn Fn(i64, Vec<std::path::PathBuf>) + 'static>;
+type TagPromotedToCollectionCallback = Box<dyn Fn(String) + 'static>;
 
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
@@ -38,14 +39,13 @@ mod imp {
         pub folder_ignored_changed_cb: RefCell<Option<FolderIgnoredChangedCallback>>,
         pub collection_selected_cb: RefCell<Option<CollectionSelectedCallback>>,
         pub collection_add_requested_cb: RefCell<Option<CollectionAddRequestedCallback>>,
-        pub collection_child_add_requested_cb:
-            RefCell<Option<CollectionChildAddRequestedCallback>>,
+        pub collection_child_add_requested_cb: RefCell<Option<CollectionChildAddRequestedCallback>>,
         pub collection_edit_requested_cb: RefCell<Option<CollectionEditRequestedCallback>>,
         pub collection_move_requested_cb: RefCell<Option<CollectionMoveRequestedCallback>>,
-        pub collection_reparent_requested_cb:
-            RefCell<Option<CollectionReparentRequestedCallback>>,
+        pub collection_reparent_requested_cb: RefCell<Option<CollectionReparentRequestedCallback>>,
         pub collection_delete_requested_cb: RefCell<Option<CollectionDeleteRequestedCallback>>,
         pub drop_paths_to_collection_cb: RefCell<Option<DropPathsToCollectionCallback>>,
+        pub tag_promoted_to_collection_cb: RefCell<Option<TagPromotedToCollectionCallback>>,
         pub suppress_folder_signal: Cell<bool>,
         pub suppress_collection_signal: Cell<bool>,
         pub collapsed_collection_ids: RefCell<HashSet<i64>>,
@@ -68,6 +68,7 @@ mod imp {
                 collection_reparent_requested_cb: RefCell::new(None),
                 collection_delete_requested_cb: RefCell::new(None),
                 drop_paths_to_collection_cb: RefCell::new(None),
+                tag_promoted_to_collection_cb: RefCell::new(None),
                 suppress_folder_signal: Cell::new(false),
                 suppress_collection_signal: Cell::new(false),
                 collapsed_collection_ids: RefCell::new(HashSet::new()),
@@ -205,6 +206,22 @@ impl SidebarPane {
         new_collection_btn.set_margin_end(8);
         collections_header.append(&collections_label);
         collections_header.append(&new_collection_btn);
+
+        let drop_target = gtk4::DropTarget::new(glib::Type::STRING, gdk4::DragAction::COPY);
+        let widget_weak = self.downgrade();
+        drop_target.connect_drop(move |_, value, _, _| {
+            let Ok(s) = value.get::<String>() else {
+                return false;
+            };
+            if let Some(tag) = s.strip_prefix("tag:") {
+                if let Some(widget) = widget_weak.upgrade() {
+                    widget.emit_tag_promoted_to_collection(tag.to_string());
+                }
+                return true;
+            }
+            false
+        });
+        collections_header.add_controller(drop_target);
 
         imp.collection_list.add_css_class("navigation-sidebar");
         imp.collection_list
@@ -404,6 +421,10 @@ impl SidebarPane {
         *self.imp().collection_delete_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_tag_promoted_to_collection<F: Fn(String) + 'static>(&self, f: F) {
+        *self.imp().tag_promoted_to_collection_cb.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn clear_collection_selection(&self) {
         self.imp().suppress_collection_signal.set(true);
         self.imp().collection_list.unselect_all();
@@ -464,7 +485,12 @@ impl SidebarPane {
         for coll in visible_collections(collections, &imp.collapsed_collection_ids.borrow()) {
             let has_children = collections.iter().any(|c| c.parent_id == Some(coll.id));
             let is_collapsed = imp.collapsed_collection_ids.borrow().contains(&coll.id);
-            let row = CollectionRow::new(&coll, collection_depth(coll.id, collections), has_children, is_collapsed);
+            let row = CollectionRow::new(
+                &coll,
+                collection_depth(coll.id, collections),
+                has_children,
+                is_collapsed,
+            );
             self.attach_collection_row_menu(&row);
             imp.collection_list.append(&row);
         }
@@ -683,7 +709,12 @@ impl SidebarPane {
     }
 
     fn emit_collection_child_add_requested(&self, id: i64) {
-        if let Some(cb) = self.imp().collection_child_add_requested_cb.borrow().as_ref() {
+        if let Some(cb) = self
+            .imp()
+            .collection_child_add_requested_cb
+            .borrow()
+            .as_ref()
+        {
             cb(id);
         }
     }
@@ -701,7 +732,12 @@ impl SidebarPane {
     }
 
     fn emit_collection_reparent_requested(&self, source_id: i64, target_parent_id: i64) {
-        if let Some(cb) = self.imp().collection_reparent_requested_cb.borrow().as_ref() {
+        if let Some(cb) = self
+            .imp()
+            .collection_reparent_requested_cb
+            .borrow()
+            .as_ref()
+        {
             cb(source_id, target_parent_id);
         }
     }
@@ -709,6 +745,12 @@ impl SidebarPane {
     fn emit_collection_delete_requested(&self, id: i64) {
         if let Some(cb) = self.imp().collection_delete_requested_cb.borrow().as_ref() {
             cb(id);
+        }
+    }
+
+    fn emit_tag_promoted_to_collection(&self, tag: String) {
+        if let Some(cb) = self.imp().tag_promoted_to_collection_cb.borrow().as_ref() {
+            cb(tag);
         }
     }
 
@@ -809,7 +851,10 @@ fn section_label(text: &str) -> gtk4::Label {
     lbl
 }
 
-fn visible_collections(collections: &[Collection], collapsed_ids: &HashSet<i64>) -> Vec<Collection> {
+fn visible_collections(
+    collections: &[Collection],
+    collapsed_ids: &HashSet<i64>,
+) -> Vec<Collection> {
     let by_parent = collection_children(collections);
     let mut out = Vec::new();
     append_visible_collections(None, &by_parent, collapsed_ids, &mut out);
@@ -847,7 +892,8 @@ fn collection_children(collections: &[Collection]) -> HashMap<Option<i64>, Vec<C
 }
 
 fn collection_depth(id: i64, collections: &[Collection]) -> u32 {
-    let by_id: HashMap<i64, Option<i64>> = collections.iter().map(|c| (c.id, c.parent_id)).collect();
+    let by_id: HashMap<i64, Option<i64>> =
+        collections.iter().map(|c| (c.id, c.parent_id)).collect();
     let mut depth = 0u32;
     let mut current = by_id.get(&id).copied().flatten();
     while let Some(parent_id) = current {
@@ -880,7 +926,7 @@ fn install_collection_css() {
             .collection-child-icon {
                 color: alpha(@accent_color, 0.72);
             }
-            "
+            ",
         );
         if let Some(display) = gtk4::gdk::Display::default() {
             gtk4::style_context_add_provider_for_display(
@@ -1046,7 +1092,12 @@ glib::wrapper! {
 }
 
 impl CollectionRow {
-    pub fn new(collection: &Collection, depth: u32, has_children: bool, is_collapsed: bool) -> Self {
+    pub fn new(
+        collection: &Collection,
+        depth: u32,
+        has_children: bool,
+        is_collapsed: bool,
+    ) -> Self {
         let row: Self = glib::Object::new();
         row.imp().collection_id.set(collection.id);
         *row.imp().collection_name.borrow_mut() = collection.name.clone();
