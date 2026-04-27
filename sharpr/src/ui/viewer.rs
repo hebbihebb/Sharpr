@@ -96,6 +96,9 @@ mod imp {
         pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
         /// Called after a successful edit save so the filmstrip can refresh thumbnails.
         pub post_save_cb: RefCell<Option<Box<dyn Fn()>>>,
+        /// Commit action for the active convert operation (downscale or upscale).
+        /// Called with the temp output path when the user clicks Commit.
+        pub pending_commit_fn: RefCell<Option<Box<dyn FnOnce(PathBuf)>>>,
     }
 
     impl Default for ViewerPane {
@@ -289,6 +292,7 @@ mod imp {
                 preview_handle: RefCell::new(None),
                 metadata_handle: RefCell::new(None),
                 post_save_cb: RefCell::new(None),
+                pending_commit_fn: RefCell::new(None),
             }
         }
     }
@@ -1626,6 +1630,23 @@ impl ViewerPane {
                     }
                     UpscaleEvent::Done(out_path) => {
                         trigger_btn.set_sensitive(true);
+                        let viewer_weak = viewer.downgrade();
+                        *viewer.imp().pending_commit_fn.borrow_mut() =
+                            Some(Box::new(move |pending_path: PathBuf| {
+                                let Some(v) = viewer_weak.upgrade() else {
+                                    return;
+                                };
+                                let final_path = committed_output_path(&pending_path);
+                                if final_path != pending_path
+                                    && std::fs::rename(&pending_path, &final_path).is_ok()
+                                {
+                                    v.insert_committed_output(&final_path);
+                                    v.load_image(final_path);
+                                    return;
+                                }
+                                v.insert_committed_output(&pending_path);
+                                v.load_image(pending_path);
+                            }));
                         viewer.show_comparison(path.clone(), out_path);
                         if let Some(op) = op.take() {
                             op.complete();
@@ -1649,6 +1670,79 @@ impl ViewerPane {
                             op.fail(msg);
                         }
                         break;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Export `source` to a temp file in the destination folder, then show
+    /// the before/after comparison. `on_commit` is called with the temp path
+    /// when the user clicks Commit; `discard_convert` deletes the temp file.
+    pub fn start_downscale_preview(
+        &self,
+        source: PathBuf,
+        config: crate::export::ExportConfig,
+        on_commit: Box<dyn FnOnce(PathBuf) + 'static>,
+    ) {
+        let imp = self.imp();
+        let ops_queue = {
+            let st = imp.state.borrow();
+            let Some(ref rc) = *st else { return };
+            let ops = rc.borrow().ops.clone();
+            ops
+        };
+
+        let stem = source
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let ext = crate::export::format_extension(config.format);
+        let pid = std::process::id();
+        let temp_path = config.destination.join(format!("{stem}.pending-{pid}.{ext}"));
+
+        *imp.pending_output.borrow_mut() = Some(temp_path.clone());
+        *imp.pending_commit_fn.borrow_mut() = Some(on_commit);
+
+        let source_c = source.clone();
+        let temp_c = temp_path.clone();
+        let max_edge = config.max_edge;
+        let format = config.format;
+        let quality = config.quality;
+
+        let (tx, rx) = async_channel::bounded::<Result<(), String>>(1);
+        rayon::spawn(move || {
+            let result =
+                crate::export::export_to_path(&source_c, &temp_c, max_edge, format, quality)
+                    .map_err(|e| e.to_string());
+            let _ = tx.send_blocking(result);
+        });
+
+        let widget_weak = self.downgrade();
+        let op = ops_queue.add("Preparing preview");
+        glib::MainContext::default().spawn_local(async move {
+            if let Ok(result) = rx.recv().await {
+                op.complete();
+                let Some(viewer) = widget_weak.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok(()) => {
+                        viewer.show_comparison(source, temp_path);
+                    }
+                    Err(msg) => {
+                        let vimp = viewer.imp();
+                        vimp.pending_output.borrow_mut().take();
+                        vimp.pending_commit_fn.borrow_mut().take();
+                        let dialog =
+                            libadwaita::AlertDialog::new(Some("Export Failed"), Some(&msg));
+                        dialog.add_response("ok", "OK");
+                        if let Some(root) = viewer.root() {
+                            if let Ok(win) = root.downcast::<gtk4::Window>() {
+                                dialog.present(Some(&win));
+                            }
+                        }
                     }
                 }
             }
@@ -1711,33 +1805,39 @@ impl ViewerPane {
         self.show_comparison_with_actions(path.clone(), path, false);
     }
 
-    /// Commit: load the upscaled output into the viewer and return to the
-    /// normal view. Does NOT copy the file — the output path IS the final
-    /// location (`<src_dir>/upscaled/<name>`).
-    pub fn commit_upscale(&self) {
+    /// Generic commit: runs the pending commit closure (set by start_upscale or
+    /// start_downscale_preview) with the temp output path, then restores the view.
+    pub fn commit_convert(&self) {
         let imp = self.imp();
         let pending_path = imp.pending_output.borrow_mut().take();
+        let commit_fn = imp.pending_commit_fn.borrow_mut().take();
         self.restore_view_mode();
-        if let Some(path) = pending_path {
-            let final_path = committed_output_path(&path);
-            if final_path != path && std::fs::rename(&path, &final_path).is_ok() {
-                self.insert_committed_output(&final_path);
-                self.load_image(final_path);
-                return;
-            }
-            self.insert_committed_output(&path);
-            self.load_image(path);
+        if let (Some(path), Some(f)) = (pending_path, commit_fn) {
+            f(path);
         }
     }
 
-    /// Discard: delete the temp output file and return to the normal viewer.
-    pub fn discard_upscale(&self) {
+    /// Generic discard: deletes the temp output file and restores the view.
+    pub fn discard_convert(&self) {
         let imp = self.imp();
         let out_path = imp.pending_output.borrow_mut().take();
+        imp.pending_commit_fn.borrow_mut().take();
         if let Some(path) = out_path {
             let _ = std::fs::remove_file(&path);
         }
         self.restore_view_mode();
+    }
+
+    /// Commit: load the upscaled output into the viewer and return to the
+    /// normal view. Does NOT copy the file — the output path IS the final
+    /// location (`<src_dir>/upscaled/<name>`).
+    pub fn commit_upscale(&self) {
+        self.commit_convert();
+    }
+
+    /// Discard: delete the temp output file and return to the normal viewer.
+    pub fn discard_upscale(&self) {
+        self.discard_convert();
     }
 
     fn restore_view_mode(&self) {

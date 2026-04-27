@@ -1978,13 +1978,13 @@ impl SharprWindow {
         {
             let viewer_c = viewer.clone();
             commit_btn.connect_clicked(move |_| {
-                viewer_c.commit_upscale();
+                viewer_c.commit_convert();
             });
         }
         {
             let viewer_c = viewer.clone();
             discard_btn.connect_clicked(move |_| {
-                viewer_c.discard_upscale();
+                viewer_c.discard_convert();
             });
         }
         {
@@ -3008,13 +3008,9 @@ impl SharprWindow {
         transform_section.append(Some("Flip Vertical"), Some("win.flip-v"));
         menu.append_section(Some("Rotate & Flip"), &transform_section);
 
-        let export_section = gio::Menu::new();
-        export_section.append(Some("Export…"), Some("win.export"));
-        menu.append_section(Some("Export"), &export_section);
-
-        let upscale_section = gio::Menu::new();
-        upscale_section.append(Some("Upscale Image…"), Some("win.upscale"));
-        menu.append_section(Some("AI Upscale"), &upscale_section);
+        let convert_section = gio::Menu::new();
+        convert_section.append(Some("Convert…"), Some("win.convert"));
+        menu.append_section(Some("Convert"), &convert_section);
 
         let app_section = gio::Menu::new();
         app_section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));
@@ -3651,6 +3647,555 @@ impl SharprWindow {
             });
         }
         self.add_action(&export_action);
+
+        let convert_action = gio::SimpleAction::new("convert", None);
+        {
+            let state_c = state.clone();
+            let banner_c = upscale_banner.clone();
+            let viewer_weak = viewer.downgrade();
+            let window_weak = self.downgrade();
+            let action_weak = convert_action.downgrade();
+
+            convert_action.connect_activate(move |_, _| {
+                let Some(win) = window_weak.upgrade() else { return };
+                let Some(viewer) = viewer_weak.upgrade() else { return };
+
+                let (
+                    sources,
+                    show_upscale,
+                    saved_backend,
+                    saved_cli_model,
+                    saved_onnx_model,
+                    comfyui_enabled,
+                    ops_queue,
+                ) = {
+                    let mut st = state_c.borrow_mut();
+                    if st.upscale_binary.is_none() {
+                        st.upscale_binary = AppSettings::load()
+                            .upscaler_binary_path
+                            .filter(|p| p.is_file());
+                    }
+                    if st.upscale_binary.is_none() {
+                        st.upscale_binary = UpscaleDetector::find_realesrgan();
+                    }
+                    let srcs = if !st.selected_paths.is_empty() {
+                        let mut v: Vec<PathBuf> = st.selected_paths.iter().cloned().collect();
+                        v.sort();
+                        v
+                    } else if let Some(entry) = st.library.selected_entry() {
+                        vec![entry.path()]
+                    } else {
+                        return;
+                    };
+                    (
+                        srcs,
+                        st.settings.show_upscale_ui,
+                        st.settings.upscale_backend.clone(),
+                        st.settings.upscaler_default_model.clone(),
+                        st.settings.onnx_upscale_model.clone(),
+                        st.settings.comfyui_enabled,
+                        st.ops.clone(),
+                    )
+                };
+
+                let backend_kind = UpscaleBackendKind::from_settings(&saved_backend);
+
+                // ── Dialog ──────────────────────────────────────────────────
+                let dialog = libadwaita::AlertDialog::new(Some("Convert"), None);
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("convert", "Convert");
+                dialog.set_default_response(Some("convert"));
+                dialog.set_close_response("cancel");
+                dialog.set_response_appearance(
+                    "convert",
+                    libadwaita::ResponseAppearance::Suggested,
+                );
+
+                let content = gtk4::Box::new(gtk4::Orientation::Vertical, 18);
+                content.set_margin_top(6);
+                content.set_margin_bottom(6);
+
+                // ── Mode toggle ─────────────────────────────────────────────
+                let downscale_radio = gtk4::CheckButton::with_label("Downscale");
+                downscale_radio.set_active(true);
+                let upscale_radio = gtk4::CheckButton::with_label("AI Upscale");
+                upscale_radio.set_group(Some(&downscale_radio));
+
+                let mode_stack = gtk4::Stack::new();
+                mode_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+                mode_stack.set_transition_duration(120);
+
+                // ── Upscale widgets (created unconditionally so they are in
+                //    scope for the connect_response closure regardless of
+                //    show_upscale; they are only *added to the UI* when
+                //    show_upscale = true) ────────────────────────────────────
+                let scale_drop =
+                    gtk4::DropDown::from_strings(&["Smart (auto)", "2×", "3×", "4×"]);
+                scale_drop.set_selected(0);
+
+                let cli_btn = gtk4::CheckButton::with_label(
+                    "CLI Upscaler (realesrgan, GPU-accelerated)",
+                );
+                let onnx_btn = gtk4::CheckButton::with_label(
+                    "ONNX – Swin2SR (CPU/GPU, no binary needed)",
+                );
+                onnx_btn.set_group(Some(&cli_btn));
+                let comfyui_btn = gtk4::CheckButton::with_label(
+                    "ComfyUI – Remote/Local server (JSON API)",
+                );
+                comfyui_btn.set_group(Some(&cli_btn));
+                comfyui_btn.set_sensitive(comfyui_enabled);
+                comfyui_btn.set_visible(comfyui_enabled);
+                match backend_kind {
+                    UpscaleBackendKind::Onnx => onnx_btn.set_active(true),
+                    UpscaleBackendKind::ComfyUi if comfyui_enabled => {
+                        comfyui_btn.set_active(true)
+                    }
+                    _ => cli_btn.set_active(true),
+                }
+
+                let standard_btn = gtk4::CheckButton::with_label("Standard – best for photos");
+                let anime_btn =
+                    gtk4::CheckButton::with_label("Anime / Art – best for illustration");
+                anime_btn.set_group(Some(&standard_btn));
+                if saved_cli_model == "anime" {
+                    anime_btn.set_active(true);
+                } else {
+                    standard_btn.set_active(true);
+                }
+
+                let onnx_variants = [
+                    OnnxUpscaleModel::Swin2srLightweightX2,
+                    OnnxUpscaleModel::Swin2srCompressedX4,
+                    OnnxUpscaleModel::Swin2srRealX4,
+                ];
+                let onnx_labels: Vec<&str> =
+                    onnx_variants.iter().map(|m| m.info().display_name).collect();
+                let onnx_drop = gtk4::DropDown::from_strings(&onnx_labels);
+                let saved_onnx = OnnxUpscaleModel::from_settings(&saved_onnx_model);
+                let onnx_sel = onnx_variants
+                    .iter()
+                    .position(|&m| m == saved_onnx)
+                    .unwrap_or(0) as u32;
+                onnx_drop.set_selected(onnx_sel);
+
+                // ── Downscale pane ───────────────────────────────────────────
+                let ds_box = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+
+                let dest_label = gtk4::Label::new(Some("No folder selected"));
+                dest_label.set_halign(gtk4::Align::Start);
+                dest_label.set_hexpand(true);
+                let choose_btn = gtk4::Button::with_label("Choose Folder…");
+                let dest_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+                dest_row.append(&dest_label);
+                dest_row.append(&choose_btn);
+                ds_box.append(&dest_row);
+
+                let edge_lbl = gtk4::Label::new(Some("Max size"));
+                edge_lbl.set_halign(gtk4::Align::Start);
+                let edge_drop =
+                    gtk4::DropDown::from_strings(&["Original", "1920px", "2560px", "1280px"]);
+                ds_box.append(&edge_lbl);
+                ds_box.append(&edge_drop);
+
+                let fmt_lbl = gtk4::Label::new(Some("Format"));
+                fmt_lbl.set_halign(gtk4::Align::Start);
+                let fmt_drop = gtk4::DropDown::from_strings(&["JPEG", "WebP", "PNG"]);
+                ds_box.append(&fmt_lbl);
+                ds_box.append(&fmt_drop);
+
+                let quality_lbl = gtk4::Label::new(Some("Quality (1–100)"));
+                quality_lbl.set_halign(gtk4::Align::Start);
+                let quality_spin = gtk4::SpinButton::with_range(1.0, 100.0, 1.0);
+                quality_spin.set_value(85.0);
+                ds_box.append(&quality_lbl);
+                ds_box.append(&quality_spin);
+
+                {
+                    let ql = quality_lbl.clone();
+                    let qs = quality_spin.clone();
+                    fmt_drop.connect_selected_notify(move |drop| {
+                        let visible = drop.selected() == 0;
+                        ql.set_visible(visible);
+                        qs.set_visible(visible);
+                    });
+                }
+
+                let chosen_dest: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
+                {
+                    let chosen = chosen_dest.clone();
+                    let lbl = dest_label.clone();
+                    let win_weak2 = window_weak.clone();
+                    choose_btn.connect_clicked(move |_| {
+                        let file_dialog = gtk4::FileDialog::new();
+                        file_dialog.set_title("Choose Destination Folder");
+                        let chosen_c = chosen.clone();
+                        let lbl_c = lbl.clone();
+                        let parent = win_weak2.upgrade().map(|w| w.upcast::<gtk4::Window>());
+                        file_dialog.select_folder(
+                            parent.as_ref(),
+                            None::<&gio::Cancellable>,
+                            move |result| {
+                                if let Ok(f) = result {
+                                    if let Some(path) = f.path() {
+                                        *chosen_c.borrow_mut() = Some(path.clone());
+                                        lbl_c.set_label(
+                                            path.file_name()
+                                                .map(|n| n.to_string_lossy().into_owned())
+                                                .unwrap_or_else(|| path.display().to_string())
+                                                .as_str(),
+                                        );
+                                    }
+                                }
+                            },
+                        );
+                    });
+                }
+
+                mode_stack.add_named(&ds_box, Some("downscale"));
+
+                // ── Upscale pane (only added to UI when show_upscale) ────────
+                if show_upscale {
+                    let mode_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 16);
+                    mode_box.append(&downscale_radio);
+                    mode_box.append(&upscale_radio);
+                    content.append(&mode_box);
+                    {
+                        let stack_c = mode_stack.clone();
+                        upscale_radio.connect_toggled(move |btn| {
+                            stack_c.set_visible_child_name(if btn.is_active() {
+                                "upscale"
+                            } else {
+                                "downscale"
+                            });
+                        });
+                    }
+
+                    let us_box = gtk4::Box::new(gtk4::Orientation::Vertical, 18);
+                    let scale_lbl = gtk4::Label::new(Some("Scale"));
+                    scale_lbl.set_halign(gtk4::Align::Start);
+                    us_box.append(&scale_lbl);
+                    us_box.append(&scale_drop);
+
+                    let adv_expander = gtk4::Expander::new(Some("Advanced"));
+                    adv_expander.set_expanded(false);
+                    let adv_box = gtk4::Box::new(gtk4::Orientation::Vertical, 18);
+                    let be_lbl = gtk4::Label::new(Some("Backend"));
+                    be_lbl.set_halign(gtk4::Align::Start);
+                    adv_box.append(&be_lbl);
+                    adv_box.append(&cli_btn);
+                    adv_box.append(&onnx_btn);
+                    adv_box.append(&comfyui_btn);
+
+                    let be_stack = gtk4::Stack::new();
+                    be_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+                    be_stack.set_transition_duration(120);
+
+                    let cli_page = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+                    let cli_model_lbl = gtk4::Label::new(Some("CLI Model"));
+                    cli_model_lbl.set_halign(gtk4::Align::Start);
+                    cli_page.append(&cli_model_lbl);
+                    cli_page.append(&standard_btn);
+                    cli_page.append(&anime_btn);
+                    be_stack.add_named(&cli_page, Some("cli"));
+
+                    let onnx_page = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+                    let onnx_model_lbl = gtk4::Label::new(Some("ONNX Model"));
+                    onnx_model_lbl.set_halign(gtk4::Align::Start);
+
+                    let dl_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+                    dl_row.set_halign(gtk4::Align::Start);
+                    let dl_btn = gtk4::Button::new();
+                    let dl_status = gtk4::Label::new(None);
+                    dl_status.add_css_class("dim-label");
+                    let refresh_dl = {
+                        let dl_btn = dl_btn.clone();
+                        let dl_status = dl_status.clone();
+                        move |model: OnnxUpscaleModel| {
+                            use crate::upscale::backends::onnx::OnnxBackend;
+                            if OnnxBackend::model_path(model).exists() {
+                                dl_btn.set_visible(false);
+                                dl_status.set_text("Downloaded ✓");
+                            } else {
+                                let info = model.info();
+                                dl_btn.set_label(&format!(
+                                    "Download ({} MB)",
+                                    info.download_size_mb
+                                ));
+                                dl_btn.set_visible(true);
+                                dl_status.set_text("");
+                            }
+                        }
+                    };
+                    refresh_dl(onnx_variants[onnx_sel as usize]);
+                    {
+                        let refresh = refresh_dl.clone();
+                        let onnx_drop_c = onnx_drop.clone();
+                        onnx_drop_c.connect_selected_notify(move |dd| {
+                            if let Some(&m) = onnx_variants.get(dd.selected() as usize) {
+                                refresh(m);
+                            }
+                        });
+                    }
+                    {
+                        let dl_btn_c = dl_btn.clone();
+                        let dl_status_c = dl_status.clone();
+                        let onnx_drop_c = onnx_drop.clone();
+                        let ops_c = ops_queue.clone();
+                        dl_btn.connect_clicked(move |btn| {
+                            let idx = onnx_drop_c.selected() as usize;
+                            let Some(&model) = onnx_variants.get(idx) else { return };
+                            btn.set_sensitive(false);
+                            dl_status_c.set_text("Downloading…");
+                            let rx = downloader::download_model(model);
+                            let op = ops_c.add(format!(
+                                "Downloading {}",
+                                model.info().display_name
+                            ));
+                            let btn_weak = dl_btn_c.downgrade();
+                            let status_weak = dl_status_c.downgrade();
+                            glib::MainContext::default().spawn_local(async move {
+                                let mut op = Some(op);
+                                while let Ok(event) = rx.recv().await {
+                                    match event {
+                                        DownloadEvent::Progress(f) => {
+                                            if let Some(op) = op.as_ref() {
+                                                op.progress(Some(f));
+                                            }
+                                        }
+                                        DownloadEvent::Done => {
+                                            if let Some(op) = op.take() { op.complete(); }
+                                            if let Some(b) = btn_weak.upgrade() { b.set_visible(false); }
+                                            if let Some(s) = status_weak.upgrade() { s.set_text("Downloaded ✓"); }
+                                        }
+                                        DownloadEvent::Failed(msg) => {
+                                            if let Some(op) = op.take() { op.fail(msg.clone()); }
+                                            if let Some(b) = btn_weak.upgrade() { b.set_sensitive(true); }
+                                            if let Some(s) = status_weak.upgrade() {
+                                                s.set_text(&format!("Failed: {msg}"));
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        });
+                    }
+                    dl_row.append(&dl_btn);
+                    dl_row.append(&dl_status);
+                    onnx_page.append(&onnx_model_lbl);
+                    onnx_page.append(&onnx_drop);
+                    onnx_page.append(&dl_row);
+                    be_stack.add_named(&onnx_page, Some("onnx"));
+
+                    {
+                        let stack_c = be_stack.clone();
+                        onnx_btn.connect_toggled(move |btn| {
+                            stack_c.set_visible_child_name(if btn.is_active() { "onnx" } else { "cli" });
+                        });
+                    }
+                    be_stack.set_visible_child_name(match backend_kind {
+                        UpscaleBackendKind::Onnx => "onnx",
+                        _ => "cli",
+                    });
+                    adv_box.append(&be_stack);
+                    adv_expander.set_child(Some(&adv_box));
+                    us_box.append(&adv_expander);
+                    mode_stack.add_named(&us_box, Some("upscale"));
+                }
+
+                mode_stack.set_visible_child_name("downscale");
+                content.append(&mode_stack);
+                dialog.set_extra_child(Some(&content));
+
+                // ── Response handler ─────────────────────────────────────────
+                let state_cc = state_c.clone();
+                let win_weak3 = window_weak.clone();
+                let viewer_c = viewer.clone();
+                let action_weak_c = action_weak.clone();
+                let banner_cc = banner_c.clone();
+                dialog.connect_response(None, move |_, response| {
+                    if response != "convert" {
+                        return;
+                    }
+
+                    let is_upscale = show_upscale && !downscale_radio.is_active();
+
+                    if is_upscale {
+                        // ── AI Upscale path ──────────────────────────────────
+                        let backend_kind2 = if onnx_btn.is_active() {
+                            UpscaleBackendKind::Onnx
+                        } else if comfyui_btn.is_active() {
+                            UpscaleBackendKind::ComfyUi
+                        } else {
+                            UpscaleBackendKind::Cli
+                        };
+                        if backend_kind2 == UpscaleBackendKind::Cli
+                            && state_cc.borrow().upscale_binary.is_none()
+                        {
+                            banner_cc.set_title("AI upscaling requires a supported Vulkan backend such as upscayl-bin or realesrgan-ncnn-vulkan.");
+                            banner_cc.set_revealed(true);
+                            return;
+                        }
+                        banner_cc.set_revealed(false);
+
+                        let chosen_onnx = onnx_variants
+                            .get(onnx_drop.selected() as usize)
+                            .copied()
+                            .unwrap_or_default();
+                        {
+                            let mut st = state_cc.borrow_mut();
+                            st.settings.set_upscale_backend(backend_kind2.settings_key());
+                            st.settings.set_onnx_upscale_model(chosen_onnx.settings_key());
+                            st.settings.set_upscaler_default_model(
+                                if anime_btn.is_active() { "anime" } else { "standard" },
+                            );
+                        }
+
+                        let path = state_cc
+                            .borrow()
+                            .library
+                            .selected_entry()
+                            .map(|e: ImageEntry| e.path());
+                        let Some(p) = path else { return };
+
+                        if let Some(action) = action_weak_c.upgrade() {
+                            action.set_enabled(false);
+                        }
+                        let action_weak_cc = action_weak_c.clone();
+                        let proxy_btn = gtk4::Button::new();
+                        proxy_btn.connect_sensitive_notify(move |btn| {
+                            if btn.is_sensitive() {
+                                if let Some(a) = action_weak_cc.upgrade() {
+                                    a.set_enabled(true);
+                                }
+                            }
+                        });
+                        proxy_btn.set_sensitive(false);
+
+                        let cli_model = if anime_btn.is_active() {
+                            UpscaleModel::Anime
+                        } else {
+                            UpscaleModel::Standard
+                        };
+                        let scale = match scale_drop.selected() {
+                            1 => 2,
+                            2 => 3,
+                            3 => 4,
+                            _ => 0,
+                        };
+                        viewer_c.start_upscale(p, scale, cli_model, proxy_btn);
+                    } else {
+                        // ── Downscale path ───────────────────────────────────
+                        let dest = match chosen_dest.borrow().clone() {
+                            Some(p) => p,
+                            None => {
+                                if let Some(w) = win_weak3.upgrade() {
+                                    w.add_toast(libadwaita::Toast::new(
+                                        "Choose a destination folder first",
+                                    ));
+                                }
+                                return;
+                            }
+                        };
+
+                        let max_edge = match edge_drop.selected() {
+                            1 => Some(1920u32),
+                            2 => Some(2560u32),
+                            3 => Some(1280u32),
+                            _ => None,
+                        };
+                        let format = match fmt_drop.selected() {
+                            1 => crate::export::ExportFormat::Webp,
+                            2 => crate::export::ExportFormat::Png,
+                            _ => crate::export::ExportFormat::Jpeg,
+                        };
+                        let quality = quality_spin.value() as u8;
+
+                        let config = crate::export::ExportConfig {
+                            destination: dest.clone(),
+                            max_edge,
+                            format,
+                            quality,
+                        };
+
+                        if sources.len() == 1 {
+                            // Single image → comparison preview
+                            let source = sources[0].clone();
+                            let win_weak_c = win_weak3.clone();
+                            let on_commit = Box::new(move |temp_path: PathBuf| {
+                                let final_path = crate::export::unique_output_path(
+                                    &dest, &source, format,
+                                );
+                                if final_path != temp_path {
+                                    let _ = std::fs::rename(&temp_path, &final_path);
+                                }
+                                if let Some(w) = win_weak_c.upgrade() {
+                                    w.add_toast(libadwaita::Toast::new("Image exported"));
+                                }
+                            });
+                            viewer_c.start_downscale_preview(
+                                sources[0].clone(),
+                                config,
+                                on_commit,
+                            );
+                        } else {
+                            // Batch → run directly with progress
+                            let total = sources.len();
+                            let op = state_cc
+                                .borrow()
+                                .ops
+                                .add(format!("Exporting {total} image(s)"));
+                            let win_weak_c = win_weak3.clone();
+                            let srcs = sources.clone();
+                            let (tx, rx) = async_channel::unbounded::<Result<(), String>>();
+                            rayon::spawn(move || {
+                                for src in &srcs {
+                                    let result = crate::export::export_image(src, &config)
+                                        .map(|_| ())
+                                        .map_err(|e| format!("{}: {e}", src.display()));
+                                    let _ = tx.send_blocking(result);
+                                }
+                            });
+                            glib::MainContext::default().spawn_local(async move {
+                                let mut ok = 0usize;
+                                let mut failed = 0usize;
+                                while let Ok(result) = rx.recv().await {
+                                    match result {
+                                        Ok(()) => ok += 1,
+                                        Err(e) => {
+                                            failed += 1;
+                                            eprintln!("export error: {e}");
+                                        }
+                                    }
+                                    let done = ok + failed;
+                                    op.progress(Some(done as f32 / total as f32));
+                                }
+                                if failed == 0 {
+                                    op.complete();
+                                    let msg = if ok == 1 {
+                                        "Image exported".to_string()
+                                    } else {
+                                        format!("{ok} images exported")
+                                    };
+                                    if let Some(w) = win_weak_c.upgrade() {
+                                        w.add_toast(libadwaita::Toast::new(&msg));
+                                    }
+                                } else {
+                                    let msg = format!("{ok}/{total} exported, {failed} failed");
+                                    op.fail(msg.clone());
+                                    if let Some(w) = win_weak_c.upgrade() {
+                                        w.add_toast(libadwaita::Toast::new(&msg));
+                                    }
+                                }
+                            });
+                        }
+                    }
+                });
+
+                dialog.present(Some(&win));
+            });
+        }
+        self.add_action(&convert_action);
     }
 
     /// Build the viewer header bar.

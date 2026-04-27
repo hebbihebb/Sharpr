@@ -122,6 +122,32 @@ pub(crate) fn unique_output_path(dest_dir: &Path, source: &Path, format: ExportF
     dest_dir.join(format!("{stem}-{ts}.{ext}"))
 }
 
+/// Decode `source`, resize when needed, and write to the explicit `output` path.
+///
+/// Unlike `export_image`, the caller controls the output file name; no
+/// uniqueness suffix is added.
+pub fn export_to_path(
+    source: &Path,
+    output: &Path,
+    max_edge: Option<u32>,
+    format: ExportFormat,
+    quality: u8,
+) -> Result<(), ExportError> {
+    let img = {
+        let file = std::fs::File::open(source)
+            .map_err(|e| ExportError::IoError(format!("open {}: {e}", source.display())))?;
+        let reader = image::ImageReader::new(std::io::BufReader::new(file))
+            .with_guessed_format()
+            .map_err(|e| ExportError::DecodeError(e.to_string()))?;
+        let decoded = reader
+            .decode()
+            .map_err(|e| ExportError::DecodeError(e.to_string()))?;
+        apply_exif_orientation(decoded, source)
+    };
+    let img = resize_if_needed(img, max_edge);
+    save_image(&img, output, format, quality)
+}
+
 /// Downscale `img` so its longest edge is at most `max_edge`. No-op when the
 /// image already fits, or when `max_edge` is `None`.
 pub(crate) fn resize_if_needed(
@@ -145,7 +171,7 @@ pub(crate) fn resize_if_needed(
     img.resize_exact(nw, nh, FilterType::Lanczos3)
 }
 
-fn format_extension(format: ExportFormat) -> &'static str {
+pub fn format_extension(format: ExportFormat) -> &'static str {
     match format {
         ExportFormat::Jpeg => "jpg",
         ExportFormat::Png => "png",
