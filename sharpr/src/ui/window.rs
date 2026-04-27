@@ -72,6 +72,43 @@ impl Default for ViewScope {
     }
 }
 
+fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
+    match scope {
+        ViewScope::Folder(path) => {
+            sidebar.select_folder(path);
+            sidebar.set_search_selected(false);
+            sidebar.set_duplicates_selected(false);
+            sidebar.set_tags_selected(false);
+            sidebar.set_quality_selected(None);
+        }
+        ViewScope::Duplicates => {
+            sidebar.set_duplicates_selected(true);
+            sidebar.set_search_selected(false);
+            sidebar.set_tags_selected(false);
+            sidebar.set_quality_selected(None);
+        }
+        ViewScope::Search => {
+            sidebar.set_search_selected(true);
+            sidebar.set_duplicates_selected(false);
+            sidebar.set_tags_selected(false);
+            sidebar.set_quality_selected(None);
+        }
+        ViewScope::Quality(class) => {
+            sidebar.set_quality_selected(Some(*class));
+            sidebar.set_search_selected(false);
+            sidebar.set_duplicates_selected(false);
+            sidebar.set_tags_selected(false);
+        }
+        ViewScope::Collection(id) => {
+            sidebar.set_duplicates_selected(false);
+            sidebar.set_search_selected(false);
+            sidebar.set_tags_selected(false);
+            sidebar.set_quality_selected(None);
+            sidebar.set_collection_selected(*id);
+        }
+    }
+}
+
 #[derive(Clone)]
 struct PrefetchRequest {
     path: PathBuf,
@@ -1001,11 +1038,8 @@ impl SharprWindow {
                         );
                     }
 
-                    sidebar_rx.select_folder(&path_rx);
-                    sidebar_rx.set_search_selected(false);
-                    sidebar_rx.set_duplicates_selected(false);
-                    sidebar_rx.set_tags_selected(false);
-                    sidebar_rx.set_quality_selected(None);
+                    let scope = state_rx.borrow().scope.clone();
+                    apply_scope_to_sidebar(&scope, &sidebar_rx);
 
                     viewer_rx.clear();
                     filmstrip_rx.refresh();
@@ -1363,10 +1397,8 @@ impl SharprWindow {
                             "image_count": result_count,
                         }),
                     );
-                    sidebar_rx.set_duplicates_selected(true);
-                    sidebar_rx.set_search_selected(false);
-                    sidebar_rx.set_tags_selected(false);
-                    sidebar_rx.set_quality_selected(None);
+                    let scope = state_rx.borrow().scope.clone();
+                    apply_scope_to_sidebar(&scope, &sidebar_rx);
                     filmstrip_rx.refresh_virtual();
                     let first = state_rx
                         .borrow()
@@ -1402,12 +1434,10 @@ impl SharprWindow {
                 }
                 content_stack.set_visible_child_name("viewer");
                 crate::bench_event!("smart.search.activate", serde_json::json!({}));
-                sidebar_c.set_search_selected(true);
-                sidebar_c.set_duplicates_selected(false);
-                sidebar_c.set_tags_selected(false);
-                sidebar_c.set_quality_selected(None);
                 // Show an empty filmstrip immediately so the user knows to type.
                 state_c.borrow_mut().scope = ViewScope::Search;
+                let scope = state_c.borrow().scope.clone();
+                apply_scope_to_sidebar(&scope, &sidebar_c);
                 load_virtual_async(&state_c, &[]);
                 crate::bench_event!(
                     "virtual_view.load",
@@ -1570,10 +1600,8 @@ impl SharprWindow {
                             "image_count": result_count,
                         }),
                     );
-                    sidebar_rx.set_quality_selected(Some(class));
-                    sidebar_rx.set_search_selected(false);
-                    sidebar_rx.set_duplicates_selected(false);
-                    sidebar_rx.set_tags_selected(false);
+                    let scope = state_rx.borrow().scope.clone();
+                    apply_scope_to_sidebar(&scope, &sidebar_rx);
                     viewer_rx.clear();
                     filmstrip_rx.refresh_virtual();
                     let first = state_rx
@@ -1708,10 +1736,8 @@ impl SharprWindow {
                         "duration_ms": crate::bench::duration_ms(started),
                     }),
                 );
-                sidebar_c.set_duplicates_selected(false);
-                sidebar_c.set_search_selected(false);
-                sidebar_c.set_tags_selected(false);
-                sidebar_c.set_quality_selected(None);
+                let scope = state_c.borrow().scope.clone();
+                apply_scope_to_sidebar(&scope, &sidebar_c);
                 filmstrip_c.refresh_virtual();
                 let first = state_c
                     .borrow()
@@ -2189,10 +2215,8 @@ impl SharprWindow {
                                 state_rx.borrow_mut().scope = ViewScope::Search;
                                 load_virtual_async(&state_rx, &merged);
                                 content_stack_rx.set_visible_child_name("viewer");
-                                sidebar_rx.set_search_selected(true);
-                                sidebar_rx.set_duplicates_selected(false);
-                                sidebar_rx.set_tags_selected(false);
-                                sidebar_rx.set_quality_selected(None);
+                                let scope = state_rx.borrow().scope.clone();
+                                apply_scope_to_sidebar(&scope, &sidebar_rx);
                                 viewer_rx.clear();
                                 filmstrip_rx.refresh_virtual();
                                 let first_path = state_rx
@@ -2243,10 +2267,8 @@ impl SharprWindow {
                         state_rx.borrow_mut().scope = ViewScope::Search;
                         load_virtual_async(&state_rx, &paths);
                         content_stack_rx.set_visible_child_name("viewer");
-                        sidebar_rx.set_search_selected(true);
-                        sidebar_rx.set_duplicates_selected(false);
-                        sidebar_rx.set_tags_selected(false);
-                        sidebar_rx.set_quality_selected(None);
+                        let scope = state_rx.borrow().scope.clone();
+                        apply_scope_to_sidebar(&scope, &sidebar_rx);
                         viewer_rx.clear();
                         filmstrip_rx.refresh_virtual();
                         let first_path = state_rx
