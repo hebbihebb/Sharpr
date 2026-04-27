@@ -166,7 +166,7 @@ impl TagDatabase {
         let Ok(conn) = self.conn.lock() else {
             return;
         };
-        let tag = tag.trim().to_lowercase();
+        let tag = normalize_tag(tag);
         if tag.is_empty() {
             return;
         }
@@ -180,9 +180,13 @@ impl TagDatabase {
         let Ok(conn) = self.conn.lock() else {
             return;
         };
+        let tag = normalize_tag(tag);
+        if tag.is_empty() {
+            return;
+        }
         let _ = conn.execute(
             "DELETE FROM file_tags WHERE path = ?1 AND tag = ?2",
-            params![path.to_string_lossy().as_ref(), tag.to_lowercase()],
+            params![path.to_string_lossy().as_ref(), tag],
         );
     }
 
@@ -204,11 +208,139 @@ impl TagDatabase {
             params![path.to_string_lossy().as_ref()],
         );
     }
+
+    pub fn paths_for_all_tags(&self, tags: &[String]) -> Vec<PathBuf> {
+        let tags = normalized_unique_tags(tags);
+        if tags.is_empty() {
+            return Vec::new();
+        }
+        let Ok(conn) = self.conn.lock() else {
+            return vec![];
+        };
+        let placeholders = std::iter::repeat_n("?", tags.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT path
+             FROM file_tags
+             WHERE tag IN ({placeholders})
+             GROUP BY path
+             HAVING COUNT(DISTINCT tag) = ?
+             ORDER BY path COLLATE NOCASE"
+        );
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(stmt) => stmt,
+            Err(_) => return vec![],
+        };
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = tags
+            .iter()
+            .map(|tag| tag as &dyn rusqlite::ToSql)
+            .collect();
+        let tag_count = tags.len() as i64;
+        params_vec.push(&tag_count);
+        let rows = match stmt.query_map(params_vec.as_slice(), |row| row.get::<_, String>(0)) {
+            Ok(rows) => rows,
+            Err(_) => return vec![],
+        };
+        let paths: Vec<PathBuf> = rows.filter_map(|r| r.ok()).map(PathBuf::from).collect();
+        drop(stmt);
+        prune_missing_paths(&conn, paths)
+    }
+
+    pub fn add_tags_to_paths(&self, paths: &[PathBuf], tags: &[String]) -> usize {
+        let tags = normalized_unique_tags(tags);
+        if paths.is_empty() || tags.is_empty() {
+            return 0;
+        }
+        let Ok(mut conn) = self.conn.lock() else {
+            return 0;
+        };
+        let tx = match conn.transaction() {
+            Ok(tx) => tx,
+            Err(_) => return 0,
+        };
+        let mut changed = 0usize;
+        for path in paths {
+            let path_str = path.to_string_lossy();
+            for tag in &tags {
+                changed += tx
+                    .execute(
+                        "INSERT OR IGNORE INTO file_tags (path, tag) VALUES (?1, ?2)",
+                        params![path_str.as_ref(), tag],
+                    )
+                    .unwrap_or(0);
+            }
+        }
+        let _ = tx.commit();
+        changed
+    }
+
+    pub fn remove_tags_from_paths(&self, paths: &[PathBuf], tags: &[String]) -> usize {
+        let tags = normalized_unique_tags(tags);
+        if paths.is_empty() || tags.is_empty() {
+            return 0;
+        }
+        let Ok(mut conn) = self.conn.lock() else {
+            return 0;
+        };
+        let tx = match conn.transaction() {
+            Ok(tx) => tx,
+            Err(_) => return 0,
+        };
+        let mut changed = 0usize;
+        for path in paths {
+            let path_str = path.to_string_lossy();
+            for tag in &tags {
+                changed += tx
+                    .execute(
+                        "DELETE FROM file_tags WHERE path = ?1 AND tag = ?2",
+                        params![path_str.as_ref(), tag],
+                    )
+                    .unwrap_or(0);
+            }
+        }
+        let _ = tx.commit();
+        changed
+    }
+
+    pub fn replace_tag_in_paths(&self, paths: &[PathBuf], old_tag: &str, new_tag: &str) -> usize {
+        let old_tag = normalize_tag(old_tag);
+        let new_tag = normalize_tag(new_tag);
+        if paths.is_empty() || old_tag.is_empty() || new_tag.is_empty() || old_tag == new_tag {
+            return 0;
+        }
+        let Ok(mut conn) = self.conn.lock() else {
+            return 0;
+        };
+        let tx = match conn.transaction() {
+            Ok(tx) => tx,
+            Err(_) => return 0,
+        };
+        let mut changed = 0usize;
+        for path in paths {
+            let path_str = path.to_string_lossy();
+            let removed = tx
+                .execute(
+                    "DELETE FROM file_tags WHERE path = ?1 AND tag = ?2",
+                    params![path_str.as_ref(), old_tag],
+                )
+                .unwrap_or(0);
+            if removed > 0 {
+                let _ = tx.execute(
+                    "INSERT OR IGNORE INTO file_tags (path, tag) VALUES (?1, ?2)",
+                    params![path_str.as_ref(), new_tag],
+                );
+                changed += removed;
+            }
+        }
+        let _ = tx.commit();
+        changed
+    }
 }
 
 #[cfg(test)]
 impl TagDatabase {
-    fn open_in_memory() -> rusqlite::Result<Self> {
+    pub(crate) fn open_in_memory() -> rusqlite::Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(
             "
@@ -239,6 +371,21 @@ fn prune_missing_paths(conn: &Connection, paths: Vec<PathBuf>) -> Vec<PathBuf> {
         }
     }
     existing
+}
+
+fn normalize_tag(tag: &str) -> String {
+    tag.trim().to_lowercase()
+}
+
+fn normalized_unique_tags(tags: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for tag in tags {
+        let normalized = normalize_tag(tag);
+        if !normalized.is_empty() && !out.contains(&normalized) {
+            out.push(normalized);
+        }
+    }
+    out
 }
 
 fn prune_all_missing_paths(conn: &Connection) {
@@ -294,6 +441,55 @@ mod tests {
         std::fs::remove_file(&existing).unwrap();
         assert!(db.paths_for_tag("cow").is_empty());
         assert!(db.all_tags().is_empty());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn paths_for_all_tags_requires_full_intersection() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let root = temp_path("all-tags");
+        std::fs::create_dir_all(&root).unwrap();
+        let a = root.join("a.jpg");
+        let b = root.join("b.jpg");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+
+        db.add_tag(&a, "people");
+        db.add_tag(&a, "model");
+        db.add_tag(&b, "people");
+
+        let paths = db.paths_for_all_tags(&["people".into(), "model".into()]);
+        assert_eq!(paths, vec![a.clone()]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bulk_tag_operations_update_multiple_paths() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let root = temp_path("bulk-tags");
+        std::fs::create_dir_all(&root).unwrap();
+        let a = root.join("a.jpg");
+        let b = root.join("b.jpg");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+
+        db.add_tags_to_paths(&[a.clone(), b.clone()], &["people".into(), "model".into()]);
+        assert_eq!(
+            db.paths_for_all_tags(&["people".into(), "model".into()]),
+            vec![a.clone(), b.clone()]
+        );
+
+        db.replace_tag_in_paths(&[a.clone(), b.clone()], "model", "portrait");
+        assert!(db.paths_for_all_tags(&["people".into(), "model".into()]).is_empty());
+        assert_eq!(
+            db.paths_for_all_tags(&["people".into(), "portrait".into()]),
+            vec![a.clone(), b.clone()]
+        );
+
+        db.remove_tags_from_paths(&[a.clone()], &["portrait".into()]);
+        assert_eq!(db.tags_for_path(&a), vec!["people".to_string()]);
 
         std::fs::remove_dir_all(root).unwrap();
     }

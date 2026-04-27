@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,12 +10,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::model::library::SortOrder;
 use crate::quality::QualityClass;
 
-const SCHEMA_VERSION: &str = "2";
+const SCHEMA_VERSION: &str = "3";
 
 #[derive(Clone, Debug)]
 pub struct Collection {
     pub id: i64,
+    pub parent_id: Option<i64>,
     pub name: String,
+    pub primary_tag: String,
+    pub extra_tags: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub item_count: usize,
@@ -63,6 +66,7 @@ impl LibraryIndex {
         {
             let conn = pool.get().map_err(|_| rusqlite::Error::InvalidQuery)?;
             initialize_schema(&conn)?;
+            ensure_collection_schema(&conn)?;
         }
         crate::bench_event!(
             "index.open",
@@ -539,49 +543,97 @@ impl LibraryIndex {
     pub fn list_collections(&self) -> rusqlite::Result<Vec<Collection>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT c.id, c.name, c.created_at, c.updated_at,
-                    COUNT(ci.image_path) AS item_count
+            "SELECT c.id, c.parent_id, c.name, c.primary_tag, c.extra_tags_json,
+                    c.created_at, c.updated_at
              FROM collections c
-             LEFT JOIN collection_items ci ON ci.collection_id = c.id
-             GROUP BY c.id
              ORDER BY c.name COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Collection {
                 id: row.get(0)?,
-                name: row.get(1)?,
-                created_at: row.get(2)?,
-                updated_at: row.get(3)?,
-                item_count: row.get::<_, i64>(4)? as usize,
+                parent_id: row.get(1)?,
+                name: row.get(2)?,
+                primary_tag: row.get(3)?,
+                extra_tags: parse_tags_json(&row.get::<_, String>(4)?),
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                item_count: 0,
             })
         })?;
         Ok(rows.filter_map(Result::ok).collect())
     }
 
-    pub fn create_collection(&self, name: &str) -> rusqlite::Result<Collection> {
+    pub fn collection(&self, id: i64) -> rusqlite::Result<Option<Collection>> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT id, parent_id, name, primary_tag, extra_tags_json, created_at, updated_at
+             FROM collections
+             WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(Collection {
+                    id: row.get(0)?,
+                    parent_id: row.get(1)?,
+                    name: row.get(2)?,
+                    primary_tag: row.get(3)?,
+                    extra_tags: parse_tags_json(&row.get::<_, String>(4)?),
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    item_count: 0,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn create_collection(
+        &self,
+        parent_id: Option<i64>,
+        name: &str,
+        extra_tags: &[String],
+    ) -> rusqlite::Result<Collection> {
         let name = name.trim();
         if name.is_empty() {
             return Err(rusqlite::Error::InvalidParameterName(
                 "collection name cannot be empty".into(),
             ));
         }
+        if let Some(parent_id) = parent_id {
+            if self.collection(parent_id)?.is_none() {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+        }
         let now = now_secs();
+        let primary_tag = normalize_collection_tag(name);
+        let mut extra_tags = normalize_collection_tags(extra_tags);
+        extra_tags.retain(|tag| tag != &primary_tag);
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO collections (name, created_at, updated_at) VALUES (?1, ?2, ?2)",
-            params![name, now],
+            "INSERT INTO collections (
+                 parent_id, name, primary_tag, extra_tags_json, created_at, updated_at,
+                 tag_migrated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5)",
+            params![parent_id, name, primary_tag, tags_to_json(&extra_tags), now],
         )?;
         let id = conn.last_insert_rowid();
         Ok(Collection {
             id,
+            parent_id,
             name: name.to_string(),
+            primary_tag,
+            extra_tags,
             created_at: now,
             updated_at: now,
             item_count: 0,
         })
     }
 
-    pub fn rename_collection(&self, id: i64, name: &str) -> rusqlite::Result<()> {
+    pub fn update_collection(
+        &self,
+        id: i64,
+        name: &str,
+        extra_tags: &[String],
+    ) -> rusqlite::Result<()> {
         let name = name.trim();
         if name.is_empty() {
             return Err(rusqlite::Error::InvalidParameterName(
@@ -589,103 +641,189 @@ impl LibraryIndex {
             ));
         }
         let now = now_secs();
+        let primary_tag = normalize_collection_tag(name);
+        let mut extra_tags = normalize_collection_tags(extra_tags);
+        extra_tags.retain(|tag| tag != &primary_tag);
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE collections SET name = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, name, now],
+            "UPDATE collections
+             SET name = ?2,
+                 primary_tag = ?3,
+                 extra_tags_json = ?4,
+                 updated_at = ?5
+             WHERE id = ?1",
+            params![id, name, primary_tag, tags_to_json(&extra_tags), now],
         )?;
         Ok(())
     }
 
     pub fn delete_collection(&self, id: i64) -> rusqlite::Result<()> {
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM collections WHERE id = ?1", params![id])?;
+        let ids = self.collection_subtree_ids(id)?;
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        for id in ids {
+            tx.execute("DELETE FROM collections WHERE id = ?1", params![id])?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
-    pub fn add_paths_to_collection(
-        &self,
-        collection_id: i64,
-        paths: &[PathBuf],
-    ) -> rusqlite::Result<usize> {
-        if paths.is_empty() {
-            return Ok(0);
+    pub fn reparent_collection(&self, id: i64, new_parent_id: i64) -> rusqlite::Result<()> {
+        if id == new_parent_id {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "collection cannot be its own parent".into(),
+            ));
+        }
+        let Some(collection) = self.collection(id)? else {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        };
+        if self.collection(new_parent_id)?.is_none() {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        let collections = self.list_collections()?;
+        if collections.iter().any(|c| c.parent_id == Some(id)) {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "only leaf collections can be reparented".into(),
+            ));
+        }
+        if collection.parent_id == Some(new_parent_id) {
+            return Ok(());
         }
         let now = now_secs();
-        let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
-        let mut added = 0usize;
-        for path in paths {
-            let n = tx.execute(
-                "INSERT OR IGNORE INTO collection_items (collection_id, image_path, added_at)
-                 VALUES (?1, ?2, ?3)",
-                params![collection_id, path_to_string(path), now],
-            )?;
-            added += n;
-        }
-        if added > 0 {
-            tx.execute(
-                "UPDATE collections SET updated_at = ?2 WHERE id = ?1",
-                params![collection_id, now],
-            )?;
-        }
-        tx.commit()?;
-        Ok(added)
-    }
-
-    pub fn remove_paths_from_collection(
-        &self,
-        collection_id: i64,
-        paths: &[PathBuf],
-    ) -> rusqlite::Result<usize> {
-        if paths.is_empty() {
-            return Ok(0);
-        }
-        let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
-        let mut removed = 0usize;
-        for path in paths {
-            let n = tx.execute(
-                "DELETE FROM collection_items
-                 WHERE collection_id = ?1 AND image_path = ?2",
-                params![collection_id, path_to_string(path)],
-            )?;
-            removed += n;
-        }
-        if removed > 0 {
-            let now = now_secs();
-            tx.execute(
-                "UPDATE collections SET updated_at = ?2 WHERE id = ?1",
-                params![collection_id, now],
-            )?;
-        }
-        tx.commit()?;
-        Ok(removed)
-    }
-
-    pub fn collection_paths(&self, collection_id: i64) -> rusqlite::Result<Vec<PathBuf>> {
         let conn = self.conn()?;
-        let ignored = {
-            let mut stmt =
-                conn.prepare("SELECT path FROM folders WHERE ignored = 1 ORDER BY path")?;
-            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-            rows.filter_map(Result::ok)
-                .map(PathBuf::from)
-                .collect::<Vec<_>>()
-        };
-        let paths = {
-            let mut stmt = conn.prepare(
-                "SELECT image_path FROM collection_items
-                 WHERE collection_id = ?1
-                 ORDER BY added_at ASC",
+        conn.execute(
+            "UPDATE collections
+             SET parent_id = ?2, updated_at = ?3
+             WHERE id = ?1",
+            params![id, new_parent_id, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn collection_effective_tags(&self, collection_id: i64) -> rusqlite::Result<Vec<String>> {
+        let collections = self.list_collections()?;
+        let by_id: HashMap<i64, Collection> = collections.into_iter().map(|c| (c.id, c)).collect();
+        let mut current_id = Some(collection_id);
+        let mut lineage = Vec::new();
+        while let Some(id) = current_id {
+            let Some(collection) = by_id.get(&id) else {
+                break;
+            };
+            lineage.push(collection.clone());
+            current_id = collection.parent_id;
+        }
+        lineage.reverse();
+        let mut tags = Vec::new();
+        for collection in lineage {
+            push_unique_tag(&mut tags, &collection.primary_tag);
+            for tag in &collection.extra_tags {
+                push_unique_tag(&mut tags, tag);
+            }
+        }
+        Ok(tags)
+    }
+
+    pub fn touch_collection(&self, collection_id: i64) -> rusqlite::Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE collections SET updated_at = ?2 WHERE id = ?1",
+            params![collection_id, now_secs()],
+        )?;
+        Ok(())
+    }
+
+    pub fn ignored_folders_snapshot(&self) -> rusqlite::Result<Vec<PathBuf>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT path FROM folders WHERE ignored = 1 ORDER BY path")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(Result::ok).map(PathBuf::from).collect())
+    }
+
+    pub fn filter_ignored_paths(&self, paths: Vec<PathBuf>) -> rusqlite::Result<Vec<PathBuf>> {
+        let ignored = self.ignored_folders_snapshot()?;
+        Ok(paths
+            .into_iter()
+            .filter(|path| !path_is_ignored(path, &ignored))
+            .collect())
+    }
+
+    pub fn migrate_legacy_collections_to_tags(
+        &self,
+        tags: &crate::tags::TagDatabase,
+    ) -> rusqlite::Result<()> {
+        let legacy_collections = self.legacy_collections_pending_tag_migration()?;
+        if legacy_collections.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn()?;
+        for collection in legacy_collections {
+            let paths = {
+                let mut stmt = conn.prepare(
+                    "SELECT image_path FROM collection_items
+                     WHERE collection_id = ?1
+                     ORDER BY added_at ASC",
+                )?;
+                let rows = stmt.query_map(params![collection.id], |row| row.get::<_, String>(0))?;
+                rows.filter_map(Result::ok).map(PathBuf::from).collect::<Vec<_>>()
+            };
+            if !paths.is_empty() {
+                tags.add_tags_to_paths(&paths, &[collection.primary_tag.clone()]);
+            }
+            conn.execute(
+                "UPDATE collections
+                 SET tag_migrated_at = ?2,
+                     updated_at = ?2
+                 WHERE id = ?1",
+                params![collection.id, now_secs()],
             )?;
-            let rows = stmt.query_map(params![collection_id], |row| row.get::<_, String>(0))?;
-            rows.filter_map(Result::ok)
-                .map(PathBuf::from)
-                .filter(|path| !path_is_ignored(path, &ignored))
-                .collect()
-        };
-        Ok(paths)
+        }
+        Ok(())
+    }
+
+    fn legacy_collections_pending_tag_migration(&self) -> rusqlite::Result<Vec<Collection>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, parent_id, name, primary_tag, extra_tags_json, created_at, updated_at
+             FROM collections
+             WHERE tag_migrated_at IS NULL
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Collection {
+                id: row.get(0)?,
+                parent_id: row.get(1)?,
+                name: row.get(2)?,
+                primary_tag: row.get(3)?,
+                extra_tags: parse_tags_json(&row.get::<_, String>(4)?),
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                item_count: 0,
+            })
+        })?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    fn collection_subtree_ids(&self, id: i64) -> rusqlite::Result<Vec<i64>> {
+        let collections = self.list_collections()?;
+        let mut by_parent: HashMap<Option<i64>, Vec<i64>> = HashMap::new();
+        for collection in collections {
+            by_parent
+                .entry(collection.parent_id)
+                .or_default()
+                .push(collection.id);
+        }
+        let mut ids = Vec::new();
+        let mut stack = vec![id];
+        while let Some(current) = stack.pop() {
+            ids.push(current);
+            if let Some(children) = by_parent.get(&Some(current)) {
+                stack.extend(children.iter().copied());
+            }
+        }
+        Ok(ids)
     }
 
     fn conn(&self) -> rusqlite::Result<PooledConnection<SqliteConnectionManager>> {
@@ -844,12 +982,90 @@ fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+fn ensure_collection_schema(conn: &Connection) -> rusqlite::Result<()> {
+    let columns = table_columns(conn, "collections")?;
+    if !columns.iter().any(|column| column == "parent_id") {
+        conn.execute("ALTER TABLE collections ADD COLUMN parent_id INTEGER", [])?;
+    }
+    if !columns.iter().any(|column| column == "primary_tag") {
+        conn.execute(
+            "ALTER TABLE collections ADD COLUMN primary_tag TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE collections
+             SET primary_tag = lower(trim(name))
+             WHERE primary_tag = ''",
+            [],
+        )?;
+    }
+    if !columns.iter().any(|column| column == "extra_tags_json") {
+        conn.execute(
+            "ALTER TABLE collections ADD COLUMN extra_tags_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
+    }
+    if !columns.iter().any(|column| column == "tag_migrated_at") {
+        conn.execute(
+            "ALTER TABLE collections ADD COLUMN tag_migrated_at INTEGER",
+            [],
+        )?;
+    }
+    conn.execute(
+        "UPDATE collections
+         SET primary_tag = lower(trim(name))
+         WHERE trim(primary_tag) = ''",
+        [],
+    )?;
+    Ok(())
+}
+
+fn table_columns(conn: &Connection, table: &str) -> rusqlite::Result<Vec<String>> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    Ok(rows.filter_map(Result::ok).collect())
+}
+
+fn parse_tags_json(raw: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(raw)
+        .map(|tags| normalize_collection_tags(&tags))
+        .unwrap_or_default()
+}
+
+fn tags_to_json(tags: &[String]) -> String {
+    serde_json::to_string(&normalize_collection_tags(tags)).unwrap_or_else(|_| "[]".to_string())
+}
+
+pub fn normalize_collection_tag(tag: &str) -> String {
+    tag.trim().to_lowercase()
+}
+
+fn normalize_collection_tags(tags: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for tag in tags {
+        let tag = normalize_collection_tag(tag);
+        if !tag.is_empty() && !normalized.contains(&tag) {
+            normalized.push(tag);
+        }
+    }
+    normalized
+}
+
+fn push_unique_tag(tags: &mut Vec<String>, tag: &str) {
+    let tag = normalize_collection_tag(tag);
+    if !tag.is_empty() && !tags.contains(&tag) {
+        tags.push(tag);
+    }
+}
+
 #[cfg(test)]
 impl LibraryIndex {
     fn open_in_memory() -> rusqlite::Result<Self> {
         let manager = SqliteConnectionManager::memory().with_init(|conn| {
             configure_connection(conn)?;
             initialize_schema(conn)?;
+            ensure_collection_schema(conn)?;
             Ok(())
         });
         let pool = Pool::builder()
@@ -1115,9 +1331,10 @@ mod tests {
     #[test]
     fn create_and_list_collections() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let c = idx.create_collection("Pinned").unwrap();
+        let c = idx.create_collection(None, "Pinned", &[]).unwrap();
         assert_eq!(c.name, "Pinned");
         assert_eq!(c.item_count, 0);
+        assert_eq!(c.primary_tag, "pinned");
 
         let list = idx.list_collections().unwrap();
         assert_eq!(list.len(), 1);
@@ -1128,104 +1345,117 @@ mod tests {
     #[test]
     fn create_collection_rejects_empty_name() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        assert!(idx.create_collection("").is_err());
-        assert!(idx.create_collection("   ").is_err());
+        assert!(idx.create_collection(None, "", &[]).is_err());
+        assert!(idx.create_collection(None, "   ", &[]).is_err());
     }
 
     #[test]
     fn create_collection_rejects_duplicate_name() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        idx.create_collection("Pinned").unwrap();
-        assert!(idx.create_collection("Pinned").is_err());
+        idx.create_collection(None, "Pinned", &[]).unwrap();
+        assert!(idx.create_collection(None, "Pinned", &[]).is_err());
     }
 
     #[test]
     fn rename_collection() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let c = idx.create_collection("Old").unwrap();
-        idx.rename_collection(c.id, "New").unwrap();
+        let c = idx.create_collection(None, "Old", &["People".into()]).unwrap();
+        idx.update_collection(c.id, "New", &["Model".into()]).unwrap();
         let list = idx.list_collections().unwrap();
         assert_eq!(list[0].name, "New");
+        assert_eq!(list[0].primary_tag, "new");
+        assert_eq!(list[0].extra_tags, vec!["model".to_string()]);
     }
 
     #[test]
     fn rename_collection_rejects_empty_name() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let c = idx.create_collection("Name").unwrap();
-        assert!(idx.rename_collection(c.id, "").is_err());
+        let c = idx.create_collection(None, "Name", &[]).unwrap();
+        assert!(idx.update_collection(c.id, "", &[]).is_err());
     }
 
     #[test]
-    fn delete_collection_cascades_items() {
+    fn delete_collection_removes_subtree() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let c = idx.create_collection("Pinned").unwrap();
-        let paths = vec![PathBuf::from("/photos/a.jpg")];
-        idx.add_paths_to_collection(c.id, &paths).unwrap();
+        let root = idx.create_collection(None, "People", &[]).unwrap();
+        idx.create_collection(Some(root.id), "Model", &[]).unwrap();
 
-        idx.delete_collection(c.id).unwrap();
+        idx.delete_collection(root.id).unwrap();
         assert!(idx.list_collections().unwrap().is_empty());
-        // Collection items should be gone via CASCADE.
-        assert!(idx.collection_paths(c.id).unwrap().is_empty());
     }
 
     #[test]
-    fn add_paths_idempotent() {
+    fn collection_effective_tags_include_ancestors_and_extra_tags() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let c = idx.create_collection("Pinned").unwrap();
-        let paths = vec![
-            PathBuf::from("/photos/a.jpg"),
-            PathBuf::from("/photos/b.jpg"),
-        ];
-        let added = idx.add_paths_to_collection(c.id, &paths).unwrap();
-        assert_eq!(added, 2);
+        let people = idx
+            .create_collection(None, "People", &["portrait".into()])
+            .unwrap();
+        let model = idx
+            .create_collection(Some(people.id), "Model", &["studio".into()])
+            .unwrap();
+        let blonde = idx.create_collection(Some(model.id), "Blonde", &[]).unwrap();
 
-        // Add again — should be no-ops.
-        let added2 = idx.add_paths_to_collection(c.id, &paths).unwrap();
-        assert_eq!(added2, 0);
-
-        let list = idx.list_collections().unwrap();
-        assert_eq!(list[0].item_count, 2);
+        let tags = idx.collection_effective_tags(blonde.id).unwrap();
+        assert_eq!(
+            tags,
+            vec![
+                "people".to_string(),
+                "portrait".to_string(),
+                "model".to_string(),
+                "studio".to_string(),
+                "blonde".to_string()
+            ]
+        );
     }
 
     #[test]
-    fn remove_paths_from_collection() {
+    fn reparent_leaf_collection_updates_parent() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let c = idx.create_collection("Batch").unwrap();
-        let paths = vec![
-            PathBuf::from("/photos/a.jpg"),
-            PathBuf::from("/photos/b.jpg"),
-            PathBuf::from("/photos/c.jpg"),
-        ];
-        idx.add_paths_to_collection(c.id, &paths).unwrap();
+        let art = idx.create_collection(None, "Art", &[]).unwrap();
+        let diffusion = idx.create_collection(None, "Diffusion", &[]).unwrap();
 
-        let removed = idx
-            .remove_paths_from_collection(c.id, &[PathBuf::from("/photos/b.jpg")])
-            .unwrap();
-        assert_eq!(removed, 1);
-
-        let remaining = idx.collection_paths(c.id).unwrap();
-        assert_eq!(remaining.len(), 2);
-        assert!(!remaining.contains(&PathBuf::from("/photos/b.jpg")));
+        idx.reparent_collection(diffusion.id, art.id).unwrap();
+        let moved = idx.collection(diffusion.id).unwrap().unwrap();
+        assert_eq!(moved.parent_id, Some(art.id));
     }
 
     #[test]
-    fn collection_paths_ordered_by_added_at() {
+    fn reparent_rejects_non_leaf_collection() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let c = idx.create_collection("Order Test").unwrap();
-        // Add one at a time so added_at timestamps differ (same second is fine; ordering is by
-        // insertion order since we use now_secs() once per batch call).
-        idx.add_paths_to_collection(c.id, &[PathBuf::from("/photos/a.jpg")])
-            .unwrap();
-        idx.add_paths_to_collection(c.id, &[PathBuf::from("/photos/b.jpg")])
-            .unwrap();
-        idx.add_paths_to_collection(c.id, &[PathBuf::from("/photos/c.jpg")])
-            .unwrap();
+        let art = idx.create_collection(None, "Art", &[]).unwrap();
+        let root = idx.create_collection(None, "People", &[]).unwrap();
+        idx.create_collection(Some(root.id), "Model", &[]).unwrap();
 
-        let paths = idx.collection_paths(c.id).unwrap();
-        assert_eq!(paths.len(), 3);
-        // All three paths are present (order within same second is not guaranteed).
-        assert!(paths.contains(&PathBuf::from("/photos/a.jpg")));
-        assert!(paths.contains(&PathBuf::from("/photos/b.jpg")));
-        assert!(paths.contains(&PathBuf::from("/photos/c.jpg")));
+        assert!(idx.reparent_collection(root.id, art.id).is_err());
+    }
+
+    #[test]
+    fn migrate_legacy_collection_items_into_tags() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let tags = crate::tags::TagDatabase::open_in_memory().unwrap();
+        let root = std::env::temp_dir().join(format!("sharpr-legacy-migrate-{}", now_secs()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("a.jpg");
+        std::fs::write(&path, b"a").unwrap();
+
+        let collection = idx.create_collection(None, "Pinned", &[]).unwrap();
+        let conn = idx.conn().unwrap();
+        conn.execute(
+            "UPDATE collections SET tag_migrated_at = NULL WHERE id = ?1",
+            params![collection.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO collection_items (collection_id, image_path, added_at)
+             VALUES (?1, ?2, ?3)",
+            params![collection.id, path.to_string_lossy().as_ref(), now_secs()],
+        )
+        .unwrap();
+        drop(conn);
+
+        idx.migrate_legacy_collections_to_tags(&tags).unwrap();
+        assert_eq!(tags.tags_for_path(&path), vec!["pinned".to_string()]);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

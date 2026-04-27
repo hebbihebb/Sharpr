@@ -1,7 +1,8 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Once;
 
 use gtk4::gio;
 use gtk4::prelude::*;
@@ -15,7 +16,10 @@ type FolderSelectedCallback = Box<dyn Fn(PathBuf) + 'static>;
 type FolderIgnoredChangedCallback = Box<dyn Fn(PathBuf, bool) + 'static>;
 type CollectionSelectedCallback = Box<dyn Fn(i64) + 'static>;
 type CollectionAddRequestedCallback = Box<dyn Fn() + 'static>;
-type CollectionRenameRequestedCallback = Box<dyn Fn(i64, String) + 'static>;
+type CollectionChildAddRequestedCallback = Box<dyn Fn(i64) + 'static>;
+type CollectionEditRequestedCallback = Box<dyn Fn(i64) + 'static>;
+type CollectionMoveRequestedCallback = Box<dyn Fn(i64) + 'static>;
+type CollectionReparentRequestedCallback = Box<dyn Fn(i64, i64) + 'static>;
 type CollectionDeleteRequestedCallback = Box<dyn Fn(i64) + 'static>;
 type DropPathsToCollectionCallback = Box<dyn Fn(i64, Vec<std::path::PathBuf>) + 'static>;
 
@@ -34,11 +38,18 @@ mod imp {
         pub folder_ignored_changed_cb: RefCell<Option<FolderIgnoredChangedCallback>>,
         pub collection_selected_cb: RefCell<Option<CollectionSelectedCallback>>,
         pub collection_add_requested_cb: RefCell<Option<CollectionAddRequestedCallback>>,
-        pub collection_rename_requested_cb: RefCell<Option<CollectionRenameRequestedCallback>>,
+        pub collection_child_add_requested_cb:
+            RefCell<Option<CollectionChildAddRequestedCallback>>,
+        pub collection_edit_requested_cb: RefCell<Option<CollectionEditRequestedCallback>>,
+        pub collection_move_requested_cb: RefCell<Option<CollectionMoveRequestedCallback>>,
+        pub collection_reparent_requested_cb:
+            RefCell<Option<CollectionReparentRequestedCallback>>,
         pub collection_delete_requested_cb: RefCell<Option<CollectionDeleteRequestedCallback>>,
         pub drop_paths_to_collection_cb: RefCell<Option<DropPathsToCollectionCallback>>,
         pub suppress_folder_signal: Cell<bool>,
         pub suppress_collection_signal: Cell<bool>,
+        pub collapsed_collection_ids: RefCell<HashSet<i64>>,
+        pub collections: RefCell<Vec<Collection>>,
     }
 
     impl Default for SidebarPane {
@@ -51,11 +62,16 @@ mod imp {
                 folder_ignored_changed_cb: RefCell::new(None),
                 collection_selected_cb: RefCell::new(None),
                 collection_add_requested_cb: RefCell::new(None),
-                collection_rename_requested_cb: RefCell::new(None),
+                collection_child_add_requested_cb: RefCell::new(None),
+                collection_edit_requested_cb: RefCell::new(None),
+                collection_move_requested_cb: RefCell::new(None),
+                collection_reparent_requested_cb: RefCell::new(None),
                 collection_delete_requested_cb: RefCell::new(None),
                 drop_paths_to_collection_cb: RefCell::new(None),
                 suppress_folder_signal: Cell::new(false),
                 suppress_collection_signal: Cell::new(false),
+                collapsed_collection_ids: RefCell::new(HashSet::new()),
+                collections: RefCell::new(Vec::new()),
             }
         }
     }
@@ -87,6 +103,7 @@ glib::wrapper! {
 
 impl SidebarPane {
     pub fn new(state: Rc<RefCell<AppState>>) -> Self {
+        install_collection_css();
         let widget: Self = glib::Object::new();
         widget.build_ui(state);
         widget
@@ -367,8 +384,20 @@ impl SidebarPane {
         *self.imp().collection_add_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_collection_rename_requested<F: Fn(i64, String) + 'static>(&self, f: F) {
-        *self.imp().collection_rename_requested_cb.borrow_mut() = Some(Box::new(f));
+    pub fn connect_collection_child_add_requested<F: Fn(i64) + 'static>(&self, f: F) {
+        *self.imp().collection_child_add_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_collection_edit_requested<F: Fn(i64) + 'static>(&self, f: F) {
+        *self.imp().collection_edit_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_collection_move_requested<F: Fn(i64) + 'static>(&self, f: F) {
+        *self.imp().collection_move_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_collection_reparent_requested<F: Fn(i64, i64) + 'static>(&self, f: F) {
+        *self.imp().collection_reparent_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn connect_collection_delete_requested<F: Fn(i64) + 'static>(&self, f: F) {
@@ -382,6 +411,28 @@ impl SidebarPane {
     }
 
     pub fn set_collection_selected(&self, id: i64) {
+        let ancestors = {
+            let collections = self.imp().collections.borrow();
+            let by_id: HashMap<i64, Option<i64>> =
+                collections.iter().map(|c| (c.id, c.parent_id)).collect();
+            let mut ancestors = Vec::new();
+            let mut current = by_id.get(&id).copied().flatten();
+            while let Some(parent_id) = current {
+                ancestors.push(parent_id);
+                current = by_id.get(&parent_id).copied().flatten();
+            }
+            ancestors
+        };
+        if !ancestors.is_empty() {
+            {
+                let mut collapsed = self.imp().collapsed_collection_ids.borrow_mut();
+                for ancestor in ancestors {
+                    collapsed.remove(&ancestor);
+                }
+            }
+            let collections = self.imp().collections.borrow().clone();
+            self.refresh_collections(&collections);
+        }
         self.imp().suppress_collection_signal.set(true);
         let mut child = self.imp().collection_list.first_child();
         while let Some(widget) = child {
@@ -400,28 +451,90 @@ impl SidebarPane {
     /// Rebuild the collection list from the given slice. Safe to call at any time.
     pub fn refresh_collections(&self, collections: &[Collection]) {
         let imp = self.imp();
+        *imp.collections.borrow_mut() = collections.to_vec();
+        let selected_id = imp
+            .collection_list
+            .selected_row()
+            .and_then(|row| row.downcast::<CollectionRow>().ok())
+            .map(|row| row.collection_id());
         imp.suppress_collection_signal.set(true);
         while let Some(child) = imp.collection_list.first_child() {
             imp.collection_list.remove(&child);
         }
-        for coll in collections {
-            let row = CollectionRow::new(coll.id, &coll.name, coll.item_count);
+        for coll in visible_collections(collections, &imp.collapsed_collection_ids.borrow()) {
+            let has_children = collections.iter().any(|c| c.parent_id == Some(coll.id));
+            let is_collapsed = imp.collapsed_collection_ids.borrow().contains(&coll.id);
+            let row = CollectionRow::new(&coll, collection_depth(coll.id, collections), has_children, is_collapsed);
             self.attach_collection_row_menu(&row);
             imp.collection_list.append(&row);
+        }
+        if let Some(selected_id) = selected_id {
+            let mut child = imp.collection_list.first_child();
+            while let Some(widget) = child {
+                let next = widget.next_sibling();
+                if let Ok(row) = widget.downcast::<CollectionRow>() {
+                    if row.collection_id() == selected_id {
+                        imp.collection_list.select_row(Some(&row));
+                        break;
+                    }
+                }
+                child = next;
+            }
         }
         imp.suppress_collection_signal.set(false);
     }
 
     fn attach_collection_row_menu(&self, row: &CollectionRow) {
+        if let Some(disclosure) = row.disclosure_button() {
+            let row_weak = row.downgrade();
+            let widget_weak = self.downgrade();
+            disclosure.connect_clicked(move |_| {
+                let Some(widget) = widget_weak.upgrade() else {
+                    return;
+                };
+                let Some(row) = row_weak.upgrade() else {
+                    return;
+                };
+                widget.toggle_collection_collapsed(row.collection_id());
+            });
+        }
+
+        if !row.has_children() {
+            let drag_source = gtk4::DragSource::new();
+            drag_source.set_actions(gdk4::DragAction::MOVE);
+            let collection_id = row.collection_id();
+            drag_source.connect_prepare(move |_, _, _| {
+                Some(gdk4::ContentProvider::for_value(
+                    &format!("collection:{collection_id}").to_value(),
+                ))
+            });
+            row.add_controller(drag_source);
+        }
+
         // Drop target: accept path strings dragged from the filmstrip.
         let id = row.collection_id();
         let widget_weak = self.downgrade();
-        let drop_target = gtk4::DropTarget::new(glib::Type::STRING, gdk4::DragAction::COPY);
+        let drop_target = gtk4::DropTarget::new(
+            glib::Type::STRING,
+            gdk4::DragAction::COPY | gdk4::DragAction::MOVE,
+        );
         drop_target.connect_drop(move |_, value, _, _| {
             let paths_str = match value.get::<String>() {
                 Ok(s) => s,
                 Err(_) => return false,
             };
+            if let Some(source_id) = paths_str
+                .strip_prefix("collection:")
+                .and_then(|id| id.parse::<i64>().ok())
+            {
+                if source_id == id {
+                    return false;
+                }
+                if let Some(widget) = widget_weak.upgrade() {
+                    widget.emit_collection_reparent_requested(source_id, id);
+                }
+                return true;
+            }
             let paths: Vec<std::path::PathBuf> = paths_str
                 .lines()
                 .filter(|l| !l.is_empty())
@@ -442,8 +555,13 @@ impl SidebarPane {
         popover.set_has_arrow(true);
         popover.set_position(gtk4::PositionType::Right);
 
-        let btn_rename = gtk4::Button::with_label("Rename Collection");
-        btn_rename.add_css_class("flat");
+        let btn_child = gtk4::Button::with_label("New Child Collection");
+        btn_child.add_css_class("flat");
+        let btn_edit = gtk4::Button::with_label("Edit Collection");
+        btn_edit.add_css_class("flat");
+        let btn_move = gtk4::Button::with_label("Assign As Child Of…");
+        btn_move.add_css_class("flat");
+        btn_move.set_visible(!row.has_children());
         let btn_delete = gtk4::Button::with_label("Delete Collection");
         btn_delete.add_css_class("flat");
         btn_delete.add_css_class("destructive-action");
@@ -451,16 +569,17 @@ impl SidebarPane {
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
         vbox.set_margin_top(4);
         vbox.set_margin_bottom(4);
-        vbox.append(&btn_rename);
+        vbox.append(&btn_child);
+        vbox.append(&btn_edit);
+        vbox.append(&btn_move);
         vbox.append(&btn_delete);
         popover.set_child(Some(&vbox));
         popover.set_parent(row);
 
-        // Rename button
         let widget_weak = self.downgrade();
         let row_weak = row.downgrade();
         let popover_clone = popover.clone();
-        btn_rename.connect_clicked(move |_| {
+        btn_child.connect_clicked(move |_| {
             popover_clone.popdown();
             let Some(widget) = widget_weak.upgrade() else {
                 return;
@@ -468,38 +587,35 @@ impl SidebarPane {
             let Some(row) = row_weak.upgrade() else {
                 return;
             };
-            let id = row.collection_id();
-            let current_name = row.collection_name();
-            let dialog = libadwaita::AlertDialog::new(Some("Rename Collection"), None);
-            dialog.add_response("cancel", "Cancel");
-            dialog.add_response("rename", "Rename");
-            dialog.set_default_response(Some("rename"));
-            dialog.set_close_response("cancel");
-            dialog.set_response_appearance("rename", libadwaita::ResponseAppearance::Suggested);
-            let entry = gtk4::Entry::new();
-            entry.set_text(&current_name);
-            entry.select_region(0, -1);
-            let entry_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-            entry_box.set_margin_top(6);
-            entry_box.append(&entry);
-            dialog.set_extra_child(Some(&entry_box));
-            let entry_clone = entry.clone();
-            let widget_weak2 = widget.downgrade();
-            dialog.connect_response(None, move |_, response| {
-                if response == "rename" {
-                    let new_name = entry_clone.text().to_string();
-                    if let Some(w) = widget_weak2.upgrade() {
-                        w.emit_collection_rename_requested(id, new_name);
-                    }
-                }
-            });
-            if let Some(root) = row.root() {
-                if let Some(window) = root.downcast_ref::<gtk4::Window>() {
-                    dialog.present(Some(window));
-                } else {
-                    dialog.present(None::<&gtk4::Window>);
-                }
-            }
+            widget.emit_collection_child_add_requested(row.collection_id());
+        });
+
+        let widget_weak = self.downgrade();
+        let row_weak = row.downgrade();
+        let popover_clone = popover.clone();
+        btn_edit.connect_clicked(move |_| {
+            popover_clone.popdown();
+            let Some(widget) = widget_weak.upgrade() else {
+                return;
+            };
+            let Some(row) = row_weak.upgrade() else {
+                return;
+            };
+            widget.emit_collection_edit_requested(row.collection_id());
+        });
+
+        let widget_weak = self.downgrade();
+        let row_weak = row.downgrade();
+        let popover_clone = popover.clone();
+        btn_move.connect_clicked(move |_| {
+            popover_clone.popdown();
+            let Some(widget) = widget_weak.upgrade() else {
+                return;
+            };
+            let Some(row) = row_weak.upgrade() else {
+                return;
+            };
+            widget.emit_collection_move_requested(row.collection_id());
         });
 
         // Delete button
@@ -516,7 +632,9 @@ impl SidebarPane {
             };
             let id = row.collection_id();
             let name = row.collection_name();
-            let body = format!("\u{201c}{name}\u{201d} and all its image assignments will be removed. Images themselves are not deleted.");
+            let body = format!(
+                "\u{201c}{name}\u{201d} and any child collections will be removed from the sidebar. Image tags are left unchanged."
+            );
             let dialog = libadwaita::AlertDialog::new(Some("Delete Collection?"), Some(&body));
             dialog.add_response("cancel", "Cancel");
             dialog.add_response("delete", "Delete");
@@ -564,9 +682,27 @@ impl SidebarPane {
         }
     }
 
-    fn emit_collection_rename_requested(&self, id: i64, name: String) {
-        if let Some(cb) = self.imp().collection_rename_requested_cb.borrow().as_ref() {
-            cb(id, name);
+    fn emit_collection_child_add_requested(&self, id: i64) {
+        if let Some(cb) = self.imp().collection_child_add_requested_cb.borrow().as_ref() {
+            cb(id);
+        }
+    }
+
+    fn emit_collection_edit_requested(&self, id: i64) {
+        if let Some(cb) = self.imp().collection_edit_requested_cb.borrow().as_ref() {
+            cb(id);
+        }
+    }
+
+    fn emit_collection_move_requested(&self, id: i64) {
+        if let Some(cb) = self.imp().collection_move_requested_cb.borrow().as_ref() {
+            cb(id);
+        }
+    }
+
+    fn emit_collection_reparent_requested(&self, source_id: i64, target_parent_id: i64) {
+        if let Some(cb) = self.imp().collection_reparent_requested_cb.borrow().as_ref() {
+            cb(source_id, target_parent_id);
         }
     }
 
@@ -587,6 +723,18 @@ impl SidebarPane {
         if let Some(cb) = self.imp().drop_paths_to_collection_cb.borrow().as_ref() {
             cb(id, paths);
         }
+    }
+
+    fn toggle_collection_collapsed(&self, id: i64) {
+        let imp = self.imp();
+        {
+            let mut collapsed = imp.collapsed_collection_ids.borrow_mut();
+            if !collapsed.insert(id) {
+                collapsed.remove(&id);
+            }
+        }
+        let collections = imp.collections.borrow().clone();
+        self.refresh_collections(&collections);
     }
 
     fn attach_folder_row_menu(&self, row: &FolderRow) {
@@ -659,6 +807,89 @@ fn section_label(text: &str) -> gtk4::Label {
     lbl.set_margin_top(8);
     lbl.set_margin_bottom(4);
     lbl
+}
+
+fn visible_collections(collections: &[Collection], collapsed_ids: &HashSet<i64>) -> Vec<Collection> {
+    let by_parent = collection_children(collections);
+    let mut out = Vec::new();
+    append_visible_collections(None, &by_parent, collapsed_ids, &mut out);
+    out
+}
+
+fn append_visible_collections(
+    parent_id: Option<i64>,
+    by_parent: &HashMap<Option<i64>, Vec<Collection>>,
+    collapsed_ids: &HashSet<i64>,
+    out: &mut Vec<Collection>,
+) {
+    if let Some(children) = by_parent.get(&parent_id) {
+        for child in children {
+            out.push(child.clone());
+            if !collapsed_ids.contains(&child.id) {
+                append_visible_collections(Some(child.id), by_parent, collapsed_ids, out);
+            }
+        }
+    }
+}
+
+fn collection_children(collections: &[Collection]) -> HashMap<Option<i64>, Vec<Collection>> {
+    let mut by_parent: HashMap<Option<i64>, Vec<Collection>> = HashMap::new();
+    for collection in collections {
+        by_parent
+            .entry(collection.parent_id)
+            .or_default()
+            .push(collection.clone());
+    }
+    for children in by_parent.values_mut() {
+        children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    }
+    by_parent
+}
+
+fn collection_depth(id: i64, collections: &[Collection]) -> u32 {
+    let by_id: HashMap<i64, Option<i64>> = collections.iter().map(|c| (c.id, c.parent_id)).collect();
+    let mut depth = 0u32;
+    let mut current = by_id.get(&id).copied().flatten();
+    while let Some(parent_id) = current {
+        depth += 1;
+        current = by_id.get(&parent_id).copied().flatten();
+    }
+    depth
+}
+
+fn install_collection_css() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let provider = gtk4::CssProvider::new();
+        provider.load_from_string(
+            "
+            .collection-child-row {
+                opacity: 0.94;
+            }
+            .collection-root-row {
+                opacity: 1.0;
+            }
+            .collection-disclosure {
+                min-width: 20px;
+                min-height: 20px;
+                padding: 0;
+            }
+            .collection-root-icon {
+                color: @accent_color;
+            }
+            .collection-child-icon {
+                color: alpha(@accent_color, 0.72);
+            }
+            "
+        );
+        if let Some(display) = gtk4::gdk::Display::default() {
+            gtk4::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+    });
 }
 
 fn discover_image_child_folders(root: &Path, root_name: &str) -> Vec<(PathBuf, String)> {
@@ -792,6 +1023,9 @@ mod collection_row_imp {
         pub collection_id: Cell<i64>,
         pub collection_name: RefCell<String>,
         pub item_count: Cell<usize>,
+        pub depth: Cell<u32>,
+        pub has_children: Cell<bool>,
+        pub disclosure_button: RefCell<Option<gtk4::Button>>,
     }
 
     #[glib::object_subclass]
@@ -812,31 +1046,65 @@ glib::wrapper! {
 }
 
 impl CollectionRow {
-    pub fn new(id: i64, name: &str, item_count: usize) -> Self {
+    pub fn new(collection: &Collection, depth: u32, has_children: bool, is_collapsed: bool) -> Self {
         let row: Self = glib::Object::new();
-        row.imp().collection_id.set(id);
-        *row.imp().collection_name.borrow_mut() = name.to_string();
-        row.imp().item_count.set(item_count);
+        row.imp().collection_id.set(collection.id);
+        *row.imp().collection_name.borrow_mut() = collection.name.clone();
+        row.imp().item_count.set(collection.item_count);
+        row.imp().depth.set(depth);
+        row.imp().has_children.set(has_children);
 
-        let icon = gtk4::Image::from_icon_name("folder-saved-search-symbolic");
-        let name_label = gtk4::Label::new(Some(name));
+        let disclosure = gtk4::Button::new();
+        disclosure.add_css_class("flat");
+        disclosure.add_css_class("collection-disclosure");
+        disclosure.set_icon_name(if is_collapsed {
+            "pan-end-symbolic"
+        } else {
+            "pan-down-symbolic"
+        });
+        disclosure.set_sensitive(has_children);
+        disclosure.set_opacity(if has_children { 1.0 } else { 0.0 });
+        *row.imp().disclosure_button.borrow_mut() = Some(disclosure.clone());
+
+        let icon = gtk4::Image::from_icon_name(if depth == 0 {
+            "tag-symbolic"
+        } else {
+            "tag-new-symbolic"
+        });
+        icon.add_css_class(if depth == 0 {
+            "collection-root-icon"
+        } else {
+            "collection-child-icon"
+        });
+        let name_label = gtk4::Label::new(Some(&collection.name));
         name_label.set_halign(gtk4::Align::Start);
         name_label.set_hexpand(true);
         name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
 
         let mut count_buf = itoa::Buffer::new();
-        let count_label = gtk4::Label::new(Some(count_buf.format(item_count)));
+        let count_label = gtk4::Label::new(Some(count_buf.format(collection.item_count)));
         count_label.add_css_class("dim-label");
         count_label.add_css_class("caption");
+        count_label.set_tooltip_text(Some(&format!(
+            "{} tag-matched image{}",
+            collection.item_count,
+            if collection.item_count == 1 { "" } else { "s" }
+        )));
 
         let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-        hbox.set_margin_start(8);
+        hbox.set_margin_start(8 + (depth as i32 * 18));
         hbox.set_margin_end(8);
         hbox.set_margin_top(6);
         hbox.set_margin_bottom(6);
+        hbox.append(&disclosure);
         hbox.append(&icon);
         hbox.append(&name_label);
         hbox.append(&count_label);
+        if depth > 0 {
+            row.add_css_class("collection-child-row");
+        } else {
+            row.add_css_class("collection-root-row");
+        }
 
         row.set_child(Some(&hbox));
         row
@@ -848,5 +1116,13 @@ impl CollectionRow {
 
     pub fn collection_name(&self) -> String {
         self.imp().collection_name.borrow().clone()
+    }
+
+    pub fn disclosure_button(&self) -> Option<gtk4::Button> {
+        self.imp().disclosure_button.borrow().clone()
+    }
+
+    pub fn has_children(&self) -> bool {
+        self.imp().has_children.get()
     }
 }

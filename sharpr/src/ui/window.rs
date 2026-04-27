@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use crate::config::AppSettings;
 use crate::duplicates::phash;
-use crate::library_index::{BasicImageInfo, LibraryIndex};
+use crate::library_index::{normalize_collection_tag, BasicImageInfo, Collection, LibraryIndex};
 use crate::model::library::{CachedImageData, RawImageEntry, SortOrder};
 use crate::model::{ImageEntry, LibraryManager};
 use crate::tags::smart::SmartModel;
@@ -84,6 +84,92 @@ fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
             sidebar.clear_collection_selection();
         }
     }
+}
+
+fn parse_collection_tags_input(input: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    for tag in input.split(',') {
+        let tag = normalize_collection_tag(tag);
+        if !tag.is_empty() && !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    tags
+}
+
+fn collection_paths_from_services(
+    index: &LibraryIndex,
+    tags: &crate::tags::TagDatabase,
+    collection_id: i64,
+) -> Vec<PathBuf> {
+    let effective_tags = index
+        .collection_effective_tags(collection_id)
+        .unwrap_or_default();
+    if effective_tags.is_empty() {
+        return Vec::new();
+    }
+    index
+        .filter_ignored_paths(tags.paths_for_all_tags(&effective_tags))
+        .unwrap_or_default()
+}
+
+fn collections_for_sidebar(state: &AppState) -> Vec<Collection> {
+    let Some(index) = state.library_index.as_ref() else {
+        return Vec::new();
+    };
+    let Some(tags) = state.tags.as_ref() else {
+        return index.list_collections().unwrap_or_default();
+    };
+    let mut collections = index.list_collections().unwrap_or_default();
+    for collection in &mut collections {
+        collection.item_count = collection_paths_from_services(index, tags, collection.id).len();
+    }
+    collections
+}
+
+fn flatten_collection_paths(collections: &[Collection]) -> Vec<(i64, String)> {
+    let mut by_parent: HashMap<Option<i64>, Vec<Collection>> = HashMap::new();
+    for collection in collections {
+        by_parent
+            .entry(collection.parent_id)
+            .or_default()
+            .push(collection.clone());
+    }
+    for children in by_parent.values_mut() {
+        children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    }
+
+    fn walk(
+        parent_id: Option<i64>,
+        prefix: Option<String>,
+        by_parent: &HashMap<Option<i64>, Vec<Collection>>,
+        out: &mut Vec<(i64, String)>,
+    ) {
+        if let Some(children) = by_parent.get(&parent_id) {
+            for child in children {
+                let label = match &prefix {
+                    Some(prefix) => format!("{prefix} > {}", child.name),
+                    None => child.name.clone(),
+                };
+                out.push((child.id, label.clone()));
+                walk(Some(child.id), Some(label), by_parent, out);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    walk(None, None, &by_parent, &mut out);
+    out
+}
+
+fn collection_local_tags(collection: &Collection) -> Vec<String> {
+    let mut tags = vec![collection.primary_tag.clone()];
+    for tag in &collection.extra_tags {
+        if !tags.contains(tag) {
+            tags.push(tag.clone());
+        }
+    }
+    tags
 }
 
 #[derive(Clone)]
@@ -480,13 +566,17 @@ impl AppState {
             .as_ref()
             .and_then(|index| index.ignored_folders().ok())
             .unwrap_or_default();
+        let tags = crate::tags::TagDatabase::open().ok().map(Arc::new);
+        if let (Some(index), Some(tags)) = (&library_index, &tags) {
+            let _ = index.migrate_legacy_collections_to_tags(tags);
+        }
         let state = Self {
             library,
             settings,
             sort_order: SortOrder::default(),
             library_index,
             library_index_error,
-            tags: crate::tags::TagDatabase::open().ok().map(Arc::new),
+            tags,
             smart_tagger,
             upscale_binary,
             ops,
@@ -1581,17 +1671,19 @@ impl SharprWindow {
             let sidebar_c = sidebar.clone();
             let state_c = state.clone();
             move || {
-                if let Some(idx) = state_c.borrow().library_index.clone() {
-                    let collections = idx.list_collections().unwrap_or_default();
-                    sidebar_c.refresh_collections(&collections);
-                }
+                let (collections, scope) = {
+                    let state = state_c.borrow();
+                    (collections_for_sidebar(&state), state.scope.clone())
+                };
+                sidebar_c.refresh_collections(&collections);
+                apply_scope_to_sidebar(&scope, &sidebar_c);
             }
         };
 
         // Populate sidebar collections on startup.
         refresh_sidebar_collections();
 
-        // "New Collection" + button → AlertDialog for name → create → refresh.
+        // "New Collection" + button → create root collection metadata.
         {
             let state_c = state.clone();
             let toast_overlay_c = toast_overlay.clone();
@@ -1607,24 +1699,34 @@ impl SharprWindow {
                 dialog.set_default_response(Some("create"));
                 dialog.set_close_response("cancel");
                 dialog.set_response_appearance("create", libadwaita::ResponseAppearance::Suggested);
-                let entry = gtk4::Entry::new();
-                entry.set_placeholder_text(Some("Collection name"));
-                let entry_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+                let name_entry = gtk4::Entry::new();
+                name_entry.set_placeholder_text(Some("Collection name"));
+                let tags_entry = gtk4::Entry::new();
+                tags_entry.set_placeholder_text(Some("Extra tags, comma separated"));
+                let info = gtk4::Label::new(Some("The collection name is also used as a tag."));
+                info.add_css_class("dim-label");
+                info.set_wrap(true);
+                info.set_halign(gtk4::Align::Start);
+                let entry_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
                 entry_box.set_margin_top(6);
-                entry_box.append(&entry);
+                entry_box.append(&name_entry);
+                entry_box.append(&info);
+                entry_box.append(&tags_entry);
                 dialog.set_extra_child(Some(&entry_box));
                 let state_d = state_c.clone();
                 let toast_d = toast_overlay_c.clone();
                 let refresh_d = refresh_c.clone();
-                let entry_clone = entry.clone();
+                let name_clone = name_entry.clone();
+                let tags_clone = tags_entry.clone();
                 dialog.connect_response(None, move |_, response| {
                     if response != "create" {
                         return;
                     }
-                    let name = entry_clone.text().to_string();
+                    let name = name_clone.text().to_string();
+                    let extra_tags = parse_collection_tags_input(tags_clone.text().as_str());
                     if let Some(idx) = state_d.borrow().library_index.clone() {
                         let started = std::time::Instant::now();
-                        match idx.create_collection(&name) {
+                        match idx.create_collection(None, &name, &extra_tags) {
                             Ok(coll) => {
                                 crate::bench_event!(
                                     "collection.create",
@@ -1668,12 +1770,13 @@ impl SharprWindow {
                     win.clear_inline_search(true);
                 }
                 content_stack.set_visible_child_name("viewer");
-                let paths = state_c
-                    .borrow()
-                    .library_index
-                    .clone()
-                    .and_then(|idx| idx.collection_paths(id).ok())
-                    .unwrap_or_default();
+                let paths = {
+                    let state = state_c.borrow();
+                    match (state.library_index.as_ref(), state.tags.as_ref()) {
+                        (Some(idx), Some(tags)) => collection_paths_from_services(idx, tags, id),
+                        _ => Vec::new(),
+                    }
+                };
                 let started = std::time::Instant::now();
                 {
                     let mut s = state_c.borrow_mut();
@@ -1709,32 +1812,197 @@ impl SharprWindow {
             });
         }
 
-        // Rename collection → update DB → refresh sidebar.
+        // Right-click → create child collection.
         {
             let state_c = state.clone();
             let toast_overlay_c = toast_overlay.clone();
             let refresh_c = refresh_sidebar_collections.clone();
-            sidebar.connect_collection_rename_requested(move |id, new_name| {
-                if let Some(idx) = state_c.borrow().library_index.clone() {
+            let window_weak = self.downgrade();
+            sidebar.connect_collection_child_add_requested(move |parent_id| {
+                let Some(win) = window_weak.upgrade() else {
+                    return;
+                };
+                let dialog = libadwaita::AlertDialog::new(Some("New Child Collection"), None);
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("create", "Create");
+                dialog.set_default_response(Some("create"));
+                dialog.set_close_response("cancel");
+                dialog.set_response_appearance("create", libadwaita::ResponseAppearance::Suggested);
+                let name_entry = gtk4::Entry::new();
+                name_entry.set_placeholder_text(Some("Collection name"));
+                let tags_entry = gtk4::Entry::new();
+                tags_entry.set_placeholder_text(Some("Extra tags, comma separated"));
+                let info = gtk4::Label::new(Some("The collection name is also used as a tag."));
+                info.add_css_class("dim-label");
+                info.set_wrap(true);
+                info.set_halign(gtk4::Align::Start);
+                let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+                box_.set_margin_top(6);
+                box_.append(&name_entry);
+                box_.append(&info);
+                box_.append(&tags_entry);
+                dialog.set_extra_child(Some(&box_));
+                let state_d = state_c.clone();
+                let toast_d = toast_overlay_c.clone();
+                let refresh_d = refresh_c.clone();
+                let name_clone = name_entry.clone();
+                let tags_clone = tags_entry.clone();
+                dialog.connect_response(None, move |_, response| {
+                    if response != "create" {
+                        return;
+                    }
+                    if let Some(idx) = state_d.borrow().library_index.clone() {
+                        let started = std::time::Instant::now();
+                        match idx.create_collection(
+                            Some(parent_id),
+                            name_clone.text().as_str(),
+                            &parse_collection_tags_input(tags_clone.text().as_str()),
+                        ) {
+                            Ok(coll) => {
+                                crate::bench_event!(
+                                    "collection.create",
+                                    serde_json::json!({
+                                        "collection_id": coll.id,
+                                        "parent_id": parent_id,
+                                        "name": coll.name,
+                                        "duration_ms": crate::bench::duration_ms(started),
+                                    }),
+                                );
+                                refresh_d();
+                                toast_d.add_toast(libadwaita::Toast::new(&format!(
+                                    "Child collection \u{201c}{}\u{201d} created",
+                                    coll.name
+                                )));
+                            }
+                            Err(e) => {
+                                toast_d.add_toast(libadwaita::Toast::new(&format!(
+                                    "Could not create child collection: {e}"
+                                )));
+                            }
+                        }
+                    }
+                });
+                dialog.present(Some(&win));
+            });
+        }
+
+        // Right-click → rename/edit collection metadata and retag current scope.
+        {
+            let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
+            let sidebar_c = sidebar.clone();
+            let state_c = state.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            let refresh_c = refresh_sidebar_collections.clone();
+            let window_weak = self.downgrade();
+            sidebar.connect_collection_edit_requested(move |id| {
+                let Some(win) = window_weak.upgrade() else {
+                    return;
+                };
+                let Some(idx) = state_c.borrow().library_index.clone() else {
+                    return;
+                };
+                let Some(collection) = idx.collection(id).ok().flatten() else {
+                    return;
+                };
+                let dialog = libadwaita::AlertDialog::new(Some("Edit Collection"), None);
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("save", "Save");
+                dialog.set_default_response(Some("save"));
+                dialog.set_close_response("cancel");
+                dialog.set_response_appearance("save", libadwaita::ResponseAppearance::Suggested);
+                let name_entry = gtk4::Entry::new();
+                name_entry.set_text(&collection.name);
+                name_entry.select_region(0, -1);
+                let tags_entry = gtk4::Entry::new();
+                tags_entry.set_text(&collection.extra_tags.join(", "));
+                let info = gtk4::Label::new(Some("The collection name is also used as a tag."));
+                info.add_css_class("dim-label");
+                info.set_wrap(true);
+                info.set_halign(gtk4::Align::Start);
+                let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+                box_.set_margin_top(6);
+                box_.append(&name_entry);
+                box_.append(&info);
+                box_.append(&tags_entry);
+                dialog.set_extra_child(Some(&box_));
+                let state_d = state_c.clone();
+                let toast_d = toast_overlay_c.clone();
+                let refresh_d = refresh_c.clone();
+                let filmstrip_d = filmstrip_c.clone();
+                let viewer_d = viewer_c.clone();
+                let sidebar_d = sidebar_c.clone();
+                let name_clone = name_entry.clone();
+                let tags_clone = tags_entry.clone();
+                dialog.connect_response(None, move |_, response| {
+                    if response != "save" {
+                        return;
+                    }
+                    let (Some(idx), Some(tags_db)) = (
+                        state_d.borrow().library_index.clone(),
+                        state_d.borrow().tags.clone(),
+                    ) else {
+                        return;
+                    };
+                    let Some(before) = idx.collection(id).ok().flatten() else {
+                        return;
+                    };
+                    let new_name = name_clone.text().to_string();
+                    let new_extra_tags = parse_collection_tags_input(tags_clone.text().as_str());
+                    let old_scope_paths = collection_paths_from_services(&idx, &tags_db, id);
+                    let old_primary = before.primary_tag.clone();
+                    let new_primary = normalize_collection_tag(&new_name);
+                    let added_extra_tags: Vec<String> = new_extra_tags
+                        .iter()
+                        .filter(|tag| !before.extra_tags.contains(*tag))
+                        .cloned()
+                        .collect();
                     let started = std::time::Instant::now();
-                    match idx.rename_collection(id, &new_name) {
+                    match idx.update_collection(id, &new_name, &new_extra_tags) {
                         Ok(()) => {
+                            if !added_extra_tags.is_empty() {
+                                tags_db.add_tags_to_paths(&old_scope_paths, &added_extra_tags);
+                            }
+                            if old_primary != new_primary {
+                                tags_db.replace_tag_in_paths(&old_scope_paths, &old_primary, &new_primary);
+                            }
                             crate::bench_event!(
-                                "collection.rename",
+                                "collection.update",
                                 serde_json::json!({
                                     "collection_id": id,
                                     "duration_ms": crate::bench::duration_ms(started),
                                 }),
                             );
-                            refresh_c();
+                            refresh_d();
+                            if matches!(state_d.borrow().scope, ViewScope::Collection(active) if active == id) {
+                                let paths = collection_paths_from_services(&idx, &tags_db, id);
+                                state_d.borrow_mut().scope = ViewScope::Collection(id);
+                                load_virtual_async(&state_d, &paths);
+                                filmstrip_d.refresh_virtual();
+                                let scope = state_d.borrow().scope.clone();
+                                apply_scope_to_sidebar(&scope, &sidebar_d);
+                                let first = state_d
+                                    .borrow()
+                                    .library
+                                    .entry_at(0)
+                                    .map(|e: ImageEntry| e.path());
+                                if let Some(path) = first {
+                                    state_d.borrow_mut().library.selected_index = Some(0);
+                                    filmstrip_d.navigate_to(0);
+                                    viewer_d.load_image(path);
+                                } else {
+                                    viewer_d.clear();
+                                }
+                            }
                         }
                         Err(e) => {
-                            toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                                "Could not rename collection: {e}"
+                            toast_d.add_toast(libadwaita::Toast::new(&format!(
+                                "Could not update collection: {e}"
                             )));
                         }
                     }
-                }
+                });
+                dialog.present(Some(&win));
             });
         }
 
@@ -1757,7 +2025,7 @@ impl SharprWindow {
                                     "duration_ms": crate::bench::duration_ms(started),
                                 }),
                             );
-                            let was_active = matches!(state_c.borrow().scope, ViewScope::Collection(a) if a == id);
+                            let was_active = matches!(state_c.borrow().scope, ViewScope::Collection(active) if idx.collection(active).unwrap_or(None).is_none());
                             if was_active {
                                 let mut s = state_c.borrow_mut();
                                 s.scope = ViewScope::Search;
@@ -1781,6 +2049,184 @@ impl SharprWindow {
             });
         }
 
+        // Reparent a leaf collection under another collection.
+        {
+            let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
+            let sidebar_c = sidebar.clone();
+            let state_c = state.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            let refresh_c = refresh_sidebar_collections.clone();
+            let reparent_collection = Rc::new(move |source_id: i64, target_parent_id: i64| {
+                let (Some(idx), Some(tags_db)) = (
+                    state_c.borrow().library_index.clone(),
+                    state_c.borrow().tags.clone(),
+                ) else {
+                    return;
+                };
+                let Some(before) = idx.collection(source_id).ok().flatten() else {
+                    return;
+                };
+                let old_effective_tags = idx.collection_effective_tags(source_id).unwrap_or_default();
+                let local_tags = collection_local_tags(&before);
+                let old_paths = collection_paths_from_services(&idx, &tags_db, source_id);
+                let started = std::time::Instant::now();
+                match idx.reparent_collection(source_id, target_parent_id) {
+                    Ok(()) => {
+                        let new_effective_tags =
+                            idx.collection_effective_tags(source_id).unwrap_or_default();
+                        let old_ancestor_tags: Vec<String> = old_effective_tags
+                            .iter()
+                            .filter(|tag| !local_tags.contains(*tag))
+                            .cloned()
+                            .collect();
+                        let new_ancestor_tags: Vec<String> = new_effective_tags
+                            .iter()
+                            .filter(|tag| !local_tags.contains(*tag))
+                            .cloned()
+                            .collect();
+                        let tags_to_remove: Vec<String> = old_ancestor_tags
+                            .iter()
+                            .filter(|tag| !new_ancestor_tags.contains(*tag))
+                            .cloned()
+                            .collect();
+                        let tags_to_add: Vec<String> = new_ancestor_tags
+                            .iter()
+                            .filter(|tag| !old_ancestor_tags.contains(*tag))
+                            .cloned()
+                            .collect();
+                        if !tags_to_remove.is_empty() {
+                            tags_db.remove_tags_from_paths(&old_paths, &tags_to_remove);
+                        }
+                        if !tags_to_add.is_empty() {
+                            tags_db.add_tags_to_paths(&old_paths, &tags_to_add);
+                        }
+                        crate::bench_event!(
+                            "collection.reparent",
+                            serde_json::json!({
+                                "collection_id": source_id,
+                                "target_parent_id": target_parent_id,
+                                "path_count": old_paths.len(),
+                                "duration_ms": crate::bench::duration_ms(started),
+                            }),
+                        );
+                        refresh_c();
+                        if let ViewScope::Collection(active_id) = state_c.borrow().scope.clone() {
+                            let paths = collection_paths_from_services(&idx, &tags_db, active_id);
+                            state_c.borrow_mut().scope = ViewScope::Collection(active_id);
+                            load_virtual_async(&state_c, &paths);
+                            filmstrip_c.refresh_virtual();
+                            let scope = state_c.borrow().scope.clone();
+                            apply_scope_to_sidebar(&scope, &sidebar_c);
+                            let first = state_c
+                                .borrow()
+                                .library
+                                .entry_at(0)
+                                .map(|e: ImageEntry| e.path());
+                            if let Some(path) = first {
+                                state_c.borrow_mut().library.selected_index = Some(0);
+                                filmstrip_c.navigate_to(0);
+                                viewer_c.load_image(path);
+                            } else {
+                                viewer_c.clear();
+                            }
+                        }
+                        let moved_name = idx
+                            .collection(source_id)
+                            .ok()
+                            .flatten()
+                            .map(|c| c.name)
+                            .unwrap_or_else(|| "collection".to_string());
+                        let parent_name = idx
+                            .collection(target_parent_id)
+                            .ok()
+                            .flatten()
+                            .map(|c| c.name)
+                            .unwrap_or_else(|| "collection".to_string());
+                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                            "\u{201c}{}\u{201d} is now a child of \u{201c}{}\u{201d}",
+                            moved_name, parent_name
+                        )));
+                    }
+                    Err(e) => {
+                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                            "Could not move collection: {e}"
+                        )));
+                    }
+                }
+            });
+
+            let state_move = state.clone();
+            let toast_move = toast_overlay.clone();
+            let window_weak = self.downgrade();
+            let reparent_from_dialog = reparent_collection.clone();
+            sidebar.connect_collection_move_requested(move |source_id| {
+                let Some(win) = window_weak.upgrade() else {
+                    return;
+                };
+                let collections = {
+                    let state = state_move.borrow();
+                    collections_for_sidebar(&state)
+                };
+                let options: Vec<(i64, String)> = flatten_collection_paths(&collections)
+                    .into_iter()
+                    .filter(|(id, _)| *id != source_id)
+                    .collect();
+                if options.is_empty() {
+                    toast_move.add_toast(libadwaita::Toast::new(
+                        "No target collection is available for reparenting",
+                    ));
+                    return;
+                }
+
+                let dialog =
+                    libadwaita::AlertDialog::new(Some("Assign As Child Of"), None);
+                dialog.add_response("cancel", "Cancel");
+                dialog.set_close_response("cancel");
+                let list_box = gtk4::ListBox::new();
+                list_box.add_css_class("boxed-list");
+                list_box.set_selection_mode(gtk4::SelectionMode::Single);
+                for (id, label) in options {
+                    let row = gtk4::ListBoxRow::new();
+                    unsafe {
+                        row.set_data("collection-id", id);
+                    }
+                    let lbl = gtk4::Label::new(Some(&label));
+                    lbl.set_halign(gtk4::Align::Start);
+                    lbl.set_margin_top(8);
+                    lbl.set_margin_bottom(8);
+                    lbl.set_margin_start(12);
+                    lbl.set_margin_end(12);
+                    row.set_child(Some(&lbl));
+                    list_box.append(&row);
+                }
+                let scroll = gtk4::ScrolledWindow::new();
+                scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+                scroll.set_max_content_height(300);
+                scroll.set_propagate_natural_height(true);
+                scroll.set_child(Some(&list_box));
+                let extra = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+                extra.set_margin_top(6);
+                extra.append(&scroll);
+                dialog.set_extra_child(Some(&extra));
+                let reparent = reparent_from_dialog.clone();
+                list_box.connect_row_activated(move |_, row| {
+                    let Some(target_id) =
+                        (unsafe { row.data("collection-id").map(|p| *p.as_ref()) })
+                    else {
+                        return;
+                    };
+                    reparent(source_id, target_id);
+                });
+                dialog.present(Some(&win));
+            });
+
+            let reparent_from_drop = reparent_collection.clone();
+            sidebar.connect_collection_reparent_requested(move |source_id, target_parent_id| {
+                reparent_from_drop(source_id, target_parent_id);
+            });
+        }
+
         // Drag-and-drop from filmstrip to sidebar collection row.
         {
             let filmstrip_c = filmstrip.clone();
@@ -1789,17 +2235,21 @@ impl SharprWindow {
             let toast_overlay_c = toast_overlay.clone();
             let refresh_c = refresh_sidebar_collections.clone();
             sidebar.connect_drop_paths_to_collection(move |id, paths| {
-                let Some(idx) = state_c.borrow().library_index.clone() else {
+                let (Some(idx), Some(tags_db)) = (
+                    state_c.borrow().library_index.clone(),
+                    state_c.borrow().tags.clone(),
+                ) else {
                     return;
                 };
                 let started = std::time::Instant::now();
-                match idx.add_paths_to_collection(id, &paths) {
-                    Ok(added) => {
+                match idx.collection_effective_tags(id) {
+                    Ok(effective_tags) => {
+                        let added = tags_db.add_tags_to_paths(&paths, &effective_tags);
+                        let _ = idx.touch_collection(id);
                         let name = idx
-                            .list_collections()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .find(|c| c.id == id)
+                            .collection(id)
+                            .ok()
+                            .flatten()
                             .map(|c| c.name)
                             .unwrap_or_else(|| "collection".to_string());
                         crate::bench_event!(
@@ -1812,9 +2262,8 @@ impl SharprWindow {
                             })
                         );
                         refresh_c();
-                        // If we're viewing this collection, append newly added paths.
                         if matches!(state_c.borrow().scope, ViewScope::Collection(a) if a == id) {
-                            let all_paths = idx.collection_paths(id).unwrap_or_default();
+                            let all_paths = collection_paths_from_services(&idx, &tags_db, id);
                             state_c.borrow_mut().scope = ViewScope::Collection(id);
                             load_virtual_async(&state_c, &all_paths);
                             filmstrip_c.refresh_virtual();
@@ -1830,15 +2279,15 @@ impl SharprWindow {
                             }
                         }
                         toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                            "Added {} image{} to \u{201c}{}\u{201d}",
-                            added,
-                            if added == 1 { "" } else { "s" },
+                            "Tagged {} image{} for \u{201c}{}\u{201d}",
+                            paths.len(),
+                            if paths.len() == 1 { "" } else { "s" },
                             name
                         )));
                     }
                     Err(e) => {
                         toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                            "Could not add to collection: {e}"
+                            "Could not tag images for collection: {e}"
                         )));
                     }
                 }
@@ -1910,7 +2359,13 @@ impl SharprWindow {
                         .unwrap_or_default(),
                     ViewScope::Collection(id) => library_index
                         .as_ref()
-                        .and_then(|idx| idx.collection_paths(*id).ok())
+                        .and_then(|idx| {
+                            state_c
+                                .borrow()
+                                .tags
+                                .as_ref()
+                                .map(|tags| collection_paths_from_services(idx, tags, *id))
+                        })
                         .unwrap_or_default(),
                     _ => {
                         let s = state_c.borrow();
@@ -2449,11 +2904,14 @@ impl SharprWindow {
                 let Some(win) = window_weak.upgrade() else {
                     return;
                 };
-                let Some(idx) = state_c.borrow().library_index.clone() else {
+                let Some(_idx) = state_c.borrow().library_index.clone() else {
                     toast_overlay_c.add_toast(libadwaita::Toast::new("Library index unavailable"));
                     return;
                 };
-                let collections = idx.list_collections().unwrap_or_default();
+                let collections = {
+                    let state = state_c.borrow();
+                    collections_for_sidebar(&state)
+                };
 
                 let dialog = libadwaita::AlertDialog::new(Some("Add to Collection"), None);
                 dialog.add_response("done", "Done");
@@ -2475,12 +2933,12 @@ impl SharprWindow {
                 new_row.set_child(Some(&new_label));
                 list_box.append(&new_row);
 
-                for coll in &collections {
+                for (collection_id, label) in flatten_collection_paths(&collections) {
                     let row = gtk4::ListBoxRow::new();
                     unsafe {
-                        row.set_data("collection-id", coll.id);
+                        row.set_data("collection-id", collection_id);
                     }
-                    let lbl = gtk4::Label::new(Some(&coll.name));
+                    let lbl = gtk4::Label::new(Some(&label));
                     lbl.set_halign(gtk4::Align::Start);
                     lbl.set_margin_top(8);
                     lbl.set_margin_bottom(8);
@@ -2537,22 +2995,39 @@ impl SharprWindow {
                         );
                         let entry = gtk4::Entry::new();
                         entry.set_placeholder_text(Some("Collection name"));
-                        let eb = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+                        let tags_entry = gtk4::Entry::new();
+                        tags_entry.set_placeholder_text(Some("Extra tags, comma separated"));
+                        let info =
+                            gtk4::Label::new(Some("The collection name is also used as a tag."));
+                        info.add_css_class("dim-label");
+                        info.set_wrap(true);
+                        info.set_halign(gtk4::Align::Start);
+                        let eb = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
                         eb.set_margin_top(6);
                         eb.append(&entry);
+                        eb.append(&info);
+                        eb.append(&tags_entry);
                         new_dialog.set_extra_child(Some(&eb));
                         let paths_cc = paths_c.clone();
                         let state_dd = state_d.clone();
                         let toast_dd = toast_d.clone();
                         let refresh_dd = refresh_d.clone();
+                        let tags_entry_c = tags_entry.clone();
                         let create_collection = Rc::new(move |name: String| {
-                            if let Some(idx) = state_dd.borrow().library_index.clone() {
+                            let (Some(idx), Some(tags_db)) = (
+                                state_dd.borrow().library_index.clone(),
+                                state_dd.borrow().tags.clone(),
+                            ) else {
+                                return;
+                            };
                                 let started = std::time::Instant::now();
-                                match idx.create_collection(&name) {
+                                let extra_tags =
+                                    parse_collection_tags_input(tags_entry_c.text().as_str());
+                                match idx.create_collection(None, &name, &extra_tags) {
                                     Ok(coll) => {
-                                        let added = idx
-                                            .add_paths_to_collection(coll.id, &paths_cc)
-                                            .unwrap_or(0);
+                                        let effective_tags =
+                                            idx.collection_effective_tags(coll.id).unwrap_or_default();
+                                        let added = tags_db.add_tags_to_paths(&paths_cc, &effective_tags);
                                         crate::bench_event!(
                                             "collection.create",
                                             serde_json::json!({
@@ -2572,9 +3047,9 @@ impl SharprWindow {
                                         );
                                         refresh_dd();
                                         toast_dd.add_toast(libadwaita::Toast::new(&format!(
-                                            "Added {} image{} to \u{201c}{}\u{201d}",
-                                            added,
-                                            if added == 1 { "" } else { "s" },
+                                            "Tagged {} image{} for \u{201c}{}\u{201d}",
+                                            paths_cc.len(),
+                                            if paths_cc.len() == 1 { "" } else { "s" },
                                             coll.name
                                         )));
                                     }
@@ -2584,7 +3059,6 @@ impl SharprWindow {
                                         )));
                                     }
                                 }
-                            }
                         });
                         let entry_c = entry.clone();
                         let create_c = create_collection.clone();
@@ -2605,17 +3079,21 @@ impl SharprWindow {
                         return;
                     }
                     let id = coll_id.unwrap();
-                    if let Some(idx) = state_d.borrow().library_index.clone() {
+                    if let (Some(idx), Some(tags_db)) = (
+                        state_d.borrow().library_index.clone(),
+                        state_d.borrow().tags.clone(),
+                    ) {
                         let started = std::time::Instant::now();
-                        match idx.add_paths_to_collection(id, &paths_c) {
-                            Ok(added) => {
+                        match idx.collection_effective_tags(id) {
+                            Ok(effective_tags) => {
+                                let added = tags_db.add_tags_to_paths(&paths_c, &effective_tags);
                                 let name = idx
-                                    .list_collections()
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .find(|c| c.id == id)
+                                    .collection(id)
+                                    .ok()
+                                    .flatten()
                                     .map(|c| c.name)
                                     .unwrap_or_else(|| "collection".to_string());
+                                let _ = idx.touch_collection(id);
                                 crate::bench_event!(
                                     "collection.add_paths",
                                     serde_json::json!({
@@ -2627,15 +3105,15 @@ impl SharprWindow {
                                 );
                                 refresh_d();
                                 toast_d.add_toast(libadwaita::Toast::new(&format!(
-                                    "Added {} image{} to \u{201c}{}\u{201d}",
-                                    added,
-                                    if added == 1 { "" } else { "s" },
+                                    "Tagged {} image{} for \u{201c}{}\u{201d}",
+                                    paths_c.len(),
+                                    if paths_c.len() == 1 { "" } else { "s" },
                                     name
                                 )));
                             }
                             Err(e) => {
                                 toast_d.add_toast(libadwaita::Toast::new(&format!(
-                                    "Could not add to collection: {e}"
+                                    "Could not tag images for collection: {e}"
                                 )));
                             }
                         }
@@ -2650,12 +3128,14 @@ impl SharprWindow {
         {
             let filmstrip_c = filmstrip.clone();
             let viewer_c = viewer.clone();
-            let sidebar_c = sidebar.clone();
             let state_c = state.clone();
             let toast_overlay_c = toast_overlay.clone();
             let refresh_c = refresh_sidebar_collections.clone();
             filmstrip.connect_remove_from_collection_requested(move |paths| {
-                let Some(idx) = state_c.borrow().library_index.clone() else {
+                let (Some(idx), Some(tags_db)) = (
+                    state_c.borrow().library_index.clone(),
+                    state_c.borrow().tags.clone(),
+                ) else {
                     return;
                 };
                 let id = match state_c.borrow().scope {
@@ -2663,8 +3143,10 @@ impl SharprWindow {
                     _ => return,
                 };
                 let started = std::time::Instant::now();
-                match idx.remove_paths_from_collection(id, &paths) {
-                    Ok(removed) => {
+                match idx.collection_effective_tags(id) {
+                    Ok(effective_tags) => {
+                        let removed = tags_db.remove_tags_from_paths(&paths, &effective_tags);
+                        let _ = idx.touch_collection(id);
                         crate::bench_event!(
                             "collection.remove_paths",
                             serde_json::json!({
@@ -2674,7 +3156,7 @@ impl SharprWindow {
                                 "duration_ms": crate::bench::duration_ms(started),
                             })
                         );
-                        let remaining = idx.collection_paths(id).unwrap_or_default();
+                        let remaining = collection_paths_from_services(&idx, &tags_db, id);
                         state_c.borrow_mut().scope = ViewScope::Collection(id);
                         load_virtual_async(&state_c, &remaining);
                         state_c.borrow_mut().selected_paths.clear();
@@ -2692,13 +3174,10 @@ impl SharprWindow {
                             viewer_c.clear();
                         }
                         refresh_c();
-                        if let Ok(colls) = idx.list_collections() {
-                            sidebar_c.refresh_collections(&colls);
-                        }
                         toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
                             "Removed {} image{} from collection",
-                            removed,
-                            if removed == 1 { "" } else { "s" }
+                            paths.len(),
+                            if paths.len() == 1 { "" } else { "s" }
                         )));
                     }
                     Err(e) => {
