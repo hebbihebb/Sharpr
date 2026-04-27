@@ -3197,17 +3197,6 @@ impl SharprWindow {
         library_section.append(Some("Browse Tags"), Some("win.show-tags"));
         menu.append_section(Some("Library"), &library_section);
 
-        let quality_section = gio::Menu::new();
-        quality_section.append(Some("Excellent"), Some("win.scan-quality::Excellent"));
-        quality_section.append(Some("Good"), Some("win.scan-quality::Good"));
-        quality_section.append(Some("Fair"), Some("win.scan-quality::Fair"));
-        quality_section.append(Some("Poor"), Some("win.scan-quality::Poor"));
-        quality_section.append(
-            Some("Needs Upscale"),
-            Some("win.scan-quality::Needs Upscale"),
-        );
-        menu.append_section(Some("Quality Filter"), &quality_section);
-
         let app_section = gio::Menu::new();
         app_section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));
         app_section.append(Some("Manual"), Some("win.show-manual"));
