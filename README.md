@@ -1,56 +1,49 @@
 # Sharpr
 
 <p align="center">
-  A GNOME-native image library viewer for Linux, built with GTK4, Libadwaita, and Rust.
+  A high-performance, local-first image curation tool and viewer for Linux, built with GTK4, Libadwaita, and Rust.
 </p>
 
 ---
 
 <p align="center">
-  <img src="./light.jpg" alt="Sharpr — three-pane layout with sidebar, filmstrip, and full-resolution viewer showing a mountain scene with metadata overlay" width="900">
+  <img src="./light.jpg" alt="Sharpr — Light mode showing the library interface with sidebar, filter bar, filmstrip, and image viewer" width="900">
 </p>
 
 <p align="center">
-  <img src="./dark.jpg" alt="Sharpr — dark mode, Mountain collection selected, filmstrip with thumbnails and full-resolution viewer" width="900">
+  <img src="./dark.jpg" alt="Sharpr — Dark mode showing image curation, tag-backed collections, and the high-resolution viewer" width="900">
 </p>
 
 ---
 
-## What Sharpr Does
+## What is Sharpr?
 
-Sharpr is an image library viewer for Linux. It is made for browsing folders of images, finding useful groups of images, checking image quality, tagging images, and previewing edits before saving them.
+Sharpr is a modern desktop application designed to help you browse, organize, and curate large local image libraries without the overhead of a heavy, monolithic database. 
 
-You can use Sharpr to:
+Instead of locking your photos into a proprietary catalog, Sharpr treats your file system as the ultimate source of truth. It uses industry-standard metadata (EXIF/XMP tags) to build lightning-fast virtual collections and robust filtering workflows.
 
-- browse image folders with a sidebar, thumbnail strip, and large preview
-- open common folders or choose your own library folder
-- disable folders you do not want Sharpr to scan or include in smart views
-- sort images by name, date, or file type
-- view images fullscreen, zoom in, zoom out, and pan around
-- see basic image details such as size, dimensions, tags, and quality
-- add and search tags
-- find duplicate images
-- group images by quality, such as good images or images that need upscaling
-- rotate, flip, and save images
-- upscale images with AI tools when configured
-- add images to collections
-- move images to trash from the app
-- keep thumbnails cached so folders load faster after the first scan
+### What it does
 
-## Current State
+- **Instant Browsing:** Open massive folders of images instantly. Sharpr loads thumbnails in the background and uses local caching for zero-latency navigation.
+- **Tag-Backed Collections:** Dragging an image into a virtual "Collection" automatically writes organizational tags directly into the file's metadata. Your organization lives within the files themselves.
+- **Advanced Filtering:** Use the horizontal Filter Bar to infinitely stack tag searches and quality ratings (e.g., show only "Excellent" photos tagged "Landscape") over your currently selected folder.
+- **Intelligent Curation:** Detect duplicate images via perceptual hashing and automatically score image quality to help you quickly cull bad shots.
+- **Native AI Upscaling:** Seamlessly run local AI models (like `realesrgan-ncnn-vulkan` or ComfyUI) to upscale and enhance images directly from the viewer.
+- **GNOME-Native Design:** Built on GTK4 and Libadwaita, Sharpr offers an adaptive, deeply integrated, and visually polished experience on Linux.
+- **Quick Operations:** Rotate, flip, pan, zoom (including a 1:1 pixel view), and safely move rejected images to the system trash.
 
-Sharpr is usable today as a desktop image browser and curation tool.
+## How it works
 
-It can browse real folders, remember your last folder, load thumbnails in the background, show a large preview, search and edit tags, find duplicates, score image quality, and run AI upscaling if the required tool is installed.
+Sharpr is built around a strict separation of **Navigation** and **Filtering**:
+1. **The Sidebar (Where am I?):** Use the left sidebar to select your scope. Browse physical directories on your hard drive or view your curated Collections.
+2. **The Filter Bar (What am I seeing?):** Once you've selected a location, use the Filter Bar to narrow down the view. Filter by quality ratings or specific tags without losing your place in the folder tree.
 
-The app stores its library information locally on your computer. Disabled folders are remembered and are left out of indexing, smart folders, search results, duplicate detection, quality views, and collections.
-
-Sharpr is still being developed, but the main browsing, sorting, tagging, duplicate finding, quality checking, and upscaling workflows are already in place.
+Because Sharpr reads and writes standard EXIF/XMP tags, any organizational work you do is portable and permanent.
 
 ## Requirements
 
 - GNOME 48 runtime (Flatpak) **or** GTK 4.14+ / Libadwaita 1.5+ natively
-- For AI upscaling: `realesrgan-ncnn-vulkan` binary with model files in a `models/` subdirectory next to the binary
+- For AI upscaling: `realesrgan-ncnn-vulkan` binary with model files in a `models/` subdirectory next to the binary, or a configured ComfyUI instance.
 
 ## Building
 
@@ -83,27 +76,6 @@ GSettings schemas must be compiled before running natively:
 glib-compile-schemas data/
 GSETTINGS_SCHEMA_DIR=data cargo run
 ```
-
-## AI Upscaling setup
-
-Download the `realesrgan-ncnn-vulkan` binary and place model files alongside it:
-
-```
-~/.local/bin/
-  realesrgan-ncnn-vulkan
-  models/
-    realesrgan-x4plus.param
-    realesrgan-x4plus.bin
-    realesrgan-x4plus-anime.param
-    realesrgan-x4plus-anime.bin
-```
-
-The Flatpak build bundles the binary and models automatically.
-
-## Help
-
-- Open **Manual** from the app menu for the bundled help window and setup guide
-- Open **Keyboard Shortcuts** from the app menu, or press `?`, to browse available shortcuts
 
 ## Keyboard shortcuts
 
