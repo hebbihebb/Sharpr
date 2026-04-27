@@ -12,6 +12,7 @@ use gtk4::subclass::prelude::*;
 
 use crate::model::library::SortOrder;
 use crate::model::ImageEntry;
+use crate::quality::QualityClass;
 use crate::thumbnails::worker::WorkerRequest;
 use crate::ui::window::{AppState, ViewScope};
 
@@ -23,6 +24,7 @@ type TrashRequestedCallback = Box<dyn Fn(std::path::PathBuf) + 'static>;
 type AddToCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type RemoveFromCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type SortOrderChangedCallback = Box<dyn Fn(SortOrder) + 'static>;
+type QualityFilterChangedCallback = Box<dyn Fn(Option<QualityClass>) + 'static>;
 
 const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
 const BUFFER_ROWS: u32 = 2000;
@@ -51,6 +53,8 @@ mod imp {
         pub remove_from_collection_requested_cb:
             RefCell<Option<RemoveFromCollectionRequestedCallback>>,
         pub sort_order_changed_cb: RefCell<Option<SortOrderChangedCallback>>,
+        pub quality_filter_changed_cb: RefCell<Option<QualityFilterChangedCallback>>,
+        pub quality_radios: RefCell<Vec<(gtk4::CheckButton, Option<QualityClass>)>>,
         pub sort_btn: RefCell<Option<gtk4::MenuButton>>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub visible_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
@@ -93,6 +97,8 @@ mod imp {
                 add_to_collection_requested_cb: RefCell::new(None),
                 remove_from_collection_requested_cb: RefCell::new(None),
                 sort_order_changed_cb: RefCell::new(None),
+                quality_filter_changed_cb: RefCell::new(None),
+                quality_radios: RefCell::new(Vec::new()),
                 sort_btn: RefCell::new(None),
                 state: RefCell::new(None),
                 visible_thumbnail_tx: RefCell::new(None),
@@ -147,6 +153,7 @@ impl FilmstripPane {
         let sort_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         sort_box.add_css_class("menu");
 
+        // Sort section.
         let name_row = gtk4::CheckButton::with_label("Name");
         name_row.set_active(true);
         let date_row = gtk4::CheckButton::with_label("Date Modified");
@@ -157,11 +164,32 @@ impl FilmstripPane {
         sort_box.append(&name_row);
         sort_box.append(&date_row);
         sort_box.append(&type_row);
+
+        // Quality filter section.
+        let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+        sep.set_margin_top(4);
+        sep.set_margin_bottom(4);
+        sort_box.append(&sep);
+
+        let all_quality = gtk4::CheckButton::with_label("All Quality");
+        all_quality.set_active(true);
+        sort_box.append(&all_quality);
+
+        let mut quality_radios: Vec<(gtk4::CheckButton, Option<QualityClass>)> = Vec::new();
+        quality_radios.push((all_quality.clone(), None));
+        for &class in QualityClass::ALL.iter() {
+            let radio = gtk4::CheckButton::with_label(class.label());
+            radio.set_group(Some(&all_quality));
+            sort_box.append(&radio);
+            quality_radios.push((radio, Some(class)));
+        }
+        *imp.quality_radios.borrow_mut() = quality_radios;
+
         sort_popover.set_child(Some(&sort_box));
 
         let sort_btn = gtk4::MenuButton::new();
         sort_btn.set_icon_name("pan-down-symbolic");
-        sort_btn.set_tooltip_text(Some("Sort order"));
+        sort_btn.set_tooltip_text(Some("Sort and filter"));
         sort_btn.set_popover(Some(&sort_popover));
         header.pack_end(&sort_btn);
         *imp.sort_btn.borrow_mut() = Some(sort_btn.clone());
@@ -200,6 +228,19 @@ impl FilmstripPane {
             }
         });
 
+        for (radio, class) in imp.quality_radios.borrow().clone() {
+            let w = self.downgrade();
+            radio.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    if let Some(f) = w.upgrade() {
+                        if let Some(cb) = f.imp().quality_filter_changed_cb.borrow().as_ref() {
+                            cb(class);
+                        }
+                    }
+                }
+            });
+        }
+
         self.install_css();
 
         imp.search_entry.set_placeholder_text(Some("Search tags…"));
@@ -217,8 +258,6 @@ impl FilmstripPane {
         imp.suggestions_popover
             .set_child(Some(&imp.suggestions_list));
         imp.suggestions_popover.set_parent(&imp.search_entry);
-
-        imp.root_box.append(&imp.search_bar);
 
         let factory = gtk4::SignalListItemFactory::new();
 
@@ -1045,6 +1084,17 @@ impl FilmstripPane {
 
     pub fn set_sort_order_changed_cb<F: Fn(SortOrder) + 'static>(&self, cb: F) {
         *self.imp().sort_order_changed_cb.borrow_mut() = Some(Box::new(cb));
+    }
+
+    pub fn connect_quality_filter_changed<F: Fn(Option<QualityClass>) + 'static>(&self, cb: F) {
+        *self.imp().quality_filter_changed_cb.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// Resets the quality filter radio to "All Quality" without emitting the callback.
+    pub fn reset_quality_filter(&self) {
+        if let Some((all_radio, _)) = self.imp().quality_radios.borrow().first() {
+            all_radio.set_active(true);
+        }
     }
 
     pub fn show_autocomplete(&self, suggestions: Vec<String>) {
