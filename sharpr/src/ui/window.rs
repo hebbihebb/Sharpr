@@ -76,31 +76,12 @@ fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
     match scope {
         ViewScope::Folder(path) => {
             sidebar.select_folder(path);
-            sidebar.set_search_selected(false);
-            sidebar.set_duplicates_selected(false);
-            sidebar.set_tags_selected(false);
-        }
-        ViewScope::Duplicates => {
-            sidebar.set_duplicates_selected(true);
-            sidebar.set_search_selected(false);
-            sidebar.set_tags_selected(false);
-        }
-        ViewScope::Search => {
-            sidebar.set_search_selected(true);
-            sidebar.set_duplicates_selected(false);
-            sidebar.set_tags_selected(false);
-        }
-        ViewScope::Quality(_) => {
-            // Quality rows were removed from the sidebar; nothing to highlight.
-            sidebar.set_search_selected(false);
-            sidebar.set_duplicates_selected(false);
-            sidebar.set_tags_selected(false);
         }
         ViewScope::Collection(id) => {
-            sidebar.set_duplicates_selected(false);
-            sidebar.set_search_selected(false);
-            sidebar.set_tags_selected(false);
             sidebar.set_collection_selected(*id);
+        }
+        ViewScope::Duplicates | ViewScope::Search | ViewScope::Quality(_) => {
+            sidebar.clear_collection_selection();
         }
     }
 }
@@ -1308,7 +1289,8 @@ impl SharprWindow {
             let content_stack = content_stack.clone();
             let toast_overlay_c = toast_overlay.clone();
             let window_weak = self.downgrade();
-            sidebar.connect_duplicates_selected(move || {
+            let dupe_action = gio::SimpleAction::new("find-duplicates", None);
+            dupe_action.connect_activate(move |_, _| {
                 let expected_gen = window_weak.upgrade().and_then(|win| {
                     let gen = win.bump_thumbnail_generation("smart.duplicates");
                     win.complete_thumbnail_ops();
@@ -1414,48 +1396,17 @@ impl SharprWindow {
                     op.complete();
                 });
             });
-        }
-
-        {
-            let filmstrip_c = filmstrip.clone();
-            let viewer_c = viewer.clone();
-            let sidebar_c = sidebar.clone();
-            let state_c = state.clone();
-            let content_stack = content_stack.clone();
-            let window_weak = self.downgrade();
-            sidebar.connect_search_activated(move || {
-                if let Some(win) = window_weak.upgrade() {
-                    let _ = win.bump_thumbnail_generation("smart.search");
-                    win.complete_thumbnail_ops();
-                }
-                content_stack.set_visible_child_name("viewer");
-                crate::bench_event!("smart.search.activate", serde_json::json!({}));
-                // Show an empty filmstrip immediately so the user knows to type.
-                state_c.borrow_mut().scope = ViewScope::Search;
-                let scope = state_c.borrow().scope.clone();
-                apply_scope_to_sidebar(&scope, &sidebar_c);
-                load_virtual_async(&state_c, &[]);
-                crate::bench_event!(
-                    "virtual_view.load",
-                    serde_json::json!({
-                        "source": "search",
-                        "image_count": 0,
-                    }),
-                );
-                viewer_c.clear();
-                filmstrip_c.refresh_virtual();
-                filmstrip_c.activate_search();
-            });
+            self.add_action(&dupe_action);
         }
 
         if let Some(tag_browser) = tag_browser.clone() {
-            let sidebar_c = sidebar.clone();
             let content_stack_c = content_stack.clone();
-            sidebar.connect_tags_selected(move || {
+            let tags_action = gio::SimpleAction::new("show-tags", None);
+            tags_action.connect_activate(move |_, _| {
                 content_stack_c.set_visible_child_name("tags");
                 tag_browser.refresh();
-                sidebar_c.set_tags_selected(true);
             });
+            self.add_action(&tags_action);
         }
 
         {
@@ -2145,8 +2096,6 @@ impl SharprWindow {
             let pending_search = Rc::new(Cell::new(None::<glib::SourceId>));
             filmstrip.connect_search_changed(move |text| {
                 content_stack.set_visible_child_name("viewer");
-                sidebar_c.set_search_selected(!text.trim().is_empty());
-                sidebar_c.set_tags_selected(false);
                 filmstrip_c.show_autocomplete(vec![]);
 
                 if let Some(source_id) = pending_search.take() {
@@ -2293,15 +2242,12 @@ impl SharprWindow {
 
         {
             let state_c = state.clone();
-            let sidebar_c = sidebar.clone();
             let suppress_search_restore_c = suppress_search_restore.clone();
             let open_folder_c = open_folder.clone();
             filmstrip.connect_search_dismissed(move || {
                 if suppress_search_restore_c.replace(false) {
                     return;
                 }
-                sidebar_c.set_search_selected(false);
-                sidebar_c.set_tags_selected(false);
                 if !matches!(state_c.borrow().scope, ViewScope::Folder(_)) {
                     // Extract last_folder in a separate let so the Ref<AppState> temporary
                     // is dropped at the semicolon — not held alive through the if let body
@@ -2318,11 +2264,9 @@ impl SharprWindow {
 
         if let Some(tag_browser) = tag_browser {
             let content_stack_c = content_stack.clone();
-            let sidebar_c = sidebar.clone();
             let filmstrip_c = filmstrip.clone();
             tag_browser.connect_tag_activated(move |tag| {
                 content_stack_c.set_visible_child_name("viewer");
-                sidebar_c.set_tags_selected(false);
                 filmstrip_c.emit_search_activate(tag);
             });
         }
@@ -2618,8 +2562,7 @@ impl SharprWindow {
             .or_else(|| sidebar.first_folder_path());
 
         // Defer by one idle cycle so widgets are realized before we call
-        // open_folder(). Without this, smart_list.unselect_all() fires before
-        // realization and the Duplicates row stays visually highlighted.
+        // open_folder() and apply its initial sidebar selection.
         if let Some(folder) = start_folder {
             glib::idle_add_local_once(move || {
                 open_folder(folder);
@@ -3041,6 +2984,11 @@ impl SharprWindow {
         let convert_section = gio::Menu::new();
         convert_section.append(Some("Convert…"), Some("win.convert"));
         menu.append_section(Some("Convert"), &convert_section);
+
+        let library_section = gio::Menu::new();
+        library_section.append(Some("Find Duplicates"), Some("win.find-duplicates"));
+        library_section.append(Some("Browse Tags"), Some("win.show-tags"));
+        menu.append_section(Some("Library"), &library_section);
 
         let quality_section = gio::Menu::new();
         quality_section.append(Some("Excellent"), Some("win.scan-quality::Excellent"));

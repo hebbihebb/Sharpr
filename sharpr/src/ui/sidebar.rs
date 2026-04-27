@@ -12,9 +12,6 @@ use crate::library_index::Collection;
 use crate::ui::window::AppState;
 
 type FolderSelectedCallback = Box<dyn Fn(PathBuf) + 'static>;
-type DuplicatesSelectedCallback = Box<dyn Fn() + 'static>;
-type TagsSelectedCallback = Box<dyn Fn() + 'static>;
-type SearchActivatedCallback = Box<dyn Fn() + 'static>;
 type FolderIgnoredChangedCallback = Box<dyn Fn(PathBuf, bool) + 'static>;
 type CollectionSelectedCallback = Box<dyn Fn(i64) + 'static>;
 type CollectionAddRequestedCallback = Box<dyn Fn() + 'static>;
@@ -26,29 +23,14 @@ const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SmartFolderSelection {
-    None,
-    Duplicates,
-    Tags,
-    Search,
-}
-
 mod imp {
     use super::*;
 
     pub struct SidebarPane {
         pub toolbar_view: libadwaita::ToolbarView,
         pub list_box: gtk4::ListBox,
-        pub smart_list: gtk4::ListBox,
         pub collection_list: gtk4::ListBox,
-        pub duplicates_row: gtk4::ListBoxRow,
-        pub tags_row: gtk4::ListBoxRow,
-        pub search_row: gtk4::ListBoxRow,
         pub folder_selected_cb: RefCell<Option<FolderSelectedCallback>>,
-        pub duplicates_selected_cb: RefCell<Option<DuplicatesSelectedCallback>>,
-        pub tags_selected_cb: RefCell<Option<TagsSelectedCallback>>,
-        pub search_activated_cb: RefCell<Option<SearchActivatedCallback>>,
         pub folder_ignored_changed_cb: RefCell<Option<FolderIgnoredChangedCallback>>,
         pub collection_selected_cb: RefCell<Option<CollectionSelectedCallback>>,
         pub collection_add_requested_cb: RefCell<Option<CollectionAddRequestedCallback>>,
@@ -56,7 +38,6 @@ mod imp {
         pub collection_delete_requested_cb: RefCell<Option<CollectionDeleteRequestedCallback>>,
         pub drop_paths_to_collection_cb: RefCell<Option<DropPathsToCollectionCallback>>,
         pub suppress_folder_signal: Cell<bool>,
-        pub suppress_smart_signal: Cell<bool>,
         pub suppress_collection_signal: Cell<bool>,
     }
 
@@ -65,15 +46,8 @@ mod imp {
             Self {
                 toolbar_view: libadwaita::ToolbarView::new(),
                 list_box: gtk4::ListBox::new(),
-                smart_list: gtk4::ListBox::new(),
                 collection_list: gtk4::ListBox::new(),
-                duplicates_row: gtk4::ListBoxRow::new(),
-                tags_row: gtk4::ListBoxRow::new(),
-                search_row: gtk4::ListBoxRow::new(),
                 folder_selected_cb: RefCell::new(None),
-                duplicates_selected_cb: RefCell::new(None),
-                tags_selected_cb: RefCell::new(None),
-                search_activated_cb: RefCell::new(None),
                 folder_ignored_changed_cb: RefCell::new(None),
                 collection_selected_cb: RefCell::new(None),
                 collection_add_requested_cb: RefCell::new(None),
@@ -81,7 +55,6 @@ mod imp {
                 collection_delete_requested_cb: RefCell::new(None),
                 drop_paths_to_collection_cb: RefCell::new(None),
                 suppress_folder_signal: Cell::new(false),
-                suppress_smart_signal: Cell::new(false),
                 suppress_collection_signal: Cell::new(false),
             }
         }
@@ -193,7 +166,6 @@ impl SidebarPane {
                 widget.imp().suppress_folder_signal.set(false);
                 return;
             }
-            widget.set_smart_selection(SmartFolderSelection::None);
             widget.clear_collection_selection();
             widget.emit_folder_selected(folder_row.path());
         });
@@ -203,42 +175,7 @@ impl SidebarPane {
         scroll.set_propagate_natural_height(true);
         scroll.set_child(Some(&imp.list_box));
 
-        let smart_label = section_label("Smart Folders");
         let folders_label = section_label("Folders");
-
-        imp.smart_list.add_css_class("navigation-sidebar");
-        imp.smart_list
-            .set_selection_mode(gtk4::SelectionMode::Single);
-
-        configure_smart_row(&imp.duplicates_row, "edit-find-symbolic", "Duplicates");
-        configure_smart_row(&imp.tags_row, "bookmark-new-symbolic", "Tags");
-        configure_smart_row(&imp.search_row, "system-search-symbolic", "Search");
-
-        imp.smart_list.append(&imp.duplicates_row);
-        imp.smart_list.append(&imp.tags_row);
-        imp.smart_list.append(&imp.search_row);
-
-        let widget_weak = self.downgrade();
-        imp.smart_list.connect_selected_rows_changed(move |list| {
-            let Some(widget) = widget_weak.upgrade() else {
-                return;
-            };
-            if widget.imp().suppress_smart_signal.get() {
-                return;
-            }
-            let Some(row) = list.selected_row() else {
-                return;
-            };
-            widget.clear_folder_selection();
-            widget.clear_collection_selection();
-            if row == widget.imp().duplicates_row {
-                widget.emit_duplicates_selected();
-            } else if row == widget.imp().tags_row {
-                widget.emit_tags_selected();
-            } else if row == widget.imp().search_row {
-                widget.emit_search_activated();
-            }
-        });
 
         // Collections section header: label + "New Collection" + button
         let collections_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
@@ -280,15 +217,12 @@ impl SidebarPane {
                     return;
                 };
                 widget.clear_folder_selection();
-                widget.clear_smart_list_selection();
                 widget.emit_collection_selected(coll_row.collection_id());
             });
 
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         vbox.append(&folders_label);
         vbox.append(&scroll);
-        vbox.append(&smart_label);
-        vbox.append(&imp.smart_list);
         vbox.append(&collections_header);
         vbox.append(&imp.collection_list);
 
@@ -350,18 +284,6 @@ impl SidebarPane {
         *self.imp().folder_selected_cb.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_duplicates_selected<F: Fn() + 'static>(&self, f: F) {
-        *self.imp().duplicates_selected_cb.borrow_mut() = Some(Box::new(f));
-    }
-
-    pub fn connect_tags_selected<F: Fn() + 'static>(&self, f: F) {
-        *self.imp().tags_selected_cb.borrow_mut() = Some(Box::new(f));
-    }
-
-    pub fn connect_search_activated<F: Fn() + 'static>(&self, f: F) {
-        *self.imp().search_activated_cb.borrow_mut() = Some(Box::new(f));
-    }
-
     pub fn connect_folder_ignored_changed<F: Fn(PathBuf, bool) + 'static>(&self, f: F) {
         *self.imp().folder_ignored_changed_cb.borrow_mut() = Some(Box::new(f));
     }
@@ -401,33 +323,7 @@ impl SidebarPane {
             .map(|row| row.path())
     }
 
-    pub fn set_duplicates_selected(&self, selected: bool) {
-        if selected {
-            self.set_smart_selection(SmartFolderSelection::Duplicates);
-        } else if self.current_smart_selection() == SmartFolderSelection::Duplicates {
-            self.set_smart_selection(SmartFolderSelection::None);
-        }
-    }
-
-    pub fn set_search_selected(&self, selected: bool) {
-        if selected {
-            self.set_smart_selection(SmartFolderSelection::Search);
-        } else if self.current_smart_selection() == SmartFolderSelection::Search {
-            self.set_smart_selection(SmartFolderSelection::None);
-        }
-    }
-
-    pub fn set_tags_selected(&self, selected: bool) {
-        if selected {
-            self.set_smart_selection(SmartFolderSelection::Tags);
-        } else if self.current_smart_selection() == SmartFolderSelection::Tags {
-            self.set_smart_selection(SmartFolderSelection::None);
-        }
-    }
-
     pub fn select_folder(&self, path: &Path) {
-        self.clear_smart_selection();
-
         let mut child = self.imp().list_box.first_child();
         while let Some(widget) = child {
             let next = widget.next_sibling();
@@ -449,75 +345,9 @@ impl SidebarPane {
         self.imp().suppress_folder_signal.set(false);
     }
 
-    fn clear_smart_selection(&self) {
-        self.set_smart_selection(SmartFolderSelection::None);
-    }
-
-    fn clear_smart_list_selection(&self) {
-        self.imp().suppress_smart_signal.set(true);
-        self.imp().smart_list.unselect_all();
-        self.imp().suppress_smart_signal.set(false);
-    }
-
-    fn set_smart_selection(&self, selection: SmartFolderSelection) {
-        self.imp().suppress_smart_signal.set(true);
-        match selection {
-            SmartFolderSelection::None => {
-                self.imp().smart_list.unselect_all();
-            }
-            SmartFolderSelection::Duplicates => {
-                self.imp()
-                    .smart_list
-                    .select_row(Some(&self.imp().duplicates_row));
-            }
-            SmartFolderSelection::Tags => {
-                self.imp().smart_list.select_row(Some(&self.imp().tags_row));
-            }
-            SmartFolderSelection::Search => {
-                self.imp()
-                    .smart_list
-                    .select_row(Some(&self.imp().search_row));
-            }
-        }
-        self.imp().suppress_smart_signal.set(false);
-    }
-
-    fn current_smart_selection(&self) -> SmartFolderSelection {
-        if let Some(row) = self.imp().smart_list.selected_row() {
-            if row == self.imp().duplicates_row {
-                return SmartFolderSelection::Duplicates;
-            }
-            if row == self.imp().tags_row {
-                return SmartFolderSelection::Tags;
-            }
-            if row == self.imp().search_row {
-                return SmartFolderSelection::Search;
-            }
-        }
-        SmartFolderSelection::None
-    }
-
     fn emit_folder_selected(&self, path: PathBuf) {
         if let Some(cb) = self.imp().folder_selected_cb.borrow().as_ref() {
             cb(path);
-        }
-    }
-
-    fn emit_duplicates_selected(&self) {
-        if let Some(cb) = self.imp().duplicates_selected_cb.borrow().as_ref() {
-            cb();
-        }
-    }
-
-    fn emit_tags_selected(&self) {
-        if let Some(cb) = self.imp().tags_selected_cb.borrow().as_ref() {
-            cb();
-        }
-    }
-
-    fn emit_search_activated(&self) {
-        if let Some(cb) = self.imp().search_activated_cb.borrow().as_ref() {
-            cb();
         }
     }
 
@@ -819,22 +649,6 @@ impl SidebarPane {
         });
         row.add_controller(gesture);
     }
-}
-
-fn configure_smart_row(row: &gtk4::ListBoxRow, icon_name: &str, label_text: &str) {
-    let icon = gtk4::Image::from_icon_name(icon_name);
-    let label = gtk4::Label::new(Some(label_text));
-    label.set_halign(gtk4::Align::Start);
-    label.set_hexpand(true);
-
-    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    hbox.set_margin_start(8);
-    hbox.set_margin_end(8);
-    hbox.set_margin_top(6);
-    hbox.set_margin_bottom(6);
-    hbox.append(&icon);
-    hbox.append(&label);
-    row.set_child(Some(&hbox));
 }
 
 fn section_label(text: &str) -> gtk4::Label {
