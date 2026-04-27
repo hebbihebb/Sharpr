@@ -2021,14 +2021,10 @@ impl SharprWindow {
         let inner_split = libadwaita::OverlaySplitView::new();
         inner_split.set_sidebar_position(gtk4::PackType::Start);
 
-        let filmstrip_col = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        filmstrip_col.append(&filter_bar);
-        filmstrip.set_vexpand(true);
-        filmstrip_col.append(&filmstrip);
         let filmstrip_page = libadwaita::NavigationPage::builder()
             .title("Photos")
             .tag("filmstrip")
-            .child(&filmstrip_col)
+            .child(&filmstrip)
             .build();
         inner_split.set_sidebar(Some(&filmstrip_page));
 
@@ -2143,10 +2139,14 @@ impl SharprWindow {
             .build();
         outer_split.set_sidebar(Some(&sidebar_page));
 
+        let content_col = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        content_col.append(&filter_bar);
+        inner_split.set_vexpand(true);
+        content_col.append(&inner_split);
         let content_page = libadwaita::NavigationPage::builder()
             .title("Image Library")
             .tag("content")
-            .child(&inner_split)
+            .child(&content_col)
             .build();
         outer_split.set_content(Some(&content_page));
 
