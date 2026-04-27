@@ -20,6 +20,7 @@ use crate::model::library::{CachedImageData, RawImageEntry, SortOrder};
 use crate::model::{ImageEntry, LibraryManager};
 use crate::tags::smart::SmartModel;
 use crate::thumbnails::ThumbnailWorker;
+use crate::ui::filter_bar::{ActiveFilters, FilterBar};
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::ops_indicator::OpsIndicator;
 use crate::ui::preferences::build_preferences_window;
@@ -50,6 +51,8 @@ pub struct AppState {
     pub selected_paths: HashSet<PathBuf>,
     /// The single content scope currently loaded into the filmstrip.
     pub scope: ViewScope,
+    /// Active attribute filters applied on top of the current scope.
+    pub filters: ActiveFilters,
     /// Folders disabled by the user. Images under these paths must not be indexed or shown.
     pub disabled_folders: Vec<PathBuf>,
 }
@@ -492,6 +495,7 @@ impl AppState {
             ops,
             selected_paths: HashSet::new(),
             scope: ViewScope::default(),
+            filters: ActiveFilters::default(),
             disabled_folders,
         };
         maybe_download_model(smart_model);
@@ -717,6 +721,7 @@ impl SharprWindow {
         // -----------------------------------------------------------------------
         let sidebar = SidebarPane::new(state.clone());
         let filmstrip = FilmstripPane::new(state.clone());
+        let filter_bar = FilterBar::new(state.borrow().tags.clone());
         let viewer = ViewerPane::new(state.clone());
         *self.imp().viewer.borrow_mut() = Some(viewer.clone());
         viewer.set_metadata_visible(state.borrow().settings.metadata_visible);
@@ -771,6 +776,7 @@ impl SharprWindow {
             let window_weak = self.downgrade();
             let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
+            let filter_bar_c = filter_bar.clone();
             Rc::new(move |path: PathBuf| {
                 if path_is_disabled(&path, &state_c.borrow().disabled_folders) {
                     toast_overlay_c.add_toast(libadwaita::Toast::new("Folder is disabled"));
@@ -800,7 +806,9 @@ impl SharprWindow {
                     st.settings.save();
                     st.selected_paths.clear();
                     st.scope = ViewScope::Folder(path.clone());
+                    st.filters = ActiveFilters::default();
                 }
+                filter_bar_c.reset();
 
                 let (index, mut index_error, sort_order) = {
                     let st = state_c.borrow();
@@ -1289,6 +1297,7 @@ impl SharprWindow {
             let content_stack = content_stack.clone();
             let toast_overlay_c = toast_overlay.clone();
             let window_weak = self.downgrade();
+            let filter_bar_c = filter_bar.clone();
             let dupe_action = gio::SimpleAction::new("find-duplicates", None);
             dupe_action.connect_activate(move |_, _| {
                 let expected_gen = window_weak.upgrade().and_then(|win| {
@@ -1342,6 +1351,7 @@ impl SharprWindow {
                 let state_rx = state_c.clone();
                 let suppress_search_restore_rx = suppress_search_restore_c.clone();
                 let window_weak_rx = window_weak.clone();
+                let filter_bar_rx = filter_bar_c.clone();
                 glib::MainContext::default().spawn_local(async move {
                     let Ok(paths) = rx.recv().await else {
                         op.fail("Detection failed");
@@ -1366,6 +1376,8 @@ impl SharprWindow {
                     }
 
                     let result_count = paths.len();
+                    state_rx.borrow_mut().filters = ActiveFilters::default();
+                    filter_bar_rx.reset();
                     state_rx.borrow_mut().scope = ViewScope::Duplicates;
                     load_virtual_async(&state_rx, &paths);
                     crate::bench_event!(
@@ -1417,6 +1429,7 @@ impl SharprWindow {
             let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
             let window_weak = self.downgrade();
+            let filter_bar_c = filter_bar.clone();
             let quality_action =
                 gio::SimpleAction::new("scan-quality", Some(glib::VariantTy::STRING));
             quality_action.connect_activate(move |_, param| {
@@ -1519,6 +1532,7 @@ impl SharprWindow {
                 let state_rx = state_c.clone();
                 let suppress_rx = suppress_search_restore_c.clone();
                 let window_weak_rx = window_weak.clone();
+                let filter_bar_rx = filter_bar_c.clone();
 
                 glib::MainContext::default().spawn_local(async move {
                     let Ok((paths, scan_state)) = rx.recv().await else {
@@ -1546,6 +1560,8 @@ impl SharprWindow {
                             .library
                             .bg_scan_quality_finish(new_indexed, new_cache);
                     }
+                    state_rx.borrow_mut().filters = ActiveFilters::default();
+                    filter_bar_rx.reset();
                     state_rx.borrow_mut().scope = ViewScope::Quality(class);
                     load_virtual_async(&state_rx, &paths);
                     crate::bench_event!(
@@ -1666,6 +1682,7 @@ impl SharprWindow {
             let content_stack = content_stack.clone();
             let toast_overlay_c = toast_overlay.clone();
             let window_weak = self.downgrade();
+            let filter_bar_c = filter_bar.clone();
             sidebar.connect_collection_selected(move |id| {
                 if let Some(win) = window_weak.upgrade() {
                     let _ = win.bump_thumbnail_generation("collection.load");
@@ -1683,6 +1700,8 @@ impl SharprWindow {
                     let mut s = state_c.borrow_mut();
                     s.selected_paths.clear();
                 }
+                state_c.borrow_mut().filters = ActiveFilters::default();
+                filter_bar_c.reset();
                 state_c.borrow_mut().scope = ViewScope::Collection(id);
                 load_virtual_async(&state_c, &paths);
                 crate::bench_event!(
@@ -1892,6 +1911,104 @@ impl SharprWindow {
         self.start_thumbnail_poll(state.clone(), filmstrip.clone());
         self.start_hash_poll(state.clone());
 
+        // FilterBar: when quality chips or tag entry change, re-derive paths from
+        // the current scope and apply the attribute filters.
+        {
+            let state_c = state.clone();
+            let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
+            let window_weak = self.downgrade();
+            filter_bar.connect_filters_changed(move |filters| {
+                let (scope, library_index, tags_db, sort_order) = {
+                    let s = state_c.borrow();
+                    (
+                        s.scope.clone(),
+                        s.library_index.clone(),
+                        s.tags.clone(),
+                        s.sort_order,
+                    )
+                };
+
+                // Derive the base path list for the current scope.
+                let base_paths: Vec<PathBuf> = match &scope {
+                    ViewScope::Folder(path) => library_index
+                        .as_ref()
+                        .and_then(|idx| idx.images_in_folder(path, sort_order).ok())
+                        .map(|rows| rows.into_iter().map(|r| r.path).collect())
+                        .unwrap_or_default(),
+                    ViewScope::Collection(id) => library_index
+                        .as_ref()
+                        .and_then(|idx| idx.collection_paths(*id).ok())
+                        .unwrap_or_default(),
+                    // For scope-specific views (Quality/Duplicates/Search), preserve
+                    // the current filmstrip contents and apply filters on top.
+                    _ => {
+                        let s = state_c.borrow();
+                        (0..s.library.image_count())
+                            .filter_map(|i| s.library.entry_at(i).map(|e: ImageEntry| e.path()))
+                            .collect()
+                    }
+                };
+
+                if base_paths.is_empty() {
+                    return;
+                }
+
+                let active_filters = filters.clone();
+                let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
+
+                rayon::spawn(move || {
+                    let mut result: Vec<PathBuf> = base_paths;
+
+                    if let Some(class) = active_filters.quality {
+                        if let Some(idx) = library_index.as_ref() {
+                            if let Ok(quality_paths) = idx.images_by_quality(class) {
+                                let quality_set: std::collections::HashSet<_> =
+                                    quality_paths.into_iter().collect();
+                                result.retain(|p| quality_set.contains(p));
+                            }
+                        }
+                    }
+
+                    if let Some(tag) = active_filters.tag.as_deref() {
+                        if let Some(db) = tags_db.as_ref() {
+                            let tag_set: std::collections::HashSet<_> =
+                                db.search_paths(tag).into_iter().collect();
+                            result.retain(|p| tag_set.contains(p));
+                        }
+                    }
+
+                    let _ = tx.send_blocking(result);
+                });
+
+                let filmstrip_rx = filmstrip_c.clone();
+                let viewer_rx = viewer_c.clone();
+                let state_rx = state_c.clone();
+                let window_weak_rx = window_weak.clone();
+                glib::MainContext::default().spawn_local(async move {
+                    let Ok(paths) = rx.recv().await else { return };
+                    if let Some(win) = window_weak_rx.upgrade() {
+                        let _ = win.bump_thumbnail_generation("filter.apply");
+                        win.complete_thumbnail_ops();
+                    }
+                    load_virtual_async(&state_rx, &paths);
+                    filmstrip_rx.refresh_virtual();
+                    let first = state_rx
+                        .borrow()
+                        .library
+                        .entry_at(0)
+                        .map(|e: ImageEntry| e.path());
+                    if let Some(p) = first {
+                        state_rx.borrow_mut().library.selected_index = Some(0);
+                        filmstrip_rx.navigate_to(0);
+                        viewer_rx.load_image(p);
+                    } else {
+                        viewer_rx.clear();
+                    }
+                });
+            });
+        }
+
         // -----------------------------------------------------------------------
         // Layout: AdwOverlaySplitView (outer) → AdwOverlaySplitView (inner)
         // -----------------------------------------------------------------------
@@ -1904,10 +2021,13 @@ impl SharprWindow {
         let inner_split = libadwaita::OverlaySplitView::new();
         inner_split.set_sidebar_position(gtk4::PackType::Start);
 
+        let filmstrip_col = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        filmstrip_col.append(&filter_bar);
+        filmstrip_col.append(&filmstrip);
         let filmstrip_page = libadwaita::NavigationPage::builder()
             .title("Photos")
             .tag("filmstrip")
-            .child(&filmstrip)
+            .child(&filmstrip_col)
             .build();
         inner_split.set_sidebar(Some(&filmstrip_page));
 

@@ -1,3 +1,4 @@
+pub mod filter_bar;
 pub mod filmstrip;
 pub mod help_window;
 pub mod image_ops;
