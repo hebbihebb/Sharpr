@@ -199,7 +199,12 @@ fn save_image(
         ExportFormat::Jpeg => {
             let rgb = img.to_rgb8();
             JpegEncoder::new_with_quality(writer, quality.clamp(1, 100))
-                .write_image(rgb.as_raw(), rgb.width(), rgb.height(), ExtendedColorType::Rgb8)
+                .write_image(
+                    rgb.as_raw(),
+                    rgb.width(),
+                    rgb.height(),
+                    ExtendedColorType::Rgb8,
+                )
                 .map_err(|e| ExportError::EncodeError(e.to_string()))
         }
         ExportFormat::Png => {

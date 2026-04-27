@@ -146,7 +146,9 @@ impl FilterBar {
                 if !btn.is_active() {
                     return;
                 }
-                let Some(this) = this_weak.upgrade() else { return };
+                let Some(this) = this_weak.upgrade() else {
+                    return;
+                };
                 let imp = this.imp();
                 if imp.suppress_signals.get() {
                     return;
@@ -157,7 +159,8 @@ impl FilterBar {
                     None => "Quality",
                 };
                 imp.quality_btn.set_label(label);
-                imp.reset_btn.set_sensitive(!this.current_filters().is_empty());
+                imp.reset_btn
+                    .set_sensitive(!this.current_filters().is_empty());
                 this.emit_filters_changed();
             });
         }
@@ -165,7 +168,9 @@ impl FilterBar {
         {
             let this_weak = this_weak.clone();
             self.imp().tag_entry.connect_search_changed(move |_| {
-                let Some(this) = this_weak.upgrade() else { return };
+                let Some(this) = this_weak.upgrade() else {
+                    return;
+                };
                 if this.imp().suppress_signals.get() {
                     return;
                 }
@@ -178,7 +183,9 @@ impl FilterBar {
 
         {
             self.imp().reset_btn.connect_clicked(move |_| {
-                let Some(this) = this_weak.upgrade() else { return };
+                let Some(this) = this_weak.upgrade() else {
+                    return;
+                };
                 this.reset();
                 this.emit_filters_changed();
             });

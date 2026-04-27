@@ -767,7 +767,9 @@ impl LibraryIndex {
                      ORDER BY added_at ASC",
                 )?;
                 let rows = stmt.query_map(params![collection.id], |row| row.get::<_, String>(0))?;
-                rows.filter_map(Result::ok).map(PathBuf::from).collect::<Vec<_>>()
+                rows.filter_map(Result::ok)
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>()
             };
             if !paths.is_empty() {
                 tags.add_tags_to_paths(&paths, &[collection.primary_tag.clone()]);
@@ -1359,8 +1361,11 @@ mod tests {
     #[test]
     fn rename_collection() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let c = idx.create_collection(None, "Old", &["People".into()]).unwrap();
-        idx.update_collection(c.id, "New", &["Model".into()]).unwrap();
+        let c = idx
+            .create_collection(None, "Old", &["People".into()])
+            .unwrap();
+        idx.update_collection(c.id, "New", &["Model".into()])
+            .unwrap();
         let list = idx.list_collections().unwrap();
         assert_eq!(list[0].name, "New");
         assert_eq!(list[0].primary_tag, "new");
@@ -1393,7 +1398,9 @@ mod tests {
         let model = idx
             .create_collection(Some(people.id), "Model", &["studio".into()])
             .unwrap();
-        let blonde = idx.create_collection(Some(model.id), "Blonde", &[]).unwrap();
+        let blonde = idx
+            .create_collection(Some(model.id), "Blonde", &[])
+            .unwrap();
 
         let tags = idx.collection_effective_tags(blonde.id).unwrap();
         assert_eq!(

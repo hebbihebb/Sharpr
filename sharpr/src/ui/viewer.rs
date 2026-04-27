@@ -1,10 +1,10 @@
+use gtk4::prelude::*;
+use gtk4::subclass::prelude::*;
+use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Once};
-use gtk4::prelude::*;
-use gtk4::subclass::prelude::*;
-use libadwaita::prelude::*;
 
 use crate::quality::{scorer, QualityScore};
 use crate::tags::TagDatabase;
@@ -562,13 +562,16 @@ impl ViewerPane {
                         *imp.current_rgba.borrow_mut() = None;
                         imp.picture.set_paintable(None::<&gdk4::Paintable>);
                         let msg = match result.image {
-                            Err(crate::image_pipeline::PreviewDecodeError::OpenFailed) =>
-                                "Could not open file",
-                            Err(crate::image_pipeline::PreviewDecodeError::FormatDetectFailed) |
-                            Err(crate::image_pipeline::PreviewDecodeError::Unsupported) =>
-                                "Unsupported image format",
-                            Err(crate::image_pipeline::PreviewDecodeError::InvalidDimensions) =>
-                                "Image has invalid dimensions",
+                            Err(crate::image_pipeline::PreviewDecodeError::OpenFailed) => {
+                                "Could not open file"
+                            }
+                            Err(crate::image_pipeline::PreviewDecodeError::FormatDetectFailed)
+                            | Err(crate::image_pipeline::PreviewDecodeError::Unsupported) => {
+                                "Unsupported image format"
+                            }
+                            Err(crate::image_pipeline::PreviewDecodeError::InvalidDimensions) => {
+                                "Image has invalid dimensions"
+                            }
                             _ => "Could not load image",
                         };
                         imp.error_label.set_text(msg);
@@ -1077,9 +1080,7 @@ impl ViewerPane {
                 };
                 viewer.finish_save_edit(path.clone(), rgba.clone(), w, h);
             });
-            let parent_window = self
-                .root()
-                .and_then(|r| r.downcast::<gtk4::Window>().ok());
+            let parent_window = self.root().and_then(|r| r.downcast::<gtk4::Window>().ok());
             dialog.present(parent_window.as_ref());
             return;
         }
@@ -1700,7 +1701,9 @@ impl ViewerPane {
             .into_owned();
         let ext = crate::export::format_extension(config.format);
         let pid = std::process::id();
-        let temp_path = config.destination.join(format!("{stem}.pending-{pid}.{ext}"));
+        let temp_path = config
+            .destination
+            .join(format!("{stem}.pending-{pid}.{ext}"));
 
         *imp.pending_output.borrow_mut() = Some(temp_path.clone());
         *imp.pending_commit_fn.borrow_mut() = Some(on_commit);

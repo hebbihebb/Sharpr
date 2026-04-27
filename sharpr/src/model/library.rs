@@ -325,8 +325,9 @@ impl LibraryManager {
             self.cache_order.remove(pos);
         }
         if let Some((bytes, w, h)) = self.preview_cache.remove(path) {
-            self.preview_cache_bytes =
-                self.preview_cache_bytes.saturating_sub(Self::entry_bytes(w, h));
+            self.preview_cache_bytes = self
+                .preview_cache_bytes
+                .saturating_sub(Self::entry_bytes(w, h));
             drop(bytes);
         }
         if let Some(pos) = self.preview_order.iter().position(|p| p == path) {
@@ -349,8 +350,9 @@ impl LibraryManager {
         }
 
         if let Some((bytes, w, h)) = self.preview_cache.remove(path) {
-            self.preview_cache_bytes =
-                self.preview_cache_bytes.saturating_sub(Self::entry_bytes(w, h));
+            self.preview_cache_bytes = self
+                .preview_cache_bytes
+                .saturating_sub(Self::entry_bytes(w, h));
             drop(bytes);
         }
         if let Some(pos) = self.preview_order.iter().position(|p| p == path) {
@@ -358,8 +360,9 @@ impl LibraryManager {
         }
 
         if let Some((bytes, w, h)) = self.prefetch_cache.remove(path) {
-            self.prefetch_cache_bytes =
-                self.prefetch_cache_bytes.saturating_sub(Self::entry_bytes(w, h));
+            self.prefetch_cache_bytes = self
+                .prefetch_cache_bytes
+                .saturating_sub(Self::entry_bytes(w, h));
             drop(bytes);
         }
         if let Some(pos) = self.prefetch_order.iter().position(|p| p == path) {
@@ -473,13 +476,15 @@ impl LibraryManager {
             };
             self.prefetch_order.remove(0);
             if let Some((evicted, ew, eh)) = self.prefetch_cache.remove(&oldest) {
-                self.prefetch_cache_bytes =
-                    self.prefetch_cache_bytes.saturating_sub(Self::entry_bytes(ew, eh));
+                self.prefetch_cache_bytes = self
+                    .prefetch_cache_bytes
+                    .saturating_sub(Self::entry_bytes(ew, eh));
                 drop(evicted);
             }
         }
         self.prefetch_cache_bytes += entry_size;
-        self.prefetch_cache.insert(path.clone(), (bytes, width, height));
+        self.prefetch_cache
+            .insert(path.clone(), (bytes, width, height));
         self.prefetch_order.push(path);
     }
 
@@ -490,8 +495,9 @@ impl LibraryManager {
             self.prefetch_order.remove(pos);
         }
         if let Some((bytes, w, h)) = self.prefetch_cache.remove(path) {
-            self.prefetch_cache_bytes =
-                self.prefetch_cache_bytes.saturating_sub(Self::entry_bytes(w, h));
+            self.prefetch_cache_bytes = self
+                .prefetch_cache_bytes
+                .saturating_sub(Self::entry_bytes(w, h));
             return Some((bytes, w, h));
         }
         None
@@ -512,8 +518,9 @@ impl LibraryManager {
         }
         // Remove existing entry first so its bytes are freed before re-inserting.
         if let Some((old_bytes, ow, oh)) = self.preview_cache.remove(&path) {
-            self.preview_cache_bytes =
-                self.preview_cache_bytes.saturating_sub(Self::entry_bytes(ow, oh));
+            self.preview_cache_bytes = self
+                .preview_cache_bytes
+                .saturating_sub(Self::entry_bytes(ow, oh));
             if let Some(pos) = self.preview_order.iter().position(|p| p == &path) {
                 self.preview_order.remove(pos);
             }
@@ -525,13 +532,15 @@ impl LibraryManager {
             };
             self.preview_order.remove(0);
             if let Some((evicted, ew, eh)) = self.preview_cache.remove(&oldest) {
-                self.preview_cache_bytes =
-                    self.preview_cache_bytes.saturating_sub(Self::entry_bytes(ew, eh));
+                self.preview_cache_bytes = self
+                    .preview_cache_bytes
+                    .saturating_sub(Self::entry_bytes(ew, eh));
                 drop(evicted);
             }
         }
         self.preview_cache_bytes += entry_size;
-        self.preview_cache.insert(path.clone(), (bytes, width, height));
+        self.preview_cache
+            .insert(path.clone(), (bytes, width, height));
         self.preview_order.push(path);
     }
 
@@ -1017,7 +1026,10 @@ mod tests {
         assert_eq!(used, 2 * 4000 * 4000 * 4);
         // Adding c (64 MiB) would exceed 128 MiB budget — evicts a (oldest).
         mgr.insert_preview(c.clone(), bytes_64mib.clone(), 4000, 4000);
-        assert!(mgr.cached_preview(&a).is_none(), "a should have been evicted");
+        assert!(
+            mgr.cached_preview(&a).is_none(),
+            "a should have been evicted"
+        );
         assert!(mgr.cached_preview(&b).is_some());
         assert!(mgr.cached_preview(&c).is_some());
         let (used, _) = mgr.cache_stats();
@@ -1049,7 +1061,10 @@ mod tests {
         mgr.insert_prefetch(b.clone(), bytes_32mib.clone(), w, h);
         // c should evict a.
         mgr.insert_prefetch(c.clone(), bytes_32mib.clone(), w, h);
-        assert!(mgr.take_prefetch(&a).is_none(), "a should have been evicted");
+        assert!(
+            mgr.take_prefetch(&a).is_none(),
+            "a should have been evicted"
+        );
         assert!(mgr.take_prefetch(&b).is_some());
         assert!(mgr.take_prefetch(&c).is_some());
     }

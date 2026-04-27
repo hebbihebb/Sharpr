@@ -25,7 +25,7 @@ Instead of locking your photos into a proprietary catalog, Sharpr treats your fi
 ### What it does
 
 - **Instant Browsing:** Open massive folders of images instantly. Sharpr loads thumbnails in the background and uses local caching for zero-latency navigation.
-- **Tag-Backed Collections:** Dragging an image into a virtual "Collection" automatically writes organizational tags directly into the file's metadata. Your organization lives within the files themselves.
+- **Tag-Backed Collections:** Virtual Collections are backed by tags stored in a local SQLite database — your image files are never modified by tagging or organisation operations. Your library stays exactly as you left it on disk.
 - **Sorting & Quality Filtering:** Sort and filter the active folder directly from the filmstrip drop-down menu. You can order images by date or name, and stack quality filters to instantly cull your view.
 - **Intelligent Curation:** Detect duplicate images via perceptual hashing and automatically score image quality to help you quickly cull bad shots.
 - **Native AI Upscaling:** Seamlessly run local AI models (like `realesrgan-ncnn-vulkan` or ComfyUI) to upscale and enhance images directly from the viewer.
@@ -38,7 +38,7 @@ Sharpr is built around a strict separation of **Navigation** and **Viewing**:
 1. **The Sidebar (Where am I?):** Use the left sidebar to select your scope. Browse physical directories on your hard drive or view your curated Collections.
 2. **The Filmstrip (What am I seeing?):** Once you've selected a location, use the filmstrip's menu to narrow down the view. Sort by name or date, and filter by quality ratings without losing your place in the folder tree.
 
-Because Sharpr reads and writes standard EXIF/XMP tags, any organizational work you do is portable and permanent.
+All organisational data (tags, collections, quality scores) lives in a sidecar SQLite database at `~/.local/share/sharpr/`. Image files are only ever written to when you explicitly perform a destructive operation such as rotate, flip, upscale, or move to trash.
 
 ## Requirements
 

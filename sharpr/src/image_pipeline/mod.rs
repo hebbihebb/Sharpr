@@ -334,6 +334,10 @@ mod tests {
         ];
         let labels: Vec<_> = errors.iter().map(|e| e.label()).collect();
         let unique: std::collections::HashSet<_> = labels.iter().collect();
-        assert_eq!(labels.len(), unique.len(), "all error labels must be distinct");
+        assert_eq!(
+            labels.len(),
+            unique.len(),
+            "all error labels must be distinct"
+        );
     }
 }
