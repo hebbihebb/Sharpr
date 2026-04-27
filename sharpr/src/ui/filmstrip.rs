@@ -13,7 +13,7 @@ use gtk4::subclass::prelude::*;
 use crate::model::library::SortOrder;
 use crate::model::ImageEntry;
 use crate::thumbnails::worker::WorkerRequest;
-use crate::ui::window::AppState;
+use crate::ui::window::{AppState, ViewScope};
 
 type ImageSelectedCallback = Box<dyn Fn(u32) + 'static>;
 type SearchChangedCallback = Box<dyn Fn(&str) + 'static>;
@@ -495,21 +495,20 @@ impl FilmstripPane {
                 }
 
                 if let Some(widget) = widget_weak_gesture.upgrade() {
-                    let (has_library_index, active_collection) = widget
+                    let (has_library_index, in_collection) = widget
                         .imp()
                         .state
                         .borrow()
                         .as_ref()
                         .map(|s| {
                             let s = s.borrow();
-                            (s.library_index.is_some(), s.active_collection)
+                            (s.library_index.is_some(), matches!(s.scope, ViewScope::Collection(_)))
                         })
-                        .unwrap_or((false, None));
+                        .unwrap_or((false, false));
                     if let Some(btn) = add_btn_weak.upgrade() {
                         btn.set_sensitive(has_library_index);
                     }
                     if let Some(btn) = remove_btn_weak.upgrade() {
-                        let in_collection = active_collection.is_some();
                         btn.set_visible(in_collection);
                         btn.set_sensitive(in_collection);
                     }

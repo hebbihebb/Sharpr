@@ -48,20 +48,28 @@ pub struct AppState {
     pub ops: crate::ops::queue::OpQueue,
     /// Paths additionally highlighted by Ctrl/Shift-click for bulk collection actions.
     pub selected_paths: HashSet<PathBuf>,
-    /// ID of the collection currently loaded as the virtual view, if any.
-    pub active_collection: Option<i64>,
+    /// The single content scope currently loaded into the filmstrip.
+    pub scope: ViewScope,
     /// Folders disabled by the user. Images under these paths must not be indexed or shown.
     pub disabled_folders: Vec<PathBuf>,
 }
 
-/// Which virtual content source is currently displayed in the filmstrip.
-#[allow(dead_code)]
+/// The single content scope currently loaded into the filmstrip.
+/// Replaces the implicit encoding previously spread across
+/// `library.current_folder` and `AppState::active_collection`.
 #[derive(Clone, Debug, PartialEq)]
-pub enum VirtualSource {
+pub enum ViewScope {
+    Folder(PathBuf),
+    Collection(i64),
     Duplicates,
     Search,
     Quality(crate::quality::QualityClass),
-    Collection(i64),
+}
+
+impl Default for ViewScope {
+    fn default() -> Self {
+        ViewScope::Search
+    }
 }
 
 #[derive(Clone)]
@@ -333,18 +341,6 @@ fn start_raw_dimension_hydrator(
 }
 
 fn load_virtual_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf]) {
-    load_virtual_async_with_collection(state, paths, None);
-}
-
-fn load_collection_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf], collection_id: i64) {
-    load_virtual_async_with_collection(state, paths, Some(collection_id));
-}
-
-fn load_virtual_async_with_collection(
-    state: &Rc<RefCell<AppState>>,
-    paths: &[PathBuf],
-    active_collection: Option<i64>,
-) {
     let paths: Vec<PathBuf> = {
         let st = state.borrow();
         paths
@@ -355,7 +351,6 @@ fn load_virtual_async_with_collection(
     };
     let pending = {
         let mut st = state.borrow_mut();
-        st.active_collection = active_collection;
         st.library.load_virtual(&paths)
     };
     if pending.is_empty() {
@@ -482,7 +477,7 @@ impl AppState {
             upscale_binary,
             ops,
             selected_paths: HashSet::new(),
-            active_collection: None,
+            scope: ViewScope::default(),
             disabled_folders,
         };
         maybe_download_model(smart_model);
@@ -790,7 +785,7 @@ impl SharprWindow {
                     st.settings.last_folder = Some(path.clone());
                     st.settings.save();
                     st.selected_paths.clear();
-                    st.active_collection = None;
+                    st.scope = ViewScope::Folder(path.clone());
                 }
 
                 let (index, mut index_error, sort_order) = {
@@ -1224,8 +1219,8 @@ impl SharprWindow {
                                     .unwrap_or(false)
                             {
                                 st.library.load_virtual(&[]);
-                                st.active_collection = None;
-                            } else if st.library.current_folder.is_none() {
+                                st.scope = ViewScope::Search;
+                            } else if !matches!(st.scope, ViewScope::Folder(_)) {
                                 let visible_paths: Vec<PathBuf> = (0..st.library.image_count())
                                     .filter_map(|i| st.library.entry_at(i).map(|e| e.path()))
                                     .filter(|image_path| {
@@ -1359,6 +1354,7 @@ impl SharprWindow {
                     }
 
                     let result_count = paths.len();
+                    state_rx.borrow_mut().scope = ViewScope::Duplicates;
                     load_virtual_async(&state_rx, &paths);
                     crate::bench_event!(
                         "virtual_view.load",
@@ -1411,6 +1407,7 @@ impl SharprWindow {
                 sidebar_c.set_tags_selected(false);
                 sidebar_c.set_quality_selected(None);
                 // Show an empty filmstrip immediately so the user knows to type.
+                state_c.borrow_mut().scope = ViewScope::Search;
                 load_virtual_async(&state_c, &[]);
                 crate::bench_event!(
                     "virtual_view.load",
@@ -1563,6 +1560,7 @@ impl SharprWindow {
                             .library
                             .bg_scan_quality_finish(new_indexed, new_cache);
                     }
+                    state_rx.borrow_mut().scope = ViewScope::Quality(class);
                     load_virtual_async(&state_rx, &paths);
                     crate::bench_event!(
                         "virtual_view.load",
@@ -1700,7 +1698,8 @@ impl SharprWindow {
                     let mut s = state_c.borrow_mut();
                     s.selected_paths.clear();
                 }
-                load_collection_async(&state_c, &paths, id);
+                state_c.borrow_mut().scope = ViewScope::Collection(id);
+                load_virtual_async(&state_c, &paths);
                 crate::bench_event!(
                     "collection.load",
                     serde_json::json!({
@@ -1778,10 +1777,10 @@ impl SharprWindow {
                                     "duration_ms": crate::bench::duration_ms(started),
                                 }),
                             );
-                            let was_active = state_c.borrow().active_collection == Some(id);
+                            let was_active = matches!(state_c.borrow().scope, ViewScope::Collection(a) if a == id);
                             if was_active {
                                 let mut s = state_c.borrow_mut();
-                                s.active_collection = None;
+                                s.scope = ViewScope::Search;
                                 s.selected_paths.clear();
                                 drop(s);
                                 load_virtual_async(&state_c, &[]);
@@ -1834,9 +1833,10 @@ impl SharprWindow {
                         );
                         refresh_c();
                         // If we're viewing this collection, append newly added paths.
-                        if state_c.borrow().active_collection == Some(id) {
+                        if matches!(state_c.borrow().scope, ViewScope::Collection(a) if a == id) {
                             let all_paths = idx.collection_paths(id).unwrap_or_default();
-                            load_collection_async(&state_c, &all_paths, id);
+                            state_c.borrow_mut().scope = ViewScope::Collection(id);
+                            load_virtual_async(&state_c, &all_paths);
                             filmstrip_c.refresh_virtual();
                             let first = state_c
                                 .borrow()
@@ -2124,6 +2124,7 @@ impl SharprWindow {
 
                 let text = text.trim().to_string();
                 if text.is_empty() {
+                    state_c.borrow_mut().scope = ViewScope::Search;
                     load_virtual_async(&state_c, &[]);
                     viewer_c.clear();
                     filmstrip_c.refresh_virtual();
@@ -2185,6 +2186,7 @@ impl SharprWindow {
                                     .cloned()
                                     .collect();
 
+                                state_rx.borrow_mut().scope = ViewScope::Search;
                                 load_virtual_async(&state_rx, &merged);
                                 content_stack_rx.set_visible_child_name("viewer");
                                 sidebar_rx.set_search_selected(true);
@@ -2238,6 +2240,7 @@ impl SharprWindow {
                 let content_stack_rx = content_stack.clone();
                 glib::MainContext::default().spawn_local(async move {
                     if let Ok(paths) = rx.recv().await {
+                        state_rx.borrow_mut().scope = ViewScope::Search;
                         load_virtual_async(&state_rx, &paths);
                         content_stack_rx.set_visible_child_name("viewer");
                         sidebar_rx.set_search_selected(true);
@@ -2273,7 +2276,7 @@ impl SharprWindow {
                 sidebar_c.set_search_selected(false);
                 sidebar_c.set_tags_selected(false);
                 sidebar_c.set_quality_selected(None);
-                if state_c.borrow().library.current_folder.is_none() {
+                if !matches!(state_c.borrow().scope, ViewScope::Folder(_)) {
                     // Extract last_folder in a separate let so the Ref<AppState> temporary
                     // is dropped at the semicolon — not held alive through the if let body
                     // where open_folder_c calls borrow_mut() and would panic.
@@ -2522,8 +2525,9 @@ impl SharprWindow {
                 let Some(idx) = state_c.borrow().library_index.clone() else {
                     return;
                 };
-                let Some(id) = state_c.borrow().active_collection else {
-                    return;
+                let id = match state_c.borrow().scope {
+                    ViewScope::Collection(id) => id,
+                    _ => return,
                 };
                 let started = std::time::Instant::now();
                 match idx.remove_paths_from_collection(id, &paths) {
@@ -2538,7 +2542,8 @@ impl SharprWindow {
                             })
                         );
                         let remaining = idx.collection_paths(id).unwrap_or_default();
-                        load_collection_async(&state_c, &remaining, id);
+                        state_c.borrow_mut().scope = ViewScope::Collection(id);
+                        load_virtual_async(&state_c, &remaining);
                         state_c.borrow_mut().selected_paths.clear();
                         filmstrip_c.refresh_virtual();
                         let first = state_c
