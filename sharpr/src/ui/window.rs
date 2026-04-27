@@ -519,6 +519,11 @@ mod imp {
         pub hash_result_rx: RefCell<Option<Receiver<HashResult>>>,
         pub(super) thumbnail_ops: RefCell<HashMap<PathBuf, ThumbnailOpState>>,
         pub toast_overlay: RefCell<Option<libadwaita::ToastOverlay>>,
+        pub inline_search_entry: RefCell<Option<gtk4::SearchEntry>>,
+        pub inline_search_revealer: RefCell<Option<gtk4::Revealer>>,
+        pub inline_search_pending: RefCell<Option<glib::SourceId>>,
+        pub inline_search_generation: Cell<u64>,
+        pub inline_search_suppressed: Cell<bool>,
     }
 
     impl Default for SharprWindow {
@@ -534,6 +539,11 @@ mod imp {
                 hash_result_rx: RefCell::new(None),
                 thumbnail_ops: RefCell::new(HashMap::new()),
                 toast_overlay: RefCell::new(None),
+                inline_search_entry: RefCell::new(None),
+                inline_search_revealer: RefCell::new(None),
+                inline_search_pending: RefCell::new(None),
+                inline_search_generation: Cell::new(0),
+                inline_search_suppressed: Cell::new(false),
             }
         }
     }
@@ -748,7 +758,6 @@ impl SharprWindow {
             });
         }
 
-        let suppress_search_restore = Rc::new(Cell::new(false));
         let content_stack = gtk4::Stack::new();
         let toast_overlay = libadwaita::ToastOverlay::new();
         *self.imp().toast_overlay.borrow_mut() = Some(toast_overlay.clone());
@@ -769,7 +778,6 @@ impl SharprWindow {
             let state_c = state.clone();
             let toast_overlay_c = toast_overlay.clone();
             let window_weak = self.downgrade();
-            let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
             Rc::new(move |path: PathBuf| {
                 if path_is_disabled(&path, &state_c.borrow().disabled_folders) {
@@ -786,6 +794,7 @@ impl SharprWindow {
                 if let Some(win) = window_weak.upgrade() {
                     let _ = win.bump_thumbnail_generation("folder.open");
                     win.complete_thumbnail_ops();
+                    win.clear_inline_search(true);
                 }
                 content_stack.set_visible_child_name("viewer");
                 let cache_max = AppSettings::load().thumbnail_cache_max as usize;
@@ -907,7 +916,6 @@ impl SharprWindow {
                 let viewer_rx = viewer_c.clone();
                 let sidebar_rx = sidebar_c.clone();
                 let state_rx = state_c.clone();
-                let suppress_search_restore_rx = suppress_search_restore_c.clone();
                 let path_rx = path.clone();
                 let window_weak_rx = window_weak.clone();
                 let toast_overlay_rx = toast_overlay_c.clone();
@@ -1081,11 +1089,6 @@ impl SharprWindow {
                         if let Some(path) = path {
                             viewer_rx.load_image(path);
                         }
-                    }
-
-                    if filmstrip_rx.is_search_active() {
-                        suppress_search_restore_rx.set(true);
-                        filmstrip_rx.deactivate_search();
                     }
 
                     // If we showed cached rows, wait for the reconciled result and apply
@@ -1286,7 +1289,6 @@ impl SharprWindow {
             let viewer_c = viewer.clone();
             let sidebar_c = sidebar.clone();
             let state_c = state.clone();
-            let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
             let toast_overlay_c = toast_overlay.clone();
             let window_weak = self.downgrade();
@@ -1295,6 +1297,7 @@ impl SharprWindow {
                 let expected_gen = window_weak.upgrade().and_then(|win| {
                     let gen = win.bump_thumbnail_generation("smart.duplicates");
                     win.complete_thumbnail_ops();
+                    win.clear_inline_search(true);
                     gen
                 });
                 content_stack.set_visible_child_name("viewer");
@@ -1341,7 +1344,6 @@ impl SharprWindow {
                 let viewer_rx = viewer_c.clone();
                 let sidebar_rx = sidebar_c.clone();
                 let state_rx = state_c.clone();
-                let suppress_search_restore_rx = suppress_search_restore_c.clone();
                 let window_weak_rx = window_weak.clone();
                 glib::MainContext::default().spawn_local(async move {
                     let Ok(paths) = rx.recv().await else {
@@ -1391,10 +1393,6 @@ impl SharprWindow {
                     } else {
                         viewer_rx.clear();
                     }
-                    if filmstrip_rx.is_search_active() {
-                        suppress_search_restore_rx.set(true);
-                        filmstrip_rx.deactivate_search();
-                    }
                     op.complete();
                 });
             });
@@ -1416,7 +1414,6 @@ impl SharprWindow {
             let viewer_c = viewer.clone();
             let sidebar_c = sidebar.clone();
             let state_c = state.clone();
-            let suppress_search_restore_c = suppress_search_restore.clone();
             let content_stack = content_stack.clone();
             let window_weak = self.downgrade();
             let quality_action =
@@ -1433,6 +1430,7 @@ impl SharprWindow {
                 let expected_gen = window_weak.upgrade().and_then(|win| {
                     let gen = win.bump_thumbnail_generation("smart.quality");
                     win.complete_thumbnail_ops();
+                    win.clear_inline_search(true);
                     gen
                 });
                 content_stack.set_visible_child_name("viewer");
@@ -1519,7 +1517,6 @@ impl SharprWindow {
                 let viewer_rx = viewer_c.clone();
                 let sidebar_rx = sidebar_c.clone();
                 let state_rx = state_c.clone();
-                let suppress_rx = suppress_search_restore_c.clone();
                 let window_weak_rx = window_weak.clone();
                 glib::MainContext::default().spawn_local(async move {
                     let Ok((paths, scan_state)) = rx.recv().await else {
@@ -1572,10 +1569,6 @@ impl SharprWindow {
                         state_rx.borrow_mut().library.selected_index = Some(0);
                         filmstrip_rx.navigate_to(0);
                         viewer_rx.load_image(path);
-                    }
-                    if filmstrip_rx.is_search_active() {
-                        suppress_rx.set(true);
-                        filmstrip_rx.deactivate_search();
                     }
                     op.complete();
                 });
@@ -1672,6 +1665,7 @@ impl SharprWindow {
                 if let Some(win) = window_weak.upgrade() {
                     let _ = win.bump_thumbnail_generation("collection.load");
                     win.complete_thumbnail_ops();
+                    win.clear_inline_search(true);
                 }
                 content_stack.set_visible_child_name("viewer");
                 let paths = state_c
@@ -2013,6 +2007,23 @@ impl SharprWindow {
 
         let viewer_toolbar = libadwaita::ToolbarView::new();
         viewer_toolbar.add_top_bar(&viewer_header);
+
+        let preview_search_entry = gtk4::SearchEntry::new();
+        preview_search_entry.set_hexpand(true);
+        preview_search_entry.set_placeholder_text(Some("Search filenames and tags"));
+        preview_search_entry.set_margin_start(12);
+        preview_search_entry.set_margin_end(12);
+        preview_search_entry.set_margin_top(6);
+        preview_search_entry.set_margin_bottom(6);
+
+        let preview_search_revealer = gtk4::Revealer::new();
+        preview_search_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideDown);
+        preview_search_revealer.set_reveal_child(false);
+        preview_search_revealer.set_child(Some(&preview_search_entry));
+        viewer_toolbar.add_top_bar(&preview_search_revealer);
+        *self.imp().inline_search_entry.borrow_mut() = Some(preview_search_entry.clone());
+        *self.imp().inline_search_revealer.borrow_mut() = Some(preview_search_revealer.clone());
+
         viewer_toolbar.add_top_bar(&upscale_banner);
 
         // content_stack lives inside viewer_toolbar so the header bar (hamburger,
@@ -2075,12 +2086,16 @@ impl SharprWindow {
         {
             let viewer_page_c = viewer_page.clone();
             let preview_title_btn_c = preview_title_btn.clone();
+            let preview_search_revealer_c = preview_search_revealer.clone();
             content_stack.connect_visible_child_notify(move |stack| {
                 let name = stack.visible_child_name().unwrap_or_default();
                 let is_tags = name == "tags";
                 viewer_page_c.set_title(if is_tags { "Tags" } else { "Preview" });
                 preview_title_btn_c.set_label(if is_tags { "Tags" } else { "Preview" });
                 preview_title_btn_c.set_sensitive(!is_tags);
+                if is_tags {
+                    preview_search_revealer_c.set_reveal_child(false);
+                }
             });
         }
 
@@ -2170,52 +2185,253 @@ impl SharprWindow {
         let help_overlay: gtk4::ShortcutsWindow = builder.object("help_overlay").unwrap();
         self.set_help_overlay(Some(&help_overlay));
 
-        if let Some(tag_browser) = tag_browser {
-            let content_stack_c = content_stack.clone();
+        {
             let filmstrip_c = filmstrip.clone();
             let viewer_c = viewer.clone();
             let state_c = state.clone();
             let sidebar_c = sidebar.clone();
+            let content_stack_c = content_stack.clone();
+            let window_weak = self.downgrade();
+            preview_search_entry.connect_search_changed(move |entry| {
+                let Some(win) = window_weak.upgrade() else {
+                    return;
+                };
+                if win.imp().inline_search_suppressed.get() {
+                    return;
+                }
+                if let Some(source_id) = win.imp().inline_search_pending.borrow_mut().take() {
+                    source_id.remove();
+                }
+                let search_gen = win.imp().inline_search_generation.get().wrapping_add(1);
+                win.imp().inline_search_generation.set(search_gen);
+
+                let query = entry.text().trim().to_string();
+                content_stack_c.set_visible_child_name("viewer");
+                if query.is_empty() {
+                    let Ok(mut state) = state_c.try_borrow_mut() else {
+                        return;
+                    };
+                    state.scope = ViewScope::Search;
+                    drop(state);
+                    load_virtual_async(&state_c, &[]);
+                    let Ok(state) = state_c.try_borrow() else {
+                        return;
+                    };
+                    let scope = state.scope.clone();
+                    drop(state);
+                    apply_scope_to_sidebar(&scope, &sidebar_c);
+                    viewer_c.clear();
+                    filmstrip_c.refresh_virtual();
+                    return;
+                }
+
+                if query.len() < 2 {
+                    return;
+                }
+
+                let filmstrip_rx = filmstrip_c.clone();
+                let viewer_rx = viewer_c.clone();
+                let state_rx = state_c.clone();
+                let sidebar_rx = sidebar_c.clone();
+                let content_stack_rx = content_stack_c.clone();
+                let window_weak_rx = window_weak.clone();
+                let source_id =
+                    glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+                        if let Some(win) = window_weak_rx.upgrade() {
+                            win.imp().inline_search_pending.borrow_mut().take();
+                        }
+                        let db_query = query.clone();
+                        let ui_query = query.clone();
+                        let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
+                        let tags = state_rx.try_borrow().ok().and_then(|state| state.tags.clone());
+                        rayon::spawn(move || {
+                            let paths = tags
+                                .as_ref()
+                                .map(|db| db.search_paths(&db_query))
+                                .unwrap_or_default();
+                            let _ = tx.send_blocking(paths);
+                        });
+
+                        let filmstrip_ui = filmstrip_rx.clone();
+                        let viewer_ui = viewer_rx.clone();
+                        let state_ui = state_rx.clone();
+                        let sidebar_ui = sidebar_rx.clone();
+                        let content_stack_ui = content_stack_rx.clone();
+                        let window_weak_ui = window_weak_rx.clone();
+                        glib::MainContext::default().spawn_local(async move {
+                            if let Ok(db_paths) = rx.recv().await {
+                                let Some(win) = window_weak_ui.upgrade() else {
+                                    return;
+                                };
+                                if win.imp().inline_search_generation.get() != search_gen {
+                                    return;
+                                }
+                                let q = ui_query.to_lowercase();
+                                let library_paths: Vec<PathBuf> = {
+                                    let Ok(state) = state_ui.try_borrow() else {
+                                        return;
+                                    };
+                                    (0..state.library.image_count())
+                                        .filter_map(|i| state.library.entry_at(i))
+                                        .map(|e| e.path())
+                                        .filter(|p| {
+                                            p.file_name()
+                                                .and_then(|n| n.to_str())
+                                                .map(|n| n.to_lowercase().contains(&q))
+                                                .unwrap_or(false)
+                                        })
+                                        .collect()
+                                };
+
+                                let mut seen = std::collections::HashSet::new();
+                                let merged: Vec<PathBuf> = db_paths
+                                    .iter()
+                                    .chain(library_paths.iter())
+                                    .filter(|p| seen.insert((*p).clone()))
+                                    .cloned()
+                                    .collect();
+
+                                let Ok(mut state) = state_ui.try_borrow_mut() else {
+                                    return;
+                                };
+                                state.scope = ViewScope::Search;
+                                drop(state);
+                                load_virtual_async(&state_ui, &merged);
+                                content_stack_ui.set_visible_child_name("viewer");
+                                let Ok(state) = state_ui.try_borrow() else {
+                                    return;
+                                };
+                                let scope = state.scope.clone();
+                                drop(state);
+                                apply_scope_to_sidebar(&scope, &sidebar_ui);
+                                viewer_ui.clear();
+                                filmstrip_ui.refresh_virtual();
+                                let first_path = state_ui.try_borrow().ok().and_then(|state| {
+                                    state.library.entry_at(0).map(|e: ImageEntry| e.path())
+                                });
+                                if let Some(path) = first_path {
+                                    if let Ok(mut state) = state_ui.try_borrow_mut() {
+                                        state.library.selected_index = Some(0);
+                                    } else {
+                                        return;
+                                    }
+                                    filmstrip_ui.navigate_to(0);
+                                    viewer_ui.load_image(path);
+                                }
+                            }
+                        });
+
+                        glib::ControlFlow::Break
+                    });
+                *win.imp().inline_search_pending.borrow_mut() = Some(source_id);
+            });
+        }
+
+        {
+            let state_c = state.clone();
+            let open_folder_c = open_folder.clone();
+            let window_weak = self.downgrade();
+            let search_key = gtk4::EventControllerKey::new();
+            search_key.connect_key_pressed(move |_, key, _, _| {
+                if key != gtk4::gdk::Key::Escape {
+                    return glib::Propagation::Proceed;
+                }
+                let Some(win) = window_weak.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                let Some(revealer) = win.imp().inline_search_revealer.borrow().clone() else {
+                    return glib::Propagation::Proceed;
+                };
+                if !revealer.reveals_child() {
+                    return glib::Propagation::Proceed;
+                }
+                win.clear_inline_search(true);
+                if !matches!(state_c.borrow().scope, ViewScope::Folder(_)) {
+                    let last_folder = state_c.borrow().settings.last_folder.clone();
+                    if let Some(folder) = last_folder {
+                        if folder.is_dir() {
+                            open_folder_c(folder);
+                        }
+                    }
+                }
+                glib::Propagation::Stop
+            });
+            preview_search_entry.add_controller(search_key);
+        }
+
+        {
+            let content_stack_c = content_stack.clone();
+            let window_weak = self.downgrade();
+            let type_to_search = gtk4::EventControllerKey::new();
+            type_to_search.connect_key_pressed(move |controller, key, _, state| {
+                let Some(widget) = controller.widget() else {
+                    return glib::Propagation::Proceed;
+                };
+                let Some(window) = widget.downcast_ref::<gtk4::Window>() else {
+                    return glib::Propagation::Proceed;
+                };
+                if let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) {
+                    if focus.is::<gtk4::Text>() || focus.is::<gtk4::SearchEntry>() {
+                        return glib::Propagation::Proceed;
+                    }
+                }
+                if !(state.is_empty() || state == gtk4::gdk::ModifierType::SHIFT_MASK) {
+                    return glib::Propagation::Proceed;
+                }
+                let Some(ch) = key.to_unicode() else {
+                    return glib::Propagation::Proceed;
+                };
+                if ch.is_control() {
+                    return glib::Propagation::Proceed;
+                }
+                let Some(win) = window_weak.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                let Some(revealer) = win.imp().inline_search_revealer.borrow().clone() else {
+                    return glib::Propagation::Proceed;
+                };
+                let Some(entry) = win.imp().inline_search_entry.borrow().clone() else {
+                    return glib::Propagation::Proceed;
+                };
+                content_stack_c.set_visible_child_name("viewer");
+                if !revealer.reveals_child() {
+                    revealer.set_reveal_child(true);
+                    win.imp().inline_search_suppressed.set(true);
+                    entry.set_text("");
+                    win.imp().inline_search_suppressed.set(false);
+                }
+                let mut text = entry.text().to_string();
+                text.push(ch);
+                entry.set_text(&text);
+                entry.grab_focus();
+                entry.set_position(-1);
+                glib::Propagation::Stop
+            });
+            self.add_controller(type_to_search);
+        }
+
+        if let Some(tag_browser) = tag_browser {
+            let content_stack_c = content_stack.clone();
+            let window_weak = self.downgrade();
             tag_browser.connect_tag_activated(move |tag| {
                 content_stack_c.set_visible_child_name("viewer");
                 let tag = tag.trim();
                 if tag.is_empty() {
                     return;
                 }
-                let Some(tags) = state_c.borrow().tags.clone() else {
+                let Some(win) = window_weak.upgrade() else {
                     return;
                 };
-                let tag = tag.to_string();
-                let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
-                rayon::spawn(move || {
-                    let _ = tx.send_blocking(tags.search_paths(&tag));
-                });
-                let filmstrip_rx = filmstrip_c.clone();
-                let viewer_rx = viewer_c.clone();
-                let state_rx = state_c.clone();
-                let sidebar_rx = sidebar_c.clone();
-                let content_stack_rx = content_stack_c.clone();
-                glib::MainContext::default().spawn_local(async move {
-                    if let Ok(paths) = rx.recv().await {
-                        state_rx.borrow_mut().scope = ViewScope::Search;
-                        load_virtual_async(&state_rx, &paths);
-                        content_stack_rx.set_visible_child_name("viewer");
-                        let scope = state_rx.borrow().scope.clone();
-                        apply_scope_to_sidebar(&scope, &sidebar_rx);
-                        viewer_rx.clear();
-                        filmstrip_rx.refresh_virtual();
-                        let first_path = state_rx
-                            .borrow()
-                            .library
-                            .entry_at(0)
-                            .map(|e: ImageEntry| e.path());
-                        if let Some(path) = first_path {
-                            state_rx.borrow_mut().library.selected_index = Some(0);
-                            filmstrip_rx.navigate_to(0);
-                            viewer_rx.load_image(path);
-                        }
-                    }
-                });
+                let Some(revealer) = win.imp().inline_search_revealer.borrow().clone() else {
+                    return;
+                };
+                let Some(entry) = win.imp().inline_search_entry.borrow().clone() else {
+                    return;
+                };
+                revealer.set_reveal_child(true);
+                entry.set_text(tag);
+                entry.grab_focus();
+                entry.set_position(-1);
             });
         }
 
@@ -2499,6 +2715,7 @@ impl SharprWindow {
             filmstrip.clone(),
             viewer.clone(),
             outer_split.clone(),
+            content_stack.clone(),
         );
 
         // -----------------------------------------------------------------------
@@ -2525,6 +2742,7 @@ impl SharprWindow {
         filmstrip: FilmstripPane,
         viewer: ViewerPane,
         outer_split: libadwaita::OverlaySplitView,
+        content_stack: gtk4::Stack,
     ) {
         let shortcuts = gtk4::ShortcutController::new();
         // Managed scope means the window itself handles these even when a child
@@ -2597,6 +2815,19 @@ impl SharprWindow {
             Some(gtk4::CallbackAction::new(move |_, _| {
                 outer_split.set_show_sidebar(!outer_split.shows_sidebar());
                 glib::Propagation::Stop
+            })),
+        ));
+
+        // Ctrl+F — reveal and focus inline search.
+        shortcuts.add_shortcut(gtk4::Shortcut::new(
+            Some(gtk4::ShortcutTrigger::parse_string("<Control>F").unwrap()),
+            Some(gtk4::CallbackAction::new(move |widget, _| {
+                if let Some(window) = widget.downcast_ref::<SharprWindow>() {
+                    content_stack.set_visible_child_name("viewer");
+                    window.show_inline_search();
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
             })),
         ));
 
@@ -2717,6 +2948,34 @@ impl SharprWindow {
         }
 
         self.add_controller(shortcuts);
+    }
+
+    fn show_inline_search(&self) {
+        if let Some(revealer) = self.imp().inline_search_revealer.borrow().as_ref() {
+            revealer.set_reveal_child(true);
+        }
+        if let Some(entry) = self.imp().inline_search_entry.borrow().as_ref() {
+            entry.grab_focus();
+            entry.set_position(-1);
+        }
+    }
+
+    fn clear_inline_search(&self, hide: bool) {
+        if let Some(source_id) = self.imp().inline_search_pending.borrow_mut().take() {
+            source_id.remove();
+        }
+        let next_gen = self.imp().inline_search_generation.get().wrapping_add(1);
+        self.imp().inline_search_generation.set(next_gen);
+        self.imp().inline_search_suppressed.set(true);
+        if let Some(entry) = self.imp().inline_search_entry.borrow().as_ref() {
+            entry.set_text("");
+        }
+        self.imp().inline_search_suppressed.set(false);
+        if hide {
+            if let Some(revealer) = self.imp().inline_search_revealer.borrow().as_ref() {
+                revealer.set_reveal_child(false);
+            }
+        }
     }
 
     /// Drain thumbnail results from the worker pool on the GLib main context.
