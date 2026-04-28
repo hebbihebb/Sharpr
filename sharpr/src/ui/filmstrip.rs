@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
@@ -30,6 +31,59 @@ type SaveSearchAsCollectionCallback = Box<dyn Fn(&str) + 'static>;
 const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
 const BUFFER_ROWS: u32 = 2000;
 const FALLBACK_VISIBLE_ROWS: u32 = 40;
+const COLLECTION_COLOR_PALETTE: &[&str] = &[
+    "#57e389",
+    "#62a0ea",
+    "#ff7800",
+    "#f5c211",
+    "#dc8add",
+    "#5bc8af",
+    "#e01b24",
+    "#9141ac",
+];
+
+fn fallback_collection_color(collection_id: i64) -> &'static str {
+    COLLECTION_COLOR_PALETTE[(collection_id as usize) % COLLECTION_COLOR_PALETTE.len()]
+}
+
+fn root_collection_id(id: i64, parent_by_id: &HashMap<i64, Option<i64>>) -> i64 {
+    let mut root_id = id;
+    let mut current = parent_by_id.get(&id).copied().flatten();
+    while let Some(parent_id) = current {
+        root_id = parent_id;
+        current = parent_by_id.get(&parent_id).copied().flatten();
+    }
+    root_id
+}
+
+fn collection_tag_color_map(
+    collections: &[crate::library_index::Collection],
+) -> HashMap<String, String> {
+    let parent_by_id: HashMap<i64, Option<i64>> = collections
+        .iter()
+        .map(|collection| (collection.id, collection.parent_id))
+        .collect();
+    let collection_by_id: HashMap<i64, &crate::library_index::Collection> = collections
+        .iter()
+        .map(|collection| (collection.id, collection))
+        .collect();
+    let mut tag_to_color = HashMap::new();
+
+    for collection in collections {
+        let root_id = root_collection_id(collection.id, &parent_by_id);
+        let resolved_color = collection_by_id
+            .get(&root_id)
+            .and_then(|root| root.color.clone())
+            .unwrap_or_else(|| fallback_collection_color(root_id).to_string());
+
+        tag_to_color.insert(collection.primary_tag.clone(), resolved_color.clone());
+        for tag in &collection.extra_tags {
+            tag_to_color.insert(tag.clone(), resolved_color.clone());
+        }
+    }
+
+    tag_to_color
+}
 
 mod imp {
     use super::*;
@@ -65,6 +119,7 @@ mod imp {
         pub thumbnail_gen: RefCell<Option<Arc<std::sync::atomic::AtomicU64>>>,
         pub pending_thumbnails: RefCell<Option<Arc<Mutex<std::collections::HashSet<PathBuf>>>>>,
         pub pending_notify_count: std::sync::atomic::AtomicU32,
+        pub tag_root_color: RefCell<HashMap<String, String>>,
     }
 
     impl Default for FilmstripPane {
@@ -116,6 +171,7 @@ mod imp {
                 thumbnail_gen: RefCell::new(None),
                 pending_thumbnails: RefCell::new(None),
                 pending_notify_count: std::sync::atomic::AtomicU32::new(0),
+                tag_root_color: RefCell::new(HashMap::new()),
             }
         }
     }
@@ -302,8 +358,18 @@ impl FilmstripPane {
             index_label.set_valign(gtk4::Align::End);
             index_label.add_css_class("filmstrip-index-label");
 
+            let badge = gtk4::DrawingArea::new();
+            badge.set_content_width(10);
+            badge.set_content_height(10);
+            badge.set_halign(gtk4::Align::Start);
+            badge.set_valign(gtk4::Align::End);
+            badge.set_margin_start(5);
+            badge.set_margin_bottom(5);
+            badge.set_visible(false);
+
             overlay.set_child(Some(&picture));
             overlay.add_overlay(&index_label);
+            overlay.add_overlay(&badge);
 
             let filename_label = gtk4::Label::new(None);
             filename_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
@@ -326,6 +392,7 @@ impl FilmstripPane {
             unsafe {
                 list_item.set_data("fs-picture", picture.clone());
                 list_item.set_data("fs-index-label", index_label.clone());
+                list_item.set_data("fs-badge", badge.clone());
                 list_item.set_data("fs-filename-label", filename_label.clone());
                 list_item.set_data("fs-item-box", item_box.clone());
             }
@@ -590,12 +657,15 @@ impl FilmstripPane {
                 Some(entry) => entry,
                 None => return,
             };
-            let (picture, index_label, filename_label, item_box) = unsafe {
+            let (picture, index_label, badge, filename_label, item_box) = unsafe {
                 let picture = list_item
                     .data::<gtk4::Picture>("fs-picture")
                     .map(|p| p.as_ref().clone());
                 let index_label = list_item
                     .data::<gtk4::Label>("fs-index-label")
+                    .map(|p| p.as_ref().clone());
+                let badge = list_item
+                    .data::<gtk4::DrawingArea>("fs-badge")
                     .map(|p| p.as_ref().clone());
                 let filename_label = list_item
                     .data::<gtk4::Label>("fs-filename-label")
@@ -603,8 +673,8 @@ impl FilmstripPane {
                 let item_box = list_item
                     .data::<gtk4::Box>("fs-item-box")
                     .map(|p| p.as_ref().clone());
-                match (picture, index_label, filename_label) {
-                    (Some(p), Some(i), Some(f)) => (p, i, f, item_box),
+                match (picture, index_label, badge, filename_label) {
+                    (Some(p), Some(i), Some(b), Some(f)) => (p, i, b, f, item_box),
                     _ => return,
                 }
             };
@@ -631,6 +701,44 @@ impl FilmstripPane {
 
             filename_label.set_text(&entry.filename());
             index_label.set_text(&(list_item.position() + 1).to_string());
+
+            let badge_color = widget_weak_bind
+                .upgrade()
+                .and_then(|w| {
+                    let state = w.imp().state.borrow();
+                    let state = state.as_ref()?.borrow();
+                    let tags = state.tags.clone()?;
+                    let path = entry.path();
+                    let tag_root_color = w.imp().tag_root_color.borrow();
+                    tags.tags_for_path(&path)
+                        .into_iter()
+                        .find_map(|tag| tag_root_color.get(&tag).cloned())
+                });
+            if let Some(color) = badge_color {
+                badge.set_visible(true);
+                badge.set_draw_func(move |_, cr: &gtk4::cairo::Context, _, _| {
+                    if let Some(hex) = color.strip_prefix('#') {
+                        if hex.len() == 6 {
+                            if let (Ok(r), Ok(g), Ok(b)) = (
+                                u8::from_str_radix(&hex[0..2], 16),
+                                u8::from_str_radix(&hex[2..4], 16),
+                                u8::from_str_radix(&hex[4..6], 16),
+                            ) {
+                                cr.set_source_rgb(
+                                    f64::from(r) / 255.0,
+                                    f64::from(g) / 255.0,
+                                    f64::from(b) / 255.0,
+                                );
+                                cr.arc(5.0, 5.0, 4.5, 0.0, 2.0 * std::f64::consts::PI);
+                                let _ = cr.fill();
+                            }
+                        }
+                    }
+                });
+                badge.queue_draw();
+            } else {
+                badge.set_visible(false);
+            }
 
             match entry.thumbnail() {
                 Some(ref texture) => picture.set_paintable(Some(texture.upcast_ref::<Paintable>())),
@@ -678,6 +786,12 @@ impl FilmstripPane {
                     .map(|p| p.as_ref().clone())
                 {
                     label.set_text("");
+                }
+                if let Some(badge) = list_item
+                    .data::<gtk4::DrawingArea>("fs-badge")
+                    .map(|p| p.as_ref().clone())
+                {
+                    badge.set_visible(false);
                 }
                 if let Some(label) = list_item
                     .data::<gtk4::Label>("fs-filename-label")
@@ -858,6 +972,11 @@ impl FilmstripPane {
 
     pub fn refresh_virtual(&self) {
         self.refresh();
+    }
+
+    pub fn refresh_collection_colors(&self, collections: &[crate::library_index::Collection]) {
+        *self.imp().tag_root_color.borrow_mut() = collection_tag_color_map(collections);
+        self.imp().list_view.queue_draw();
     }
 
     pub fn set_thumbnail_sender(

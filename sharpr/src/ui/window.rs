@@ -1867,12 +1867,14 @@ impl SharprWindow {
         // Helper: refresh the sidebar collection list from the DB.
         let refresh_sidebar_collections = {
             let sidebar_c = sidebar.clone();
+            let filmstrip_c = filmstrip.clone();
             let state_c = state.clone();
             move || {
                 let (collections, scope) = {
                     let state = state_c.borrow();
                     (collections_for_sidebar(&state), state.scope.clone())
                 };
+                filmstrip_c.refresh_collection_colors(&collections);
                 sidebar_c.refresh_collections(&collections);
                 apply_scope_to_sidebar(&scope, &sidebar_c);
             }
