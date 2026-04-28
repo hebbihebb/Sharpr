@@ -27,6 +27,9 @@ type TagPromotedToCollectionCallback = Box<dyn Fn(String) + 'static>;
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
 ];
+const COLLECTION_COLOR_PALETTE: &[&str] = &[
+    "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
+];
 
 mod imp {
     use super::*;
@@ -473,6 +476,7 @@ impl SidebarPane {
     pub fn refresh_collections(&self, collections: &[Collection]) {
         let imp = self.imp();
         *imp.collections.borrow_mut() = collections.to_vec();
+        let root_colors = collection_root_colors(collections);
         let selected_id = imp
             .collection_list
             .selected_row()
@@ -485,8 +489,13 @@ impl SidebarPane {
         for coll in visible_collections(collections, &imp.collapsed_collection_ids.borrow()) {
             let has_children = collections.iter().any(|c| c.parent_id == Some(coll.id));
             let is_collapsed = imp.collapsed_collection_ids.borrow().contains(&coll.id);
+            let effective_color = root_colors
+                .get(&root_collection_id(coll.id, collections))
+                .map(String::as_str)
+                .unwrap_or_else(|| fallback_collection_color(coll.id));
             let row = CollectionRow::new(
                 &coll,
+                effective_color,
                 collection_depth(coll.id, collections),
                 has_children,
                 is_collapsed,
@@ -903,6 +912,97 @@ fn collection_depth(id: i64, collections: &[Collection]) -> u32 {
     depth
 }
 
+fn root_collection_id(id: i64, collections: &[Collection]) -> i64 {
+    let by_id: HashMap<i64, Option<i64>> =
+        collections.iter().map(|c| (c.id, c.parent_id)).collect();
+    let mut root_id = id;
+    let mut current = by_id.get(&id).copied().flatten();
+    while let Some(parent_id) = current {
+        root_id = parent_id;
+        current = by_id.get(&parent_id).copied().flatten();
+    }
+    root_id
+}
+
+fn collection_root_colors(collections: &[Collection]) -> HashMap<i64, String> {
+    collections
+        .iter()
+        .filter(|collection| collection.parent_id.is_none())
+        .map(|collection| {
+            (
+                collection.id,
+                collection
+                    .color
+                    .clone()
+                    .unwrap_or_else(|| fallback_collection_color(collection.id).to_string()),
+            )
+        })
+        .collect()
+}
+
+fn fallback_collection_color(collection_id: i64) -> &'static str {
+    COLLECTION_COLOR_PALETTE[(collection_id as usize) % COLLECTION_COLOR_PALETTE.len()]
+}
+
+fn parse_hex_color(color: &str) -> Option<(f64, f64, f64)> {
+    let hex = color.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((
+        f64::from(r) / 255.0,
+        f64::from(g) / 255.0,
+        f64::from(b) / 255.0,
+    ))
+}
+
+fn append_rounded_rect(
+    cr: &gtk4::cairo::Context,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    radius: f64,
+) {
+    let right = x + width;
+    let bottom = y + height;
+    let degrees = std::f64::consts::PI / 180.0;
+
+    cr.new_sub_path();
+    cr.arc(
+        right - radius,
+        y + radius,
+        radius,
+        -90.0 * degrees,
+        0.0 * degrees,
+    );
+    cr.arc(
+        right - radius,
+        bottom - radius,
+        radius,
+        0.0 * degrees,
+        90.0 * degrees,
+    );
+    cr.arc(
+        x + radius,
+        bottom - radius,
+        radius,
+        90.0 * degrees,
+        180.0 * degrees,
+    );
+    cr.arc(
+        x + radius,
+        y + radius,
+        radius,
+        180.0 * degrees,
+        270.0 * degrees,
+    );
+    cr.close_path();
+}
+
 fn install_collection_css() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -919,12 +1019,6 @@ fn install_collection_css() {
                 min-width: 20px;
                 min-height: 20px;
                 padding: 0;
-            }
-            .collection-root-icon {
-                color: @accent_color;
-            }
-            .collection-child-icon {
-                color: alpha(@accent_color, 0.72);
             }
             ",
         );
@@ -1021,7 +1115,7 @@ impl FolderRow {
         let row: Self = glib::Object::new();
         *row.imp().path.borrow_mut() = path;
 
-        let icon = gtk4::Image::from_icon_name("folder-symbolic");
+        let icon = gtk4::Image::from_icon_name(folder_icon_name(&row.path()));
         let name_label = gtk4::Label::new(Some(label));
         name_label.set_halign(gtk4::Align::Start);
         name_label.set_hexpand(true);
@@ -1054,6 +1148,23 @@ impl FolderRow {
         } else {
             None
         });
+    }
+}
+
+fn folder_icon_name(path: &Path) -> &'static str {
+    let s = path.to_string_lossy();
+    if s.contains("/Pictures") || s.contains("/photos") || s.contains("/Photos") {
+        "folder-pictures-symbolic"
+    } else if s.contains("/Downloads") || s.contains("/downloads") {
+        "folder-download-symbolic"
+    } else if s.contains("/Videos") || s.contains("/videos") {
+        "folder-videos-symbolic"
+    } else if s.contains("/Music") || s.contains("/music") {
+        "folder-music-symbolic"
+    } else if s.contains("/Documents") || s.contains("/documents") {
+        "folder-documents-symbolic"
+    } else {
+        "folder-symbolic"
     }
 }
 
@@ -1094,6 +1205,7 @@ glib::wrapper! {
 impl CollectionRow {
     pub fn new(
         collection: &Collection,
+        effective_color: &str,
         depth: u32,
         has_children: bool,
         is_collapsed: bool,
@@ -1117,15 +1229,16 @@ impl CollectionRow {
         disclosure.set_opacity(if has_children { 1.0 } else { 0.0 });
         *row.imp().disclosure_button.borrow_mut() = Some(disclosure.clone());
 
-        let icon = gtk4::Image::from_icon_name(if depth == 0 {
-            "tag-symbolic"
-        } else {
-            "tag-new-symbolic"
-        });
-        icon.add_css_class(if depth == 0 {
-            "collection-root-icon"
-        } else {
-            "collection-child-icon"
+        let icon = gtk4::DrawingArea::new();
+        icon.set_content_width(14);
+        icon.set_content_height(14);
+        let effective_color = effective_color.to_string();
+        icon.set_draw_func(move |_, cr, _, _| {
+            let (r, g, b) = parse_hex_color(&effective_color)
+                .unwrap_or_else(|| parse_hex_color("#57e389").unwrap());
+            cr.set_source_rgb(r, g, b);
+            append_rounded_rect(cr, 1.0, 1.0, 12.0, 12.0, 3.0);
+            let _ = cr.fill();
         });
         let name_label = gtk4::Label::new(Some(&collection.name));
         name_label.set_halign(gtk4::Align::Start);
