@@ -56,6 +56,39 @@ fn root_collection_id(id: i64, parent_by_id: &HashMap<i64, Option<i64>>) -> i64 
     root_id
 }
 
+fn register_pill_color(color: &str) -> String {
+    use std::sync::{LazyLock, Mutex};
+    static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+    let hex = color.trim_start_matches('#');
+    let key = hex.to_lowercase();
+    let class_name = format!("filmstrip-pill-color-{key}");
+
+    if let Ok(mut seen) = REGISTERED.lock() {
+        if seen.insert(key) && hex.len() == 6 {
+            if let (Ok(r), Ok(g), Ok(b)) = (
+                u8::from_str_radix(&hex[0..2], 16),
+                u8::from_str_radix(&hex[2..4], 16),
+                u8::from_str_radix(&hex[4..6], 16),
+            ) {
+                let provider = gtk4::CssProvider::new();
+                provider.load_from_string(&format!(
+                    ".{class_name} {{ background-color: rgba({r},{g},{b},0.92); }}"
+                ));
+                if let Some(display) = gdk4::Display::default() {
+                    gtk4::style_context_add_provider_for_display(
+                        &display,
+                        &provider,
+                        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                    );
+                }
+            }
+        }
+    }
+    class_name
+}
+
 fn collection_tag_color_map(
     collections: &[crate::library_index::Collection],
 ) -> HashMap<String, String> {
@@ -120,6 +153,7 @@ mod imp {
         pub pending_thumbnails: RefCell<Option<Arc<Mutex<std::collections::HashSet<PathBuf>>>>>,
         pub pending_notify_count: std::sync::atomic::AtomicU32,
         pub tag_root_color: RefCell<HashMap<String, String>>,
+        pub cached_tags: RefCell<Option<std::sync::Arc<crate::tags::TagDatabase>>>,
     }
 
     impl Default for FilmstripPane {
@@ -172,6 +206,7 @@ mod imp {
                 pending_thumbnails: RefCell::new(None),
                 pending_notify_count: std::sync::atomic::AtomicU32::new(0),
                 tag_root_color: RefCell::new(HashMap::new()),
+                cached_tags: RefCell::new(None),
             }
         }
     }
@@ -354,13 +389,15 @@ impl FilmstripPane {
             picture.add_css_class("thumbnail-frame");
 
             let index_label = gtk4::Label::new(None);
-            index_label.set_halign(gtk4::Align::Start);
+            index_label.set_halign(gtk4::Align::End);
             index_label.set_valign(gtk4::Align::End);
+            index_label.set_margin_end(5);
+            index_label.set_margin_bottom(5);
             index_label.add_css_class("filmstrip-index-label");
 
             let badge = gtk4::DrawingArea::new();
-            badge.set_content_width(10);
-            badge.set_content_height(10);
+            badge.set_content_width(12);
+            badge.set_content_height(12);
             badge.set_halign(gtk4::Align::Start);
             badge.set_valign(gtk4::Align::End);
             badge.set_margin_start(5);
@@ -702,42 +739,31 @@ impl FilmstripPane {
             filename_label.set_text(&entry.filename());
             index_label.set_text(&(list_item.position() + 1).to_string());
 
+            // Always hide the separate badge dot; collection color lives in the pill instead.
+            badge.set_visible(false);
+
             let badge_color = widget_weak_bind
                 .upgrade()
                 .and_then(|w| {
-                    let state = w.imp().state.borrow();
-                    let state = state.as_ref()?.borrow();
-                    let tags = state.tags.clone()?;
+                    let tags = w.imp().cached_tags.borrow().clone()?;
                     let path = entry.path();
                     let tag_root_color = w.imp().tag_root_color.borrow();
                     tags.tags_for_path(&path)
                         .into_iter()
                         .find_map(|tag| tag_root_color.get(&tag).cloned())
                 });
+
+            // Remove any previously applied color class from this recycled label.
+            let old_class: Option<String> =
+                unsafe { list_item.steal_data("fs-pill-class") };
+            if let Some(ref cls) = old_class {
+                index_label.remove_css_class(cls);
+            }
+
             if let Some(color) = badge_color {
-                badge.set_visible(true);
-                badge.set_draw_func(move |_, cr: &gtk4::cairo::Context, _, _| {
-                    if let Some(hex) = color.strip_prefix('#') {
-                        if hex.len() == 6 {
-                            if let (Ok(r), Ok(g), Ok(b)) = (
-                                u8::from_str_radix(&hex[0..2], 16),
-                                u8::from_str_radix(&hex[2..4], 16),
-                                u8::from_str_radix(&hex[4..6], 16),
-                            ) {
-                                cr.set_source_rgb(
-                                    f64::from(r) / 255.0,
-                                    f64::from(g) / 255.0,
-                                    f64::from(b) / 255.0,
-                                );
-                                cr.arc(5.0, 5.0, 4.5, 0.0, 2.0 * std::f64::consts::PI);
-                                let _ = cr.fill();
-                            }
-                        }
-                    }
-                });
-                badge.queue_draw();
-            } else {
-                badge.set_visible(false);
+                let class_name = register_pill_color(&color);
+                index_label.add_css_class(&class_name);
+                unsafe { list_item.set_data("fs-pill-class", class_name); }
             }
 
             match entry.thumbnail() {
@@ -923,11 +949,12 @@ impl FilmstripPane {
         provider.load_from_string(
             "
             .filmstrip-index-label {
-                font-size: 10px;
-                padding: 2px 4px;
-                background-color: rgba(0, 0, 0, 0.45);
+                font-size: 11px;
+                font-weight: 500;
+                padding: 2px 7px;
+                background-color: rgba(0, 0, 0, 0.55);
                 color: white;
-                border-radius: 0 3px 0 0;
+                border-radius: 10px;
             }
             .multi-selected {
                 outline: 2px solid @accent_color;
@@ -977,6 +1004,10 @@ impl FilmstripPane {
     pub fn refresh_collection_colors(&self, collections: &[crate::library_index::Collection]) {
         *self.imp().tag_root_color.borrow_mut() = collection_tag_color_map(collections);
         self.imp().list_view.queue_draw();
+    }
+
+    pub fn set_cached_tags(&self, tags: std::sync::Arc<crate::tags::TagDatabase>) {
+        *self.imp().cached_tags.borrow_mut() = Some(tags);
     }
 
     pub fn set_thumbnail_sender(

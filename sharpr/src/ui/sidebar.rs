@@ -1007,6 +1007,56 @@ fn install_collection_css() {
     });
 }
 
+
+fn apply_collection_badge_css(image: &gtk4::Image, color_hex: &str, full_opacity: bool) {
+    use std::sync::{LazyLock, Mutex};
+
+    static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+    let hex = color_hex.trim_start_matches('#');
+    if hex.len() != 6 {
+        return;
+    }
+    let (Ok(r), Ok(g), Ok(b)) = (
+        u8::from_str_radix(&hex[0..2], 16),
+        u8::from_str_radix(&hex[2..4], 16),
+        u8::from_str_radix(&hex[4..6], 16),
+    ) else {
+        return;
+    };
+
+    let alpha = if full_opacity { 1.0_f64 } else { 0.72_f64 };
+    let key = format!("{}_{:.0}", hex.to_lowercase(), alpha * 100.0);
+    let class_name = format!("coll-badge-{key}");
+
+    if let Ok(mut seen) = REGISTERED.lock() {
+        if seen.insert(key) {
+            let provider = gtk4::CssProvider::new();
+            // Apply background directly on the GtkImage node — no wrapper box needed.
+            // Using USER priority (800) only for this background-color rule so it wins
+            // over any Libadwaita navigation-sidebar foreground resets.
+            provider.load_from_string(&format!(
+                ".{class_name} {{ \
+                    background-color: rgba({r},{g},{b},{alpha}); \
+                    border-radius: 5px; \
+                    padding: 4px; \
+                    color: white; \
+                    -gtk-icon-size: 14px; \
+                }}"
+            ));
+            if let Some(display) = gtk4::gdk::Display::default() {
+                gtk4::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+            }
+        }
+    }
+    image.add_css_class(&class_name);
+}
+
 fn discover_image_child_folders(root: &Path, root_name: &str) -> Vec<(PathBuf, String)> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
@@ -1220,34 +1270,16 @@ impl CollectionRow {
         disclosure.set_opacity(if has_children { 1.0 } else { 0.0 });
         *row.imp().disclosure_button.borrow_mut() = Some(disclosure.clone());
 
-        let dot = gtk4::DrawingArea::new();
-        dot.set_content_width(10);
-        dot.set_content_height(10);
-        dot.set_valign(gtk4::Align::Center);
-        let dot_color = effective_color.to_string();
-        dot.set_draw_func(move |_, cr, _, _| {
-            let hex = dot_color.trim_start_matches('#');
-            if hex.len() == 6 {
-                if let (Ok(r), Ok(g), Ok(b)) = (
-                    u8::from_str_radix(&hex[0..2], 16),
-                    u8::from_str_radix(&hex[2..4], 16),
-                    u8::from_str_radix(&hex[4..6], 16),
-                ) {
-                    let alpha = if depth == 0 { 1.0 } else { 0.72 };
-                    cr.set_source_rgba(
-                        f64::from(r) / 255.0,
-                        f64::from(g) / 255.0,
-                        f64::from(b) / 255.0,
-                        alpha,
-                    );
-                    cr.arc(5.0, 5.0, 4.5, 0.0, 2.0 * std::f64::consts::PI);
-                    let _ = cr.fill();
-                }
-            }
-        });
+        // Badge: colored rounded square with a tag-symbolic icon.
+        // CSS background-color + border-radius applied directly to the Image widget
+        // avoids the Overlay layout issue that causes GtkImage overlay children to
+        // appear as "image-missing" when the icon context is incomplete.
+        let badge = gtk4::Image::from_icon_name("tag-symbolic");
+        badge.set_pixel_size(14);
+        badge.set_halign(gtk4::Align::Center);
+        badge.set_valign(gtk4::Align::Center);
+        apply_collection_badge_css(&badge, effective_color, depth == 0);
 
-        let icon = gtk4::Image::from_icon_name("tag-symbolic");
-        icon.set_pixel_size(16);
         let name_label = gtk4::Label::new(Some(&collection.name));
         name_label.set_halign(gtk4::Align::Start);
         name_label.set_hexpand(true);
@@ -1269,8 +1301,7 @@ impl CollectionRow {
         hbox.set_margin_top(6);
         hbox.set_margin_bottom(6);
         hbox.append(&disclosure);
-        hbox.append(&dot);
-        hbox.append(&icon);
+        hbox.append(&badge);
         hbox.append(&name_label);
         hbox.append(&count_label);
         if depth > 0 {

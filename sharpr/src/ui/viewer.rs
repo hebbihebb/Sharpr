@@ -76,14 +76,26 @@ fn apply_tag_chip_tint(chip: &gtk4::Box, color: &str) {
     static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
         LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
-    let key = color.trim_start_matches('#').to_lowercase();
+    let hex = color.trim_start_matches('#');
+    if hex.len() != 6 {
+        return;
+    }
+    let (Ok(r), Ok(g), Ok(b)) = (
+        u8::from_str_radix(&hex[0..2], 16),
+        u8::from_str_radix(&hex[2..4], 16),
+        u8::from_str_radix(&hex[4..6], 16),
+    ) else {
+        return;
+    };
+
+    let key = hex.to_lowercase();
     let class_name = format!("tag-chip-color-{key}");
 
     if let Ok(mut registered) = REGISTERED.lock() {
         if registered.insert(key) {
             let provider = gtk4::CssProvider::new();
             provider.load_from_string(&format!(
-                ".{class_name} {{ background-color: alpha({color}, 0.25); border-radius: 999px; }}"
+                ".{class_name} {{ background-color: rgba({r},{g},{b},0.25); border-radius: 999px; }}"
             ));
             if let Some(display) = gtk4::gdk::Display::default() {
                 gtk4::style_context_add_provider_for_display(
@@ -95,6 +107,45 @@ fn apply_tag_chip_tint(chip: &gtk4::Box, color: &str) {
         }
     }
     chip.add_css_class(&class_name);
+}
+
+fn apply_tag_osd_chip_tint(btn: &gtk4::Button, color: &str) {
+    use std::sync::{LazyLock, Mutex};
+
+    static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+    let hex = color.trim_start_matches('#');
+    if hex.len() != 6 {
+        return;
+    }
+    let (Ok(r), Ok(g), Ok(b)) = (
+        u8::from_str_radix(&hex[0..2], 16),
+        u8::from_str_radix(&hex[2..4], 16),
+        u8::from_str_radix(&hex[4..6], 16),
+    ) else {
+        return;
+    };
+
+    let key = hex.to_lowercase();
+    let class_name = format!("tag-osd-chip-color-{key}");
+
+    if let Ok(mut registered) = REGISTERED.lock() {
+        if registered.insert(key) {
+            let provider = gtk4::CssProvider::new();
+            provider.load_from_string(&format!(
+                ".{class_name} {{ background-color: rgba({r},{g},{b},0.35); }}"
+            ));
+            if let Some(display) = gtk4::gdk::Display::default() {
+                gtk4::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+            }
+        }
+    }
+    btn.add_css_class(&class_name);
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +176,7 @@ mod imp {
         pub picture: gtk4::Picture,
         pub metadata_chip: MetadataChip,
         pub tag_osd: gtk4::Box,
+        pub tag_chips_box: gtk4::Box,
         pub tag_label: gtk4::Label,
         pub tag_button: gtk4::Button,
         pub tag_add_button: gtk4::Button,
@@ -222,7 +274,7 @@ mod imp {
             metadata_chip.set_margin_end(16);
             metadata_chip.set_margin_bottom(4);
 
-            let tag_osd = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            let tag_osd = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
             tag_osd.add_css_class("osd");
             tag_osd.add_css_class("tag-osd");
             tag_osd.set_halign(gtk4::Align::Start);
@@ -231,11 +283,14 @@ mod imp {
             tag_osd.set_margin_bottom(16);
             tag_osd.set_visible(false);
 
+            let tag_chips_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+
+            // tag_button and tag_label are kept in the struct for backward-compat
+            // but are no longer appended to tag_osd; chips are used instead.
             let tag_button = gtk4::Button::new();
             tag_button.add_css_class("flat");
             tag_button.add_css_class("tag-osd-pill");
             tag_button.set_focus_on_click(false);
-            tag_button.set_tooltip_text(Some("Edit tags"));
 
             let tag_label = gtk4::Label::new(Some("Tags"));
             tag_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
@@ -249,7 +304,7 @@ mod imp {
             tag_add_button.set_focus_on_click(false);
             tag_add_button.set_tooltip_text(Some("Add or edit tags"));
 
-            tag_osd.append(&tag_button);
+            tag_osd.append(&tag_chips_box);
             tag_osd.append(&tag_add_button);
 
             let progress_bar = gtk4::ProgressBar::new();
@@ -338,6 +393,7 @@ mod imp {
                 picture,
                 metadata_chip,
                 tag_osd,
+                tag_chips_box,
                 tag_label,
                 tag_button,
                 tag_add_button,
@@ -1268,7 +1324,7 @@ impl ViewerPane {
         content.set_margin_bottom(12);
         content.set_margin_start(12);
         content.set_margin_end(12);
-        content.set_size_request(320, -1);
+        content.set_size_request(380, -1);
 
         let header_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         let title = gtk4::Label::new(Some("Tags"));
@@ -1281,8 +1337,9 @@ impl ViewerPane {
 
         let chips_scroll = gtk4::ScrolledWindow::new();
         chips_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-        chips_scroll.set_min_content_height(72);
-        chips_scroll.set_max_content_height(180);
+        chips_scroll.set_min_content_height(100);
+        chips_scroll.set_max_content_height(220);
+        chips_scroll.set_propagate_natural_height(true);
         chips_scroll.set_child(Some(&imp.tag_flowbox));
 
         content.append(&header_row);
@@ -1503,9 +1560,18 @@ impl ViewerPane {
         for tag in db.tags_for_path(&path) {
             let chip = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
             chip.add_css_class("pill");
+            chip.set_margin_start(2);
+            chip.set_margin_end(2);
+            chip.set_margin_top(2);
+            chip.set_margin_bottom(2);
             if let Some(color) = tag_to_color.get(&tag) {
                 apply_tag_chip_tint(&chip, color);
+            } else {
+                chip.add_css_class("tag-chip-neutral");
             }
+
+            let tag_icon = gtk4::Image::from_icon_name("tag-symbolic");
+            tag_icon.set_pixel_size(12);
 
             let label = gtk4::Label::new(Some(&tag));
             label.set_halign(gtk4::Align::Start);
@@ -1515,6 +1581,7 @@ impl ViewerPane {
             remove.set_focus_on_click(false);
             remove.set_tooltip_text(Some("Remove tag"));
 
+            chip.append(&tag_icon);
             chip.append(&label);
             chip.append(&remove);
             imp.tag_flowbox.insert(&chip, -1);
@@ -1557,20 +1624,71 @@ impl ViewerPane {
             return;
         };
 
-        let tags = db.tags_for_path(&path);
-        let summary = match tags.len() {
-            0 => "Add tag".to_string(),
-            1..=3 => tags.join(" · "),
-            _ => format!("{} +{}", tags[..3].join(" · "), tags.len() - 3),
-        };
-        let tooltip = if tags.is_empty() {
-            "Add tags".to_string()
-        } else {
-            format!("Tags: {}", tags.join(", "))
-        };
+        let tag_to_color = imp
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|state| state.borrow().library_index.clone())
+            .and_then(|index| index.list_collections().ok())
+            .map(|collections| collection_tag_color_map(&collections))
+            .unwrap_or_default();
 
-        imp.tag_label.set_text(&summary);
-        imp.tag_button.set_tooltip_text(Some(&tooltip));
+        while let Some(child) = imp.tag_chips_box.first_child() {
+            imp.tag_chips_box.remove(&child);
+        }
+
+        let tags = db.tags_for_path(&path);
+        const MAX_CHIPS: usize = 4;
+        let shown = tags.len().min(MAX_CHIPS);
+
+        for tag in &tags[..shown] {
+            let chip = gtk4::Button::new();
+            chip.add_css_class("flat");
+            chip.add_css_class("tag-osd-pill");
+            chip.set_focus_on_click(false);
+            chip.set_tooltip_text(Some(tag.as_str()));
+
+            let chip_inner = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+            let icon = gtk4::Image::from_icon_name("tag-symbolic");
+            icon.set_pixel_size(12);
+            let label = gtk4::Label::new(Some(tag.as_str()));
+            label.set_max_width_chars(12);
+            label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            chip_inner.append(&icon);
+            chip_inner.append(&label);
+            chip.set_child(Some(&chip_inner));
+
+            if let Some(color) = tag_to_color.get(tag.as_str()) {
+                apply_tag_osd_chip_tint(&chip, color);
+            }
+
+            imp.tag_chips_box.append(&chip);
+
+            let viewer_weak = self.downgrade();
+            chip.connect_clicked(move |_| {
+                if let Some(viewer) = viewer_weak.upgrade() {
+                    viewer.open_tag_popover();
+                }
+            });
+        }
+
+        if tags.len() > MAX_CHIPS {
+            let overflow = gtk4::Button::new();
+            overflow.add_css_class("flat");
+            overflow.add_css_class("tag-osd-pill");
+            overflow.set_focus_on_click(false);
+            overflow.set_tooltip_text(Some("Show all tags"));
+            let overflow_label = gtk4::Label::new(Some(&format!("+{}", tags.len() - MAX_CHIPS)));
+            overflow.set_child(Some(&overflow_label));
+            let viewer_weak = self.downgrade();
+            overflow.connect_clicked(move |_| {
+                if let Some(viewer) = viewer_weak.upgrade() {
+                    viewer.open_tag_popover();
+                }
+            });
+            imp.tag_chips_box.append(&overflow);
+        }
+
         imp.tag_osd.set_visible(imp.metadata_visible.get());
     }
 
@@ -2060,6 +2178,10 @@ fn install_viewer_osd_css() {
             .tag-osd-add {
                 min-width: 28px;
                 padding: 0;
+            }
+            .tag-chip-neutral {
+                background-color: rgba(255, 255, 255, 0.10);
+                border-radius: 999px;
             }
             .zoom-osd {
                 padding: 10px 18px;
