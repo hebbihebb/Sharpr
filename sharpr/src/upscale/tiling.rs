@@ -109,3 +109,69 @@ where
 
     Ok(output)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgb, RgbImage};
+
+    fn sample_image() -> RgbImage {
+        let mut img = RgbImage::new(3, 3);
+        for y in 0..3 {
+            for x in 0..3 {
+                img.put_pixel(x, y, Rgb([x as u8, y as u8, (x + y) as u8]));
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn process_tiled_reassembles_identity_tiles() {
+        let img = sample_image();
+        let config = TileConfig {
+            tile_size: 2,
+            overlap: 1,
+            scale: 1,
+        };
+        let mut progress = Vec::new();
+
+        let out = process_tiled(&img, &config, |fraction| progress.push(fraction), Ok).unwrap();
+
+        assert_eq!(out, img);
+        assert_eq!(progress, vec![0.25, 0.5, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn process_tiled_rejects_unexpected_tile_dimensions() {
+        let img = sample_image();
+        let config = TileConfig {
+            tile_size: 2,
+            overlap: 0,
+            scale: 2,
+        };
+
+        let err = process_tiled(
+            &img,
+            &config,
+            |_| {},
+            |tile| Ok(RgbImage::new(tile.width() + 1, tile.height() * 2)),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("output"));
+        assert!(err.contains("expected"));
+    }
+
+    #[test]
+    fn process_tiled_propagates_tile_processor_errors() {
+        let img = sample_image();
+        let config = TileConfig {
+            tile_size: 2,
+            overlap: 0,
+            scale: 1,
+        };
+
+        let err = process_tiled(&img, &config, |_| {}, |_| Err("tile failed".into())).unwrap_err();
+        assert_eq!(err, "tile failed");
+    }
+}

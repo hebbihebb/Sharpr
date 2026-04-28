@@ -63,3 +63,57 @@ fn which_binary(name: &str) -> Option<PathBuf> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("sharpr-{name}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn finds_supported_binary_on_path() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = temp_dir("which-binary");
+        let home = temp_dir("which-home");
+        let binary = dir.join("upscayl-bin");
+        std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
+
+        let original = std::env::var_os("PATH");
+        let original_home = std::env::var_os("HOME");
+        std::env::set_var("PATH", &dir);
+        std::env::set_var("HOME", &home);
+        std::env::remove_var("FLATPAK_ID");
+
+        let found = UpscaleDetector::find_realesrgan();
+
+        match original {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_file(&binary);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(found, Some(binary));
+    }
+}

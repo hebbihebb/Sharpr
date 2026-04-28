@@ -187,3 +187,87 @@ fn read_exif_tiff(path: &Path) -> Option<(bool, Vec<u8>)> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{DynamicImage, Rgba, RgbaImage};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("sharpr-{name}-{}-{nanos}.jpg", std::process::id()))
+    }
+
+    fn pixel_strip() -> DynamicImage {
+        let mut img = RgbaImage::new(2, 1);
+        img.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+        img.put_pixel(1, 0, Rgba([0, 0, 255, 255]));
+        DynamicImage::ImageRgba8(img)
+    }
+
+    fn jpeg_with_orientation(orientation: u16) -> Vec<u8> {
+        let mut tiff = Vec::new();
+        tiff.extend_from_slice(b"II");
+        tiff.extend_from_slice(&42u16.to_le_bytes());
+        tiff.extend_from_slice(&8u32.to_le_bytes());
+        tiff.extend_from_slice(&1u16.to_le_bytes());
+        tiff.extend_from_slice(&0x0112u16.to_le_bytes());
+        tiff.extend_from_slice(&3u16.to_le_bytes());
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&orientation.to_le_bytes());
+        tiff.extend_from_slice(&0u16.to_le_bytes());
+        tiff.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut exif = Vec::new();
+        exif.extend_from_slice(b"Exif\0\0");
+        exif.extend_from_slice(&tiff);
+
+        let mut jpeg = Vec::new();
+        jpeg.extend_from_slice(&[0xFF, 0xD8]);
+        jpeg.extend_from_slice(&[0xFF, 0xE1]);
+        jpeg.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+        jpeg.extend_from_slice(&exif);
+        jpeg.extend_from_slice(&[0xFF, 0xD9]);
+        jpeg
+    }
+
+    #[test]
+    fn apply_exif_orientation_rotates_clockwise() {
+        let out = apply_exif_orientation_value(pixel_strip(), 6).to_rgba8();
+        assert_eq!(out.dimensions(), (1, 2));
+        assert_eq!(*out.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
+        assert_eq!(*out.get_pixel(0, 1), Rgba([0, 0, 255, 255]));
+    }
+
+    #[test]
+    fn apply_exif_orientation_flips_horizontally() {
+        let out = apply_exif_orientation_value(pixel_strip(), 2).to_rgba8();
+        assert_eq!(out.dimensions(), (2, 1));
+        assert_eq!(*out.get_pixel(0, 0), Rgba([0, 0, 255, 255]));
+        assert_eq!(*out.get_pixel(1, 0), Rgba([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn extract_exif_data_reads_orientation_from_app1_segment() {
+        let path = temp_path("orientation");
+        std::fs::write(&path, jpeg_with_orientation(8)).unwrap();
+        let (_thumb, orientation) = extract_exif_data(&path, 0);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(orientation, 8);
+    }
+
+    #[test]
+    fn extract_exif_data_defaults_on_non_jpeg() {
+        let path = temp_path("not-jpeg");
+        std::fs::write(&path, b"not a jpeg").unwrap();
+        let (thumb, orientation) = extract_exif_data(&path, 0);
+        let _ = std::fs::remove_file(&path);
+        assert!(thumb.is_none());
+        assert_eq!(orientation, 1);
+    }
+}

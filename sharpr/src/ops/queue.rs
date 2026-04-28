@@ -76,3 +76,60 @@ pub fn new_queue() -> (OpQueue, Receiver<OpEvent>) {
     let (tx, rx) = async_channel::unbounded();
     (OpQueue(tx), rx)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queue_emits_added_progress_and_completed_events_in_order() {
+        let (queue, rx) = new_queue();
+        let handle = queue.add("Index folder");
+
+        match rx.recv_blocking().unwrap() {
+            OpEvent::Added { id, title } => {
+                assert_eq!(id, handle.id);
+                assert_eq!(title, "Index folder");
+            }
+            other => panic!("unexpected first event: {other:?}"),
+        }
+
+        handle.progress(Some(0.5));
+        match rx.recv_blocking().unwrap() {
+            OpEvent::Progress { id, fraction } => {
+                assert_eq!(id, handle.id);
+                assert_eq!(fraction, Some(0.5));
+            }
+            other => panic!("unexpected progress event: {other:?}"),
+        }
+
+        let id = handle.id;
+        handle.complete();
+        match rx.recv_blocking().unwrap() {
+            OpEvent::Completed(done_id) => assert_eq!(done_id, id),
+            other => panic!("unexpected completed event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn queue_assigns_monotonic_ids_and_emits_failures() {
+        let (queue, rx) = new_queue();
+        let first = queue.add("First");
+        let second = queue.add("Second");
+        let second_id = second.id;
+
+        assert!(second_id > first.id);
+
+        let _ = rx.recv_blocking().unwrap();
+        let _ = rx.recv_blocking().unwrap();
+        second.fail("boom");
+
+        match rx.recv_blocking().unwrap() {
+            OpEvent::Failed { id, msg } => {
+                assert_eq!(id, second_id);
+                assert_eq!(msg, "boom");
+            }
+            other => panic!("unexpected failed event: {other:?}"),
+        }
+    }
+}

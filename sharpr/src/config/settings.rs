@@ -100,7 +100,10 @@ impl Default for AppSettings {
 
 impl AppSettings {
     pub fn load() -> Self {
-        let settings = gio::Settings::new("io.github.hebbihebb.Sharpr");
+        Self::load_from_settings(gio::Settings::new("io.github.hebbihebb.Sharpr"))
+    }
+
+    fn load_from_settings(settings: gio::Settings) -> Self {
         let last_folder = string_path(&settings, "last-folder");
         let window_width = settings.int("window-width").clamp(400, 7680);
         let window_height = settings.int("window-height").clamp(300, 4320);
@@ -406,5 +409,143 @@ fn string_path(settings: &gio::Settings, key: &str) -> Option<PathBuf> {
         None
     } else {
         Some(PathBuf::from(value.as_str()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn settings_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn test_settings() -> gio::Settings {
+        let _guard = settings_test_lock().lock().unwrap();
+        let data_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
+        let source = gio::SettingsSchemaSource::from_directory(
+            &data_dir,
+            gio::SettingsSchemaSource::default().as_ref(),
+            false,
+        )
+        .expect("compiled test schema should be available");
+        let schema = source
+            .lookup("io.github.hebbihebb.Sharpr", true)
+            .expect("Sharpr schema should be loadable for tests");
+        let backend = gio::memory_settings_backend_new();
+        gio::Settings::new_full(&schema, Some(&backend), None::<&str>)
+    }
+
+    #[test]
+    fn load_normalizes_invalid_and_out_of_range_values() {
+        let settings = test_settings();
+        let _ = settings.set_int("window-width", 20);
+        let _ = settings.set_int("window-height", 99999);
+        let _ = settings.set_int("upscaler-quality", 5);
+        let _ = settings.set_int("upscaler-tile-size", 50000);
+        let _ = settings.set_int("upscaler-gpu-id", 99);
+        let _ = settings.set_int("thumbnail-cache-max", 2);
+        let _ = settings.set_string("upscaler-default-model", "bogus");
+        let _ = settings.set_string("upscaler-output-format", "tiff");
+        let _ = settings.set_string("upscaler-compression-mode", "zip");
+        let _ = settings.set_string("smart-tagger-model", "resnet34");
+        let _ = settings.set_string("upscale-backend", "mystery");
+        let _ = settings.set_string("onnx-upscale-model", "unknown");
+        let _ = settings.set_string("comfyui-url", "");
+        let _ = settings.set_string("library-root", "/tmp/library");
+        let _ = settings.set_string("upscaler-binary-path", "/tmp/upscaler");
+        let _ = settings.set_boolean("comfyui-enabled", true);
+        let _ = settings.set_boolean("show-upscale-ui", true);
+
+        let loaded = AppSettings::load_from_settings(settings);
+        assert_eq!(loaded.window_width, 400);
+        assert_eq!(loaded.window_height, 4320);
+        assert_eq!(loaded.upscaler_quality, 50);
+        assert_eq!(loaded.upscaler_tile_size, 4096);
+        assert_eq!(loaded.upscaler_gpu_id, 16);
+        assert_eq!(loaded.thumbnail_cache_max, 100);
+        assert_eq!(loaded.upscaler_default_model, "standard");
+        assert_eq!(loaded.upscaler_output_format, "auto");
+        assert_eq!(loaded.upscaler_compression_mode, "auto");
+        assert_eq!(loaded.smart_tagger_model, "resnet50-v1-7");
+        assert_eq!(loaded.upscale_backend, "cli");
+        assert_eq!(loaded.onnx_upscale_model, "swin2sr-lightweight-x2");
+        assert_eq!(loaded.comfyui_url, "http://127.0.0.1:8188");
+        assert_eq!(loaded.library_root, Some(PathBuf::from("/tmp/library")));
+        assert_eq!(
+            loaded.upscaler_binary_path,
+            Some(PathBuf::from("/tmp/upscaler"))
+        );
+        assert!(loaded.comfyui_enabled);
+        assert!(loaded.show_upscale_ui);
+    }
+
+    #[test]
+    fn save_clamps_and_normalizes_persisted_values() {
+        let settings = test_settings();
+        let app = AppSettings {
+            last_folder: Some(PathBuf::from("/tmp/last")),
+            metadata_visible: false,
+            window_width: 10,
+            window_height: 50000,
+            library_root: Some(PathBuf::from("/tmp/library")),
+            upscaler_binary_path: Some(PathBuf::from("/tmp/upscaler")),
+            upscaler_default_model: "weird".into(),
+            upscaler_output_format: "bmp".into(),
+            upscaler_compression_mode: "strange".into(),
+            upscaler_quality: 1000,
+            upscaler_tile_size: -7,
+            upscaler_gpu_id: 999,
+            thumbnail_cache_max: -5,
+            smart_tagger_model: "broken".into(),
+            show_upscale_ui: true,
+            upscale_backend: "mystery".into(),
+            onnx_upscale_model: "broken".into(),
+            comfyui_url: "http://localhost:9000".into(),
+            comfyui_enabled: true,
+            settings: settings.clone(),
+        };
+
+        app.save();
+
+        assert_eq!(settings.string("last-folder").as_str(), "/tmp/last");
+        assert!(!settings.boolean("metadata-visible"));
+        assert_eq!(settings.int("window-width"), 400);
+        assert_eq!(settings.int("window-height"), 4320);
+        assert_eq!(settings.string("library-root").as_str(), "/tmp/library");
+        assert_eq!(
+            settings.string("upscaler-binary-path").as_str(),
+            "/tmp/upscaler"
+        );
+        assert_eq!(
+            settings.string("upscaler-default-model").as_str(),
+            "standard"
+        );
+        assert_eq!(settings.string("upscaler-output-format").as_str(), "auto");
+        assert_eq!(
+            settings.string("upscaler-compression-mode").as_str(),
+            "auto"
+        );
+        assert_eq!(settings.int("upscaler-quality"), 100);
+        assert_eq!(settings.int("upscaler-tile-size"), 0);
+        assert_eq!(settings.int("upscaler-gpu-id"), 16);
+        assert_eq!(settings.int("thumbnail-cache-max"), 100);
+        assert_eq!(
+            settings.string("smart-tagger-model").as_str(),
+            "resnet50-v1-7"
+        );
+        assert_eq!(settings.string("upscale-backend").as_str(), "cli");
+        assert_eq!(
+            settings.string("onnx-upscale-model").as_str(),
+            "swin2sr-lightweight-x2"
+        );
+        assert_eq!(
+            settings.string("comfyui-url").as_str(),
+            "http://localhost:9000"
+        );
+        assert!(settings.boolean("comfyui-enabled"));
+        assert!(settings.boolean("show-upscale-ui"));
     }
 }
