@@ -27,9 +27,6 @@ type TagPromotedToCollectionCallback = Box<dyn Fn(String) + 'static>;
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
 ];
-const COLLECTION_COLOR_PALETTE: &[&str] = &[
-    "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
-];
 
 mod imp {
     use super::*;
@@ -941,66 +938,44 @@ fn collection_root_colors(collections: &[Collection]) -> HashMap<i64, String> {
 }
 
 fn fallback_collection_color(collection_id: i64) -> &'static str {
-    COLLECTION_COLOR_PALETTE[(collection_id as usize) % COLLECTION_COLOR_PALETTE.len()]
+    const PALETTE: &[&str] = &[
+        "#57e389",
+        "#62a0ea",
+        "#ff7800",
+        "#f5c211",
+        "#dc8add",
+        "#5bc8af",
+        "#e01b24",
+        "#9141ac",
+    ];
+    PALETTE[(collection_id as usize) % PALETTE.len()]
 }
 
-fn parse_hex_color(color: &str) -> Option<(f64, f64, f64)> {
-    let hex = color.strip_prefix('#')?;
-    if hex.len() != 6 {
-        return None;
+fn apply_icon_color(image: &gtk4::Image, color: &str) {
+    use std::sync::{LazyLock, Mutex};
+
+    static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+    let key = color
+        .replace([' ', '(', ')', ',', '#', '.'], "_")
+        .to_lowercase();
+    let class = format!("sharpr-icon-color-{key}");
+
+    if let Ok(mut seen) = REGISTERED.lock() {
+        if seen.insert(key) {
+            let provider = gtk4::CssProvider::new();
+            provider.load_from_string(&format!(".{class} {{ color: {color}; }}"));
+            if let Some(display) = gtk4::gdk::Display::default() {
+                gtk4::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk4::STYLE_PROVIDER_PRIORITY_USER,
+                );
+            }
+        }
     }
-    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-    Some((
-        f64::from(r) / 255.0,
-        f64::from(g) / 255.0,
-        f64::from(b) / 255.0,
-    ))
-}
-
-fn append_rounded_rect(
-    cr: &gtk4::cairo::Context,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    radius: f64,
-) {
-    let right = x + width;
-    let bottom = y + height;
-    let degrees = std::f64::consts::PI / 180.0;
-
-    cr.new_sub_path();
-    cr.arc(
-        right - radius,
-        y + radius,
-        radius,
-        -90.0 * degrees,
-        0.0 * degrees,
-    );
-    cr.arc(
-        right - radius,
-        bottom - radius,
-        radius,
-        0.0 * degrees,
-        90.0 * degrees,
-    );
-    cr.arc(
-        x + radius,
-        bottom - radius,
-        radius,
-        90.0 * degrees,
-        180.0 * degrees,
-    );
-    cr.arc(
-        x + radius,
-        y + radius,
-        radius,
-        180.0 * degrees,
-        270.0 * degrees,
-    );
-    cr.close_path();
+    image.add_css_class(&class);
 }
 
 fn install_collection_css() {
@@ -1115,7 +1090,12 @@ impl FolderRow {
         let row: Self = glib::Object::new();
         *row.imp().path.borrow_mut() = path;
 
-        let icon = gtk4::Image::from_icon_name(folder_icon_name(&row.path()));
+        let icon_name = folder_icon_name(&row.path());
+        let icon = gtk4::Image::from_icon_name(icon_name);
+        let folder_color = folder_icon_color(icon_name);
+        if let Some(color) = folder_color {
+            apply_icon_color(&icon, color);
+        }
         let name_label = gtk4::Label::new(Some(label));
         name_label.set_halign(gtk4::Align::Start);
         name_label.set_hexpand(true);
@@ -1148,6 +1128,17 @@ impl FolderRow {
         } else {
             None
         });
+    }
+}
+
+fn folder_icon_color(icon_name: &str) -> Option<&'static str> {
+    match icon_name {
+        "folder-pictures-symbolic" => Some("#62a0ea"),
+        "folder-download-symbolic" => Some("#e66100"),
+        "folder-videos-symbolic" => Some("#9141ac"),
+        "folder-music-symbolic" => Some("#57e389"),
+        "folder-documents-symbolic" => Some("#e5a50a"),
+        _ => None,
     }
 }
 
@@ -1229,17 +1220,34 @@ impl CollectionRow {
         disclosure.set_opacity(if has_children { 1.0 } else { 0.0 });
         *row.imp().disclosure_button.borrow_mut() = Some(disclosure.clone());
 
-        let icon = gtk4::DrawingArea::new();
-        icon.set_content_width(14);
-        icon.set_content_height(14);
-        let effective_color = effective_color.to_string();
-        icon.set_draw_func(move |_, cr, _, _| {
-            let (r, g, b) = parse_hex_color(&effective_color)
-                .unwrap_or_else(|| parse_hex_color("#57e389").unwrap());
-            cr.set_source_rgb(r, g, b);
-            append_rounded_rect(cr, 1.0, 1.0, 12.0, 12.0, 3.0);
-            let _ = cr.fill();
+        let dot = gtk4::DrawingArea::new();
+        dot.set_content_width(10);
+        dot.set_content_height(10);
+        dot.set_valign(gtk4::Align::Center);
+        let dot_color = effective_color.to_string();
+        dot.set_draw_func(move |_, cr, _, _| {
+            let hex = dot_color.trim_start_matches('#');
+            if hex.len() == 6 {
+                if let (Ok(r), Ok(g), Ok(b)) = (
+                    u8::from_str_radix(&hex[0..2], 16),
+                    u8::from_str_radix(&hex[2..4], 16),
+                    u8::from_str_radix(&hex[4..6], 16),
+                ) {
+                    let alpha = if depth == 0 { 1.0 } else { 0.72 };
+                    cr.set_source_rgba(
+                        f64::from(r) / 255.0,
+                        f64::from(g) / 255.0,
+                        f64::from(b) / 255.0,
+                        alpha,
+                    );
+                    cr.arc(5.0, 5.0, 4.5, 0.0, 2.0 * std::f64::consts::PI);
+                    let _ = cr.fill();
+                }
+            }
         });
+
+        let icon = gtk4::Image::from_icon_name("tag-symbolic");
+        icon.set_pixel_size(16);
         let name_label = gtk4::Label::new(Some(&collection.name));
         name_label.set_halign(gtk4::Align::Start);
         name_label.set_hexpand(true);
@@ -1261,6 +1269,7 @@ impl CollectionRow {
         hbox.set_margin_top(6);
         hbox.set_margin_bottom(6);
         hbox.append(&disclosure);
+        hbox.append(&dot);
         hbox.append(&icon);
         hbox.append(&name_label);
         hbox.append(&count_label);
