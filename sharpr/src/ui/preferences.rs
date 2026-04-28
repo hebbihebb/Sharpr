@@ -78,8 +78,10 @@ pub fn build_preferences_window(
         crate::tags::smart::SmartModel::Balanced,
         crate::tags::smart::SmartModel::Best,
     ];
-    let smart_model_labels: Vec<_> =
-        smart_models.iter().map(|model| model.display_name()).collect();
+    let smart_model_labels: Vec<_> = smart_models
+        .iter()
+        .map(|model| model.display_name())
+        .collect();
     let smart_model_choices = gtk4::StringList::new(&smart_model_labels);
     smart_model_row.set_model(Some(&smart_model_choices));
     let selected_model = crate::tags::smart::SmartModel::from_id(&settings.smart_tagger_model);

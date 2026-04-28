@@ -465,7 +465,6 @@ impl TagBrowser {
             );
         });
         widget.add_controller(gesture);
-
     }
 
     fn attach_drag_source(&self, widget: &gtk4::Widget, tag: &str) {
@@ -581,8 +580,12 @@ impl TagBrowser {
     fn sync_toolbar_state(&self) {
         let has_selection = !self.imp().selected_tags.borrow().is_empty();
         self.imp().clear_button.set_visible(has_selection);
-        self.imp().grid_button.set_active(self.imp().mode.get() == BrowserMode::Grid);
-        self.imp().list_button.set_active(self.imp().mode.get() == BrowserMode::List);
+        self.imp()
+            .grid_button
+            .set_active(self.imp().mode.get() == BrowserMode::Grid);
+        self.imp()
+            .list_button
+            .set_active(self.imp().mode.get() == BrowserMode::List);
     }
 
     fn show_empty_state(&self, text: &str) {
@@ -901,7 +904,12 @@ mod tests {
     fn shift_click_extends_across_visible_order() {
         let update = update_selection(
             BTreeSet::from(["beta".to_string()]),
-            &["alpha".into(), "beta".into(), "gamma".into(), "delta".into()],
+            &[
+                "alpha".into(),
+                "beta".into(),
+                "gamma".into(),
+                "delta".into(),
+            ],
             Some("beta".into()),
             "delta",
             SelectionModifiers {
@@ -911,11 +919,7 @@ mod tests {
         );
         assert_eq!(
             update.selected_tags,
-            BTreeSet::from([
-                "beta".to_string(),
-                "gamma".to_string(),
-                "delta".to_string()
-            ])
+            BTreeSet::from(["beta".to_string(), "gamma".to_string(), "delta".to_string()])
         );
     }
 }

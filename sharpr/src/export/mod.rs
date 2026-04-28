@@ -239,9 +239,9 @@ fn save_image(
                         ExtendedColorType::Rgb8,
                     )
                     .map_err(|e| ExportError::Encode(e.to_string()))
+            }
         }
     }
-}
 }
 
 // ---------------------------------------------------------------------------
