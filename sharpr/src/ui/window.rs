@@ -19,6 +19,7 @@ use crate::library_index::{normalize_collection_tag, BasicImageInfo, Collection,
 use crate::model::library::{CachedImageData, RawImageEntry, SortOrder};
 use crate::model::{ImageEntry, LibraryManager};
 use crate::tags::smart::SmartModel;
+use crate::thumbnails::worker::WorkerRequest;
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::ops_indicator::OpsIndicator;
@@ -364,6 +365,50 @@ fn collection_local_tags(collection: &Collection) -> Vec<String> {
         }
     }
     tags
+}
+
+fn apply_exact_tag_filter(
+    state: &Rc<RefCell<AppState>>,
+    filmstrip: &FilmstripPane,
+    viewer: &ViewerPane,
+    sidebar: &SidebarPane,
+    selected_tags: &[String],
+) {
+    let paths = {
+        let state_ref = state.borrow();
+        let Some(tags_db) = state_ref.tags.as_ref() else {
+            return;
+        };
+        match selected_tags {
+            [] => return,
+            [single] => tags_db.paths_for_tag(single),
+            many => tags_db.paths_for_all_tags(many),
+        }
+    };
+
+    {
+        let mut state_mut = state.borrow_mut();
+        state_mut.selected_paths.clear();
+        state_mut.scope = ViewScope::Search;
+    }
+
+    load_virtual_async(state, &paths);
+    let scope = state.borrow().scope.clone();
+    apply_scope_to_sidebar(&scope, sidebar);
+    filmstrip.refresh_virtual();
+
+    let first_path = state
+        .borrow()
+        .library
+        .entry_at(0)
+        .map(|entry: ImageEntry| entry.path());
+    if let Some(path) = first_path {
+        state.borrow_mut().library.selected_index = Some(0);
+        filmstrip.navigate_to(0);
+        viewer.load_image(path);
+    } else {
+        viewer.clear();
+    }
 }
 
 #[derive(Clone)]
@@ -1054,6 +1099,47 @@ impl SharprWindow {
         let toast_overlay = libadwaita::ToastOverlay::new();
         *self.imp().toast_overlay.borrow_mut() = Some(toast_overlay.clone());
         let tag_browser = state.borrow().tags.clone().map(TagBrowser::new);
+        if let Some(tag_browser) = tag_browser.as_ref() {
+            let collections = collections_for_sidebar(&state.borrow());
+            tag_browser.set_collections(collections);
+            if let Some(worker) = self.imp().thumbnail_worker.borrow().as_ref() {
+                let state_c = state.clone();
+                let visible_tx = worker.visible_sender();
+                let pending_set = worker.pending_set();
+                let generation = worker.generation_arc();
+                tag_browser.set_preview_hooks(
+                    move |path| state_c.borrow().library.cached_thumbnail(path),
+                    move |path| {
+                        if let Ok(pending) = pending_set.lock() {
+                            if pending.contains(path) {
+                                return;
+                            }
+                        }
+                        let path = path.to_path_buf();
+                        let should_enqueue = {
+                            let Ok(mut pending) = pending_set.lock() else {
+                                return;
+                            };
+                            pending.insert(path.clone())
+                        };
+                        if !should_enqueue {
+                            return;
+                        }
+                        if visible_tx
+                            .try_send(WorkerRequest::Thumbnail {
+                                path: path.clone(),
+                                gen: generation.load(std::sync::atomic::Ordering::Relaxed),
+                            })
+                            .is_err()
+                        {
+                            if let Ok(mut pending) = pending_set.lock() {
+                                pending.remove(&path);
+                            }
+                        }
+                    },
+                );
+            }
+        }
         let outer_split = libadwaita::OverlaySplitView::new();
         outer_split.set_max_sidebar_width(280.0);
         outer_split.set_min_sidebar_width(200.0);
@@ -1873,6 +1959,7 @@ impl SharprWindow {
             let sidebar_c = sidebar.clone();
             let filmstrip_c = filmstrip.clone();
             let state_c = state.clone();
+            let tag_browser_c = tag_browser.clone();
             move || {
                 let (collections, scope) = {
                     let state = state_c.borrow();
@@ -1880,6 +1967,9 @@ impl SharprWindow {
                 };
                 filmstrip_c.refresh_collection_colors(&collections);
                 sidebar_c.refresh_collections(&collections);
+                if let Some(tag_browser) = tag_browser_c.as_ref() {
+                    tag_browser.set_collections(collections.clone());
+                }
                 apply_scope_to_sidebar(&scope, &sidebar_c);
             }
         };
@@ -2548,7 +2638,7 @@ impl SharprWindow {
         }
 
         // Start draining thumbnail results.
-        self.start_thumbnail_poll(state.clone(), filmstrip.clone());
+        self.start_thumbnail_poll(state.clone(), filmstrip.clone(), tag_browser.clone());
         self.start_hash_poll(state.clone());
 
         // Quality filter in the filmstrip sort dropdown: re-derive paths from the
@@ -3086,26 +3176,29 @@ impl SharprWindow {
 
         if let Some(tag_browser) = tag_browser.as_ref() {
             let content_stack_c = content_stack.clone();
+            let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
+            let sidebar_c = sidebar.clone();
+            let state_c = state.clone();
             let window_weak = self.downgrade();
-            tag_browser.connect_tag_activated(move |tag| {
-                content_stack_c.set_visible_child_name("viewer");
-                let tag = tag.trim();
-                if tag.is_empty() {
+            tag_browser.connect_tags_activated(move |activation| {
+                if activation.tags.is_empty() {
                     return;
                 }
                 let Some(win) = window_weak.upgrade() else {
                     return;
                 };
-                let Some(revealer) = win.imp().inline_search_revealer.borrow().clone() else {
-                    return;
-                };
-                let Some(entry) = win.imp().inline_search_entry.borrow().clone() else {
-                    return;
-                };
-                revealer.set_reveal_child(true);
-                entry.set_text(tag);
-                entry.grab_focus();
-                entry.set_position(-1);
+                win.clear_inline_search(true);
+                apply_exact_tag_filter(
+                    &state_c,
+                    &filmstrip_c,
+                    &viewer_c,
+                    &sidebar_c,
+                    &activation.tags,
+                );
+                if activation.focus_viewer {
+                    content_stack_c.set_visible_child_name("viewer");
+                }
             });
         }
 
@@ -3737,7 +3830,12 @@ impl SharprWindow {
         }
     }
 
-    fn start_thumbnail_poll(&self, state: Rc<RefCell<AppState>>, filmstrip: FilmstripPane) {
+    fn start_thumbnail_poll(
+        &self,
+        state: Rc<RefCell<AppState>>,
+        filmstrip: FilmstripPane,
+        tag_browser: Option<TagBrowser>,
+    ) {
         let result_rx = self.imp().result_rx.borrow().clone();
         let Some(rx) = result_rx else { return };
         let window_weak = self.downgrade();
@@ -3808,6 +3906,9 @@ impl SharprWindow {
                 }
 
                 filmstrip.mark_thumbnail_ready(&result_path);
+                if let Some(tag_browser) = tag_browser.as_ref() {
+                    tag_browser.refresh_preview_for_path(&result_path);
+                }
 
                 if let Some(window) = window_weak.upgrade() {
                     if let Some(folder) = result_path.parent().map(|p| p.to_path_buf()) {

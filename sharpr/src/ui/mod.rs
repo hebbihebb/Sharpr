@@ -6,6 +6,7 @@ pub mod metadata_chip;
 pub mod ops_indicator;
 pub mod preferences;
 pub mod sidebar;
+pub mod tag_card;
 pub mod tag_browser;
 pub mod viewer;
 pub mod window;
