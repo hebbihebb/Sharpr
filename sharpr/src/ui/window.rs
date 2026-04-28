@@ -97,6 +97,116 @@ fn parse_collection_tags_input(input: &str) -> Vec<String> {
     tags
 }
 
+const SWATCH_PALETTE: &[&str] = &[
+    "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
+];
+
+fn parse_hex_color(color: &str) -> Option<(f64, f64, f64)> {
+    let hex = color.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((
+        f64::from(r) / 255.0,
+        f64::from(g) / 255.0,
+        f64::from(b) / 255.0,
+    ))
+}
+
+fn append_rounded_rect(
+    cr: &gtk4::cairo::Context,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    radius: f64,
+) {
+    let right = x + width;
+    let bottom = y + height;
+    let degrees = std::f64::consts::PI / 180.0;
+
+    cr.new_sub_path();
+    cr.arc(
+        right - radius,
+        y + radius,
+        radius,
+        -90.0 * degrees,
+        0.0 * degrees,
+    );
+    cr.arc(
+        right - radius,
+        bottom - radius,
+        radius,
+        0.0 * degrees,
+        90.0 * degrees,
+    );
+    cr.arc(
+        x + radius,
+        bottom - radius,
+        radius,
+        90.0 * degrees,
+        180.0 * degrees,
+    );
+    cr.arc(
+        x + radius,
+        y + radius,
+        radius,
+        180.0 * degrees,
+        270.0 * degrees,
+    );
+    cr.close_path();
+}
+
+fn build_color_swatch_row(selected: Option<&str>) -> (gtk4::Widget, Rc<RefCell<Option<String>>>) {
+    let selected_color = Rc::new(RefCell::new(selected.map(str::to_string)));
+    let flowbox = gtk4::FlowBox::new();
+    flowbox.set_max_children_per_line(8);
+    flowbox.set_row_spacing(4);
+    flowbox.set_column_spacing(4);
+    flowbox.set_selection_mode(gtk4::SelectionMode::None);
+    flowbox.set_halign(gtk4::Align::Start);
+
+    for color in SWATCH_PALETTE {
+        let button = gtk4::Button::new();
+        button.add_css_class("flat");
+        let swatch = gtk4::DrawingArea::new();
+        swatch.set_content_width(20);
+        swatch.set_content_height(20);
+
+        let color_string = (*color).to_string();
+        let selected_for_draw = selected_color.clone();
+        swatch.set_draw_func(move |_, cr, _, _| {
+            let (r, g, b) = parse_hex_color(&color_string)
+                .unwrap_or_else(|| parse_hex_color("#57e389").unwrap());
+            cr.set_source_rgb(r, g, b);
+            append_rounded_rect(cr, 1.0, 1.0, 18.0, 18.0, 4.0);
+            let _ = cr.fill();
+
+            if selected_for_draw.borrow().as_deref() == Some(color_string.as_str()) {
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.set_line_width(2.0);
+                append_rounded_rect(cr, 3.0, 3.0, 14.0, 14.0, 3.0);
+                let _ = cr.stroke();
+            }
+        });
+
+        button.set_child(Some(&swatch));
+        let selected_for_click = selected_color.clone();
+        let flowbox_for_click = flowbox.clone();
+        let color_for_click = (*color).to_string();
+        button.connect_clicked(move |_| {
+            *selected_for_click.borrow_mut() = Some(color_for_click.clone());
+            flowbox_for_click.queue_draw();
+        });
+        flowbox.insert(&button, -1);
+    }
+
+    (flowbox.upcast(), selected_color)
+}
+
 fn search_terms(query: &str) -> Vec<String> {
     query
         .split_whitespace()
@@ -124,6 +234,7 @@ fn show_new_collection_dialog<F>(
     let name_entry = gtk4::Entry::new();
     name_entry.set_placeholder_text(Some("Collection name"));
     name_entry.set_text(&initial_name);
+    let (color_swatch_row, selected_color) = build_color_swatch_row(None);
     let tags_entry = gtk4::Entry::new();
     tags_entry.set_placeholder_text(Some("Extra tags, comma separated"));
     tags_entry.set_text(&initial_extra_tags);
@@ -134,6 +245,7 @@ fn show_new_collection_dialog<F>(
     let entry_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
     entry_box.set_margin_top(6);
     entry_box.append(&name_entry);
+    entry_box.append(&color_swatch_row);
     entry_box.append(&info);
     entry_box.append(&tags_entry);
     dialog.set_extra_child(Some(&entry_box));
@@ -142,15 +254,17 @@ fn show_new_collection_dialog<F>(
     let refresh_d = refresh.clone();
     let name_clone = name_entry.clone();
     let tags_clone = tags_entry.clone();
+    let selected_color_clone = selected_color.clone();
     dialog.connect_response(None, move |_, response| {
         if response != "create" {
             return;
         }
         let name = name_clone.text().to_string();
         let extra_tags = parse_collection_tags_input(tags_clone.text().as_str());
+        let selected_color = selected_color_clone.borrow().clone();
         if let Some(idx) = state_d.borrow().library_index.clone() {
             let started = std::time::Instant::now();
-            match idx.create_collection(None, &name, &extra_tags, None, None) {
+            match idx.create_collection(None, &name, &extra_tags, selected_color.as_deref(), None) {
                 Ok(coll) => {
                     crate::bench_event!(
                         "collection.create",
@@ -1995,6 +2109,8 @@ impl SharprWindow {
                 let name_entry = gtk4::Entry::new();
                 name_entry.set_text(&collection.name);
                 name_entry.select_region(0, -1);
+                let (color_swatch_row, selected_color) =
+                    build_color_swatch_row(collection.color.as_deref());
                 let tags_entry = gtk4::Entry::new();
                 tags_entry.set_text(&collection.extra_tags.join(", "));
                 let info = gtk4::Label::new(Some("The collection name is also used as a tag."));
@@ -2004,6 +2120,7 @@ impl SharprWindow {
                 let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
                 box_.set_margin_top(6);
                 box_.append(&name_entry);
+                box_.append(&color_swatch_row);
                 box_.append(&info);
                 box_.append(&tags_entry);
                 dialog.set_extra_child(Some(&box_));
@@ -2015,6 +2132,8 @@ impl SharprWindow {
                 let sidebar_d = sidebar_c.clone();
                 let name_clone = name_entry.clone();
                 let tags_clone = tags_entry.clone();
+                let selected_color_clone = selected_color.clone();
+                let icon_name = collection.icon_name.clone();
                 dialog.connect_response(None, move |_, response| {
                     if response != "save" {
                         return;
@@ -2030,6 +2149,7 @@ impl SharprWindow {
                     };
                     let new_name = name_clone.text().to_string();
                     let new_extra_tags = parse_collection_tags_input(tags_clone.text().as_str());
+                    let selected_color = selected_color_clone.borrow().clone();
                     let old_scope_paths = collection_paths_from_services(&idx, &tags_db, id);
                     let old_primary = before.primary_tag.clone();
                     let new_primary = normalize_collection_tag(&new_name);
@@ -2039,7 +2159,13 @@ impl SharprWindow {
                         .cloned()
                         .collect();
                     let started = std::time::Instant::now();
-                    match idx.update_collection(id, &new_name, &new_extra_tags, None, None) {
+                    match idx.update_collection(
+                        id,
+                        &new_name,
+                        &new_extra_tags,
+                        selected_color.as_deref(),
+                        icon_name.as_deref(),
+                    ) {
                         Ok(()) => {
                             if !added_extra_tags.is_empty() {
                                 tags_db.add_tags_to_paths(&old_scope_paths, &added_extra_tags);
