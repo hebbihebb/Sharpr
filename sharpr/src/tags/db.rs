@@ -539,7 +539,7 @@ mod tests {
             vec![a.clone(), b.clone()]
         );
 
-        db.remove_tags_from_paths(&[a.clone()], &["portrait".into()]);
+        db.remove_tags_from_paths(std::slice::from_ref(&a), &["portrait".into()]);
         assert_eq!(db.tags_for_path(&a), vec!["people".to_string()]);
 
         std::fs::remove_dir_all(root).unwrap();

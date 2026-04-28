@@ -933,7 +933,7 @@ mod tests {
         let mut library = LibraryManager::new();
         library.insert_hash(path.clone(), 0xabcd);
 
-        let pending = library.load_virtual(&[path.clone()]);
+        let pending = library.load_virtual(std::slice::from_ref(&path));
 
         assert_eq!(pending, vec![path.clone()]);
         assert_eq!(library.all_hashes_snapshot(), vec![(path, 0xabcd)]);

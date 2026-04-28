@@ -193,6 +193,8 @@ struct TagPopoverState {
 mod imp {
     use super::*;
 
+    type PendingCommitFn = RefCell<Option<Box<dyn FnOnce(PathBuf)>>>;
+
     pub struct ViewerPane {
         pub content_box: gtk4::Box,
         /// Root stack: "view" = normal viewer, "compare" = before/after widget.
@@ -261,7 +263,7 @@ mod imp {
         pub post_save_cb: RefCell<Option<Box<dyn Fn()>>>,
         /// Commit action for the active convert operation (downscale or upscale).
         /// Called with the temp output path when the user clicks Commit.
-        pub pending_commit_fn: RefCell<Option<Box<dyn FnOnce(PathBuf)>>>,
+        pub pending_commit_fn: PendingCommitFn,
     }
 
     impl Default for ViewerPane {

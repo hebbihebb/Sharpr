@@ -803,7 +803,7 @@ impl LibraryIndex {
                     .collect::<Vec<_>>()
             };
             if !paths.is_empty() {
-                tags.add_tags_to_paths(&paths, &[collection.primary_tag.clone()]);
+                tags.add_tags_to_paths(&paths, std::slice::from_ref(&collection.primary_tag));
             }
             conn.execute(
                 "UPDATE collections

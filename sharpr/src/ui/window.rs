@@ -58,19 +58,14 @@ pub struct AppState {
 /// The single content scope currently loaded into the filmstrip.
 /// Replaces the implicit encoding previously spread across
 /// `library.current_folder` and `AppState::active_collection`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum ViewScope {
     Folder(PathBuf),
     Collection(i64),
     Duplicates,
+    #[default]
     Search,
     Quality(crate::quality::QualityClass),
-}
-
-impl Default for ViewScope {
-    fn default() -> Self {
-        ViewScope::Search
-    }
 }
 
 fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {

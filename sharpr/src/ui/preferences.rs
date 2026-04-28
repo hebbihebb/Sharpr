@@ -73,32 +73,37 @@ pub fn build_preferences_window(
 
     let smart_model_row = libadwaita::ComboRow::new();
     smart_model_row.set_title("Smart tagger model");
-    let smart_model_choices = gtk4::StringList::new(&[
-        "Fast (ResNet-18)",
-        "Balanced (ResNet-50)",
-        "Best (ResNet-152)",
-    ]);
+    let smart_models = [
+        crate::tags::smart::SmartModel::Fast,
+        crate::tags::smart::SmartModel::Balanced,
+        crate::tags::smart::SmartModel::Best,
+    ];
+    let smart_model_labels: Vec<_> =
+        smart_models.iter().map(|model| model.display_name()).collect();
+    let smart_model_choices = gtk4::StringList::new(&smart_model_labels);
     smart_model_row.set_model(Some(&smart_model_choices));
-    smart_model_row.set_selected(match settings.smart_tagger_model.as_str() {
-        "resnet18-v1-7" => 0,
-        "resnet152-v1-7" => 2,
-        _ => 1,
-    });
+    let selected_model = crate::tags::smart::SmartModel::from_id(&settings.smart_tagger_model);
+    let selected_idx = smart_models
+        .iter()
+        .position(|model| *model == selected_model)
+        .unwrap_or(1);
+    smart_model_row.set_selected(selected_idx as u32);
 
     {
         let parent_c = parent.clone();
+        let available_smart_models = smart_models;
         smart_model_row.connect_selected_notify(move |row| {
-            let model_id = match row.selected() {
-                0 => "resnet18-v1-7",
-                2 => "resnet152-v1-7",
-                _ => "resnet50-v1-7",
-            };
+            let model = available_smart_models
+                .get(row.selected() as usize)
+                .copied()
+                .unwrap_or(crate::tags::smart::SmartModel::Balanced);
+            let model_id = model.id();
             parent_c
                 .app_state()
                 .borrow_mut()
                 .settings
                 .set_smart_tagger_model(model_id);
-            parent_c.reload_smart_tagger_model(crate::tags::smart::SmartModel::from_id(model_id));
+            parent_c.reload_smart_tagger_model(model);
         });
     }
     smart_group.add(&smart_model_row);

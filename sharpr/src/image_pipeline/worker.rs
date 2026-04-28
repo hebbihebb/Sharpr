@@ -65,50 +65,47 @@ impl PreviewWorker {
             let rx = req_rx.clone();
             let tx = result_tx.clone();
             let gen_arc = current_gen.clone();
-            std::thread::spawn(move || loop {
-                match rx.recv_blocking() {
-                    Ok(req) => {
-                        if req.gen != gen_arc.load(Ordering::Relaxed) {
-                            crate::bench_event!(
-                                "preview.skip_stale",
-                                serde_json::json!({
-                                    "path": req.path.display().to_string(),
-                                    "request_gen": req.gen,
-                                    "current_gen": gen_arc.load(Ordering::Relaxed),
-                                }),
-                            );
-                            continue;
-                        }
-                        let started = Instant::now();
-                        let image = decode_preview(&req.path, PreviewDecodeMode::Viewer);
-                        // Check again — user may have navigated during decode.
-                        if req.gen != gen_arc.load(Ordering::Relaxed) {
-                            crate::bench_event!(
-                                "preview.stale_result",
-                                serde_json::json!({
-                                    "path": req.path.display().to_string(),
-                                    "gen": req.gen,
-                                    "duration_ms": crate::bench::duration_ms(started),
-                                }),
-                            );
-                            continue;
-                        }
+            std::thread::spawn(move || {
+                while let Ok(req) = rx.recv_blocking() {
+                    if req.gen != gen_arc.load(Ordering::Relaxed) {
                         crate::bench_event!(
-                            "preview.decode_finish",
+                            "preview.skip_stale",
+                            serde_json::json!({
+                                "path": req.path.display().to_string(),
+                                "request_gen": req.gen,
+                                "current_gen": gen_arc.load(Ordering::Relaxed),
+                            }),
+                        );
+                        continue;
+                    }
+                    let started = Instant::now();
+                    let image = decode_preview(&req.path, PreviewDecodeMode::Viewer);
+                    // Check again — user may have navigated during decode.
+                    if req.gen != gen_arc.load(Ordering::Relaxed) {
+                        crate::bench_event!(
+                            "preview.stale_result",
                             serde_json::json!({
                                 "path": req.path.display().to_string(),
                                 "gen": req.gen,
-                                "success": image.is_ok(),
                                 "duration_ms": crate::bench::duration_ms(started),
                             }),
                         );
-                        let _ = tx.send_blocking(PreviewResult {
-                            path: req.path,
-                            gen: req.gen,
-                            image,
-                        });
+                        continue;
                     }
-                    Err(_) => break,
+                    crate::bench_event!(
+                        "preview.decode_finish",
+                        serde_json::json!({
+                            "path": req.path.display().to_string(),
+                            "gen": req.gen,
+                            "success": image.is_ok(),
+                            "duration_ms": crate::bench::duration_ms(started),
+                        }),
+                    );
+                    let _ = tx.send_blocking(PreviewResult {
+                        path: req.path,
+                        gen: req.gen,
+                        image,
+                    });
                 }
             });
         }
@@ -174,22 +171,19 @@ impl MetadataWorker {
         let current_gen = Arc::new(AtomicU64::new(0));
         let gen_arc = current_gen.clone();
 
-        std::thread::spawn(move || loop {
-            match req_rx.recv_blocking() {
-                Ok(req) => {
-                    if req.gen != gen_arc.load(Ordering::Relaxed) {
-                        continue;
-                    }
-                    let metadata = ImageMetadata::load(&req.path);
-                    if req.gen != gen_arc.load(Ordering::Relaxed) {
-                        continue;
-                    }
-                    let _ = result_tx.send_blocking(MetadataResult {
-                        gen: req.gen,
-                        metadata,
-                    });
+        std::thread::spawn(move || {
+            while let Ok(req) = req_rx.recv_blocking() {
+                if req.gen != gen_arc.load(Ordering::Relaxed) {
+                    continue;
                 }
-                Err(_) => break,
+                let metadata = ImageMetadata::load(&req.path);
+                if req.gen != gen_arc.load(Ordering::Relaxed) {
+                    continue;
+                }
+                let _ = result_tx.send_blocking(MetadataResult {
+                    gen: req.gen,
+                    metadata,
+                });
             }
         });
 

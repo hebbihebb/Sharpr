@@ -42,17 +42,17 @@ pub struct ExportResult {
 
 #[derive(Debug)]
 pub enum ExportError {
-    DecodeError(String),
-    EncodeError(String),
-    IoError(String),
+    Decode(String),
+    Encode(String),
+    Io(String),
 }
 
 impl std::fmt::Display for ExportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DecodeError(s) => write!(f, "decode error: {s}"),
-            Self::EncodeError(s) => write!(f, "encode error: {s}"),
-            Self::IoError(s) => write!(f, "I/O error: {s}"),
+            Self::Decode(s) => write!(f, "decode error: {s}"),
+            Self::Encode(s) => write!(f, "encode error: {s}"),
+            Self::Io(s) => write!(f, "I/O error: {s}"),
         }
     }
 }
@@ -67,13 +67,13 @@ impl std::fmt::Display for ExportError {
 pub fn export_image(source: &Path, config: &ExportConfig) -> Result<ExportResult, ExportError> {
     let img = {
         let file = std::fs::File::open(source)
-            .map_err(|e| ExportError::IoError(format!("open {}: {e}", source.display())))?;
+            .map_err(|e| ExportError::Io(format!("open {}: {e}", source.display())))?;
         let reader = image::ImageReader::new(std::io::BufReader::new(file))
             .with_guessed_format()
-            .map_err(|e| ExportError::DecodeError(e.to_string()))?;
+            .map_err(|e| ExportError::Decode(e.to_string()))?;
         let decoded = reader
             .decode()
-            .map_err(|e| ExportError::DecodeError(e.to_string()))?;
+            .map_err(|e| ExportError::Decode(e.to_string()))?;
         apply_exif_orientation(decoded, source)
     };
 
@@ -135,13 +135,13 @@ pub fn export_to_path(
 ) -> Result<(), ExportError> {
     let img = {
         let file = std::fs::File::open(source)
-            .map_err(|e| ExportError::IoError(format!("open {}: {e}", source.display())))?;
+            .map_err(|e| ExportError::Io(format!("open {}: {e}", source.display())))?;
         let reader = image::ImageReader::new(std::io::BufReader::new(file))
             .with_guessed_format()
-            .map_err(|e| ExportError::DecodeError(e.to_string()))?;
+            .map_err(|e| ExportError::Decode(e.to_string()))?;
         let decoded = reader
             .decode()
-            .map_err(|e| ExportError::DecodeError(e.to_string()))?;
+            .map_err(|e| ExportError::Decode(e.to_string()))?;
         apply_exif_orientation(decoded, source)
     };
     let img = resize_if_needed(img, max_edge);
@@ -192,7 +192,7 @@ fn save_image(
     use std::io::BufWriter;
 
     let file = std::fs::File::create(output)
-        .map_err(|e| ExportError::IoError(format!("create {}: {e}", output.display())))?;
+        .map_err(|e| ExportError::Io(format!("create {}: {e}", output.display())))?;
     let writer = BufWriter::new(file);
 
     match format {
@@ -205,7 +205,7 @@ fn save_image(
                     rgb.height(),
                     ExtendedColorType::Rgb8,
                 )
-                .map_err(|e| ExportError::EncodeError(e.to_string()))
+                .map_err(|e| ExportError::Encode(e.to_string()))
         }
         ExportFormat::Png => {
             let rgba = img.to_rgba8();
@@ -216,7 +216,7 @@ fn save_image(
                     rgba.height(),
                     ExtendedColorType::Rgba8,
                 )
-                .map_err(|e| ExportError::EncodeError(e.to_string()))
+                .map_err(|e| ExportError::Encode(e.to_string()))
         }
         ExportFormat::Webp => {
             if img.color().has_alpha() {
@@ -228,7 +228,7 @@ fn save_image(
                         rgba.height(),
                         ExtendedColorType::Rgba8,
                     )
-                    .map_err(|e| ExportError::EncodeError(e.to_string()))
+                    .map_err(|e| ExportError::Encode(e.to_string()))
             } else {
                 let rgb = img.to_rgb8();
                 WebPEncoder::new_lossless(writer)
@@ -238,10 +238,10 @@ fn save_image(
                         rgb.height(),
                         ExtendedColorType::Rgb8,
                     )
-                    .map_err(|e| ExportError::EncodeError(e.to_string()))
-            }
+                    .map_err(|e| ExportError::Encode(e.to_string()))
         }
     }
+}
 }
 
 // ---------------------------------------------------------------------------
