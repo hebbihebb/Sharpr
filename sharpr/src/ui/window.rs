@@ -1031,6 +1031,10 @@ impl SharprWindow {
             );
         }
 
+        if let Some(tags) = state.borrow().tags.clone() {
+            filmstrip.set_cached_tags(tags);
+        }
+
         if let Some(worker) = self.imp().preview_worker.borrow().as_ref() {
             viewer.set_preview_worker(worker.handle(), preview_result_rx);
         }

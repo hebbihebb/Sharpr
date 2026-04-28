@@ -32,14 +32,7 @@ const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
 const BUFFER_ROWS: u32 = 2000;
 const FALLBACK_VISIBLE_ROWS: u32 = 40;
 const COLLECTION_COLOR_PALETTE: &[&str] = &[
-    "#57e389",
-    "#62a0ea",
-    "#ff7800",
-    "#f5c211",
-    "#dc8add",
-    "#5bc8af",
-    "#e01b24",
-    "#9141ac",
+    "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
 ];
 
 fn fallback_collection_color(collection_id: i64) -> &'static str {
@@ -389,9 +382,10 @@ impl FilmstripPane {
             picture.add_css_class("thumbnail-frame");
 
             let index_label = gtk4::Label::new(None);
-            index_label.set_halign(gtk4::Align::End);
+            index_label.set_halign(gtk4::Align::Start);
             index_label.set_valign(gtk4::Align::End);
-            index_label.set_margin_end(5);
+            index_label.set_xalign(0.0);
+            index_label.set_margin_start(5);
             index_label.set_margin_bottom(5);
             index_label.add_css_class("filmstrip-index-label");
 
@@ -742,20 +736,17 @@ impl FilmstripPane {
             // Always hide the separate badge dot; collection color lives in the pill instead.
             badge.set_visible(false);
 
-            let badge_color = widget_weak_bind
-                .upgrade()
-                .and_then(|w| {
-                    let tags = w.imp().cached_tags.borrow().clone()?;
-                    let path = entry.path();
-                    let tag_root_color = w.imp().tag_root_color.borrow();
-                    tags.tags_for_path(&path)
-                        .into_iter()
-                        .find_map(|tag| tag_root_color.get(&tag).cloned())
-                });
+            let badge_color = widget_weak_bind.upgrade().and_then(|w| {
+                let tags = w.imp().cached_tags.borrow().clone()?;
+                let path = entry.path();
+                let tag_root_color = w.imp().tag_root_color.borrow();
+                tags.tags_for_path(&path)
+                    .into_iter()
+                    .find_map(|tag| tag_root_color.get(&tag).cloned())
+            });
 
             // Remove any previously applied color class from this recycled label.
-            let old_class: Option<String> =
-                unsafe { list_item.steal_data("fs-pill-class") };
+            let old_class: Option<String> = unsafe { list_item.steal_data("fs-pill-class") };
             if let Some(ref cls) = old_class {
                 index_label.remove_css_class(cls);
             }
@@ -763,7 +754,9 @@ impl FilmstripPane {
             if let Some(color) = badge_color {
                 let class_name = register_pill_color(&color);
                 index_label.add_css_class(&class_name);
-                unsafe { list_item.set_data("fs-pill-class", class_name); }
+                unsafe {
+                    list_item.set_data("fs-pill-class", class_name);
+                }
             }
 
             match entry.thumbnail() {
@@ -951,7 +944,7 @@ impl FilmstripPane {
             .filmstrip-index-label {
                 font-size: 11px;
                 font-weight: 500;
-                padding: 2px 7px;
+                padding: 2px 6px;
                 background-color: rgba(0, 0, 0, 0.55);
                 color: white;
                 border-radius: 10px;

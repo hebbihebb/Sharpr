@@ -1398,7 +1398,8 @@ mod tests {
     #[test]
     fn create_collection_rejects_duplicate_name() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        idx.create_collection(None, "Pinned", &[], None, None).unwrap();
+        idx.create_collection(None, "Pinned", &[], None, None)
+            .unwrap();
         assert!(idx
             .create_collection(None, "Pinned", &[], None, None)
             .is_err());

@@ -14,24 +14,14 @@ use crate::ui::window::AppState;
 use crate::upscale::BeforeAfterViewer;
 
 const TAG_CHIP_COLOR_PALETTE: &[&str] = &[
-    "#57e389",
-    "#62a0ea",
-    "#ff7800",
-    "#f5c211",
-    "#dc8add",
-    "#5bc8af",
-    "#e01b24",
-    "#9141ac",
+    "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
 ];
 
 fn fallback_collection_color(collection_id: i64) -> &'static str {
     TAG_CHIP_COLOR_PALETTE[(collection_id as usize) % TAG_CHIP_COLOR_PALETTE.len()]
 }
 
-fn root_collection_id(
-    collection_id: i64,
-    parent_by_id: &HashMap<i64, Option<i64>>,
-) -> i64 {
+fn root_collection_id(collection_id: i64, parent_by_id: &HashMap<i64, Option<i64>>) -> i64 {
     let mut root_id = collection_id;
     let mut current = parent_by_id.get(&collection_id).copied().flatten();
     while let Some(parent_id) = current {
@@ -107,6 +97,42 @@ fn apply_tag_chip_tint(chip: &gtk4::Box, color: &str) {
         }
     }
     chip.add_css_class(&class_name);
+}
+
+fn apply_tag_icon_tint(icon: &gtk4::Image, color: &str) {
+    use std::sync::{LazyLock, Mutex};
+
+    static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+    let key = color
+        .replace([' ', '(', ')', ',', '#', '.'], "_")
+        .to_lowercase();
+    let class_name = format!("tag-icon-color-{key}");
+
+    if let Ok(mut registered) = REGISTERED.lock() {
+        if registered.insert(key) {
+            let provider = gtk4::CssProvider::new();
+            provider.load_from_string(&format!(".{class_name} {{ color: {color}; }}"));
+            if let Some(display) = gtk4::gdk::Display::default() {
+                gtk4::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk4::STYLE_PROVIDER_PRIORITY_USER,
+                );
+            }
+        }
+    }
+
+    icon.add_css_class(&class_name);
+}
+
+fn configure_tag_popover_chip(chip: &gtk4::Box) {
+    chip.add_css_class("tag-popover-chip");
+    chip.set_margin_start(2);
+    chip.set_margin_end(2);
+    chip.set_margin_top(2);
+    chip.set_margin_bottom(2);
 }
 
 fn apply_tag_osd_chip_tint(btn: &gtk4::Button, color: &str) {
@@ -1560,18 +1586,19 @@ impl ViewerPane {
         for tag in db.tags_for_path(&path) {
             let chip = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
             chip.add_css_class("pill");
-            chip.set_margin_start(2);
-            chip.set_margin_end(2);
-            chip.set_margin_top(2);
-            chip.set_margin_bottom(2);
-            if let Some(color) = tag_to_color.get(&tag) {
+            configure_tag_popover_chip(&chip);
+            let tag_color = tag_to_color.get(&tag).cloned();
+            if let Some(color) = tag_color.as_deref() {
                 apply_tag_chip_tint(&chip, color);
             } else {
                 chip.add_css_class("tag-chip-neutral");
             }
 
-            let tag_icon = gtk4::Image::from_icon_name("tag-symbolic");
+            let tag_icon = gtk4::Image::from_icon_name("bookmark-new-symbolic");
             tag_icon.set_pixel_size(12);
+            if let Some(color) = tag_color.as_deref() {
+                apply_tag_icon_tint(&tag_icon, color);
+            }
 
             let label = gtk4::Label::new(Some(&tag));
             label.set_halign(gtk4::Align::Start);
@@ -1649,7 +1676,7 @@ impl ViewerPane {
             chip.set_tooltip_text(Some(tag.as_str()));
 
             let chip_inner = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-            let icon = gtk4::Image::from_icon_name("tag-symbolic");
+            let icon = gtk4::Image::from_icon_name("bookmark-new-symbolic");
             icon.set_pixel_size(12);
             let label = gtk4::Label::new(Some(tag.as_str()));
             label.set_max_width_chars(12);
@@ -1660,6 +1687,7 @@ impl ViewerPane {
 
             if let Some(color) = tag_to_color.get(tag.as_str()) {
                 apply_tag_osd_chip_tint(&chip, color);
+                apply_tag_icon_tint(&icon, color);
             }
 
             imp.tag_chips_box.append(&chip);
@@ -2182,6 +2210,9 @@ fn install_viewer_osd_css() {
             .tag-chip-neutral {
                 background-color: rgba(255, 255, 255, 0.10);
                 border-radius: 999px;
+            }
+            .tag-popover-chip {
+                padding: 4px 8px;
             }
             .zoom-osd {
                 padding: 10px 18px;
