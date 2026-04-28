@@ -765,9 +765,8 @@ fn maybe_download_model(model: SmartModel) {
             Ok(())
         })();
 
-        if let Err(err) = result {
+        if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
-            eprintln!("Smart tagger model download aborted: {err}");
         }
     });
 }

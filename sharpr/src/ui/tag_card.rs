@@ -29,6 +29,7 @@ impl TagCard {
         let preview_overlay = gtk4::Overlay::new();
         preview_overlay.add_css_class("tag-card-preview");
         preview_overlay.set_size_request(-1, 136);
+        preview_overlay.set_overflow(gtk4::Overflow::Hidden);
 
         let picture = gtk4::Picture::new();
         picture.set_can_shrink(true);
@@ -191,7 +192,6 @@ fn install_css() {
                 border-top-left-radius: 18px;
                 border-top-right-radius: 18px;
                 background: linear-gradient(160deg, alpha(@accent_color, 0.14), alpha(@window_fg_color, 0.03));
-                overflow: hidden;
             }
             .tag-card-placeholder {
                 color: alpha(@window_fg_color, 0.7);
