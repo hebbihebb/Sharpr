@@ -2,6 +2,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Once};
@@ -11,6 +12,90 @@ use crate::tags::TagDatabase;
 use crate::ui::metadata_chip::MetadataChip;
 use crate::ui::window::AppState;
 use crate::upscale::BeforeAfterViewer;
+
+const TAG_CHIP_COLOR_PALETTE: &[&str] = &[
+    "#57e389",
+    "#62a0ea",
+    "#ff7800",
+    "#f5c211",
+    "#dc8add",
+    "#5bc8af",
+    "#e01b24",
+    "#9141ac",
+];
+
+fn fallback_collection_color(collection_id: i64) -> &'static str {
+    TAG_CHIP_COLOR_PALETTE[(collection_id as usize) % TAG_CHIP_COLOR_PALETTE.len()]
+}
+
+fn root_collection_id(
+    collection_id: i64,
+    parent_by_id: &HashMap<i64, Option<i64>>,
+) -> i64 {
+    let mut root_id = collection_id;
+    let mut current = parent_by_id.get(&collection_id).copied().flatten();
+    while let Some(parent_id) = current {
+        root_id = parent_id;
+        current = parent_by_id.get(&parent_id).copied().flatten();
+    }
+    root_id
+}
+
+fn collection_tag_color_map(
+    collections: &[crate::library_index::Collection],
+) -> HashMap<String, String> {
+    let parent_by_id: HashMap<i64, Option<i64>> = collections
+        .iter()
+        .map(|collection| (collection.id, collection.parent_id))
+        .collect();
+    let collection_by_id: HashMap<i64, &crate::library_index::Collection> = collections
+        .iter()
+        .map(|collection| (collection.id, collection))
+        .collect();
+    let mut tag_to_color = HashMap::new();
+
+    for collection in collections {
+        let root_id = root_collection_id(collection.id, &parent_by_id);
+        let resolved_color = collection_by_id
+            .get(&root_id)
+            .and_then(|root| root.color.clone())
+            .unwrap_or_else(|| fallback_collection_color(root_id).to_string());
+
+        tag_to_color.insert(collection.primary_tag.clone(), resolved_color.clone());
+        for tag in &collection.extra_tags {
+            tag_to_color.insert(tag.clone(), resolved_color.clone());
+        }
+    }
+
+    tag_to_color
+}
+
+fn apply_tag_chip_tint(chip: &gtk4::Box, color: &str) {
+    use std::sync::{LazyLock, Mutex};
+
+    static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+    let key = color.trim_start_matches('#').to_lowercase();
+    let class_name = format!("tag-chip-color-{key}");
+
+    if let Ok(mut registered) = REGISTERED.lock() {
+        if registered.insert(key) {
+            let provider = gtk4::CssProvider::new();
+            provider.load_from_string(&format!(
+                ".{class_name} {{ background-color: alpha({color}, 0.25); border-radius: 999px; }}"
+            ));
+            if let Some(display) = gtk4::gdk::Display::default() {
+                gtk4::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+            }
+        }
+    }
+    chip.add_css_class(&class_name);
+}
 
 // ---------------------------------------------------------------------------
 // ViewerPane
@@ -1400,6 +1485,15 @@ impl ViewerPane {
             imp.tag_flowbox.remove(&child);
         }
 
+        let tag_to_color = imp
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|state| state.borrow().library_index.clone())
+            .and_then(|index| index.list_collections().ok())
+            .map(|collections| collection_tag_color_map(&collections))
+            .unwrap_or_default();
+
         let state = imp.tag_state.borrow();
         let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) else {
             return;
@@ -1409,6 +1503,9 @@ impl ViewerPane {
         for tag in db.tags_for_path(&path) {
             let chip = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
             chip.add_css_class("pill");
+            if let Some(color) = tag_to_color.get(&tag) {
+                apply_tag_chip_tint(&chip, color);
+            }
 
             let label = gtk4::Label::new(Some(&tag));
             label.set_halign(gtk4::Align::Start);
