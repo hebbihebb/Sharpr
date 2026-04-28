@@ -19,6 +19,8 @@ pub struct Collection {
     pub name: String,
     pub primary_tag: String,
     pub extra_tags: Vec<String>,
+    pub color: Option<String>,
+    pub icon_name: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub item_count: usize,
@@ -544,7 +546,7 @@ impl LibraryIndex {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT c.id, c.parent_id, c.name, c.primary_tag, c.extra_tags_json,
-                    c.created_at, c.updated_at
+                    c.color, c.icon_name, c.created_at, c.updated_at
              FROM collections c
              ORDER BY c.name COLLATE NOCASE",
         )?;
@@ -555,8 +557,10 @@ impl LibraryIndex {
                 name: row.get(2)?,
                 primary_tag: row.get(3)?,
                 extra_tags: parse_tags_json(&row.get::<_, String>(4)?),
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
+                color: row.get(5)?,
+                icon_name: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
                 item_count: 0,
             })
         })?;
@@ -566,7 +570,8 @@ impl LibraryIndex {
     pub fn collection(&self, id: i64) -> rusqlite::Result<Option<Collection>> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT id, parent_id, name, primary_tag, extra_tags_json, created_at, updated_at
+            "SELECT id, parent_id, name, primary_tag, extra_tags_json, color, icon_name,
+                    created_at, updated_at
              FROM collections
              WHERE id = ?1",
             params![id],
@@ -577,8 +582,10 @@ impl LibraryIndex {
                     name: row.get(2)?,
                     primary_tag: row.get(3)?,
                     extra_tags: parse_tags_json(&row.get::<_, String>(4)?),
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    color: row.get(5)?,
+                    icon_name: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                     item_count: 0,
                 })
             },
@@ -591,6 +598,8 @@ impl LibraryIndex {
         parent_id: Option<i64>,
         name: &str,
         extra_tags: &[String],
+        color: Option<&str>,
+        icon_name: Option<&str>,
     ) -> rusqlite::Result<Collection> {
         let name = name.trim();
         if name.is_empty() {
@@ -610,10 +619,18 @@ impl LibraryIndex {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO collections (
-                 parent_id, name, primary_tag, extra_tags_json, created_at, updated_at,
-                 tag_migrated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5)",
-            params![parent_id, name, primary_tag, tags_to_json(&extra_tags), now],
+                 parent_id, name, primary_tag, extra_tags_json, color, icon_name,
+                 created_at, updated_at, tag_migrated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?7)",
+            params![
+                parent_id,
+                name,
+                primary_tag,
+                tags_to_json(&extra_tags),
+                color,
+                icon_name,
+                now
+            ],
         )?;
         let id = conn.last_insert_rowid();
         Ok(Collection {
@@ -622,6 +639,8 @@ impl LibraryIndex {
             name: name.to_string(),
             primary_tag,
             extra_tags,
+            color: color.map(str::to_string),
+            icon_name: icon_name.map(str::to_string),
             created_at: now,
             updated_at: now,
             item_count: 0,
@@ -633,6 +652,8 @@ impl LibraryIndex {
         id: i64,
         name: &str,
         extra_tags: &[String],
+        color: Option<&str>,
+        icon_name: Option<&str>,
     ) -> rusqlite::Result<()> {
         let name = name.trim();
         if name.is_empty() {
@@ -650,9 +671,19 @@ impl LibraryIndex {
              SET name = ?2,
                  primary_tag = ?3,
                  extra_tags_json = ?4,
-                 updated_at = ?5
+                 color = ?5,
+                 icon_name = ?6,
+                 updated_at = ?7
              WHERE id = ?1",
-            params![id, name, primary_tag, tags_to_json(&extra_tags), now],
+            params![
+                id,
+                name,
+                primary_tag,
+                tags_to_json(&extra_tags),
+                color,
+                icon_name,
+                now
+            ],
         )?;
         Ok(())
     }
@@ -788,7 +819,8 @@ impl LibraryIndex {
     fn legacy_collections_pending_tag_migration(&self) -> rusqlite::Result<Vec<Collection>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, parent_id, name, primary_tag, extra_tags_json, created_at, updated_at
+            "SELECT id, parent_id, name, primary_tag, extra_tags_json, color, icon_name,
+                    created_at, updated_at
              FROM collections
              WHERE tag_migrated_at IS NULL
              ORDER BY created_at ASC, id ASC",
@@ -800,8 +832,10 @@ impl LibraryIndex {
                 name: row.get(2)?,
                 primary_tag: row.get(3)?,
                 extra_tags: parse_tags_json(&row.get::<_, String>(4)?),
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
+                color: row.get(5)?,
+                icon_name: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
                 item_count: 0,
             })
         })?;
@@ -1012,6 +1046,12 @@ fn ensure_collection_schema(conn: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE collections ADD COLUMN tag_migrated_at INTEGER",
             [],
         )?;
+    }
+    if !columns.iter().any(|column| column == "color") {
+        conn.execute("ALTER TABLE collections ADD COLUMN color TEXT", [])?;
+    }
+    if !columns.iter().any(|column| column == "icon_name") {
+        conn.execute("ALTER TABLE collections ADD COLUMN icon_name TEXT", [])?;
     }
     conn.execute(
         "UPDATE collections
@@ -1333,10 +1373,14 @@ mod tests {
     #[test]
     fn create_and_list_collections() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let c = idx.create_collection(None, "Pinned", &[]).unwrap();
+        let c = idx
+            .create_collection(None, "Pinned", &[], None, None)
+            .unwrap();
         assert_eq!(c.name, "Pinned");
         assert_eq!(c.item_count, 0);
         assert_eq!(c.primary_tag, "pinned");
+        assert_eq!(c.color, None);
+        assert_eq!(c.icon_name, None);
 
         let list = idx.list_collections().unwrap();
         assert_eq!(list.len(), 1);
@@ -1347,24 +1391,26 @@ mod tests {
     #[test]
     fn create_collection_rejects_empty_name() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        assert!(idx.create_collection(None, "", &[]).is_err());
-        assert!(idx.create_collection(None, "   ", &[]).is_err());
+        assert!(idx.create_collection(None, "", &[], None, None).is_err());
+        assert!(idx.create_collection(None, "   ", &[], None, None).is_err());
     }
 
     #[test]
     fn create_collection_rejects_duplicate_name() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        idx.create_collection(None, "Pinned", &[]).unwrap();
-        assert!(idx.create_collection(None, "Pinned", &[]).is_err());
+        idx.create_collection(None, "Pinned", &[], None, None).unwrap();
+        assert!(idx
+            .create_collection(None, "Pinned", &[], None, None)
+            .is_err());
     }
 
     #[test]
     fn rename_collection() {
         let idx = LibraryIndex::open_in_memory().unwrap();
         let c = idx
-            .create_collection(None, "Old", &["People".into()])
+            .create_collection(None, "Old", &["People".into()], None, None)
             .unwrap();
-        idx.update_collection(c.id, "New", &["Model".into()])
+        idx.update_collection(c.id, "New", &["Model".into()], None, None)
             .unwrap();
         let list = idx.list_collections().unwrap();
         assert_eq!(list[0].name, "New");
@@ -1373,17 +1419,51 @@ mod tests {
     }
 
     #[test]
+    fn collection_color_and_icon_name_round_trip() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let collection = idx
+            .create_collection(
+                None,
+                "Pinned",
+                &[],
+                Some("#57e389"),
+                Some("folder-symbolic"),
+            )
+            .unwrap();
+        assert_eq!(collection.color.as_deref(), Some("#57e389"));
+        assert_eq!(collection.icon_name.as_deref(), Some("folder-symbolic"));
+
+        idx.update_collection(
+            collection.id,
+            "Pinned",
+            &[],
+            Some("#62a0ea"),
+            Some("starred-symbolic"),
+        )
+        .unwrap();
+
+        let stored = idx.collection(collection.id).unwrap().unwrap();
+        assert_eq!(stored.color.as_deref(), Some("#62a0ea"));
+        assert_eq!(stored.icon_name.as_deref(), Some("starred-symbolic"));
+    }
+
+    #[test]
     fn rename_collection_rejects_empty_name() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let c = idx.create_collection(None, "Name", &[]).unwrap();
-        assert!(idx.update_collection(c.id, "", &[]).is_err());
+        let c = idx
+            .create_collection(None, "Name", &[], None, None)
+            .unwrap();
+        assert!(idx.update_collection(c.id, "", &[], None, None).is_err());
     }
 
     #[test]
     fn delete_collection_removes_subtree() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let root = idx.create_collection(None, "People", &[]).unwrap();
-        idx.create_collection(Some(root.id), "Model", &[]).unwrap();
+        let root = idx
+            .create_collection(None, "People", &[], None, None)
+            .unwrap();
+        idx.create_collection(Some(root.id), "Model", &[], None, None)
+            .unwrap();
 
         idx.delete_collection(root.id).unwrap();
         assert!(idx.list_collections().unwrap().is_empty());
@@ -1393,13 +1473,13 @@ mod tests {
     fn collection_effective_tags_include_ancestors_and_extra_tags() {
         let idx = LibraryIndex::open_in_memory().unwrap();
         let people = idx
-            .create_collection(None, "People", &["portrait".into()])
+            .create_collection(None, "People", &["portrait".into()], None, None)
             .unwrap();
         let model = idx
-            .create_collection(Some(people.id), "Model", &["studio".into()])
+            .create_collection(Some(people.id), "Model", &["studio".into()], None, None)
             .unwrap();
         let blonde = idx
-            .create_collection(Some(model.id), "Blonde", &[])
+            .create_collection(Some(model.id), "Blonde", &[], None, None)
             .unwrap();
 
         let tags = idx.collection_effective_tags(blonde.id).unwrap();
@@ -1418,8 +1498,10 @@ mod tests {
     #[test]
     fn reparent_leaf_collection_updates_parent() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let art = idx.create_collection(None, "Art", &[]).unwrap();
-        let diffusion = idx.create_collection(None, "Diffusion", &[]).unwrap();
+        let art = idx.create_collection(None, "Art", &[], None, None).unwrap();
+        let diffusion = idx
+            .create_collection(None, "Diffusion", &[], None, None)
+            .unwrap();
 
         idx.reparent_collection(diffusion.id, art.id).unwrap();
         let moved = idx.collection(diffusion.id).unwrap().unwrap();
@@ -1429,9 +1511,12 @@ mod tests {
     #[test]
     fn reparent_rejects_non_leaf_collection() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let art = idx.create_collection(None, "Art", &[]).unwrap();
-        let root = idx.create_collection(None, "People", &[]).unwrap();
-        idx.create_collection(Some(root.id), "Model", &[]).unwrap();
+        let art = idx.create_collection(None, "Art", &[], None, None).unwrap();
+        let root = idx
+            .create_collection(None, "People", &[], None, None)
+            .unwrap();
+        idx.create_collection(Some(root.id), "Model", &[], None, None)
+            .unwrap();
 
         assert!(idx.reparent_collection(root.id, art.id).is_err());
     }
@@ -1445,7 +1530,9 @@ mod tests {
         let path = root.join("a.jpg");
         std::fs::write(&path, b"a").unwrap();
 
-        let collection = idx.create_collection(None, "Pinned", &[]).unwrap();
+        let collection = idx
+            .create_collection(None, "Pinned", &[], None, None)
+            .unwrap();
         let conn = idx.conn().unwrap();
         conn.execute(
             "UPDATE collections SET tag_migrated_at = NULL WHERE id = ?1",

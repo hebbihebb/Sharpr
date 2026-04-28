@@ -150,7 +150,7 @@ fn show_new_collection_dialog<F>(
         let extra_tags = parse_collection_tags_input(tags_clone.text().as_str());
         if let Some(idx) = state_d.borrow().library_index.clone() {
             let started = std::time::Instant::now();
-            match idx.create_collection(None, &name, &extra_tags) {
+            match idx.create_collection(None, &name, &extra_tags, None, None) {
                 Ok(coll) => {
                     crate::bench_event!(
                         "collection.create",
@@ -1816,7 +1816,7 @@ impl SharprWindow {
                 let Some(idx) = state_c.borrow().library_index.clone() else {
                     return;
                 };
-                match idx.create_collection(None, &tag, &[]) {
+                match idx.create_collection(None, &tag, &[], None, None) {
                     Ok(coll) => {
                         refresh_c();
                         toast_c.add_toast(libadwaita::Toast::new(&format!(
@@ -1936,6 +1936,8 @@ impl SharprWindow {
                             Some(parent_id),
                             name_clone.text().as_str(),
                             &parse_collection_tags_input(tags_clone.text().as_str()),
+                            None,
+                            None,
                         ) {
                             Ok(coll) => {
                                 crate::bench_event!(
@@ -2037,7 +2039,7 @@ impl SharprWindow {
                         .cloned()
                         .collect();
                     let started = std::time::Instant::now();
-                    match idx.update_collection(id, &new_name, &new_extra_tags) {
+                    match idx.update_collection(id, &new_name, &new_extra_tags, None, None) {
                         Ok(()) => {
                             if !added_extra_tags.is_empty() {
                                 tags_db.add_tags_to_paths(&old_scope_paths, &added_extra_tags);
@@ -3134,7 +3136,7 @@ impl SharprWindow {
                             let started = std::time::Instant::now();
                             let extra_tags =
                                 parse_collection_tags_input(tags_entry_c.text().as_str());
-                            match idx.create_collection(None, &name, &extra_tags) {
+                            match idx.create_collection(None, &name, &extra_tags, None, None) {
                                 Ok(coll) => {
                                     let effective_tags =
                                         idx.collection_effective_tags(coll.id).unwrap_or_default();
