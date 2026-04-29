@@ -217,10 +217,8 @@ impl AppSettings {
         }
         sanitize_libraries(&mut libraries);
 
-        let active_library_id = resolve_active_library_id(
-            settings.string("active-library-id").as_str(),
-            &libraries,
-        );
+        let active_library_id =
+            resolve_active_library_id(settings.string("active-library-id").as_str(), &libraries);
         let active_last_folder = active_library_id
             .as_ref()
             .and_then(|id| library_by_id(&libraries, id))
