@@ -1,3 +1,4 @@
+use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
@@ -10,7 +11,8 @@ use std::sync::{Arc, Once};
 use crate::quality::{scorer, QualityScore};
 use crate::tags::TagDatabase;
 use crate::ui::metadata_chip::MetadataChip;
-use crate::ui::window::AppState;
+use crate::ui::ops_indicator::OpsIndicator;
+use crate::ui::window::{AppState, SharprWindow};
 use crate::upscale::BeforeAfterViewer;
 
 const TAG_CHIP_COLOR_PALETTE: &[&str] = &[
@@ -190,10 +192,39 @@ struct TagPopoverState {
     path: Option<PathBuf>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConvertKind {
+    Upscale,
+    Downscale,
+}
+
+impl ConvertKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Upscale => "Upscale",
+            Self::Downscale => "Downscale",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ConvertSession {
+    op_id: u64,
+    source_path: PathBuf,
+    temp_output: PathBuf,
+    default_copy_dir: PathBuf,
+    kind: ConvertKind,
+}
+
+#[derive(Clone, Debug)]
+enum SaveTarget {
+    DefaultCopy,
+    ChosenFolder(PathBuf),
+    ReplaceOriginal,
+}
+
 mod imp {
     use super::*;
-
-    type PendingCommitFn = RefCell<Option<Box<dyn FnOnce(PathBuf)>>>;
 
     pub struct ViewerPane {
         pub content_box: gtk4::Box,
@@ -226,11 +257,10 @@ mod imp {
         pub suggestions_add_all: gtk4::Button,
         pub(super) tag_state: Rc<RefCell<TagPopoverState>>,
         pub comparison: BeforeAfterViewer,
-        /// Temp output path while the compare view is active.
-        pub pending_output: std::cell::RefCell<Option<std::path::PathBuf>>,
         /// Commit/Discard buttons owned by the window header; stored here so
         /// async upscale callbacks can show/hide them without capturing clones.
         pub commit_btn: std::cell::RefCell<Option<gtk4::Button>>,
+        pub commit_menu_btn: std::cell::RefCell<Option<gtk4::MenuButton>>,
         pub discard_btn: std::cell::RefCell<Option<gtk4::Button>>,
         /// Path of the image currently displayed — set by load_image(), cleared by clear().
         pub current_path: RefCell<Option<PathBuf>>,
@@ -261,9 +291,9 @@ mod imp {
         pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
         /// Called after a successful edit save so the filmstrip can refresh thumbnails.
         pub post_save_cb: RefCell<Option<Box<dyn Fn()>>>,
-        /// Commit action for the active convert operation (downscale or upscale).
-        /// Called with the temp output path when the user clicks Commit.
-        pub pending_commit_fn: PendingCommitFn,
+        pub(super) ops_indicator: RefCell<Option<OpsIndicator>>,
+        pub(super) convert_sessions: RefCell<HashMap<u64, Rc<ConvertSession>>>,
+        pub(super) active_convert_op_id: Cell<Option<u64>>,
     }
 
     impl Default for ViewerPane {
@@ -441,8 +471,8 @@ mod imp {
                 suggestions_add_all,
                 tag_state,
                 comparison,
-                pending_output: std::cell::RefCell::new(None),
                 commit_btn: std::cell::RefCell::new(None),
+                commit_menu_btn: std::cell::RefCell::new(None),
                 discard_btn: std::cell::RefCell::new(None),
                 current_path: RefCell::new(None),
                 current_rgba: RefCell::new(None),
@@ -461,7 +491,9 @@ mod imp {
                 preview_handle: RefCell::new(None),
                 metadata_handle: RefCell::new(None),
                 post_save_cb: RefCell::new(None),
-                pending_commit_fn: RefCell::new(None),
+                ops_indicator: RefCell::new(None),
+                convert_sessions: RefCell::new(HashMap::new()),
+                active_convert_op_id: Cell::new(None),
             }
         }
     }
@@ -499,11 +531,21 @@ impl ViewerPane {
         widget
     }
 
-    /// Store the Commit/Discard buttons so they can be shown/hidden during
+    /// Store the compare Save/Discard controls so they can be shown/hidden during
     /// the upscale comparison flow. Called once by the window after layout.
-    pub fn set_comparison_buttons(&self, commit: gtk4::Button, discard: gtk4::Button) {
+    pub fn set_comparison_buttons(
+        &self,
+        commit: gtk4::Button,
+        commit_menu: gtk4::MenuButton,
+        discard: gtk4::Button,
+    ) {
         *self.imp().commit_btn.borrow_mut() = Some(commit);
+        *self.imp().commit_menu_btn.borrow_mut() = Some(commit_menu);
         *self.imp().discard_btn.borrow_mut() = Some(discard);
+    }
+
+    pub fn set_ops_indicator(&self, indicator: OpsIndicator) {
+        *self.imp().ops_indicator.borrow_mut() = Some(indicator);
     }
 
     /// Called once by the window after layout to store the edit Save/Discard buttons.
@@ -515,6 +557,9 @@ impl ViewerPane {
     fn set_comparison_buttons_visible(&self, visible: bool) {
         let imp = self.imp();
         if let Some(ref btn) = *imp.commit_btn.borrow() {
+            btn.set_visible(visible);
+        }
+        if let Some(ref btn) = *imp.commit_menu_btn.borrow() {
             btn.set_visible(visible);
         }
         if let Some(ref btn) = *imp.discard_btn.borrow() {
@@ -783,12 +828,107 @@ impl ViewerPane {
         *self.imp().post_save_cb.borrow_mut() = Some(Box::new(cb));
     }
 
+    fn root_window(&self) -> Option<SharprWindow> {
+        self.ancestor(SharprWindow::static_type())?
+            .downcast::<SharprWindow>()
+            .ok()
+    }
+
+    fn current_convert_session(&self) -> Option<Rc<ConvertSession>> {
+        let op_id = self.imp().active_convert_op_id.get()?;
+        self.imp().convert_sessions.borrow().get(&op_id).cloned()
+    }
+
+    fn set_convert_action(&self, session: &Rc<ConvertSession>, show_toast: bool) {
+        let op_id = session.op_id;
+        let kind = session.kind;
+        let weak = self.downgrade();
+        if let Some(indicator) = self.imp().ops_indicator.borrow().as_ref() {
+            indicator.set_op_action(op_id, "Open", move || {
+                let Some(viewer) = weak.upgrade() else {
+                    return;
+                };
+                viewer.resume_convert_session(op_id);
+            });
+        }
+
+        if show_toast {
+            if let Some(window) = self.root_window() {
+                let toast = libadwaita::Toast::new(&format!("{} finished", kind.label()));
+                toast.set_button_label(Some("Open"));
+                let weak = self.downgrade();
+                toast.connect_button_clicked(move |_| {
+                    let Some(viewer) = weak.upgrade() else {
+                        return;
+                    };
+                    viewer.resume_convert_session(op_id);
+                });
+                window.add_toast(toast);
+            }
+        }
+    }
+
+    fn clear_convert_action(&self, op_id: u64) {
+        if let Some(indicator) = self.imp().ops_indicator.borrow().as_ref() {
+            indicator.clear_op_action(op_id);
+            indicator.remove_op(op_id);
+        }
+    }
+
+    fn suspend_active_convert_session(&self, show_toast: bool) {
+        let imp = self.imp();
+        let Some(op_id) = imp.active_convert_op_id.take() else {
+            return;
+        };
+        let Some(session) = imp.convert_sessions.borrow().get(&op_id).cloned() else {
+            return;
+        };
+        self.restore_view_mode();
+        self.set_convert_action(&session, show_toast);
+    }
+
+    fn finish_convert_session(&self, op_id: u64) {
+        let imp = self.imp();
+        if imp.active_convert_op_id.get() == Some(op_id) {
+            imp.active_convert_op_id.set(None);
+        }
+        imp.convert_sessions.borrow_mut().remove(&op_id);
+        self.clear_convert_action(op_id);
+    }
+
+    fn show_convert_session(&self, session: Rc<ConvertSession>) {
+        self.imp().active_convert_op_id.set(Some(session.op_id));
+        self.clear_convert_action(session.op_id);
+        let current = self.imp().current_path.borrow().clone();
+        if current.as_ref() != Some(&session.source_path) {
+            self.load_image(session.source_path.clone());
+        }
+        self.show_comparison(session.source_path.clone(), session.temp_output.clone());
+    }
+
+    pub fn resume_convert_session(&self, op_id: u64) {
+        let session = self.imp().convert_sessions.borrow().get(&op_id).cloned();
+        if let Some(session) = session {
+            self.show_convert_session(session);
+        }
+    }
+
+    pub fn can_replace_current_convert(&self) -> bool {
+        self.current_convert_session()
+            .map(|session| extensions_match(&session.temp_output, &session.source_path))
+            .unwrap_or(false)
+    }
+
     /// Clear the viewer (called when the folder changes).
     pub fn clear(&self) {
         let imp = self.imp();
         imp.load_gen.set(imp.load_gen.get().wrapping_add(1));
         imp.tag_popover.popdown();
-        self.restore_view_mode();
+        if imp.active_convert_op_id.get().is_some() {
+            self.suspend_active_convert_session(false);
+        } else {
+            self.restore_view_mode();
+        }
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
         imp.tag_osd.set_visible(false);
@@ -822,7 +962,11 @@ impl ViewerPane {
         *imp.current_path.borrow_mut() = Some(path.clone());
         imp.pending_edit.set(false);
         Self::set_edit_buttons_visible_on(imp, false);
-        self.restore_view_mode();
+        if imp.active_convert_op_id.get().is_some() {
+            self.suspend_active_convert_session(false);
+        } else {
+            self.restore_view_mode();
+        }
         imp.spinner.stop();
         imp.spinner.set_visible(false);
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
@@ -1816,6 +1960,7 @@ impl ViewerPane {
             UpscaleCompressionMode::from_settings(&settings.upscaler_compression_mode),
         );
         let final_output = output_path_for_upscale(&path, output_format);
+        let temp_output = pending_output_path(&final_output);
         let job = UpscaleJobConfig {
             source_dimensions: selected_dims,
             requested_scale,
@@ -1831,12 +1976,22 @@ impl ViewerPane {
             gpu_id: (settings.upscaler_gpu_id >= 0).then_some(settings.upscaler_gpu_id as u32),
         };
 
-        let rx = if let Some(dir) = final_output.parent() {
+        let op = ops_queue.add("Upscaling image");
+        let session = Rc::new(ConvertSession {
+            op_id: op.id,
+            source_path: path.clone(),
+            temp_output: temp_output.clone(),
+            default_copy_dir: crate::export::default_export_dir(&path),
+            kind: ConvertKind::Upscale,
+        });
+        self.imp()
+            .convert_sessions
+            .borrow_mut()
+            .insert(session.op_id, session.clone());
+
+        let rx = if let Some(dir) = temp_output.parent() {
             match std::fs::create_dir_all(dir) {
-                Ok(()) => {
-                    let output = pending_output_path(&final_output);
-                    backend.run(path.clone(), output, job)
-                }
+                Ok(()) => backend.run(path.clone(), temp_output.clone(), job),
                 Err(err) => {
                     let (tx, rx) = async_channel::bounded(1);
                     let _ = tx.try_send(UpscaleEvent::Failed(format!(
@@ -1847,12 +2002,10 @@ impl ViewerPane {
                 }
             }
         } else {
-            let output = pending_output_path(&final_output);
-            backend.run(path.clone(), output, job)
+            backend.run(path.clone(), temp_output, job)
         };
 
         let widget_weak = self.downgrade();
-        let op = ops_queue.add("Upscaling image");
         // Keep a strong ref to trigger_btn inside the closure so we can
         // re-enable it on completion. The weak-ref pattern caused the strong
         // ref to drop when start_upscale() returned, leaving upgrade() returning None.
@@ -1876,24 +2029,20 @@ impl ViewerPane {
                     }
                     UpscaleEvent::Done(out_path) => {
                         trigger_btn.set_sensitive(true);
-                        let viewer_weak = viewer.downgrade();
-                        *viewer.imp().pending_commit_fn.borrow_mut() =
-                            Some(Box::new(move |pending_path: PathBuf| {
-                                let Some(v) = viewer_weak.upgrade() else {
-                                    return;
-                                };
-                                let final_path = committed_output_path(&pending_path);
-                                if final_path != pending_path
-                                    && std::fs::rename(&pending_path, &final_path).is_ok()
-                                {
-                                    v.insert_committed_output(&final_path);
-                                    v.load_image(final_path);
-                                    return;
-                                }
-                                v.insert_committed_output(&pending_path);
-                                v.load_image(pending_path);
-                            }));
-                        viewer.show_comparison(path.clone(), out_path);
+                        if out_path != session.temp_output {
+                            eprintln!(
+                                "Upscale output path mismatch: expected {}, got {}",
+                                session.temp_output.display(),
+                                out_path.display()
+                            );
+                        }
+                        let is_same_source =
+                            viewer.imp().current_path.borrow().as_ref() == Some(&path);
+                        if is_same_source {
+                            viewer.show_convert_session(session.clone());
+                        } else {
+                            viewer.set_convert_action(&session, true);
+                        }
                         if let Some(op) = op.take() {
                             op.complete();
                         }
@@ -1903,6 +2052,7 @@ impl ViewerPane {
                         let vimp = viewer.imp();
                         vimp.progress_bar.set_visible(false);
                         trigger_btn.set_sensitive(true);
+                        vimp.convert_sessions.borrow_mut().remove(&session.op_id);
                         let dialog =
                             libadwaita::AlertDialog::new(Some("Upscale Failed"), Some(&msg));
                         dialog.add_response("ok", "OK");
@@ -1923,14 +2073,8 @@ impl ViewerPane {
     }
 
     /// Export `source` to a temp file in the destination folder, then show
-    /// the before/after comparison. `on_commit` is called with the temp path
-    /// when the user clicks Commit; `discard_convert` deletes the temp file.
-    pub fn start_downscale_preview(
-        &self,
-        source: PathBuf,
-        config: crate::export::ExportConfig,
-        on_commit: Box<dyn FnOnce(PathBuf) + 'static>,
-    ) {
+    /// the before/after comparison.
+    pub fn start_downscale_preview(&self, source: PathBuf, config: crate::export::ExportConfig) {
         let imp = self.imp();
         let ops_queue = {
             let st = imp.state.borrow();
@@ -1939,19 +2083,12 @@ impl ViewerPane {
             ops
         };
 
-        let stem = source
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
         let ext = crate::export::format_extension(config.format);
-        let pid = std::process::id();
-        let temp_path = config
-            .destination
-            .join(format!("{stem}.pending-{pid}.{ext}"));
-
-        *imp.pending_output.borrow_mut() = Some(temp_path.clone());
-        *imp.pending_commit_fn.borrow_mut() = Some(on_commit);
+        let temp_path = pending_output_path(&crate::export::unique_output_path_for_extension(
+            &config.destination,
+            &source,
+            ext,
+        ));
 
         let source_c = source.clone();
         let temp_c = temp_path.clone();
@@ -1969,20 +2106,38 @@ impl ViewerPane {
 
         let widget_weak = self.downgrade();
         let op = ops_queue.add("Preparing preview");
+        let session = Rc::new(ConvertSession {
+            op_id: op.id,
+            source_path: source.clone(),
+            temp_output: temp_path.clone(),
+            default_copy_dir: crate::export::default_export_dir(&source),
+            kind: ConvertKind::Downscale,
+        });
+        self.imp()
+            .convert_sessions
+            .borrow_mut()
+            .insert(session.op_id, session.clone());
         glib::MainContext::default().spawn_local(async move {
             if let Ok(result) = rx.recv().await {
-                op.complete();
                 let Some(viewer) = widget_weak.upgrade() else {
                     return;
                 };
                 match result {
                     Ok(()) => {
-                        viewer.show_comparison(source, temp_path);
+                        if viewer.imp().current_path.borrow().as_ref() == Some(&source) {
+                            viewer.show_convert_session(session.clone());
+                        } else {
+                            viewer.set_convert_action(&session, true);
+                        }
+                        op.complete();
                     }
                     Err(msg) => {
-                        let vimp = viewer.imp();
-                        vimp.pending_output.borrow_mut().take();
-                        vimp.pending_commit_fn.borrow_mut().take();
+                        viewer
+                            .imp()
+                            .convert_sessions
+                            .borrow_mut()
+                            .remove(&session.op_id);
+                        op.fail(msg.clone());
                         let dialog =
                             libadwaita::AlertDialog::new(Some("Export Failed"), Some(&msg));
                         dialog.add_response("ok", "OK");
@@ -2007,7 +2162,6 @@ impl ViewerPane {
     ) {
         let imp = self.imp();
         imp.comparison.reset_zoom();
-        *imp.pending_output.borrow_mut() = show_actions.then_some(after_path.clone());
         imp.stack.set_visible_child_name("compare");
         let viewer_weak = self.downgrade();
         imp.comparison.load(before_path, after_path, move || {
@@ -2030,7 +2184,7 @@ impl ViewerPane {
     pub fn toggle_debug_comparison(&self) {
         let imp = self.imp();
         if imp.stack.visible_child_name().as_deref() == Some("compare")
-            && imp.pending_output.borrow().is_none()
+            && imp.active_convert_op_id.get().is_none()
         {
             self.restore_view_mode();
             return;
@@ -2053,56 +2207,143 @@ impl ViewerPane {
         self.show_comparison_with_actions(path.clone(), path, false);
     }
 
-    /// Generic commit: runs the pending commit closure (set by start_upscale or
-    /// start_downscale_preview) with the temp output path, then restores the view.
-    pub fn commit_convert(&self) {
-        let imp = self.imp();
-        let pending_path = imp.pending_output.borrow_mut().take();
-        let commit_fn = imp.pending_commit_fn.borrow_mut().take();
-        self.restore_view_mode();
-        if let (Some(path), Some(f)) = (pending_path, commit_fn) {
-            f(path);
+    pub fn commit_convert_default(&self) {
+        self.commit_convert_to(SaveTarget::DefaultCopy);
+    }
+
+    pub fn commit_convert_replace_original(&self) {
+        self.commit_convert_to(SaveTarget::ReplaceOriginal);
+    }
+
+    pub fn commit_convert_choose_folder(&self) {
+        let Some(root) = self.root_window() else {
+            return;
+        };
+        let window: gtk4::Window = root.upcast();
+        let dialog = gtk4::FileDialog::new();
+        dialog.set_title("Choose Save Destination");
+        let weak = self.downgrade();
+        dialog.select_folder(Some(&window), None::<&gio::Cancellable>, move |result| {
+            let Some(viewer) = weak.upgrade() else {
+                return;
+            };
+            let Ok(folder) = result else {
+                return;
+            };
+            let Some(path) = folder.path() else {
+                return;
+            };
+            viewer.commit_convert_to(SaveTarget::ChosenFolder(path));
+        });
+    }
+
+    fn commit_convert_to(&self, target: SaveTarget) {
+        let Some(session) = self.current_convert_session() else {
+            return;
+        };
+        match finalize_convert_session(&session, target.clone()) {
+            Ok(final_path) => {
+                self.restore_view_mode();
+                self.finish_convert_session(session.op_id);
+
+                let is_replace = matches!(target, SaveTarget::ReplaceOriginal);
+                if is_replace {
+                    self.handle_replace_original_commit(&session, &final_path);
+                } else {
+                    self.handle_copy_commit(&session, &final_path, &target);
+                }
+            }
+            Err(msg) => self.present_convert_error("Save Failed", &msg),
         }
     }
 
     /// Generic discard: deletes the temp output file and restores the view.
     pub fn discard_convert(&self) {
-        let imp = self.imp();
-        let out_path = imp.pending_output.borrow_mut().take();
-        imp.pending_commit_fn.borrow_mut().take();
-        if let Some(path) = out_path {
-            let _ = std::fs::remove_file(&path);
-        }
+        let Some(session) = self.current_convert_session() else {
+            return;
+        };
+        let _ = std::fs::remove_file(&session.temp_output);
         self.restore_view_mode();
-    }
-
-    /// Commit: load the upscaled output into the viewer and return to the
-    /// normal view. Does NOT copy the file — the output path IS the final
-    /// location (`<src_dir>/upscaled/<name>`).
-    pub fn commit_upscale(&self) {
-        self.commit_convert();
-    }
-
-    /// Discard: delete the temp output file and return to the normal viewer.
-    pub fn discard_upscale(&self) {
-        self.discard_convert();
+        self.finish_convert_session(session.op_id);
     }
 
     fn restore_view_mode(&self) {
         let imp = self.imp();
-        *imp.pending_output.borrow_mut() = None;
         imp.comparison.clear();
         self.set_comparison_buttons_visible(false);
         imp.stack.set_visible_child_name("view");
     }
 
-    fn insert_committed_output(&self, path: &std::path::Path) {
+    fn register_output_in_current_folder(&self, path: &std::path::Path) {
         let Some(state) = self.imp().state.borrow().as_ref().cloned() else {
             return;
         };
         let mut state = state.borrow_mut();
-        if let Some(index) = state.library.insert_path(path.to_path_buf()) {
-            state.library.selected_index = Some(index);
+        let _ = state.library.insert_path(path.to_path_buf());
+    }
+
+    fn handle_copy_commit(
+        &self,
+        session: &ConvertSession,
+        final_path: &std::path::Path,
+        target: &SaveTarget,
+    ) {
+        self.register_output_in_current_folder(final_path);
+        if let Some(cb) = self.imp().post_save_cb.borrow().as_ref() {
+            cb();
+        }
+
+        if let Some(window) = self.root_window() {
+            let dest_dir = final_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .to_path_buf();
+            let msg = format!("{} saved", session.kind.label());
+            let toast = libadwaita::Toast::new(&msg);
+            let label = match target {
+                SaveTarget::ChosenFolder(_) => "Open destination",
+                _ => "Open exported folder",
+            };
+            toast.set_button_label(Some(label));
+            toast.connect_button_clicked(move |_| {
+                let uri = gio::File::for_path(&dest_dir).uri();
+                let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+            });
+            window.add_toast(toast);
+        }
+    }
+
+    fn handle_replace_original_commit(
+        &self,
+        session: &ConvertSession,
+        final_path: &std::path::Path,
+    ) {
+        let Some(state) = self.imp().state.borrow().as_ref().cloned() else {
+            return;
+        };
+        {
+            let mut state = state.borrow_mut();
+            state.library.invalidate_path_caches(final_path);
+        }
+        if let Some(cb) = self.imp().post_save_cb.borrow().as_ref() {
+            cb();
+        }
+        self.load_image(final_path.to_path_buf());
+        if let Some(window) = self.root_window() {
+            window.add_toast(libadwaita::Toast::new(&format!(
+                "{} replaced the original",
+                session.kind.label()
+            )));
+        }
+    }
+
+    fn present_convert_error(&self, title: &str, message: &str) {
+        let dialog = libadwaita::AlertDialog::new(Some(title), Some(message));
+        dialog.add_response("ok", "OK");
+        if let Some(root) = self.root() {
+            if let Ok(window) = root.downcast::<gtk4::Window>() {
+                dialog.present(Some(&window));
+            }
         }
     }
 }
@@ -2111,16 +2352,11 @@ fn output_path_for_upscale(
     input_path: &std::path::Path,
     format: crate::upscale::UpscaleOutputFormat,
 ) -> PathBuf {
-    let parent = input_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let stem = input_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("upscaled");
-    parent
-        .join("upscaled")
-        .join(format!("{stem}.{}", format.extension()))
+    crate::export::unique_output_path_for_extension(
+        &crate::export::default_export_dir(input_path),
+        input_path,
+        format.extension(),
+    )
 }
 
 fn pending_output_path(final_output: &std::path::Path) -> PathBuf {
@@ -2141,42 +2377,92 @@ fn pending_output_path(final_output: &std::path::Path) -> PathBuf {
     final_output.with_file_name(file_name)
 }
 
-fn committed_output_path(pending_output: &std::path::Path) -> PathBuf {
-    let name = pending_output
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default();
-    let trimmed = match name.split_once(".pending-") {
-        Some((prefix, rest)) => match rest.split_once('.') {
-            Some((_, ext)) => format!("{prefix}.{ext}"),
-            None => prefix.to_owned(),
-        },
-        None => name.to_owned(),
-    };
-    let base = pending_output.with_file_name(&trimmed);
-    if !base.exists() {
-        return base;
-    }
-    // File already exists — find a free slot: stem_1.ext, stem_2.ext, …
-    let dir = pending_output
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let trimmed_path = std::path::Path::new(&trimmed);
-    let stem = trimmed_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("upscaled");
-    let ext = trimmed_path.extension().and_then(|s| s.to_str());
-    for i in 1u32.. {
-        let candidate = match ext {
-            Some(e) => dir.join(format!("{stem}_{i}.{e}")),
-            None => dir.join(format!("{stem}_{i}")),
-        };
-        if !candidate.exists() {
-            return candidate;
+fn finalize_convert_session(
+    session: &ConvertSession,
+    target: SaveTarget,
+) -> Result<PathBuf, String> {
+    match target {
+        SaveTarget::DefaultCopy => finalize_copy_output(
+            &session.temp_output,
+            &session.source_path,
+            &session.default_copy_dir,
+        ),
+        SaveTarget::ChosenFolder(dir) => {
+            finalize_copy_output(&session.temp_output, &session.source_path, &dir)
+        }
+        SaveTarget::ReplaceOriginal => {
+            replace_original_output(&session.temp_output, &session.source_path)
         }
     }
-    base
+}
+
+fn finalize_copy_output(
+    temp_output: &std::path::Path,
+    source_path: &std::path::Path,
+    destination_dir: &std::path::Path,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(destination_dir).map_err(|err| {
+        format!(
+            "failed to create destination folder {}: {err}",
+            destination_dir.display()
+        )
+    })?;
+    let ext = temp_output
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let final_path =
+        crate::export::unique_output_path_for_extension(destination_dir, source_path, ext);
+    move_file(temp_output, &final_path)?;
+    Ok(final_path)
+}
+
+fn replace_original_output(
+    temp_output: &std::path::Path,
+    source_path: &std::path::Path,
+) -> Result<PathBuf, String> {
+    if !extensions_match(temp_output, source_path) {
+        return Err(
+            "replace original requires the converted image format to match the source file extension"
+                .into(),
+        );
+    }
+
+    let file = gio::File::for_path(source_path);
+    file.trash(None::<&gio::Cancellable>)
+        .map_err(|err| format!("failed to move original to trash: {err}"))?;
+    move_file(temp_output, source_path)?;
+    Ok(source_path.to_path_buf())
+}
+
+fn extensions_match(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let normalize = |path: &std::path::Path| {
+        path.extension().and_then(|ext| ext.to_str()).map(|ext| {
+            match ext.to_ascii_lowercase().as_str() {
+                "jpeg" => "jpg".to_string(),
+                other => other.to_string(),
+            }
+        })
+    };
+    normalize(left) == normalize(right)
+}
+
+fn move_file(src: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    match std::fs::rename(src, dest) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            std::fs::copy(src, dest).map_err(|err| {
+                format!(
+                    "failed to copy {} to {}: {err}",
+                    src.display(),
+                    dest.display()
+                )
+            })?;
+            std::fs::remove_file(src)
+                .map_err(|err| format!("failed to clean up temp file {}: {err}", src.display()))
+                .map(|_| ())
+        }
+    }
 }
 
 fn install_viewer_osd_css() {

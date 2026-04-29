@@ -97,12 +97,24 @@ pub fn export_image(source: &Path, config: &ExportConfig) -> Result<ExportResult
 ///
 /// Tries `<stem>.<ext>`, then `<stem>-1.<ext>`, `<stem>-2.<ext>`, … up to 999.
 pub(crate) fn unique_output_path(dest_dir: &Path, source: &Path, format: ExportFormat) -> PathBuf {
+    unique_output_path_for_extension(dest_dir, source, format_extension(format))
+}
+
+/// Return the default sibling export folder for `source`.
+pub fn default_export_dir(source: &Path) -> PathBuf {
+    source
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("exported")
+}
+
+/// Return a unique output path in `dest_dir` with an explicit file extension.
+pub fn unique_output_path_for_extension(dest_dir: &Path, source: &Path, ext: &str) -> PathBuf {
     let stem = source
         .file_stem()
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    let ext = format_extension(format);
 
     let first = dest_dir.join(format!("{stem}.{ext}"));
     if !first.exists() {
