@@ -621,6 +621,19 @@ impl ViewerPane {
         }
     }
 
+    fn set_comparison_buttons_sensitive(&self, sensitive: bool) {
+        let imp = self.imp();
+        if let Some(ref btn) = *imp.commit_btn.borrow() {
+            btn.set_sensitive(sensitive);
+        }
+        if let Some(ref btn) = *imp.commit_menu_btn.borrow() {
+            btn.set_sensitive(sensitive);
+        }
+        if let Some(ref btn) = *imp.discard_btn.borrow() {
+            btn.set_sensitive(sensitive);
+        }
+    }
+
     fn set_edit_buttons_visible_on(imp: &imp::ViewerPane, visible: bool) {
         if let Some(ref btn) = *imp.edit_commit_btn.borrow() {
             btn.set_visible(visible);
@@ -966,7 +979,6 @@ impl ViewerPane {
             .map(|session| extensions_match(&session.temp_output, &session.source_path))
             .unwrap_or(false)
     }
-
 
     /// Register a callback invoked when "Manage tags" is clicked in the popover.
     pub fn connect_manage_tags(&self, cb: impl Fn() + 'static) {
@@ -1978,7 +1990,11 @@ impl ViewerPane {
         let tags = db.tags_for_path(&path);
         const MAX_CHIPS: usize = 4;
         let expanded = imp.tag_chips_expanded.get();
-        let shown = if expanded { tags.len() } else { tags.len().min(MAX_CHIPS) };
+        let shown = if expanded {
+            tags.len()
+        } else {
+            tags.len().min(MAX_CHIPS)
+        };
 
         for tag in &tags[..shown] {
             let chip = gtk4::Button::new();
@@ -2408,20 +2424,54 @@ impl ViewerPane {
         let Some(session) = self.current_convert_session() else {
             return;
         };
-        match finalize_convert_session(&session, target.clone()) {
-            Ok(final_path) => {
-                self.restore_view_mode();
-                self.finish_convert_session(session.op_id);
+        let Some(state) = self.imp().state.borrow().as_ref().cloned() else {
+            return;
+        };
 
-                let is_replace = matches!(target, SaveTarget::ReplaceOriginal);
-                if is_replace {
-                    self.handle_replace_original_commit(&session, &final_path);
-                } else {
-                    self.handle_copy_commit(&session, &final_path, &target);
+        self.set_comparison_buttons_sensitive(false);
+
+        let (tx, rx) = async_channel::bounded::<Result<PathBuf, String>>(1);
+        let work_session = (*session).clone();
+        let work_target = target.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(finalize_convert_session(&work_session, work_target));
+        });
+
+        let op = state
+            .borrow()
+            .ops
+            .clone()
+            .add(format!("Saving {}", session.kind.label().to_lowercase()));
+        let viewer_weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Some(viewer) = viewer_weak.upgrade() else {
+                return;
+            };
+
+            match rx.recv().await {
+                Ok(Ok(final_path)) => {
+                    op.complete();
+                    viewer.restore_view_mode();
+                    viewer.finish_convert_session(session.op_id);
+
+                    if matches!(target, SaveTarget::ReplaceOriginal) {
+                        viewer.handle_replace_original_commit(&session, &final_path);
+                    } else {
+                        viewer.handle_copy_commit(&session, &final_path, &target);
+                    }
+                }
+                Ok(Err(msg)) => {
+                    op.fail(msg.clone());
+                    viewer.set_comparison_buttons_sensitive(true);
+                    viewer.present_convert_error("Save Failed", &msg);
+                }
+                Err(_) => {
+                    op.fail("Save operation was cancelled");
+                    viewer.set_comparison_buttons_sensitive(true);
+                    viewer.present_convert_error("Save Failed", "Save operation was cancelled");
                 }
             }
-            Err(msg) => self.present_convert_error("Save Failed", &msg),
-        }
+        });
     }
 
     /// Generic discard: deletes the temp output file and restores the view.

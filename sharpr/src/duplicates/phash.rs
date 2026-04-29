@@ -31,15 +31,10 @@ pub fn group_duplicates(hashes: &[(PathBuf, u64)]) -> Vec<Vec<PathBuf>> {
         return Vec::new();
     }
 
-    let mut adjacent = vec![vec![false; len]; len];
     let mut degree = vec![0_usize; len];
     for i in 0..len {
-        adjacent[i][i] = true;
         for j in (i + 1)..len {
-            let is_match = hamming(hashes[i].1, hashes[j].1) <= 4;
-            adjacent[i][j] = is_match;
-            adjacent[j][i] = is_match;
-            if is_match {
+            if hamming(hashes[i].1, hashes[j].1) <= 4 {
                 degree[i] += 1;
                 degree[j] += 1;
             }
@@ -63,7 +58,9 @@ pub fn group_duplicates(hashes: &[(PathBuf, u64)]) -> Vec<Vec<PathBuf>> {
 
         let mut group = vec![seed];
         let mut candidates: Vec<usize> = (0..len)
-            .filter(|&idx| !assigned[idx] && idx != seed && adjacent[seed][idx])
+            .filter(|&idx| {
+                !assigned[idx] && idx != seed && hamming(hashes[seed].1, hashes[idx].1) <= 4
+            })
             .collect();
         candidates.sort_by(|&a, &b| {
             degree[b]
@@ -72,7 +69,10 @@ pub fn group_duplicates(hashes: &[(PathBuf, u64)]) -> Vec<Vec<PathBuf>> {
         });
 
         for candidate in candidates {
-            if group.iter().all(|&member| adjacent[member][candidate]) {
+            if group
+                .iter()
+                .all(|&member| hamming(hashes[member].1, hashes[candidate].1) <= 4)
+            {
                 group.push(candidate);
             }
         }
@@ -135,8 +135,8 @@ mod tests {
         // hamming(0, 0b11111) == 5 → separate group
         let hashes = vec![
             (PathBuf::from("base.jpg"), 0u64),
-            (PathBuf::from("close.jpg"), 0b1111u64),    // 4 bits differ — within threshold
-            (PathBuf::from("far.jpg"), 0b11111u64),     // 5 bits differ — outside threshold
+            (PathBuf::from("close.jpg"), 0b1111u64), // 4 bits differ — within threshold
+            (PathBuf::from("far.jpg"), 0b11111u64),  // 5 bits differ — outside threshold
         ];
         let groups = group_duplicates(&hashes);
         // Only base+close form a group; far is isolated
@@ -162,6 +162,21 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].len(), 3, "triple should be first");
         assert_eq!(groups[1].len(), 2, "pair should be second");
+    }
+
+    #[test]
+    fn transitive_matches_do_not_merge_non_cliques() {
+        let hashes = vec![
+            (PathBuf::from("a.jpg"), 0b000000u64),
+            (PathBuf::from("b.jpg"), 0b000111u64),
+            (PathBuf::from("c.jpg"), 0b111111u64),
+        ];
+
+        let groups = group_duplicates(&hashes);
+        assert_eq!(
+            groups,
+            vec![vec![PathBuf::from("a.jpg"), PathBuf::from("b.jpg")]]
+        );
     }
 
     #[test]

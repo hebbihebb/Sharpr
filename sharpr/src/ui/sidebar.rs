@@ -28,6 +28,12 @@ const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
 ];
 
+#[derive(Clone, Debug)]
+struct FolderListEntry {
+    path: PathBuf,
+    label: String,
+}
+
 mod imp {
     use super::*;
 
@@ -162,7 +168,7 @@ impl SidebarPane {
                 state.disabled_folders.clone(),
             )
         };
-        self.populate_default_folders(library_root, &ignored_folders);
+        self.populate_default_folders(state.clone(), library_root, ignored_folders);
 
         let widget_weak = self.downgrade();
         imp.list_box.connect_selected_rows_changed(move |list_box| {
@@ -264,53 +270,50 @@ impl SidebarPane {
         imp.toolbar_view.set_parent(self);
     }
 
-    fn populate_default_folders(&self, library_root: Option<PathBuf>, ignored_folders: &[PathBuf]) {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home".into());
-        let home = PathBuf::from(&home);
+    fn populate_default_folders(
+        &self,
+        state: Rc<RefCell<AppState>>,
+        library_root: Option<PathBuf>,
+        ignored_folders: Vec<PathBuf>,
+    ) {
+        let (tx, rx) = async_channel::bounded::<Vec<FolderListEntry>>(1);
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(collect_default_folder_entries(library_root));
+        });
 
-        // If the user configured a custom library root, scan only that path.
-        // Otherwise fall back to the default trio.
-        let entries: Vec<(PathBuf, String)> = if let Some(root) = library_root {
-            let name = root
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Library".to_string());
-            vec![(root, name)]
-        } else {
-            vec![
-                (home.join("Pictures"), "Pictures".into()),
-                (home.join("Downloads"), "Downloads".into()),
-                (home.clone(), "Home".into()),
-            ]
-        };
+        let widget_weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(entries) = rx.recv().await else {
+                return;
+            };
+            let Some(widget) = widget_weak.upgrade() else {
+                return;
+            };
 
-        let mut seen = HashSet::new();
+            widget.replace_folder_rows(&entries, &ignored_folders);
 
-        for (root_path, root_name) in entries {
-            if !root_path.is_dir() {
-                continue;
+            if let crate::ui::window::ViewScope::Folder(path) = state.borrow().scope.clone() {
+                widget.select_folder(&path);
+            } else if let Some(entry) = entries
+                .iter()
+                .find(|entry| !row_is_ignored(&entry.path, &ignored_folders))
+            {
+                widget.select_folder(&entry.path);
+                widget.emit_folder_selected(entry.path.clone());
             }
+        });
+    }
 
-            let mut child_folders = discover_image_child_folders(&root_path, &root_name);
-            child_folders.sort_by(|(_, a), (_, b)| a.to_lowercase().cmp(&b.to_lowercase()));
+    fn replace_folder_rows(&self, entries: &[FolderListEntry], ignored_folders: &[PathBuf]) {
+        while let Some(child) = self.imp().list_box.first_child() {
+            self.imp().list_box.remove(&child);
+        }
 
-            if directory_contains_images(&root_path) && !seen.contains(&root_path) {
-                seen.insert(root_path.clone());
-                let row = FolderRow::new(root_path, &root_name);
-                row.set_ignored(row_is_ignored(&row.path(), ignored_folders));
-                self.attach_folder_row_menu(&row);
-                self.imp().list_box.append(&row);
-            }
-
-            for (path, label) in child_folders {
-                if !seen.contains(&path) {
-                    seen.insert(path.clone());
-                    let row = FolderRow::new(path, &label);
-                    row.set_ignored(row_is_ignored(&row.path(), ignored_folders));
-                    self.attach_folder_row_menu(&row);
-                    self.imp().list_box.append(&row);
-                }
-            }
+        for entry in entries {
+            let row = FolderRow::new(entry.path.clone(), &entry.label);
+            row.set_ignored(row_is_ignored(&row.path(), ignored_folders));
+            self.attach_folder_row_menu(&row);
+            self.imp().list_box.append(&row);
         }
     }
 
@@ -985,6 +988,53 @@ fn install_collection_css() {
         }
     });
 }
+
+fn collect_default_folder_entries(library_root: Option<PathBuf>) -> Vec<FolderListEntry> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home".into());
+    let home = PathBuf::from(&home);
+
+    let entries: Vec<(PathBuf, String)> = if let Some(root) = library_root {
+        let name = root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Library".to_string());
+        vec![(root, name)]
+    } else {
+        vec![
+            (home.join("Pictures"), "Pictures".into()),
+            (home.join("Downloads"), "Downloads".into()),
+            (home.clone(), "Home".into()),
+        ]
+    };
+
+    let mut seen = HashSet::new();
+    let mut rows = Vec::new();
+
+    for (root_path, root_name) in entries {
+        if !root_path.is_dir() {
+            continue;
+        }
+
+        let mut child_folders = discover_image_child_folders(&root_path, &root_name);
+        child_folders.sort_by(|(_, a), (_, b)| a.to_lowercase().cmp(&b.to_lowercase()));
+
+        if directory_contains_images(&root_path) && seen.insert(root_path.clone()) {
+            rows.push(FolderListEntry {
+                path: root_path,
+                label: root_name,
+            });
+        }
+
+        for (path, label) in child_folders {
+            if seen.insert(path.clone()) {
+                rows.push(FolderListEntry { path, label });
+            }
+        }
+    }
+
+    rows
+}
+
 fn discover_image_child_folders(root: &Path, root_name: &str) -> Vec<(PathBuf, String)> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
