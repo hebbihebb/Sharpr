@@ -71,8 +71,8 @@ mod imp {
         pub suppress_folder_signal: Cell<bool>,
         pub suppress_collection_signal: Cell<bool>,
         pub collapsed_folder_paths: RefCell<HashSet<PathBuf>>,
-        pub folder_entries: RefCell<Vec<FolderListEntry>>,
-        pub folder_tree: RefCell<Vec<FolderNode>>,
+        pub(super) folder_entries: RefCell<Vec<FolderListEntry>>,
+        pub(super) folder_tree: RefCell<Vec<FolderNode>>,
         pub ignored_folders: RefCell<Vec<PathBuf>>,
         pub collapsed_collection_ids: RefCell<HashSet<i64>>,
         pub collections: RefCell<Vec<Collection>>,
@@ -365,14 +365,7 @@ impl SidebarPane {
 
             if let crate::ui::window::ViewScope::Folder(path) = state.borrow().scope.clone() {
                 widget.select_folder(&path);
-            } else if let Some(path) = widget
-                .imp()
-                .folder_entries
-                .borrow()
-                .iter()
-                .find(|entry| !row_is_ignored(&entry.path, &ignored_folders))
-                .map(|entry| entry.path.clone())
-            {
+            } else if let Some(path) = widget.preferred_initial_folder_path() {
                 widget.select_folder(&path);
                 widget.emit_folder_selected(path);
             }
@@ -407,14 +400,7 @@ impl SidebarPane {
         {
             let mut collapsed = self.imp().collapsed_folder_paths.borrow_mut();
             if collapsed.is_empty() {
-                fn collect_paths(nodes: &[FolderNode], out: &mut HashSet<PathBuf>) {
-                    for node in nodes {
-                        out.insert(node.path.clone());
-                        collect_paths(&node.children, out);
-                    }
-                }
-
-                collect_paths(tree, &mut collapsed);
+                *collapsed = default_collapsed_folder_paths(tree);
             }
         }
         *self.imp().folder_tree.borrow_mut() = tree.to_vec();
@@ -527,12 +513,7 @@ impl SidebarPane {
 
     /// Returns the path of the first folder row in the sidebar list, if any.
     pub fn first_folder_path(&self) -> Option<PathBuf> {
-        self.imp()
-            .list_box
-            .first_child()?
-            .downcast::<FolderRow>()
-            .ok()
-            .map(|row| row.path())
+        self.preferred_initial_folder_path()
     }
 
     pub fn select_folder(&self, path: &Path) {
@@ -555,6 +536,14 @@ impl SidebarPane {
         self.imp().suppress_folder_signal.set(true);
         self.imp().list_box.unselect_all();
         self.imp().suppress_folder_signal.set(false);
+    }
+
+    fn preferred_initial_folder_path(&self) -> Option<PathBuf> {
+        preferred_initial_folder_path(
+            &self.imp().folder_tree.borrow(),
+            &self.imp().folder_entries.borrow(),
+            &self.imp().ignored_folders.borrow(),
+        )
     }
 
     fn emit_folder_selected(&self, path: PathBuf) {
@@ -1310,6 +1299,49 @@ fn append_visible_folder_nodes(
     }
 }
 
+fn default_collapsed_folder_paths(tree: &[FolderNode]) -> HashSet<PathBuf> {
+    let mut collapsed = HashSet::new();
+    collect_default_collapsed_paths(tree, 0, &mut collapsed);
+    collapsed
+}
+
+fn collect_default_collapsed_paths(
+    nodes: &[FolderNode],
+    depth: u32,
+    collapsed: &mut HashSet<PathBuf>,
+) {
+    for node in nodes {
+        if depth >= 1 {
+            collapsed.insert(node.path.clone());
+        }
+        collect_default_collapsed_paths(&node.children, depth + 1, collapsed);
+    }
+}
+
+fn preferred_initial_folder_path(
+    tree: &[FolderNode],
+    entries: &[FolderListEntry],
+    ignored_folders: &[PathBuf],
+) -> Option<PathBuf> {
+    if let Some(path) = tree
+        .first()
+        .filter(|root| tree.len() == 1 && !root.children.is_empty())
+        .and_then(|root| {
+            root.children
+                .iter()
+                .find(|child| !row_is_ignored(&child.path, ignored_folders))
+                .map(|child| child.path.clone())
+        })
+    {
+        return Some(path);
+    }
+
+    entries
+        .iter()
+        .find(|entry| !row_is_ignored(&entry.path, ignored_folders))
+        .map(|entry| entry.path.clone())
+}
+
 fn folder_label(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -1596,5 +1628,74 @@ impl CollectionRow {
 
     pub fn has_children(&self) -> bool {
         self.imp().has_children.get()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(path: &str, children: Vec<FolderNode>) -> FolderNode {
+        FolderNode {
+            path: PathBuf::from(path),
+            children,
+        }
+    }
+
+    #[test]
+    fn drilldown_defaults_to_root_expanded_with_children_collapsed() {
+        let tree = vec![node(
+            "/Pictures",
+            vec![
+                node(
+                    "/Pictures/Art",
+                    vec![node("/Pictures/Art/Sketches", vec![])],
+                ),
+                node("/Pictures/Backup", vec![]),
+            ],
+        )];
+
+        let collapsed = default_collapsed_folder_paths(&tree);
+
+        assert!(!collapsed.contains(&PathBuf::from("/Pictures")));
+        assert!(collapsed.contains(&PathBuf::from("/Pictures/Art")));
+        assert!(collapsed.contains(&PathBuf::from("/Pictures/Art/Sketches")));
+        assert!(collapsed.contains(&PathBuf::from("/Pictures/Backup")));
+    }
+
+    #[test]
+    fn drilldown_prefers_first_direct_child_for_initial_selection() {
+        let tree = vec![node(
+            "/Pictures",
+            vec![
+                node(
+                    "/Pictures/Art",
+                    vec![node("/Pictures/Art/Sketches", vec![])],
+                ),
+                node("/Pictures/Backup", vec![]),
+            ],
+        )];
+        let entries = visible_folder_entries(&tree, &default_collapsed_folder_paths(&tree));
+
+        let selected = preferred_initial_folder_path(&tree, &entries, &[]).unwrap();
+
+        assert_eq!(selected, PathBuf::from("/Pictures/Art"));
+    }
+
+    #[test]
+    fn initial_selection_skips_ignored_direct_children() {
+        let tree = vec![node(
+            "/Pictures",
+            vec![
+                node("/Pictures/Art", vec![]),
+                node("/Pictures/Backup", vec![]),
+            ],
+        )];
+        let entries = visible_folder_entries(&tree, &default_collapsed_folder_paths(&tree));
+        let ignored = vec![PathBuf::from("/Pictures/Art")];
+
+        let selected = preferred_initial_folder_path(&tree, &entries, &ignored).unwrap();
+
+        assert_eq!(selected, PathBuf::from("/Pictures/Backup"));
     }
 }
