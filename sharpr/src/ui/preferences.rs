@@ -736,9 +736,10 @@ fn present_library_editor(
                     state.disabled_folders = disabled_folders;
                 }
                 if let Some(row) = row.as_ref() {
-                    if let Some(library) = libraries.iter().find(|library| {
-                        library_id.as_deref() == Some(library.id.as_str())
-                    }) {
+                    if let Some(library) = libraries
+                        .iter()
+                        .find(|library| library_id.as_deref() == Some(library.id.as_str()))
+                    {
                         row.set_title(&library.name);
                         row.set_subtitle(&library_subtitle(library));
                     }
