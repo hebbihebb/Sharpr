@@ -259,9 +259,16 @@ impl LibraryIndex {
         }
 
         let order = match sort_order {
-            SortOrder::Name => "filename COLLATE NOCASE ASC",
-            SortOrder::DateModified => "modified_secs DESC NULLS LAST, filename COLLATE NOCASE ASC",
-            SortOrder::FileType => "extension COLLATE NOCASE ASC, filename COLLATE NOCASE ASC",
+            SortOrder::NameAsc => "filename COLLATE NOCASE ASC",
+            SortOrder::NameDesc => "filename COLLATE NOCASE DESC",
+            SortOrder::DateModifiedAsc => {
+                "modified_secs ASC NULLS LAST, filename COLLATE NOCASE ASC"
+            }
+            SortOrder::DateModifiedDesc => {
+                "modified_secs DESC NULLS LAST, filename COLLATE NOCASE ASC"
+            }
+            SortOrder::FileTypeAsc => "extension COLLATE NOCASE ASC, filename COLLATE NOCASE ASC",
+            SortOrder::FileTypeDesc => "extension COLLATE NOCASE DESC, filename COLLATE NOCASE ASC",
         };
         let rows: Vec<IndexedImage> = {
             let sql = format!(
@@ -450,9 +457,16 @@ impl LibraryIndex {
             return Ok(Vec::new());
         }
         let order = match sort_order {
-            SortOrder::Name => "filename COLLATE NOCASE ASC",
-            SortOrder::DateModified => "modified_secs DESC NULLS LAST, filename COLLATE NOCASE ASC",
-            SortOrder::FileType => "extension COLLATE NOCASE ASC, filename COLLATE NOCASE ASC",
+            SortOrder::NameAsc => "filename COLLATE NOCASE ASC",
+            SortOrder::NameDesc => "filename COLLATE NOCASE DESC",
+            SortOrder::DateModifiedAsc => {
+                "modified_secs ASC NULLS LAST, filename COLLATE NOCASE ASC"
+            }
+            SortOrder::DateModifiedDesc => {
+                "modified_secs DESC NULLS LAST, filename COLLATE NOCASE ASC"
+            }
+            SortOrder::FileTypeAsc => "extension COLLATE NOCASE ASC, filename COLLATE NOCASE ASC",
+            SortOrder::FileTypeDesc => "extension COLLATE NOCASE DESC, filename COLLATE NOCASE ASC",
         };
         let sql = format!(
             "
@@ -1146,7 +1160,7 @@ mod tests {
         let info = make_info("/photos", "a.jpg", 1000, Some(100));
         idx.upsert_image_basic(&info).unwrap();
         let rows = idx
-            .images_in_folder(Path::new("/photos"), SortOrder::Name)
+            .images_in_folder(Path::new("/photos"), SortOrder::NameAsc)
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].filename, "a.jpg");
@@ -1167,7 +1181,7 @@ mod tests {
         // Upsert same file again — size and mtime unchanged.
         idx.upsert_image_basic(&info).unwrap();
         let rows = idx
-            .images_in_folder(Path::new("/photos"), SortOrder::Name)
+            .images_in_folder(Path::new("/photos"), SortOrder::NameAsc)
             .unwrap();
         assert_eq!(rows[0].metadata_status, "ready");
         assert_eq!(rows[0].width, Some(1920));
@@ -1188,7 +1202,7 @@ mod tests {
         let changed = make_info("/photos", "a.jpg", 2000, Some(200));
         idx.upsert_image_basic(&changed).unwrap();
         let rows = idx
-            .images_in_folder(Path::new("/photos"), SortOrder::Name)
+            .images_in_folder(Path::new("/photos"), SortOrder::NameAsc)
             .unwrap();
         assert_eq!(rows[0].metadata_status, "missing");
         assert_eq!(rows[0].width, None);
@@ -1208,7 +1222,7 @@ mod tests {
             .unwrap();
         assert_eq!(removed, 1);
         let rows = idx
-            .images_in_folder(Path::new("/photos"), SortOrder::Name)
+            .images_in_folder(Path::new("/photos"), SortOrder::NameAsc)
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].filename, "a.jpg");
@@ -1231,7 +1245,7 @@ mod tests {
             make_info("/photos", "new.jpg", 300, None),
         ];
         let (rows, stale, pending) = idx
-            .reconcile_folder(Path::new("/photos"), &entries, SortOrder::Name)
+            .reconcile_folder(Path::new("/photos"), &entries, SortOrder::NameAsc)
             .unwrap();
 
         assert_eq!(stale, 1, "old.jpg should be removed");
@@ -1296,7 +1310,7 @@ mod tests {
 
         assert!(idx.is_folder_ignored(Path::new("/ignored")).unwrap());
         assert!(idx
-            .images_in_folder(Path::new("/ignored"), SortOrder::Name)
+            .images_in_folder(Path::new("/ignored"), SortOrder::NameAsc)
             .unwrap()
             .is_empty());
 
@@ -1345,7 +1359,7 @@ mod tests {
         idx.upsert_image_basic(&c).unwrap();
 
         let by_name = idx
-            .images_in_folder(Path::new("/photos"), SortOrder::Name)
+            .images_in_folder(Path::new("/photos"), SortOrder::NameAsc)
             .unwrap();
         assert_eq!(
             by_name
@@ -1356,18 +1370,28 @@ mod tests {
         );
 
         let by_date = idx
-            .images_in_folder(Path::new("/photos"), SortOrder::DateModified)
+            .images_in_folder(Path::new("/photos"), SortOrder::DateModifiedDesc)
             .unwrap();
         // Descending mtime: a(300), b(200), c(100).
         assert_eq!(by_date[0].filename, "a.jpg");
         assert_eq!(by_date[2].filename, "c.png");
 
         let by_type = idx
-            .images_in_folder(Path::new("/photos"), SortOrder::FileType)
+            .images_in_folder(Path::new("/photos"), SortOrder::FileTypeAsc)
             .unwrap();
         // jpg before png.
         assert_eq!(by_type[0].extension, "jpg");
         assert_eq!(by_type[2].extension, "png");
+
+        let by_oldest = idx
+            .images_in_folder(Path::new("/photos"), SortOrder::DateModifiedAsc)
+            .unwrap();
+        assert_eq!(by_oldest[0].filename, "c.png");
+
+        let by_name_desc = idx
+            .images_in_folder(Path::new("/photos"), SortOrder::NameDesc)
+            .unwrap();
+        assert_eq!(by_name_desc[0].filename, "c.png");
     }
 
     #[test]

@@ -2664,9 +2664,16 @@ impl SharprWindow {
             let viewer_c = viewer.clone();
             let window_weak = self.downgrade();
             filmstrip.connect_quality_filter_changed(move |quality_class| {
-                let (scope, library_index, sort_order) = {
+                let (scope, library_index, sort_order, indexed_paths, metadata_cache) = {
                     let s = state_c.borrow();
-                    (s.scope.clone(), s.library_index.clone(), s.sort_order)
+                    let (indexed_paths, _, metadata_cache) = s.library.bg_scan_quality_prep();
+                    (
+                        s.scope.clone(),
+                        s.library_index.clone(),
+                        s.sort_order,
+                        indexed_paths,
+                        metadata_cache,
+                    )
                 };
 
                 let base_paths: Vec<PathBuf> = match &scope {
@@ -2697,18 +2704,24 @@ impl SharprWindow {
                     return;
                 }
 
-                let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
+                type ScanState = (
+                    Vec<PathBuf>,
+                    rustc_hash::FxHashMap<PathBuf, crate::model::library::CachedImageData>,
+                );
+                let (tx, rx) = async_channel::bounded::<(Vec<PathBuf>, Option<ScanState>)>(1);
                 rayon::spawn(move || {
-                    let mut result = base_paths;
-                    if let Some(class) = quality_class {
-                        if let Some(idx) = library_index.as_ref() {
-                            if let Ok(quality_paths) = idx.images_by_quality(class) {
-                                let quality_set: std::collections::HashSet<_> =
-                                    quality_paths.into_iter().collect();
-                                result.retain(|p| quality_set.contains(p));
-                            }
-                        }
-                    }
+                    let result = if let Some(class) = quality_class {
+                        let (new_indexed, new_cache, filtered) =
+                            crate::model::library::LibraryManager::filter_paths_by_quality_class(
+                                class,
+                                base_paths,
+                                indexed_paths,
+                                metadata_cache,
+                            );
+                        (filtered, Some((new_indexed, new_cache)))
+                    } else {
+                        (base_paths, None)
+                    };
                     let _ = tx.send_blocking(result);
                 });
 
@@ -2717,10 +2730,18 @@ impl SharprWindow {
                 let state_rx = state_c.clone();
                 let window_weak_rx = window_weak.clone();
                 glib::MainContext::default().spawn_local(async move {
-                    let Ok(paths) = rx.recv().await else { return };
+                    let Ok((paths, scan_state)) = rx.recv().await else {
+                        return;
+                    };
                     if let Some(win) = window_weak_rx.upgrade() {
                         let _ = win.bump_thumbnail_generation("filter.apply");
                         win.complete_thumbnail_ops();
+                    }
+                    if let Some((new_indexed, new_cache)) = scan_state {
+                        state_rx
+                            .borrow_mut()
+                            .library
+                            .bg_scan_quality_finish(new_indexed, new_cache);
                     }
                     load_virtual_async(&state_rx, &paths);
                     filmstrip_rx.refresh_virtual();

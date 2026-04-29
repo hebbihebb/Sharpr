@@ -9,12 +9,50 @@ use crate::library_index::{basic_info_from_path, BasicImageInfo, IndexedImage};
 use crate::model::image_entry::ImageEntry;
 use crate::quality::{QualityClass, QualityScore};
 
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub enum SortOrder {
-    #[default]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SortField {
     Name,
     DateModified,
     FileType,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum SortOrder {
+    NameAsc,
+    NameDesc,
+    DateModifiedAsc,
+    #[default]
+    DateModifiedDesc,
+    FileTypeAsc,
+    FileTypeDesc,
+}
+
+impl SortOrder {
+    pub fn field(self) -> SortField {
+        match self {
+            Self::NameAsc | Self::NameDesc => SortField::Name,
+            Self::DateModifiedAsc | Self::DateModifiedDesc => SortField::DateModified,
+            Self::FileTypeAsc | Self::FileTypeDesc => SortField::FileType,
+        }
+    }
+
+    pub fn descending(self) -> bool {
+        matches!(
+            self,
+            Self::NameDesc | Self::DateModifiedDesc | Self::FileTypeDesc
+        )
+    }
+
+    pub fn from_parts(field: SortField, descending: bool) -> Self {
+        match (field, descending) {
+            (SortField::Name, false) => Self::NameAsc,
+            (SortField::Name, true) => Self::NameDesc,
+            (SortField::DateModified, false) => Self::DateModifiedAsc,
+            (SortField::DateModified, true) => Self::DateModifiedDesc,
+            (SortField::FileType, false) => Self::FileTypeAsc,
+            (SortField::FileType, true) => Self::FileTypeDesc,
+        }
+    }
 }
 
 /// Known image file extensions (lower-case).
@@ -708,6 +746,29 @@ impl LibraryManager {
         (indexed_paths, metadata_cache, filtered)
     }
 
+    pub fn filter_paths_by_quality_class(
+        class: QualityClass,
+        paths: Vec<PathBuf>,
+        indexed_paths: Vec<PathBuf>,
+        mut metadata_cache: FxHashMap<PathBuf, CachedImageData>,
+    ) -> (
+        Vec<PathBuf>,
+        FxHashMap<PathBuf, CachedImageData>,
+        Vec<PathBuf>,
+    ) {
+        let filtered = paths
+            .into_iter()
+            .filter(|path| {
+                Self::cached_image_data_static(path, &mut metadata_cache)
+                    .quality
+                    .class
+                    == class
+            })
+            .collect();
+
+        (indexed_paths, metadata_cache, filtered)
+    }
+
     pub fn cached_image_data_static(
         path: &Path,
         cache: &mut FxHashMap<PathBuf, CachedImageData>,
@@ -881,9 +942,29 @@ fn path_sort_key(a: &Path, b: &Path) -> std::cmp::Ordering {
 
 pub fn sort_raw_entries(entries: &mut [RawImageEntry], order: SortOrder) {
     match order {
-        SortOrder::Name => {}
-        SortOrder::DateModified => entries.sort_by(|a, b| b.modified.cmp(&a.modified)),
-        SortOrder::FileType => entries.sort_by(|a, b| {
+        SortOrder::NameAsc => entries.sort_by(|a, b| {
+            a.filename
+                .to_lowercase()
+                .cmp(&b.filename.to_lowercase())
+                .then_with(|| a.path.cmp(&b.path))
+        }),
+        SortOrder::NameDesc => entries.sort_by(|a, b| {
+            b.filename
+                .to_lowercase()
+                .cmp(&a.filename.to_lowercase())
+                .then_with(|| a.path.cmp(&b.path))
+        }),
+        SortOrder::DateModifiedAsc => entries.sort_by(|a, b| {
+            a.modified
+                .cmp(&b.modified)
+                .then_with(|| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()))
+        }),
+        SortOrder::DateModifiedDesc => entries.sort_by(|a, b| {
+            b.modified
+                .cmp(&a.modified)
+                .then_with(|| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()))
+        }),
+        SortOrder::FileTypeAsc => entries.sort_by(|a, b| {
             let ext = |e: &RawImageEntry| {
                 e.path
                     .extension()
@@ -893,6 +974,18 @@ pub fn sort_raw_entries(entries: &mut [RawImageEntry], order: SortOrder) {
             };
             ext(a)
                 .cmp(&ext(b))
+                .then_with(|| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()))
+        }),
+        SortOrder::FileTypeDesc => entries.sort_by(|a, b| {
+            let ext = |e: &RawImageEntry| {
+                e.path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase()
+            };
+            ext(b)
+                .cmp(&ext(a))
                 .then_with(|| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()))
         }),
     }
@@ -983,6 +1076,29 @@ mod tests {
 
         assert_eq!(excellent_paths, vec![excellent]);
         assert_eq!(upscale_paths, vec![needs_upscale]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn filter_paths_by_quality_class_uses_cached_file_info() {
+        let root = temp_path("quality-filter");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let poor = root.join("poor.jpg");
+        let excellent = root.join("excellent.bmp");
+        write_jpeg(&poor, 1280, 720, 65);
+        write_bmp(&excellent, 6000, 4000);
+
+        let (_, cache, filtered) = LibraryManager::filter_paths_by_quality_class(
+            QualityClass::Poor,
+            vec![poor.clone(), excellent.clone()],
+            Vec::new(),
+            FxHashMap::default(),
+        );
+
+        assert_eq!(filtered, vec![poor]);
+        assert!(cache.contains_key(&excellent));
 
         std::fs::remove_dir_all(root).unwrap();
     }

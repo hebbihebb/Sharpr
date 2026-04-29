@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -11,7 +11,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
-use crate::model::library::SortOrder;
+use crate::model::library::{SortField, SortOrder};
 use crate::model::ImageEntry;
 use crate::quality::QualityClass;
 use crate::thumbnails::worker::WorkerRequest;
@@ -138,6 +138,9 @@ mod imp {
         pub quality_filter_changed_cb: RefCell<Option<QualityFilterChangedCallback>>,
         pub save_search_as_collection_cb: RefCell<Option<SaveSearchAsCollectionCallback>>,
         pub quality_radios: RefCell<Vec<(gtk4::CheckButton, Option<QualityClass>)>>,
+        pub sort_field_radios: RefCell<Vec<(gtk4::CheckButton, SortField)>>,
+        pub sort_direction_radios: RefCell<Vec<(gtk4::CheckButton, bool)>>,
+        pub current_sort_order: Cell<SortOrder>,
         pub sort_btn: RefCell<Option<gtk4::MenuButton>>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub visible_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
@@ -191,6 +194,9 @@ mod imp {
                 quality_filter_changed_cb: RefCell::new(None),
                 save_search_as_collection_cb: RefCell::new(None),
                 quality_radios: RefCell::new(Vec::new()),
+                sort_field_radios: RefCell::new(Vec::new()),
+                sort_direction_radios: RefCell::new(Vec::new()),
+                current_sort_order: Cell::new(SortOrder::default()),
                 sort_btn: RefCell::new(None),
                 state: RefCell::new(None),
                 visible_thumbnail_tx: RefCell::new(None),
@@ -246,18 +252,48 @@ impl FilmstripPane {
         let sort_popover = gtk4::Popover::new();
         let sort_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         sort_box.add_css_class("menu");
+        let default_sort = SortOrder::default();
 
         // Sort section.
         let name_row = gtk4::CheckButton::with_label("Name");
-        name_row.set_active(true);
         let date_row = gtk4::CheckButton::with_label("Date Modified");
         date_row.set_group(Some(&name_row));
         let type_row = gtk4::CheckButton::with_label("Type");
         type_row.set_group(Some(&name_row));
+        match default_sort.field() {
+            SortField::Name => name_row.set_active(true),
+            SortField::DateModified => date_row.set_active(true),
+            SortField::FileType => type_row.set_active(true),
+        }
+        *imp.sort_field_radios.borrow_mut() = vec![
+            (name_row.clone(), SortField::Name),
+            (date_row.clone(), SortField::DateModified),
+            (type_row.clone(), SortField::FileType),
+        ];
 
         sort_box.append(&name_row);
         sort_box.append(&date_row);
         sort_box.append(&type_row);
+
+        let direction_sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+        direction_sep.set_margin_top(4);
+        direction_sep.set_margin_bottom(4);
+        sort_box.append(&direction_sep);
+
+        let ascending_row = gtk4::CheckButton::with_label("Ascending");
+        let descending_row = gtk4::CheckButton::with_label("Descending");
+        descending_row.set_group(Some(&ascending_row));
+        if default_sort.descending() {
+            descending_row.set_active(true);
+        } else {
+            ascending_row.set_active(true);
+        }
+        *imp.sort_direction_radios.borrow_mut() = vec![
+            (ascending_row.clone(), false),
+            (descending_row.clone(), true),
+        ];
+        sort_box.append(&ascending_row);
+        sort_box.append(&descending_row);
 
         // Quality filter section.
         let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
@@ -293,8 +329,13 @@ impl FilmstripPane {
         name_row.connect_toggled(move |btn| {
             if btn.is_active() {
                 if let Some(f) = w.upgrade() {
+                    let sort_order = SortOrder::from_parts(
+                        SortField::Name,
+                        f.imp().current_sort_order.get().descending(),
+                    );
+                    f.imp().current_sort_order.set(sort_order);
                     if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
-                        cb(SortOrder::Name);
+                        cb(sort_order);
                     }
                 }
             }
@@ -304,8 +345,13 @@ impl FilmstripPane {
         date_row.connect_toggled(move |btn| {
             if btn.is_active() {
                 if let Some(f) = w.upgrade() {
+                    let sort_order = SortOrder::from_parts(
+                        SortField::DateModified,
+                        f.imp().current_sort_order.get().descending(),
+                    );
+                    f.imp().current_sort_order.set(sort_order);
                     if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
-                        cb(SortOrder::DateModified);
+                        cb(sort_order);
                     }
                 }
             }
@@ -315,8 +361,41 @@ impl FilmstripPane {
         type_row.connect_toggled(move |btn| {
             if btn.is_active() {
                 if let Some(f) = w.upgrade() {
+                    let sort_order = SortOrder::from_parts(
+                        SortField::FileType,
+                        f.imp().current_sort_order.get().descending(),
+                    );
+                    f.imp().current_sort_order.set(sort_order);
                     if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
-                        cb(SortOrder::FileType);
+                        cb(sort_order);
+                    }
+                }
+            }
+        });
+
+        let w = self.downgrade();
+        ascending_row.connect_toggled(move |btn| {
+            if btn.is_active() {
+                if let Some(f) = w.upgrade() {
+                    let sort_order =
+                        SortOrder::from_parts(f.imp().current_sort_order.get().field(), false);
+                    f.imp().current_sort_order.set(sort_order);
+                    if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
+                        cb(sort_order);
+                    }
+                }
+            }
+        });
+
+        let w = self.downgrade();
+        descending_row.connect_toggled(move |btn| {
+            if btn.is_active() {
+                if let Some(f) = w.upgrade() {
+                    let sort_order =
+                        SortOrder::from_parts(f.imp().current_sort_order.get().field(), true);
+                    f.imp().current_sort_order.set(sort_order);
+                    if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
+                        cb(sort_order);
                     }
                 }
             }
