@@ -145,6 +145,8 @@ struct TagPopoverState {
     path: Option<PathBuf>,
 }
 
+type PendingCommitFn = RefCell<Option<Box<dyn FnOnce(PathBuf)>>>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConvertKind {
     Upscale,
@@ -254,6 +256,12 @@ mod imp {
         pub(super) active_convert_op_id: Cell<Option<u64>>,
         /// Called when the "Manage tags" button in the popover is clicked.
         pub manage_tags_cb: RefCell<Option<Box<dyn Fn()>>>,
+        /// Commit action for the active convert operation (downscale or upscale).
+        /// Called with the temp output path when the user clicks Commit.
+        pub pending_commit_fn: PendingCommitFn,
+        /// Last metadata-only quality score set for the displayed image, kept so
+        /// `apply_sharpness` can blend without re-reading metadata.
+        pub base_quality: RefCell<Option<crate::quality::QualityScore>>,
     }
 
     impl Default for ViewerPane {
@@ -536,6 +544,8 @@ mod imp {
                 convert_sessions: RefCell::new(HashMap::new()),
                 active_convert_op_id: Cell::new(None),
                 manage_tags_cb: RefCell::new(None),
+                pending_commit_fn: RefCell::new(None),
+                base_quality: RefCell::new(None),
             }
         }
     }
@@ -688,28 +698,22 @@ impl ViewerPane {
         self.add_controller(shortcuts);
 
         // -----------------------------------------------------------------------
-        // Ctrl+Scroll → zoom
+        // Scroll → zoom
         // -----------------------------------------------------------------------
-        // Capture phase so we see Ctrl+Scroll before the ScrolledWindow
-        // consumes the event (which it does whenever there is scrollable overflow).
+        // Capture phase so we intercept scroll before the ScrolledWindow
+        // consumes it (which it does whenever there is scrollable overflow).
         let scroll = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
         scroll.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let w = self.downgrade();
         scroll.connect_scroll(move |ctrl, _dx, dy| {
-            if ctrl
-                .current_event_state()
-                .contains(gdk4::ModifierType::CONTROL_MASK)
-            {
-                if let Some(viewer) = w.upgrade() {
-                    if let Some((x, y)) = ctrl.current_event().and_then(|event| event.position()) {
-                        viewer.imp().pointer_pos.set((x, y));
-                    }
-                    let factor = if dy < 0.0 { 1.1 } else { 1.0 / 1.1 };
-                    viewer.apply_zoom(factor);
+            if let Some(viewer) = w.upgrade() {
+                if let Some((x, y)) = ctrl.current_event().and_then(|event| event.position()) {
+                    viewer.imp().pointer_pos.set((x, y));
                 }
-                return glib::Propagation::Stop;
+                let factor = if dy < 0.0 { 1.1 } else { 1.0 / 1.1 };
+                viewer.apply_zoom(factor);
             }
-            glib::Propagation::Proceed
+            glib::Propagation::Stop
         });
         self.add_controller(scroll);
 
@@ -960,6 +964,7 @@ impl ViewerPane {
             .map(|session| extensions_match(&session.temp_output, &session.source_path))
             .unwrap_or(false)
     }
+
 
     /// Register a callback invoked when "Manage tags" is clicked in the popover.
     pub fn connect_manage_tags(&self, cb: impl Fn() + 'static) {
@@ -1315,12 +1320,25 @@ impl ViewerPane {
 
     fn set_quality_score(&self, quality: Option<&QualityScore>) {
         let imp = self.imp();
+        *imp.base_quality.borrow_mut() = quality.cloned();
         let Some(quality) = quality else {
             imp.metadata_chip.update_quality(None);
             return;
         };
-
         imp.metadata_chip.update_quality(Some(quality));
+    }
+
+    /// Blend a sharpness result into the quality display for the currently
+    /// shown image.  Does nothing if `path` doesn't match the displayed image.
+    pub fn apply_sharpness(&self, path: &std::path::Path, sharpness_norm: f64) {
+        let imp = self.imp();
+        if imp.current_path.borrow().as_deref() != Some(path) {
+            return;
+        }
+        let base = imp.base_quality.borrow().clone();
+        let Some(base) = base else { return };
+        let blended = crate::quality::scorer::blend_with_sharpness(&base, sharpness_norm);
+        imp.metadata_chip.update_quality(Some(&blended));
     }
 
     pub fn zoom_mode(&self) -> ZoomMode {

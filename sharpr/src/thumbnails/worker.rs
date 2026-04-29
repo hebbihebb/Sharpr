@@ -12,6 +12,13 @@ use crate::metadata::orientation::{
     apply_exif_orientation, apply_exif_orientation_value, extract_exif_data,
 };
 
+/// Sent back when a sharpness score is computed for an image.
+pub struct SharpnessResult {
+    pub path: PathBuf,
+    /// Raw Laplacian variance; pass through `blur::normalize_sharpness` for display.
+    pub score: f64,
+}
+
 /// Message sent from the UI to the worker pool.
 ///
 /// `gen` is the folder-switch generation at the time the request was queued.
@@ -57,6 +64,8 @@ pub struct ThumbnailWorker {
     /// Number of visible-channel workers, used for clean shutdown.
     visible_worker_count: usize,
     preload_worker_count: usize,
+    /// Sender side of the sharpness channel — hand to the backfill worker too.
+    sharpness_tx: Sender<SharpnessResult>,
 }
 
 /// Target height for generated thumbnails (in pixels).
@@ -65,8 +74,11 @@ const THUMB_HEIGHT: u32 = 160;
 impl ThumbnailWorker {
     /// Spawn background workers split into a visible pool (`thread_count - 1`
     /// threads) and a preload pool (1 thread).
-    /// Returns the worker handle and the receivers for thumbnail and hash results.
-    pub fn spawn(thread_count: usize) -> (Self, Receiver<ThumbnailResult>, Receiver<HashResult>) {
+    /// Returns the worker handle and the receivers for thumbnail, hash, and sharpness results.
+    pub fn spawn(
+        thread_count: usize,
+        db: Option<Arc<crate::tags::TagDatabase>>,
+    ) -> (Self, Receiver<ThumbnailResult>, Receiver<HashResult>, Receiver<SharpnessResult>) {
         let preload_workers = 4usize;
         let visible_workers = thread_count.saturating_sub(preload_workers).max(1);
 
@@ -74,6 +86,7 @@ impl ThumbnailWorker {
         let (preload_tx, preload_rx) = async_channel::unbounded::<WorkerRequest>();
         let (result_tx, result_rx) = async_channel::unbounded::<ThumbnailResult>();
         let (hash_result_tx, hash_result_rx) = async_channel::unbounded::<HashResult>();
+        let (sharpness_tx, sharpness_rx) = async_channel::unbounded::<SharpnessResult>();
         let generation = Arc::new(AtomicU64::new(0));
         let pending_paths = Arc::new(Mutex::new(HashSet::new()));
 
@@ -83,6 +96,8 @@ impl ThumbnailWorker {
             let request_tx = visible_tx.clone();
             let result_tx = result_tx.clone();
             let hash_result_tx = hash_result_tx.clone();
+            let sharpness_tx = sharpness_tx.clone();
+            let db = db.clone();
             let gen_arc = generation.clone();
             let pending_paths = pending_paths.clone();
             std::thread::spawn(move || {
@@ -126,7 +141,11 @@ impl ThumbnailWorker {
                                         "duration_ms": result.worker_ms,
                                     }),
                                 );
+                                let sharpness = maybe_score_sharpness(&path, &result, &db);
                                 let _ = result_tx.send_blocking(result);
+                                if let Some(sr) = sharpness {
+                                    let _ = sharpness_tx.send_blocking(sr);
+                                }
                             } else {
                                 crate::bench_event!(
                                     "thumbnail.fail",
@@ -189,6 +208,8 @@ impl ThumbnailWorker {
             let request_tx = preload_tx.clone();
             let result_tx = result_tx.clone();
             let hash_result_tx = hash_result_tx.clone();
+            let sharpness_tx = sharpness_tx.clone();
+            let db = db.clone();
             let gen_arc = generation.clone();
             let pending_paths = pending_paths.clone();
             std::thread::spawn(move || loop {
@@ -230,7 +251,11 @@ impl ThumbnailWorker {
                                     "duration_ms": result.worker_ms,
                                 }),
                             );
+                            let sharpness = maybe_score_sharpness(&path, &result, &db);
                             let _ = result_tx.send_blocking(result);
+                            if let Some(sr) = sharpness {
+                                let _ = sharpness_tx.send_blocking(sr);
+                            }
                         } else {
                             crate::bench_event!(
                                 "thumbnail.fail",
@@ -293,9 +318,11 @@ impl ThumbnailWorker {
                 pending_paths,
                 visible_worker_count: visible_workers,
                 preload_worker_count: preload_workers,
+                sharpness_tx,
             },
             result_rx,
             hash_result_rx,
+            sharpness_rx,
         )
     }
 
@@ -331,6 +358,12 @@ impl ThumbnailWorker {
     /// Return a clone of the generation Arc for use in the filmstrip.
     pub fn generation_arc(&self) -> Arc<AtomicU64> {
         self.generation.clone()
+    }
+
+    /// Clone of the sharpness sender — hand this to the backfill worker so
+    /// results flow through the same channel.
+    pub fn sharpness_sender(&self) -> Sender<SharpnessResult> {
+        self.sharpness_tx.clone()
     }
 }
 
@@ -568,12 +601,38 @@ fn thumbnail_cache_path(source_path: &Path) -> Option<PathBuf> {
     super::cache::thumbnail_cache_path(source_path)
 }
 
+/// Load cached thumbnail pixels (Sharpr disk cache or system GNOME cache).
+/// Used by both the backfill worker and `compute_hash`.
+pub(crate) fn load_cached_rgba(path: &Path) -> Option<(Vec<u8>, u32, u32)> {
+    load_cached_thumbnail(path)
+        .or_else(|| load_system_thumbnail(path))
+        .map(|t| (t.rgba_bytes, t.width, t.height))
+}
+
+/// Compute and persist a sharpness score if the image is not already scored.
+/// Returns `Some(SharpnessResult)` when a new score was calculated.
+fn maybe_score_sharpness(
+    path: &Path,
+    result: &ThumbnailResult,
+    db: &Option<Arc<crate::tags::TagDatabase>>,
+) -> Option<SharpnessResult> {
+    let db = db.as_ref()?;
+    if db.get_sharpness(path).is_some() {
+        return None;
+    }
+    let score =
+        crate::quality::blur::laplacian_variance(&result.rgba_bytes, result.width, result.height);
+    let mtime = crate::tags::db::file_mtime_secs(path).unwrap_or(0);
+    db.upsert_sharpness(path, score, mtime);
+    Some(SharpnessResult {
+        path: path.to_path_buf(),
+        score,
+    })
+}
+
 fn compute_hash(path: &Path) -> Option<u64> {
-    // Optimization: if we have a thumbnail (from our cache or system cache),
-    // use it for hashing instead of decoding the full source image.
-    if let Some(thumb) = load_cached_thumbnail(path).or_else(|| load_system_thumbnail(path)) {
-        if let Some(rgba) = image::RgbaImage::from_raw(thumb.width, thumb.height, thumb.rgba_bytes)
-        {
+    if let Some((bytes, w, h)) = load_cached_rgba(path) {
+        if let Some(rgba) = image::RgbaImage::from_raw(w, h, bytes) {
             let img = image::DynamicImage::ImageRgba8(rgba);
             return Some(crate::duplicates::phash::dhash(&img));
         }

@@ -47,6 +47,29 @@ impl QualityScore {
     }
 }
 
+/// Blend a metadata-derived base score with a normalised sharpness value
+/// (0.0–1.0 from `blur::normalize_sharpness`).  The base score accounts for
+/// resolution/format (60 %), sharpness for perceived focus quality (40 %).
+pub fn blend_with_sharpness(base: &QualityScore, sharpness_norm: f64) -> QualityScore {
+    let sharpness_component = (sharpness_norm * 100.0).round() as u8;
+    let blended = ((base.score as f64 * 0.6) + (sharpness_component as f64 * 0.4))
+        .round()
+        .clamp(0.0, 100.0) as u8;
+    let class = classify(blended);
+    let reason = if sharpness_norm < 0.25 {
+        "Soft focus detected".to_string()
+    } else if sharpness_norm < 0.5 {
+        "Moderate sharpness".to_string()
+    } else {
+        base.reason.clone()
+    };
+    QualityScore {
+        score: blended,
+        class,
+        reason,
+    }
+}
+
 pub fn score_metadata(meta: &ImageMetadata) -> QualityScore {
     score_file_info(
         Some((meta.width, meta.height)).filter(|(width, height)| *width > 0 && *height > 0),

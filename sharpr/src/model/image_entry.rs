@@ -13,7 +13,7 @@ use gtk4::subclass::prelude::*;
 mod imp {
     use super::*;
 
-    #[derive(Properties, Default)]
+    #[derive(Properties)]
     #[properties(wrapper_type = super::ImageEntry)]
     pub struct ImageEntry {
         pub path: RefCell<PathBuf>,
@@ -25,6 +25,23 @@ mod imp {
         pub height: Cell<u32>,
         /// File size in bytes, populated lazily.
         pub file_size: Cell<u64>,
+        /// Raw Laplacian variance from the sharpness scorer.
+        /// `f64::NAN` means not yet computed.
+        pub sharpness_score: Cell<f64>,
+    }
+
+    impl Default for ImageEntry {
+        fn default() -> Self {
+            Self {
+                path: RefCell::default(),
+                filename: RefCell::default(),
+                thumbnail: RefCell::default(),
+                width: Cell::new(0),
+                height: Cell::new(0),
+                file_size: Cell::new(0),
+                sharpness_score: Cell::new(f64::NAN),
+            }
+        }
     }
 
     #[glib::object_subclass]
@@ -91,5 +108,15 @@ impl ImageEntry {
 
     pub fn set_file_size(&self, size: u64) {
         self.imp().file_size.set(size);
+    }
+
+    /// Returns the raw Laplacian variance if it has been computed, or `None`.
+    pub fn sharpness_score(&self) -> Option<f64> {
+        let v = self.imp().sharpness_score.get();
+        if v.is_nan() { None } else { Some(v) }
+    }
+
+    pub fn set_sharpness_score(&self, score: f64) {
+        self.imp().sharpness_score.set(score);
     }
 }

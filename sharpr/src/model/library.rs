@@ -290,6 +290,10 @@ impl LibraryManager {
         self.selected_index.and_then(|i| self.entry_at(i))
     }
 
+    pub fn entry_for_path(&self, path: &std::path::Path) -> Option<ImageEntry> {
+        self.entry_at(self.index_of_path(path)?)
+    }
+
     pub fn restore_index_for(&self, folder: &Path) -> Option<u32> {
         self.folder_history.get(folder).copied()
     }

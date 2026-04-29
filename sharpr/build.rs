@@ -45,7 +45,13 @@ fn track_git_version_inputs() {
     let manifest_dir = std::path::PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string()),
     );
-    let git_dir = manifest_dir.join(".git");
+    // Walk up from the manifest dir to find the .git directory (may be a parent).
+    let git_dir = std::iter::successors(Some(manifest_dir.as_path()), |p| p.parent())
+        .find_map(|dir| {
+            let candidate = dir.join(".git");
+            candidate.exists().then_some(candidate)
+        });
+    let Some(git_dir) = git_dir else { return };
     let head = git_dir.join("HEAD");
     if head.exists() {
         println!("cargo:rerun-if-changed={}", head.display());
