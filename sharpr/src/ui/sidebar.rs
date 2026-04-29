@@ -153,6 +153,9 @@ impl SidebarPane {
         open_btn.set_tooltip_text(Some("Open Folder"));
         header.pack_start(&open_btn);
 
+        imp.library_label.set_text("Library");
+        header.set_title_widget(Some(&imp.library_label));
+
         let widget_weak = self.downgrade();
         open_btn.connect_clicked(move |btn| {
             let Some(widget) = widget_weak.upgrade() else {
@@ -187,6 +190,7 @@ impl SidebarPane {
         imp.toolbar_view.add_top_bar(&header);
 
         imp.list_box.add_css_class("navigation-sidebar");
+        imp.list_box.set_activate_on_single_click(true);
         imp.list_box.set_selection_mode(gtk4::SelectionMode::Single);
         self.refresh_library_menu(state.clone());
         self.populate_default_folders(state.clone());
@@ -211,43 +215,37 @@ impl SidebarPane {
                 widget.imp().suppress_folder_signal.set(false);
                 return;
             }
+            widget.clear_collection_selection();
+            widget.emit_folder_selected(folder_row.path());
+        });
+
+        let widget_weak = self.downgrade();
+        imp.list_box.connect_row_activated(move |_, row| {
+            let Some(widget) = widget_weak.upgrade() else {
+                return;
+            };
+            let Some(folder_row) = row.downcast_ref::<FolderRow>() else {
+                return;
+            };
             if folder_row.has_children() {
                 widget.toggle_folder_collapsed(folder_row.path());
             }
-            widget.clear_collection_selection();
-            widget.emit_folder_selected(folder_row.path());
         });
 
         let scroll = gtk4::ScrolledWindow::new();
         scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
         scroll.set_propagate_natural_height(true);
         scroll.set_child(Some(&imp.list_box));
-
-        let folders_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-        let folders_label = section_label("Library");
-        imp.library_label.set_text("Library");
-        imp.library_label.add_css_class("caption-heading");
-        imp.library_label.set_halign(gtk4::Align::Start);
-        imp.library_label.set_margin_start(12);
-        imp.library_label.set_margin_top(8);
-        imp.library_label.set_margin_bottom(4);
-        let _ = folders_label; // replaced by imp.library_label
-        let folders_label = imp.library_label.clone();
-        let library_spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-        library_spacer.set_hexpand(true);
         let library_menu_btn = imp.library_menu_btn.clone();
         library_menu_btn.set_icon_name("pan-down-symbolic");
         library_menu_btn.add_css_class("flat");
-        library_menu_btn.set_margin_end(8);
         library_menu_btn.set_tooltip_text(Some("Switch Library"));
         let library_popover = gtk4::Popover::new();
         let library_menu_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         library_menu_box.add_css_class("menu");
         library_popover.set_child(Some(&library_menu_box));
         library_menu_btn.set_popover(Some(&library_popover));
-        folders_header.append(&folders_label);
-        folders_header.append(&library_spacer);
-        folders_header.append(&library_menu_btn);
+        header.pack_end(&library_menu_btn);
 
         {
             let state_c = state.clone();
@@ -319,7 +317,6 @@ impl SidebarPane {
             });
 
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        vbox.append(&folders_header);
         vbox.append(&scroll);
         vbox.append(&collections_header);
         vbox.append(&imp.collection_list);
@@ -380,8 +377,7 @@ impl SidebarPane {
                 &entry.label,
                 entry.depth,
                 entry.has_children,
-                self
-                    .imp()
+                self.imp()
                     .collapsed_folder_paths
                     .borrow()
                     .contains(&entry.path),
@@ -393,6 +389,19 @@ impl SidebarPane {
     }
 
     fn set_folder_tree(&self, tree: &[FolderNode], ignored_folders: &[PathBuf]) {
+        {
+            let mut collapsed = self.imp().collapsed_folder_paths.borrow_mut();
+            if collapsed.is_empty() {
+                fn collect_paths(nodes: &[FolderNode], out: &mut HashSet<PathBuf>) {
+                    for node in nodes {
+                        out.insert(node.path.clone());
+                        collect_paths(&node.children, out);
+                    }
+                }
+
+                collect_paths(tree, &mut collapsed);
+            }
+        }
         *self.imp().folder_tree.borrow_mut() = tree.to_vec();
         let entries = visible_folder_entries(tree, &self.imp().collapsed_folder_paths.borrow());
         self.replace_folder_rows(&entries, ignored_folders);
@@ -952,6 +961,20 @@ impl SidebarPane {
     }
 
     fn attach_folder_row_menu(&self, row: &FolderRow) {
+        if let Some(disclosure) = row.disclosure_button() {
+            let row_weak = row.downgrade();
+            let widget_weak = self.downgrade();
+            disclosure.connect_clicked(move |_| {
+                let Some(widget) = widget_weak.upgrade() else {
+                    return;
+                };
+                let Some(row) = row_weak.upgrade() else {
+                    return;
+                };
+                widget.toggle_folder_collapsed(row.path());
+            });
+        }
+
         let popover = gtk4::Popover::new();
         popover.set_autohide(true);
         popover.set_has_arrow(true);
@@ -1313,6 +1336,7 @@ mod folder_row_imp {
         pub path: RefCell<PathBuf>,
         pub ignored: Cell<bool>,
         pub has_children: Cell<bool>,
+        pub disclosure_button: RefCell<Option<gtk4::Button>>,
     }
 
     #[glib::object_subclass]
@@ -1360,6 +1384,7 @@ impl FolderRow {
         });
         disclosure.set_sensitive(has_children);
         disclosure.set_opacity(if has_children { 1.0 } else { 0.0 });
+        *row.imp().disclosure_button.borrow_mut() = Some(disclosure.clone());
         let name_label = gtk4::Label::new(Some(label));
         name_label.set_halign(gtk4::Align::Start);
         name_label.set_hexpand(true);
@@ -1388,6 +1413,10 @@ impl FolderRow {
 
     pub fn has_children(&self) -> bool {
         self.imp().has_children.get()
+    }
+
+    pub fn disclosure_button(&self) -> Option<gtk4::Button> {
+        self.imp().disclosure_button.borrow().clone()
     }
 
     pub fn set_ignored(&self, ignored: bool) {

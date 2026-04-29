@@ -560,6 +560,15 @@ impl LibraryIndex {
         self.list_collections_for_library(None)
     }
 
+    pub fn assign_orphan_collections(&self, library_id: &str) -> rusqlite::Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE collections SET library_id = ?1 WHERE library_id = ''",
+            params![library_id],
+        )?;
+        Ok(())
+    }
+
     pub fn list_collections_for_library(
         &self,
         library_id: Option<&str>,
@@ -1444,8 +1453,12 @@ mod tests {
     #[test]
     fn create_collection_rejects_empty_name() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        assert!(idx.create_collection("", None, "", &[], None, None).is_err());
-        assert!(idx.create_collection("", None, "   ", &[], None, None).is_err());
+        assert!(idx
+            .create_collection("", None, "", &[], None, None)
+            .is_err());
+        assert!(idx
+            .create_collection("", None, "   ", &[], None, None)
+            .is_err());
     }
 
     #[test]
@@ -1553,7 +1566,9 @@ mod tests {
     #[test]
     fn reparent_leaf_collection_updates_parent() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let art = idx.create_collection("", None, "Art", &[], None, None).unwrap();
+        let art = idx
+            .create_collection("", None, "Art", &[], None, None)
+            .unwrap();
         let diffusion = idx
             .create_collection("", None, "Diffusion", &[], None, None)
             .unwrap();
@@ -1566,7 +1581,9 @@ mod tests {
     #[test]
     fn reparent_rejects_non_leaf_collection() {
         let idx = LibraryIndex::open_in_memory().unwrap();
-        let art = idx.create_collection("", None, "Art", &[], None, None).unwrap();
+        let art = idx
+            .create_collection("", None, "Art", &[], None, None)
+            .unwrap();
         let root = idx
             .create_collection("", None, "People", &[], None, None)
             .unwrap();

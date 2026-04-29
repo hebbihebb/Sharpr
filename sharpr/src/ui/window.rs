@@ -260,8 +260,20 @@ fn show_new_collection_dialog<F>(
         let selected_color = selected_color_clone.borrow().clone();
         if let Some(idx) = state_d.borrow().library_index.clone() {
             let started = std::time::Instant::now();
-            let library_id = state_d.borrow().settings.active_library().map(|l| l.id.clone()).unwrap_or_default();
-            match idx.create_collection(&library_id, None, &name, &extra_tags, selected_color.as_deref(), None) {
+            let library_id = state_d
+                .borrow()
+                .settings
+                .active_library()
+                .map(|l| l.id.clone())
+                .unwrap_or_default();
+            match idx.create_collection(
+                &library_id,
+                None,
+                &name,
+                &extra_tags,
+                selected_color.as_deref(),
+                None,
+            ) {
                 Ok(coll) => {
                     crate::bench_event!(
                         "collection.create",
@@ -330,17 +342,13 @@ fn show_new_library_dialog(
             let chooser = gtk4::FileDialog::new();
             chooser.set_title("Choose Library Root");
             let root_entry_inner = root_entry_c.clone();
-            chooser.select_folder(
-                Some(&window_c),
-                None::<&gio::Cancellable>,
-                move |result| {
-                    if let Ok(file) = result {
-                        if let Some(path) = file.path() {
-                            root_entry_inner.set_text(&path.to_string_lossy());
-                        }
+            chooser.select_folder(Some(&window_c), None::<&gio::Cancellable>, move |result| {
+                if let Ok(file) = result {
+                    if let Some(path) = file.path() {
+                        root_entry_inner.set_text(&path.to_string_lossy());
                     }
-                },
-            );
+                }
+            });
         });
     }
 
@@ -356,9 +364,9 @@ fn show_new_library_dialog(
         };
         let created = {
             let mut st = state.borrow_mut();
-            let result = st
-                .settings
-                .add_library(name_entry.text().as_str(), root.clone(), folder_mode);
+            let result =
+                st.settings
+                    .add_library(name_entry.text().as_str(), root.clone(), folder_mode);
             match result {
                 Ok(id) => {
                     st.settings.set_active_library(&id);
@@ -383,11 +391,7 @@ fn show_new_library_dialog(
     dialog.present(Some(&window));
 }
 
-fn switch_active_library(
-    library_id: &str,
-    state: &Rc<RefCell<AppState>>,
-    sidebar: &SidebarPane,
-) {
+fn switch_active_library(library_id: &str, state: &Rc<RefCell<AppState>>, sidebar: &SidebarPane) {
     {
         let mut st = state.borrow_mut();
         st.settings.set_active_library(library_id);
@@ -400,6 +404,7 @@ fn switch_active_library(
         st.scope = ViewScope::Search;
         st.library.load_virtual(&[]);
     }
+    sidebar.imp().collapsed_folder_paths.borrow_mut().clear();
     sidebar.refresh_active_library(state.clone());
 }
 
@@ -416,7 +421,11 @@ fn collection_paths_from_services(
     if effective_tags.is_empty() {
         return Vec::new();
     }
-    filter_paths_for_library(tags.paths_for_all_tags(&effective_tags), active_root, disabled_folders)
+    filter_paths_for_library(
+        tags.paths_for_all_tags(&effective_tags),
+        active_root,
+        disabled_folders,
+    )
 }
 
 fn collections_for_sidebar(state: &AppState) -> Vec<Collection> {
@@ -433,13 +442,22 @@ fn collections_for_sidebar(state: &AppState) -> Vec<Collection> {
         .active_library()
         .map(|library| library.root.clone());
     let Some(tags) = state.tags.as_ref() else {
-        return index.list_collections_for_library(Some(&library_id)).unwrap_or_default();
+        return index
+            .list_collections_for_library(Some(&library_id))
+            .unwrap_or_default();
     };
-    let mut collections = index.list_collections_for_library(Some(&library_id)).unwrap_or_default();
+    let mut collections = index
+        .list_collections_for_library(Some(&library_id))
+        .unwrap_or_default();
     for collection in &mut collections {
-        collection.item_count =
-            collection_paths_from_services(index, tags, collection.id, active_root.as_deref(), &state.disabled_folders)
-                .len();
+        collection.item_count = collection_paths_from_services(
+            index,
+            tags,
+            collection.id,
+            active_root.as_deref(),
+            &state.disabled_folders,
+        )
+        .len();
     }
     collections
 }
@@ -632,7 +650,9 @@ fn path_is_disabled(path: &std::path::Path, disabled_folders: &[PathBuf]) -> boo
 }
 
 fn path_in_active_library(path: &Path, active_root: Option<&Path>) -> bool {
-    active_root.map(|root| path.starts_with(root)).unwrap_or(true)
+    active_root
+        .map(|root| path.starts_with(root))
+        .unwrap_or(true)
 }
 
 fn filter_paths_for_library(
@@ -640,7 +660,8 @@ fn filter_paths_for_library(
     active_root: Option<&Path>,
     disabled_folders: &[PathBuf],
 ) -> Vec<PathBuf> {
-    paths.into_iter()
+    paths
+        .into_iter()
         .filter(|path| path_in_active_library(path, active_root))
         .filter(|path| !path_is_disabled(path, disabled_folders))
         .collect()
@@ -959,6 +980,9 @@ impl AppState {
         let tags = crate::tags::TagDatabase::open().ok().map(Arc::new);
         if let (Some(index), Some(tags)) = (&library_index, &tags) {
             let _ = index.migrate_legacy_collections_to_tags(tags);
+        }
+        if let (Some(index), Some(lib)) = (&library_index, settings.active_library()) {
+            let _ = index.assign_orphan_collections(&lib.id);
         }
         Self {
             library,
@@ -1331,7 +1355,8 @@ impl SharprWindow {
                 state_c.borrow_mut().library.reset_for_folder(&path);
                 {
                     let mut st = state_c.borrow_mut();
-                    st.settings.set_active_library_last_folder(Some(path.clone()));
+                    st.settings
+                        .set_active_library_last_folder(Some(path.clone()));
                     st.selected_paths.clear();
                     st.scope = ViewScope::Folder(path.clone());
                 }
@@ -1726,6 +1751,26 @@ impl SharprWindow {
             })
         };
 
+        // Helper: refresh the sidebar collection list from the DB.
+        let refresh_sidebar_collections = {
+            let sidebar_c = sidebar.clone();
+            let filmstrip_c = filmstrip.clone();
+            let state_c = state.clone();
+            let tag_browser_c = tag_browser.clone();
+            move || {
+                let (collections, scope) = {
+                    let state = state_c.borrow();
+                    (collections_for_sidebar(&state), state.scope.clone())
+                };
+                filmstrip_c.refresh_collection_colors(&collections);
+                sidebar_c.refresh_collections(&collections);
+                if let Some(tag_browser) = tag_browser_c.as_ref() {
+                    tag_browser.set_collections(collections.clone());
+                }
+                apply_scope_to_sidebar(&scope, &sidebar_c);
+            }
+        };
+
         // Sidebar folder selection → scan library → refresh filmstrip.
         {
             let open_folder_c = open_folder.clone();
@@ -1737,8 +1782,10 @@ impl SharprWindow {
         {
             let state_c = state.clone();
             let sidebar_c = sidebar.clone();
+            let refresh_sidebar_collections_c = refresh_sidebar_collections.clone();
             sidebar.connect_library_selected(move |library_id| {
                 switch_active_library(&library_id, &state_c, &sidebar_c);
+                refresh_sidebar_collections_c();
             });
         }
 
@@ -1793,7 +1840,9 @@ impl SharprWindow {
                     } else if !matches!(st.scope, ViewScope::Folder(_)) {
                         let visible_paths: Vec<PathBuf> = (0..st.library.image_count())
                             .filter_map(|i| st.library.entry_at(i).map(|e| e.path()))
-                            .filter(|image_path| !path_is_disabled(image_path, &st.disabled_folders))
+                            .filter(|image_path| {
+                                !path_is_disabled(image_path, &st.disabled_folders)
+                            })
                             .collect();
                         st.library.load_virtual(&visible_paths);
                     }
@@ -2132,26 +2181,6 @@ impl SharprWindow {
             self.add_action(&quality_action);
         }
 
-        // Helper: refresh the sidebar collection list from the DB.
-        let refresh_sidebar_collections = {
-            let sidebar_c = sidebar.clone();
-            let filmstrip_c = filmstrip.clone();
-            let state_c = state.clone();
-            let tag_browser_c = tag_browser.clone();
-            move || {
-                let (collections, scope) = {
-                    let state = state_c.borrow();
-                    (collections_for_sidebar(&state), state.scope.clone())
-                };
-                filmstrip_c.refresh_collection_colors(&collections);
-                sidebar_c.refresh_collections(&collections);
-                if let Some(tag_browser) = tag_browser_c.as_ref() {
-                    tag_browser.set_collections(collections.clone());
-                }
-                apply_scope_to_sidebar(&scope, &sidebar_c);
-            }
-        };
-
         // Populate sidebar collections on startup.
         refresh_sidebar_collections();
 
@@ -2204,7 +2233,12 @@ impl SharprWindow {
                 let Some(idx) = state_c.borrow().library_index.clone() else {
                     return;
                 };
-                let library_id = state_c.borrow().settings.active_library().map(|l| l.id.clone()).unwrap_or_default();
+                let library_id = state_c
+                    .borrow()
+                    .settings
+                    .active_library()
+                    .map(|l| l.id.clone())
+                    .unwrap_or_default();
                 match idx.create_collection(&library_id, None, &tag, &[], None, None) {
                     Ok(coll) => {
                         refresh_c();
@@ -2242,7 +2276,13 @@ impl SharprWindow {
                     let state = state_c.borrow();
                     let active_root = state.settings.active_library().map(|lib| lib.root.clone());
                     match (state.library_index.as_ref(), state.tags.as_ref()) {
-                        (Some(idx), Some(tags)) => collection_paths_from_services(idx, tags, id, active_root.as_deref(), &state.disabled_folders),
+                        (Some(idx), Some(tags)) => collection_paths_from_services(
+                            idx,
+                            tags,
+                            id,
+                            active_root.as_deref(),
+                            &state.disabled_folders,
+                        ),
                         _ => Vec::new(),
                     }
                 };
@@ -2322,7 +2362,12 @@ impl SharprWindow {
                     }
                     if let Some(idx) = state_d.borrow().library_index.clone() {
                         let started = std::time::Instant::now();
-                        let library_id = state_d.borrow().settings.active_library().map(|l| l.id.clone()).unwrap_or_default();
+                        let library_id = state_d
+                            .borrow()
+                            .settings
+                            .active_library()
+                            .map(|l| l.id.clone())
+                            .unwrap_or_default();
                         match idx.create_collection(
                             &library_id,
                             Some(parent_id),
@@ -2565,9 +2610,18 @@ impl SharprWindow {
                 let local_tags = collection_local_tags(&before);
                 let (active_root_buf, disabled) = {
                     let s = state_c.borrow();
-                    (s.settings.active_library().map(|lib| lib.root.clone()), s.disabled_folders.clone())
+                    (
+                        s.settings.active_library().map(|lib| lib.root.clone()),
+                        s.disabled_folders.clone(),
+                    )
                 };
-                let old_paths = collection_paths_from_services(&idx, &tags_db, source_id, active_root_buf.as_deref(), &disabled);
+                let old_paths = collection_paths_from_services(
+                    &idx,
+                    &tags_db,
+                    source_id,
+                    active_root_buf.as_deref(),
+                    &disabled,
+                );
                 let started = std::time::Instant::now();
                 match idx.reparent_collection(source_id, target_parent_id) {
                     Ok(()) => {
@@ -2612,9 +2666,18 @@ impl SharprWindow {
                         if let ViewScope::Collection(active_id) = state_c.borrow().scope.clone() {
                             let (active_root_buf2, disabled2) = {
                                 let s = state_c.borrow();
-                                (s.settings.active_library().map(|lib| lib.root.clone()), s.disabled_folders.clone())
+                                (
+                                    s.settings.active_library().map(|lib| lib.root.clone()),
+                                    s.disabled_folders.clone(),
+                                )
                             };
-                            let paths = collection_paths_from_services(&idx, &tags_db, active_id, active_root_buf2.as_deref(), &disabled2);
+                            let paths = collection_paths_from_services(
+                                &idx,
+                                &tags_db,
+                                active_id,
+                                active_root_buf2.as_deref(),
+                                &disabled2,
+                            );
                             state_c.borrow_mut().scope = ViewScope::Collection(active_id);
                             load_virtual_async(&state_c, &paths);
                             filmstrip_c.refresh_virtual();
@@ -2766,9 +2829,18 @@ impl SharprWindow {
                         if matches!(state_c.borrow().scope, ViewScope::Collection(a) if a == id) {
                             let (active_root_buf, disabled) = {
                                 let s = state_c.borrow();
-                                (s.settings.active_library().map(|lib| lib.root.clone()), s.disabled_folders.clone())
+                                (
+                                    s.settings.active_library().map(|lib| lib.root.clone()),
+                                    s.disabled_folders.clone(),
+                                )
                             };
-                            let all_paths = collection_paths_from_services(&idx, &tags_db, id, active_root_buf.as_deref(), &disabled);
+                            let all_paths = collection_paths_from_services(
+                                &idx,
+                                &tags_db,
+                                id,
+                                active_root_buf.as_deref(),
+                                &disabled,
+                            );
                             state_c.borrow_mut().scope = ViewScope::Collection(id);
                             load_virtual_async(&state_c, &all_paths);
                             filmstrip_c.refresh_virtual();
@@ -3600,8 +3672,20 @@ impl SharprWindow {
                             let started = std::time::Instant::now();
                             let extra_tags =
                                 parse_collection_tags_input(tags_entry_c.text().as_str());
-                            let library_id = state_dd.borrow().settings.active_library().map(|l| l.id.clone()).unwrap_or_default();
-                            match idx.create_collection(&library_id, None, &name, &extra_tags, None, None) {
+                            let library_id = state_dd
+                                .borrow()
+                                .settings
+                                .active_library()
+                                .map(|l| l.id.clone())
+                                .unwrap_or_default();
+                            match idx.create_collection(
+                                &library_id,
+                                None,
+                                &name,
+                                &extra_tags,
+                                None,
+                                None,
+                            ) {
                                 Ok(coll) => {
                                     let effective_tags =
                                         idx.collection_effective_tags(coll.id).unwrap_or_default();
@@ -3737,9 +3821,18 @@ impl SharprWindow {
                         );
                         let (active_root_buf, disabled) = {
                             let s = state_c.borrow();
-                            (s.settings.active_library().map(|lib| lib.root.clone()), s.disabled_folders.clone())
+                            (
+                                s.settings.active_library().map(|lib| lib.root.clone()),
+                                s.disabled_folders.clone(),
+                            )
                         };
-                        let remaining = collection_paths_from_services(&idx, &tags_db, id, active_root_buf.as_deref(), &disabled);
+                        let remaining = collection_paths_from_services(
+                            &idx,
+                            &tags_db,
+                            id,
+                            active_root_buf.as_deref(),
+                            &disabled,
+                        );
                         state_c.borrow_mut().scope = ViewScope::Collection(id);
                         load_virtual_async(&state_c, &remaining);
                         state_c.borrow_mut().selected_paths.clear();
@@ -3779,6 +3872,7 @@ impl SharprWindow {
             outer_split.clone(),
             content_stack.clone(),
         );
+        sidebar.refresh_active_library(state.clone());
 
         // -----------------------------------------------------------------------
         // Restore last folder

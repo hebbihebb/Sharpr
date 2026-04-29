@@ -703,25 +703,35 @@ fn present_library_editor(
             FolderMode::TopLevel
         };
         let root = PathBuf::from(root_entry.text().as_str());
-        let app_state_ref = parent_c.app_state();
-        let mut state = app_state_ref.borrow_mut();
-        let result = if let Some(id) = library_id.as_deref() {
-            state
-                .settings
-                .update_library(id, name_entry.text().as_str(), root, folder_mode)
-        } else {
-            state
-                .settings
-                .add_library(name_entry.text().as_str(), root, folder_mode)
-                .map(|_| ())
+        let name = name_entry.text().to_string();
+        let (result, updated_settings) = {
+            let mut settings = parent_c.app_state().borrow().settings.clone();
+            if let Some(id) = library_id.as_deref() {
+                let result = settings.update_library(id, &name, root, folder_mode);
+                (result, settings)
+            } else {
+                let result = settings.add_library(&name, root, folder_mode).map(|_| ());
+                (result, settings)
+            }
         };
 
         match result {
             Ok(()) => {
+                let libraries = updated_settings.libraries.clone();
+                let disabled_folders = updated_settings
+                    .active_library()
+                    .map(|library| library.ignored_folders.clone())
+                    .unwrap_or_default();
+                {
+                    let app_state_ref = parent_c.app_state();
+                    let mut state = app_state_ref.borrow_mut();
+                    state.settings = updated_settings;
+                    state.disabled_folders = disabled_folders;
+                }
                 while let Some(child) = group.first_child() {
                     group.remove(&child);
                 }
-                for library in state.settings.libraries.clone() {
+                for library in libraries {
                     group.add(&build_library_row(&library, &parent_c, group.clone()));
                 }
                 let add_row = libadwaita::ActionRow::new();
@@ -738,7 +748,8 @@ fn present_library_editor(
                 group.add(&add_row);
             }
             Err(err) => {
-                let error = libadwaita::AlertDialog::new(Some("Could not save library"), Some(&err));
+                let error =
+                    libadwaita::AlertDialog::new(Some("Could not save library"), Some(&err));
                 error.add_response("ok", "OK");
                 error.present(Some(parent_c.upcast_ref::<gtk4::Window>()));
             }
