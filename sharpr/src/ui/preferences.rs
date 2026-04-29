@@ -40,7 +40,7 @@ pub fn build_preferences_window(
         let parent_c = parent.clone();
         let group_c = library_group_rc.clone();
         add_button.connect_clicked(move |_| {
-            present_library_editor(None, &parent_c, group_c.clone());
+            present_library_editor(None, None, &parent_c, group_c.clone());
         });
     }
     library_group.add(&add_library_row);
@@ -592,14 +592,21 @@ fn build_library_row(
     row.set_activatable_widget(Some(&edit_button));
     let library_id = library.id.clone();
     let parent_c = parent.clone();
+    let row_c = row.clone();
     edit_button.connect_clicked(move |_| {
-        present_library_editor(Some(library_id.clone()), &parent_c, group.clone());
+        present_library_editor(
+            Some(library_id.clone()),
+            Some(row_c.clone()),
+            &parent_c,
+            group.clone(),
+        );
     });
     row
 }
 
 fn present_library_editor(
     library_id: Option<String>,
+    row: Option<libadwaita::ActionRow>,
     parent: &SharprWindow,
     group: Rc<libadwaita::PreferencesGroup>,
 ) {
@@ -728,24 +735,23 @@ fn present_library_editor(
                     state.settings = updated_settings;
                     state.disabled_folders = disabled_folders;
                 }
-                while let Some(child) = group.first_child() {
-                    group.remove(&child);
+                if let Some(row) = row.as_ref() {
+                    if let Some(library) = libraries.iter().find(|library| {
+                        library_id.as_deref() == Some(library.id.as_str())
+                    }) {
+                        row.set_title(&library.name);
+                        row.set_subtitle(&library_subtitle(library));
+                    }
+                } else if let Some(library) = libraries.last() {
+                    let row = build_library_row(library, &parent_c, group.clone());
+                    if let Some(add_row) = group.last_child() {
+                        group.remove(&add_row);
+                        group.add(&row);
+                        group.add(&add_row);
+                    } else {
+                        group.add(&row);
+                    }
                 }
-                for library in libraries {
-                    group.add(&build_library_row(&library, &parent_c, group.clone()));
-                }
-                let add_row = libadwaita::ActionRow::new();
-                add_row.set_title("Add Library");
-                add_row.set_subtitle("Create another library root and folder mode.");
-                let add_button = gtk4::Button::with_label("Create…");
-                add_row.add_suffix(&add_button);
-                add_row.set_activatable_widget(Some(&add_button));
-                let group_c = group.clone();
-                let parent_cc = parent_c.clone();
-                add_button.connect_clicked(move |_| {
-                    present_library_editor(None, &parent_cc, group_c.clone());
-                });
-                group.add(&add_row);
             }
             Err(err) => {
                 let error =
