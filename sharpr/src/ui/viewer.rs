@@ -6,6 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Once};
 
 use crate::quality::{scorer, QualityScore};
@@ -2188,10 +2189,6 @@ impl ViewerPane {
             filename_suffix,
             kind: ConvertKind::Upscale,
         });
-        self.imp()
-            .convert_sessions
-            .borrow_mut()
-            .insert(session.op_id, session.clone());
 
         let rx = if let Some(dir) = temp_output.parent() {
             match std::fs::create_dir_all(dir) {
@@ -2240,13 +2237,7 @@ impl ViewerPane {
                                 out_path.display()
                             );
                         }
-                        let is_same_source =
-                            viewer.imp().current_path.borrow().as_ref() == Some(&path);
-                        if is_same_source {
-                            viewer.show_convert_session(session.clone());
-                        } else {
-                            viewer.set_convert_action(&session, true);
-                        }
+                        viewer.finalize_completed_convert(session.as_ref().clone());
                         if let Some(op) = op.take() {
                             op.complete();
                         }
@@ -2256,7 +2247,6 @@ impl ViewerPane {
                         let vimp = viewer.imp();
                         vimp.progress_bar.set_visible(false);
                         trigger_btn.set_sensitive(true);
-                        vimp.convert_sessions.borrow_mut().remove(&session.op_id);
                         let dialog =
                             libadwaita::AlertDialog::new(Some("Upscale Failed"), Some(&msg));
                         dialog.add_response("ok", "OK");
@@ -2321,10 +2311,6 @@ impl ViewerPane {
                 .unwrap_or_else(|| crate::export::export_filename_suffix(max_edge, format)),
             kind: ConvertKind::Downscale,
         });
-        self.imp()
-            .convert_sessions
-            .borrow_mut()
-            .insert(session.op_id, session.clone());
         glib::MainContext::default().spawn_local(async move {
             if let Ok(result) = rx.recv().await {
                 let Some(viewer) = widget_weak.upgrade() else {
@@ -2332,19 +2318,10 @@ impl ViewerPane {
                 };
                 match result {
                     Ok(()) => {
-                        if viewer.imp().current_path.borrow().as_ref() == Some(&source) {
-                            viewer.show_convert_session(session.clone());
-                        } else {
-                            viewer.set_convert_action(&session, true);
-                        }
+                        viewer.finalize_completed_convert(session.as_ref().clone());
                         op.complete();
                     }
                     Err(msg) => {
-                        viewer
-                            .imp()
-                            .convert_sessions
-                            .borrow_mut()
-                            .remove(&session.op_id);
                         op.fail(msg.clone());
                         let dialog =
                             libadwaita::AlertDialog::new(Some("Export Failed"), Some(&msg));
@@ -2419,6 +2396,52 @@ impl ViewerPane {
 
     pub fn commit_convert_default(&self) {
         self.commit_convert();
+    }
+
+    fn finalize_completed_convert(&self, session: ConvertSession) {
+        let Some(state) = self.imp().state.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        let (tx, rx) = async_channel::bounded::<Result<PathBuf, String>>(1);
+        let work_session = session.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(finalize_convert_session(&work_session));
+        });
+
+        let op = state
+            .borrow()
+            .ops
+            .clone()
+            .add(format!("Saving {}", session.kind.label().to_lowercase()));
+        let viewer_weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Some(viewer) = viewer_weak.upgrade() else {
+                return;
+            };
+
+            match rx.recv().await {
+                Ok(Ok(final_path)) => {
+                    op.complete();
+                    viewer.handle_copy_commit(&session, &final_path);
+                    if viewer.imp().current_path.borrow().as_ref() == Some(&session.source_path) {
+                        viewer.show_comparison_with_actions(
+                            session.source_path.clone(),
+                            final_path,
+                            false,
+                        );
+                    }
+                }
+                Ok(Err(msg)) => {
+                    op.fail(msg.clone());
+                    viewer.present_convert_error("Save Failed", &msg);
+                }
+                Err(_) => {
+                    op.fail("Save operation was cancelled");
+                    viewer.present_convert_error("Save Failed", "Save operation was cancelled");
+                }
+            }
+        });
     }
 
     fn commit_convert(&self) {
@@ -2543,6 +2566,8 @@ fn output_path_for_upscale(
 }
 
 fn pending_output_path(final_output: &std::path::Path) -> PathBuf {
+    static PENDING_OUTPUT_SEQ: AtomicU64 = AtomicU64::new(1);
+
     let stem = final_output
         .file_stem()
         .and_then(|s| s.to_str())
@@ -2551,7 +2576,12 @@ fn pending_output_path(final_output: &std::path::Path) -> PathBuf {
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let suffix = format!("{}.pending-{}", stem, std::process::id());
+    let suffix = format!(
+        "{}.pending-{}-{}",
+        stem,
+        std::process::id(),
+        PENDING_OUTPUT_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
     let file_name = if ext.is_empty() {
         suffix
     } else {
