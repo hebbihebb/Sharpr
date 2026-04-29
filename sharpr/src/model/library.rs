@@ -5,6 +5,7 @@ use gdk4::Texture;
 use gio::prelude::*;
 use rustc_hash::FxHashMap;
 
+use crate::config::FolderMode;
 use crate::library_index::{basic_info_from_path, BasicImageInfo, IndexedImage};
 use crate::model::image_entry::ImageEntry;
 use crate::quality::{QualityClass, QualityScore};
@@ -713,6 +714,7 @@ impl LibraryManager {
 
     pub fn compute_paths_for_quality_class(
         library_root: Option<PathBuf>,
+        folder_mode: FolderMode,
         class: QualityClass,
         mut indexed_paths: Vec<PathBuf>,
         current_folder: Option<PathBuf>,
@@ -723,8 +725,12 @@ impl LibraryManager {
         FxHashMap<PathBuf, CachedImageData>,
         Vec<PathBuf>,
     ) {
-        let paths =
-            collect_library_image_paths(library_root, current_folder.as_deref(), &disabled_folders);
+        let paths = collect_library_image_paths(
+            library_root,
+            folder_mode,
+            current_folder.as_deref(),
+            &disabled_folders,
+        );
         if paths != indexed_paths {
             for path in &paths {
                 Self::cached_image_data_static(path, &mut metadata_cache);
@@ -838,10 +844,11 @@ impl Default for LibraryManager {
 
 fn collect_library_image_paths(
     library_root: Option<PathBuf>,
+    folder_mode: FolderMode,
     current_folder: Option<&Path>,
     disabled_folders: &[PathBuf],
 ) -> Vec<PathBuf> {
-    let mut folders = collect_library_folders(library_root);
+    let mut folders = collect_library_folders(library_root, folder_mode);
     if let Some(current_folder) = current_folder {
         if current_folder.is_dir()
             && !path_is_disabled(current_folder, disabled_folders)
@@ -881,7 +888,7 @@ fn path_is_disabled(path: &Path, disabled_folders: &[PathBuf]) -> bool {
         .any(|folder| path.starts_with(folder))
 }
 
-fn collect_library_folders(library_root: Option<PathBuf>) -> Vec<PathBuf> {
+fn collect_library_folders(library_root: Option<PathBuf>, folder_mode: FolderMode) -> Vec<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home".into());
     let home = PathBuf::from(home);
     let roots = if let Some(root) = library_root {
@@ -901,26 +908,52 @@ fn collect_library_folders(library_root: Option<PathBuf>) -> Vec<PathBuf> {
             folders.push(root.clone());
         }
 
-        let Ok(entries) = std::fs::read_dir(&root) else {
-            continue;
-        };
-        for entry in entries.filter_map(Result::ok) {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
+        match folder_mode {
+            FolderMode::TopLevel => {
+                let Ok(entries) = std::fs::read_dir(&root) else {
+                    continue;
+                };
+                for entry in entries.filter_map(Result::ok) {
+                    let Ok(file_type) = entry.file_type() else {
+                        continue;
+                    };
+                    if !file_type.is_dir() {
+                        continue;
+                    }
 
-            let path = entry.path();
-            if directory_contains_images(&path) && seen.insert(path.clone()) {
-                folders.push(path);
+                    let path = entry.path();
+                    if directory_contains_images(&path) && seen.insert(path.clone()) {
+                        folders.push(path);
+                    }
+                }
+            }
+            FolderMode::DrillDown => {
+                collect_recursive_folders(&root, &mut seen, &mut folders);
             }
         }
     }
 
     folders.sort_by(|a, b| path_sort_key(a, b));
     folders
+}
+
+fn collect_recursive_folders(root: &Path, seen: &mut HashSet<PathBuf>, folders: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if directory_contains_images(&path) && seen.insert(path.clone()) {
+            folders.push(path.clone());
+        }
+        collect_recursive_folders(&path, seen, folders);
+    }
 }
 
 fn directory_contains_images(dir: &Path) -> bool {
@@ -1053,12 +1086,14 @@ mod tests {
 
         let mut settings = AppSettings::default();
         settings.library_root = Some(root.clone());
+        settings.libraries[0].root = root.clone();
         let mut library = LibraryManager::new();
         library.scan_folder(&folder_a);
 
         let (indexed_paths, current_folder, metadata_cache) = library.bg_scan_quality_prep();
         let (_, _, excellent_paths) = LibraryManager::compute_paths_for_quality_class(
             settings.library_root.clone(),
+            FolderMode::TopLevel,
             QualityClass::Excellent,
             indexed_paths.clone(),
             current_folder.clone(),
@@ -1067,6 +1102,7 @@ mod tests {
         );
         let (_, _, upscale_paths) = LibraryManager::compute_paths_for_quality_class(
             settings.library_root.clone(),
+            FolderMode::TopLevel,
             QualityClass::NeedsUpscale,
             indexed_paths,
             current_folder,

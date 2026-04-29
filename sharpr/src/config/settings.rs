@@ -1,6 +1,41 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gio::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderMode {
+    #[default]
+    TopLevel,
+    DrillDown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryConfig {
+    pub id: String,
+    pub name: String,
+    pub root: PathBuf,
+    #[serde(default)]
+    pub folder_mode: FolderMode,
+    #[serde(default)]
+    pub last_folder: Option<PathBuf>,
+    #[serde(default)]
+    pub ignored_folders: Vec<PathBuf>,
+}
+
+impl LibraryConfig {
+    fn new(name: String, root: PathBuf, folder_mode: FolderMode) -> Self {
+        Self {
+            id: new_library_id(),
+            name,
+            root,
+            folder_mode,
+            last_folder: None,
+            ignored_folders: Vec::new(),
+        }
+    }
+}
 
 /// Application settings persisted via `gio::Settings`.
 #[derive(Clone)]
@@ -13,8 +48,12 @@ pub struct AppSettings {
     pub window_width: i32,
     /// Restored main window height in logical pixels.
     pub window_height: i32,
-    /// Optional custom root shown in preferences for future library scans.
+    /// Legacy single-library root kept for migration compatibility.
     pub library_root: Option<PathBuf>,
+    /// Persisted library definitions.
+    pub libraries: Vec<LibraryConfig>,
+    /// Active library id.
+    pub active_library_id: Option<String>,
     /// Optional custom path to the upscale binary.
     pub upscaler_binary_path: Option<PathBuf>,
     /// Optional custom folder for saved upscaled images.
@@ -58,6 +97,8 @@ impl std::fmt::Debug for AppSettings {
             .field("window_width", &self.window_width)
             .field("window_height", &self.window_height)
             .field("library_root", &self.library_root)
+            .field("libraries", &self.libraries)
+            .field("active_library_id", &self.active_library_id)
             .field("upscaler_binary_path", &self.upscaler_binary_path)
             .field("upscaled_output_dir", &self.upscaled_output_dir)
             .field("export_output_dir", &self.export_output_dir)
@@ -79,12 +120,17 @@ impl std::fmt::Debug for AppSettings {
 
 impl Default for AppSettings {
     fn default() -> Self {
+        let root = default_library_root();
+        let name = default_library_name(&root);
+        let library = LibraryConfig::new(name, root, FolderMode::TopLevel);
         Self {
             last_folder: None,
             metadata_visible: true,
             window_width: 1400,
             window_height: 900,
             library_root: None,
+            active_library_id: Some(library.id.clone()),
+            libraries: vec![library],
             upscaler_binary_path: None,
             upscaled_output_dir: None,
             export_output_dir: None,
@@ -165,12 +211,29 @@ impl AppSettings {
         };
         let comfyui_enabled = settings.boolean("comfyui-enabled");
 
+        let mut libraries = parse_libraries_json(settings.string("libraries-json").as_str());
+        if libraries.is_empty() {
+            libraries = migrate_legacy_library(library_root.clone(), last_folder.clone());
+        }
+        sanitize_libraries(&mut libraries);
+
+        let active_library_id = resolve_active_library_id(
+            settings.string("active-library-id").as_str(),
+            &libraries,
+        );
+        let active_last_folder = active_library_id
+            .as_ref()
+            .and_then(|id| library_by_id(&libraries, id))
+            .and_then(|library| library.last_folder.clone());
+
         Self {
-            last_folder,
+            last_folder: active_last_folder.or(last_folder),
             metadata_visible: settings.boolean("metadata-visible"),
             window_width,
             window_height,
             library_root,
+            libraries,
+            active_library_id,
             upscaler_binary_path,
             upscaled_output_dir,
             export_output_dir,
@@ -213,6 +276,13 @@ impl AppSettings {
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default();
         let _ = self.settings.set_string("library-root", &library_root);
+        let _ = self
+            .settings
+            .set_string("libraries-json", &libraries_json(&self.libraries));
+        let _ = self.settings.set_string(
+            "active-library-id",
+            self.active_library_id.as_deref().unwrap_or_default(),
+        );
         let upscaler_binary_path = self
             .upscaler_binary_path
             .as_ref()
@@ -294,6 +364,98 @@ impl AppSettings {
         let _ = self
             .settings
             .set_boolean("comfyui-enabled", self.comfyui_enabled);
+    }
+
+    pub fn active_library(&self) -> Option<&LibraryConfig> {
+        self.active_library_id
+            .as_deref()
+            .and_then(|id| library_by_id(&self.libraries, id))
+            .or_else(|| self.libraries.first())
+    }
+
+    pub fn active_library_mut(&mut self) -> Option<&mut LibraryConfig> {
+        let id = self.active_library_id.clone()?;
+        self.libraries.iter_mut().find(|library| library.id == id)
+    }
+
+    pub fn set_active_library(&mut self, id: &str) {
+        if self.libraries.iter().any(|library| library.id == id) {
+            self.active_library_id = Some(id.to_string());
+            self.last_folder = self
+                .libraries
+                .iter()
+                .find(|library| library.id == id)
+                .and_then(|library| library.last_folder.clone());
+            self.save();
+        }
+    }
+
+    pub fn add_library(
+        &mut self,
+        name: &str,
+        root: PathBuf,
+        folder_mode: FolderMode,
+    ) -> Result<String, String> {
+        validate_library_fields(name, &root)?;
+        validate_no_root_overlap(&self.libraries, &root, None)?;
+        let library = LibraryConfig::new(name.trim().to_string(), root.clone(), folder_mode);
+        let id = library.id.clone();
+        self.library_root.get_or_insert(root);
+        self.active_library_id = Some(id.clone());
+        self.last_folder = None;
+        self.libraries.push(library);
+        self.save();
+        Ok(id)
+    }
+
+    pub fn update_library(
+        &mut self,
+        id: &str,
+        name: &str,
+        root: PathBuf,
+        folder_mode: FolderMode,
+    ) -> Result<(), String> {
+        validate_library_fields(name, &root)?;
+        validate_no_root_overlap(&self.libraries, &root, Some(id))?;
+        let library_last_folder = {
+            let Some(library) = self.libraries.iter_mut().find(|library| library.id == id) else {
+                return Err("Library not found".into());
+            };
+            library.name = name.trim().to_string();
+            library.root = root;
+            library.folder_mode = folder_mode;
+            library
+                .ignored_folders
+                .retain(|path| path.starts_with(&library.root));
+            if library
+                .last_folder
+                .as_ref()
+                .is_some_and(|path| !path.starts_with(&library.root))
+            {
+                library.last_folder = None;
+            }
+            library.last_folder.clone()
+        };
+        if self.active_library_id.as_deref() == Some(id) {
+            self.last_folder = library_last_folder;
+        }
+        self.save();
+        Ok(())
+    }
+
+    pub fn set_active_library_last_folder(&mut self, folder: Option<PathBuf>) {
+        if let Some(library) = self.active_library_mut() {
+            library.last_folder = folder.clone();
+        }
+        self.last_folder = folder;
+        self.save();
+    }
+
+    pub fn set_active_library_ignored_folders(&mut self, ignored_folders: Vec<PathBuf>) {
+        if let Some(library) = self.active_library_mut() {
+            library.ignored_folders = ignored_folders;
+        }
+        self.save();
     }
 
     pub fn set_upscale_backend(&mut self, value: &str) {
@@ -452,6 +614,10 @@ impl AppSettings {
     }
 }
 
+fn library_by_id<'a>(libraries: &'a [LibraryConfig], id: &str) -> Option<&'a LibraryConfig> {
+    libraries.iter().find(|library| library.id == id)
+}
+
 fn string_path(settings: &gio::Settings, key: &str) -> Option<PathBuf> {
     let value = settings.string(key);
     if value.is_empty() {
@@ -459,6 +625,132 @@ fn string_path(settings: &gio::Settings, key: &str) -> Option<PathBuf> {
     } else {
         Some(PathBuf::from(value.as_str()))
     }
+}
+
+fn parse_libraries_json(raw: &str) -> Vec<LibraryConfig> {
+    serde_json::from_str::<Vec<LibraryConfig>>(raw).unwrap_or_default()
+}
+
+fn libraries_json(libraries: &[LibraryConfig]) -> String {
+    serde_json::to_string(libraries).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn sanitize_libraries(libraries: &mut Vec<LibraryConfig>) {
+    let mut out = Vec::new();
+    for mut library in libraries.drain(..) {
+        if library.id.trim().is_empty() {
+            library.id = new_library_id();
+        }
+        library.name = library.name.trim().to_string();
+        if library.name.is_empty() {
+            library.name = default_library_name(&library.root);
+        }
+        library.ignored_folders = library
+            .ignored_folders
+            .into_iter()
+            .filter(|path| path.starts_with(&library.root))
+            .collect();
+        if library
+            .last_folder
+            .as_ref()
+            .is_some_and(|path| !path.starts_with(&library.root))
+        {
+            library.last_folder = None;
+        }
+        if !out.iter().any(|existing: &LibraryConfig| {
+            roots_overlap(existing.root.as_path(), library.root.as_path())
+        }) {
+            out.push(library);
+        }
+    }
+    if out.is_empty() {
+        let root = default_library_root();
+        out.push(LibraryConfig::new(
+            default_library_name(&root),
+            root,
+            FolderMode::TopLevel,
+        ));
+    }
+    *libraries = out;
+}
+
+fn migrate_legacy_library(
+    legacy_root: Option<PathBuf>,
+    legacy_last_folder: Option<PathBuf>,
+) -> Vec<LibraryConfig> {
+    let root = legacy_root.unwrap_or_else(default_library_root);
+    let mut library = LibraryConfig::new(
+        default_library_name(&root),
+        root.clone(),
+        FolderMode::TopLevel,
+    );
+    library.last_folder = legacy_last_folder.filter(|path| path.starts_with(&root));
+    vec![library]
+}
+
+fn default_library_root() -> PathBuf {
+    dirs::picture_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn default_library_name(root: &Path) -> String {
+    root.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "Library".to_string())
+}
+
+fn resolve_active_library_id(raw: &str, libraries: &[LibraryConfig]) -> Option<String> {
+    if libraries.is_empty() {
+        return None;
+    }
+    if libraries.iter().any(|library| library.id == raw) {
+        Some(raw.to_string())
+    } else {
+        Some(libraries[0].id.clone())
+    }
+}
+
+fn new_library_id() -> String {
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_micros())
+        .unwrap_or(0);
+    format!("library-{micros}")
+}
+
+fn validate_library_fields(name: &str, root: &Path) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("Library name is required".into());
+    }
+    if !root.is_dir() {
+        return Err("Library root must be an existing folder".into());
+    }
+    Ok(())
+}
+
+fn validate_no_root_overlap(
+    libraries: &[LibraryConfig],
+    root: &Path,
+    skip_id: Option<&str>,
+) -> Result<(), String> {
+    for library in libraries {
+        if skip_id == Some(library.id.as_str()) {
+            continue;
+        }
+        if roots_overlap(library.root.as_path(), root) {
+            return Err(format!(
+                "Library root overlaps with existing library “{}”",
+                library.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn roots_overlap(a: &Path, b: &Path) -> bool {
+    a == b || a.starts_with(b) || b.starts_with(a)
 }
 
 #[cfg(test)]
@@ -504,6 +796,7 @@ mod tests {
         let _ = settings.set_string("onnx-upscale-model", "unknown");
         let _ = settings.set_string("comfyui-url", "");
         let _ = settings.set_string("library-root", "/tmp/library");
+        let _ = settings.set_string("libraries-json", "[]");
         let _ = settings.set_string("upscaler-binary-path", "/tmp/upscaler");
         let _ = settings.set_string("upscaled-output-dir", "/tmp/upscaled");
         let _ = settings.set_string("export-output-dir", "/tmp/export");
@@ -525,6 +818,8 @@ mod tests {
         assert_eq!(loaded.onnx_upscale_model, "swin2sr-lightweight-x2");
         assert_eq!(loaded.comfyui_url, "http://127.0.0.1:8188");
         assert_eq!(loaded.library_root, Some(PathBuf::from("/tmp/library")));
+        assert_eq!(loaded.libraries.len(), 1);
+        assert_eq!(loaded.libraries[0].root, PathBuf::from("/tmp/library"));
         assert_eq!(
             loaded.upscaler_binary_path,
             Some(PathBuf::from("/tmp/upscaler"))
@@ -551,12 +846,22 @@ mod tests {
     #[test]
     fn save_clamps_and_normalizes_persisted_values() {
         let settings = test_settings();
+        let library = LibraryConfig {
+            id: "library-1".into(),
+            name: "Primary".into(),
+            root: PathBuf::from("/tmp/library"),
+            folder_mode: FolderMode::DrillDown,
+            last_folder: Some(PathBuf::from("/tmp/library/Art")),
+            ignored_folders: vec![PathBuf::from("/tmp/library/Ignore")],
+        };
         let app = AppSettings {
-            last_folder: Some(PathBuf::from("/tmp/last")),
+            last_folder: Some(PathBuf::from("/tmp/library/Art")),
             metadata_visible: false,
             window_width: 10,
             window_height: 50000,
             library_root: Some(PathBuf::from("/tmp/library")),
+            libraries: vec![library],
+            active_library_id: Some("library-1".into()),
             upscaler_binary_path: Some(PathBuf::from("/tmp/upscaler")),
             upscaled_output_dir: Some(PathBuf::from("/tmp/upscaled")),
             export_output_dir: Some(PathBuf::from("/tmp/export")),
@@ -578,11 +883,13 @@ mod tests {
 
         app.save();
 
-        assert_eq!(settings.string("last-folder").as_str(), "/tmp/last");
+        assert_eq!(settings.string("last-folder").as_str(), "/tmp/library/Art");
         assert!(!settings.boolean("metadata-visible"));
         assert_eq!(settings.int("window-width"), 400);
         assert_eq!(settings.int("window-height"), 4320);
         assert_eq!(settings.string("library-root").as_str(), "/tmp/library");
+        assert_eq!(settings.string("active-library-id").as_str(), "library-1");
+        assert!(settings.string("libraries-json").contains("\"Primary\""));
         assert_eq!(
             settings.string("upscaler-binary-path").as_str(),
             "/tmp/upscaler"
@@ -620,5 +927,25 @@ mod tests {
         );
         assert!(settings.boolean("comfyui-enabled"));
         assert!(settings.boolean("show-upscale-ui"));
+    }
+
+    #[test]
+    fn add_library_rejects_overlapping_roots() {
+        let settings = test_settings();
+        let mut app = AppSettings::load_from_settings(settings);
+        app.libraries = vec![LibraryConfig::new(
+            "Primary".into(),
+            PathBuf::from("/tmp/photos"),
+            FolderMode::TopLevel,
+        )];
+        app.active_library_id = Some(app.libraries[0].id.clone());
+
+        let result = app.add_library(
+            "Nested",
+            PathBuf::from("/tmp/photos/child"),
+            FolderMode::TopLevel,
+        );
+
+        assert!(result.is_err());
     }
 }

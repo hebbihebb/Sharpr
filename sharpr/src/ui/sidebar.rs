@@ -9,11 +9,14 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 
+use crate::config::{FolderMode, LibraryConfig};
 use crate::library_index::Collection;
 use crate::ui::window::AppState;
 
 type FolderSelectedCallback = Box<dyn Fn(PathBuf) + 'static>;
 type FolderIgnoredChangedCallback = Box<dyn Fn(PathBuf, bool) + 'static>;
+type LibraryCreateRequestedCallback = Box<dyn Fn() + 'static>;
+type LibrarySelectedCallback = Box<dyn Fn(String) + 'static>;
 type CollectionSelectedCallback = Box<dyn Fn(i64) + 'static>;
 type CollectionAddRequestedCallback = Box<dyn Fn() + 'static>;
 type CollectionChildAddRequestedCallback = Box<dyn Fn(i64) + 'static>;
@@ -32,6 +35,14 @@ const IMAGE_EXTENSIONS: &[&str] = &[
 struct FolderListEntry {
     path: PathBuf,
     label: String,
+    depth: u32,
+    has_children: bool,
+}
+
+#[derive(Clone, Debug)]
+struct FolderNode {
+    path: PathBuf,
+    children: Vec<FolderNode>,
 }
 
 mod imp {
@@ -41,8 +52,11 @@ mod imp {
         pub toolbar_view: libadwaita::ToolbarView,
         pub list_box: gtk4::ListBox,
         pub collection_list: gtk4::ListBox,
+        pub library_menu_btn: gtk4::MenuButton,
         pub folder_selected_cb: RefCell<Option<FolderSelectedCallback>>,
         pub folder_ignored_changed_cb: RefCell<Option<FolderIgnoredChangedCallback>>,
+        pub library_create_requested_cb: RefCell<Option<LibraryCreateRequestedCallback>>,
+        pub library_selected_cb: RefCell<Option<LibrarySelectedCallback>>,
         pub collection_selected_cb: RefCell<Option<CollectionSelectedCallback>>,
         pub collection_add_requested_cb: RefCell<Option<CollectionAddRequestedCallback>>,
         pub collection_child_add_requested_cb: RefCell<Option<CollectionChildAddRequestedCallback>>,
@@ -54,6 +68,10 @@ mod imp {
         pub tag_promoted_to_collection_cb: RefCell<Option<TagPromotedToCollectionCallback>>,
         pub suppress_folder_signal: Cell<bool>,
         pub suppress_collection_signal: Cell<bool>,
+        pub collapsed_folder_paths: RefCell<HashSet<PathBuf>>,
+        pub folder_entries: RefCell<Vec<FolderListEntry>>,
+        pub folder_tree: RefCell<Vec<FolderNode>>,
+        pub ignored_folders: RefCell<Vec<PathBuf>>,
         pub collapsed_collection_ids: RefCell<HashSet<i64>>,
         pub collections: RefCell<Vec<Collection>>,
     }
@@ -64,8 +82,11 @@ mod imp {
                 toolbar_view: libadwaita::ToolbarView::new(),
                 list_box: gtk4::ListBox::new(),
                 collection_list: gtk4::ListBox::new(),
+                library_menu_btn: gtk4::MenuButton::new(),
                 folder_selected_cb: RefCell::new(None),
                 folder_ignored_changed_cb: RefCell::new(None),
+                library_create_requested_cb: RefCell::new(None),
+                library_selected_cb: RefCell::new(None),
                 collection_selected_cb: RefCell::new(None),
                 collection_add_requested_cb: RefCell::new(None),
                 collection_child_add_requested_cb: RefCell::new(None),
@@ -77,6 +98,10 @@ mod imp {
                 tag_promoted_to_collection_cb: RefCell::new(None),
                 suppress_folder_signal: Cell::new(false),
                 suppress_collection_signal: Cell::new(false),
+                collapsed_folder_paths: RefCell::new(HashSet::new()),
+                folder_entries: RefCell::new(Vec::new()),
+                folder_tree: RefCell::new(Vec::new()),
+                ignored_folders: RefCell::new(Vec::new()),
                 collapsed_collection_ids: RefCell::new(HashSet::new()),
                 collections: RefCell::new(Vec::new()),
             }
@@ -161,14 +186,8 @@ impl SidebarPane {
 
         imp.list_box.add_css_class("navigation-sidebar");
         imp.list_box.set_selection_mode(gtk4::SelectionMode::Single);
-        let (library_root, ignored_folders) = {
-            let state = state.borrow();
-            (
-                state.settings.library_root.clone(),
-                state.disabled_folders.clone(),
-            )
-        };
-        self.populate_default_folders(state.clone(), library_root, ignored_folders);
+        self.refresh_library_menu(state.clone());
+        self.populate_default_folders(state.clone());
 
         let widget_weak = self.downgrade();
         imp.list_box.connect_selected_rows_changed(move |list_box| {
@@ -190,6 +209,9 @@ impl SidebarPane {
                 widget.imp().suppress_folder_signal.set(false);
                 return;
             }
+            if folder_row.has_children() {
+                widget.toggle_folder_collapsed(folder_row.path());
+            }
             widget.clear_collection_selection();
             widget.emit_folder_selected(folder_row.path());
         });
@@ -199,7 +221,31 @@ impl SidebarPane {
         scroll.set_propagate_natural_height(true);
         scroll.set_child(Some(&imp.list_box));
 
-        let folders_label = section_label("Folders");
+        let folders_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        let folders_label = section_label("Library");
+        folders_label.set_hexpand(true);
+        let library_menu_btn = imp.library_menu_btn.clone();
+        library_menu_btn.set_icon_name("pan-down-symbolic");
+        library_menu_btn.add_css_class("flat");
+        library_menu_btn.set_margin_end(8);
+        library_menu_btn.set_tooltip_text(Some("Switch Library"));
+        let library_popover = gtk4::Popover::new();
+        let library_menu_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        library_menu_box.add_css_class("menu");
+        library_popover.set_child(Some(&library_menu_box));
+        library_menu_btn.set_popover(Some(&library_popover));
+        folders_header.append(&folders_label);
+        folders_header.append(&library_menu_btn);
+
+        {
+            let state_c = state.clone();
+            let widget_weak = self.downgrade();
+            library_popover.connect_show(move |_| {
+                if let Some(widget) = widget_weak.upgrade() {
+                    widget.refresh_library_menu(state_c.clone());
+                }
+            });
+        }
 
         // Collections section header: label + "New Collection" + button
         let collections_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
@@ -261,7 +307,7 @@ impl SidebarPane {
             });
 
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        vbox.append(&folders_label);
+        vbox.append(&folders_header);
         vbox.append(&scroll);
         vbox.append(&collections_header);
         vbox.append(&imp.collection_list);
@@ -270,51 +316,129 @@ impl SidebarPane {
         imp.toolbar_view.set_parent(self);
     }
 
-    fn populate_default_folders(
-        &self,
-        state: Rc<RefCell<AppState>>,
-        library_root: Option<PathBuf>,
-        ignored_folders: Vec<PathBuf>,
-    ) {
-        let (tx, rx) = async_channel::bounded::<Vec<FolderListEntry>>(1);
+    fn populate_default_folders(&self, state: Rc<RefCell<AppState>>) {
+        let (tx, rx) = async_channel::bounded::<Vec<FolderNode>>(1);
+        let active_library = state.borrow().settings.active_library().cloned();
         std::thread::spawn(move || {
-            let _ = tx.send_blocking(collect_default_folder_entries(library_root));
+            let tree = active_library
+                .as_ref()
+                .map(build_folder_tree)
+                .unwrap_or_default();
+            let _ = tx.send_blocking(tree);
         });
 
         let widget_weak = self.downgrade();
         glib::MainContext::default().spawn_local(async move {
-            let Ok(entries) = rx.recv().await else {
+            let Ok(tree) = rx.recv().await else {
                 return;
             };
             let Some(widget) = widget_weak.upgrade() else {
                 return;
             };
 
-            widget.replace_folder_rows(&entries, &ignored_folders);
+            let ignored_folders = state.borrow().disabled_folders.clone();
+            widget.set_folder_tree(&tree, &ignored_folders);
 
             if let crate::ui::window::ViewScope::Folder(path) = state.borrow().scope.clone() {
                 widget.select_folder(&path);
-            } else if let Some(entry) = entries
+            } else if let Some(path) = widget
+                .imp()
+                .folder_entries
+                .borrow()
                 .iter()
                 .find(|entry| !row_is_ignored(&entry.path, &ignored_folders))
+                .map(|entry| entry.path.clone())
             {
-                widget.select_folder(&entry.path);
-                widget.emit_folder_selected(entry.path.clone());
+                widget.select_folder(&path);
+                widget.emit_folder_selected(path);
             }
         });
     }
 
     fn replace_folder_rows(&self, entries: &[FolderListEntry], ignored_folders: &[PathBuf]) {
+        *self.imp().folder_entries.borrow_mut() = entries.to_vec();
+        *self.imp().ignored_folders.borrow_mut() = ignored_folders.to_vec();
         while let Some(child) = self.imp().list_box.first_child() {
             self.imp().list_box.remove(&child);
         }
 
         for entry in entries {
-            let row = FolderRow::new(entry.path.clone(), &entry.label);
+            let row = FolderRow::new(
+                entry.path.clone(),
+                &entry.label,
+                entry.depth,
+                entry.has_children,
+                self
+                    .imp()
+                    .collapsed_folder_paths
+                    .borrow()
+                    .contains(&entry.path),
+            );
             row.set_ignored(row_is_ignored(&row.path(), ignored_folders));
             self.attach_folder_row_menu(&row);
             self.imp().list_box.append(&row);
         }
+    }
+
+    fn set_folder_tree(&self, tree: &[FolderNode], ignored_folders: &[PathBuf]) {
+        *self.imp().folder_tree.borrow_mut() = tree.to_vec();
+        let entries = visible_folder_entries(tree, &self.imp().collapsed_folder_paths.borrow());
+        self.replace_folder_rows(&entries, ignored_folders);
+    }
+
+    pub fn refresh_active_library(&self, state: Rc<RefCell<AppState>>) {
+        self.refresh_library_menu(state.clone());
+        self.populate_default_folders(state);
+    }
+
+    fn refresh_library_menu(&self, state: Rc<RefCell<AppState>>) {
+        let button = self.imp().library_menu_btn.clone();
+        let Some(popover) = button.popover() else {
+            return;
+        };
+        let Some(menu_box) = popover
+            .child()
+            .and_then(|child| child.downcast::<gtk4::Box>().ok())
+        else {
+            return;
+        };
+        while let Some(child) = menu_box.first_child() {
+            menu_box.remove(&child);
+        }
+
+        let settings = state.borrow().settings.clone();
+        if settings.libraries.len() > 1 {
+            for library in &settings.libraries {
+                let label = if settings.active_library_id.as_deref() == Some(library.id.as_str()) {
+                    format!("Switch to {}  ", library.name)
+                } else {
+                    format!("Switch to {}", library.name)
+                };
+                let item = gtk4::Button::with_label(&label);
+                item.add_css_class("flat");
+                item.set_halign(gtk4::Align::Start);
+                let library_id = library.id.clone();
+                let widget_weak = self.downgrade();
+                item.connect_clicked(move |_| {
+                    if let Some(widget) = widget_weak.upgrade() {
+                        widget.emit_library_selected(library_id.clone());
+                    }
+                });
+                menu_box.append(&item);
+            }
+            menu_box.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+        }
+
+        let create_btn = gtk4::Button::with_label("Create Library…");
+        create_btn.add_css_class("flat");
+        create_btn.set_halign(gtk4::Align::Start);
+        let widget_weak = self.downgrade();
+        create_btn.connect_clicked(move |_| {
+            if let Some(widget) = widget_weak.upgrade() {
+                widget.emit_library_create_requested();
+            }
+        });
+        menu_box.append(&create_btn);
     }
 
     pub fn connect_folder_selected<F: Fn(PathBuf) + 'static>(&self, f: F) {
@@ -323,6 +447,14 @@ impl SidebarPane {
 
     pub fn connect_folder_ignored_changed<F: Fn(PathBuf, bool) + 'static>(&self, f: F) {
         *self.imp().folder_ignored_changed_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_library_create_requested<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().library_create_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_library_selected<F: Fn(String) + 'static>(&self, f: F) {
+        *self.imp().library_selected_cb.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn set_folder_ignored(&self, path: &Path, ignored: bool) {
@@ -391,6 +523,18 @@ impl SidebarPane {
     fn emit_folder_ignored_changed(&self, path: PathBuf, ignored: bool) {
         if let Some(cb) = self.imp().folder_ignored_changed_cb.borrow().as_ref() {
             cb(path, ignored);
+        }
+    }
+
+    fn emit_library_create_requested(&self) {
+        if let Some(cb) = self.imp().library_create_requested_cb.borrow().as_ref() {
+            cb();
+        }
+    }
+
+    fn emit_library_selected(&self, library_id: String) {
+        if let Some(cb) = self.imp().library_selected_cb.borrow().as_ref() {
+            cb(library_id);
         }
     }
 
@@ -848,6 +992,20 @@ impl SidebarPane {
         });
         row.add_controller(gesture);
     }
+
+    fn toggle_folder_collapsed(&self, path: PathBuf) {
+        let imp = self.imp();
+        {
+            let mut collapsed = imp.collapsed_folder_paths.borrow_mut();
+            if !collapsed.insert(path.clone()) {
+                collapsed.remove(&path);
+            }
+        }
+        let tree = imp.folder_tree.borrow().clone();
+        let ignored_folders = imp.ignored_folders.borrow().clone();
+        self.set_folder_tree(&tree, &ignored_folders);
+        self.select_folder(&path);
+    }
 }
 
 fn section_label(text: &str) -> gtk4::Label {
@@ -989,77 +1147,118 @@ fn install_collection_css() {
     });
 }
 
-fn collect_default_folder_entries(library_root: Option<PathBuf>) -> Vec<FolderListEntry> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/home".into());
-    let home = PathBuf::from(&home);
-
-    let entries: Vec<(PathBuf, String)> = if let Some(root) = library_root {
-        let name = root
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Library".to_string());
-        vec![(root, name)]
-    } else {
-        vec![
-            (home.join("Pictures"), "Pictures".into()),
-            (home.join("Downloads"), "Downloads".into()),
-            (home.clone(), "Home".into()),
-        ]
-    };
-
-    let mut seen = HashSet::new();
-    let mut rows = Vec::new();
-
-    for (root_path, root_name) in entries {
-        if !root_path.is_dir() {
-            continue;
-        }
-
-        let mut child_folders = discover_image_child_folders(&root_path, &root_name);
-        child_folders.sort_by(|(_, a), (_, b)| a.to_lowercase().cmp(&b.to_lowercase()));
-
-        if directory_contains_images(&root_path) && seen.insert(root_path.clone()) {
-            rows.push(FolderListEntry {
-                path: root_path,
-                label: root_name,
-            });
-        }
-
-        for (path, label) in child_folders {
-            if seen.insert(path.clone()) {
-                rows.push(FolderListEntry { path, label });
+fn build_folder_tree(library: &LibraryConfig) -> Vec<FolderNode> {
+    let root = library.root.clone();
+    match library.folder_mode {
+        FolderMode::TopLevel => {
+            let mut nodes = Vec::new();
+            if directory_contains_images(&root) {
+                nodes.push(FolderNode {
+                    path: root.clone(),
+                    children: Vec::new(),
+                });
             }
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                return nodes;
+            };
+            let mut children = Vec::new();
+            for entry in entries.filter_map(Result::ok) {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if !file_type.is_dir() {
+                    continue;
+                }
+                let path = entry.path();
+                if directory_contains_images(&path) {
+                    children.push(FolderNode {
+                        path,
+                        children: Vec::new(),
+                    });
+                }
+            }
+            children.sort_by(|a, b| path_sort_key(a.path.as_path(), b.path.as_path()));
+            nodes.extend(children);
+            nodes
         }
+        FolderMode::DrillDown => build_folder_node_recursive(&root)
+            .map(|node| vec![node])
+            .unwrap_or_default(),
     }
-
-    rows
 }
 
-fn discover_image_child_folders(root: &Path, root_name: &str) -> Vec<(PathBuf, String)> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
+fn build_folder_node_recursive(path: &Path) -> Option<FolderNode> {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return None;
     };
-
-    let mut folders = Vec::new();
-
+    let mut children = Vec::new();
+    let mut has_images = false;
     for entry in entries.filter_map(Result::ok) {
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
+        if file_type.is_file() && is_image_file(&entry.path()) {
+            has_images = true;
+            continue;
+        }
         if !file_type.is_dir() {
             continue;
         }
-
-        let path = entry.path();
-        if !directory_contains_images(&path) {
-            continue;
+        if let Some(child) = build_folder_node_recursive(&entry.path()) {
+            children.push(child);
         }
-
-        let child_name = entry.file_name().to_string_lossy().into_owned();
-        folders.push((path, format!("{root_name} / {child_name}")));
     }
+    children.sort_by(|a, b| path_sort_key(a.path.as_path(), b.path.as_path()));
+    if has_images || !children.is_empty() {
+        Some(FolderNode {
+            path: path.to_path_buf(),
+            children,
+        })
+    } else {
+        None
+    }
+}
 
-    folders
+fn visible_folder_entries(
+    tree: &[FolderNode],
+    collapsed_paths: &HashSet<PathBuf>,
+) -> Vec<FolderListEntry> {
+    let mut rows = Vec::new();
+    append_visible_folder_nodes(tree, 0, collapsed_paths, &mut rows);
+    rows
+}
+
+fn append_visible_folder_nodes(
+    nodes: &[FolderNode],
+    depth: u32,
+    collapsed: &HashSet<PathBuf>,
+    out: &mut Vec<FolderListEntry>,
+) {
+    for node in nodes {
+        let has_children = !node.children.is_empty();
+        out.push(FolderListEntry {
+            label: folder_label(node.path.as_path()),
+            path: node.path.clone(),
+            depth,
+            has_children,
+        });
+        if !collapsed.contains(&node.path) {
+            append_visible_folder_nodes(&node.children, depth + 1, collapsed, out);
+        }
+    }
+}
+
+fn folder_label(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn path_sort_key(a: &Path, b: &Path) -> std::cmp::Ordering {
+    a.to_string_lossy()
+        .to_lowercase()
+        .cmp(&b.to_string_lossy().to_lowercase())
 }
 
 fn directory_contains_images(dir: &Path) -> bool {
@@ -1094,6 +1293,7 @@ mod folder_row_imp {
     pub struct FolderRow {
         pub path: RefCell<PathBuf>,
         pub ignored: Cell<bool>,
+        pub has_children: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -1114,9 +1314,16 @@ glib::wrapper! {
 }
 
 impl FolderRow {
-    pub fn new(path: PathBuf, label: &str) -> Self {
+    pub fn new(
+        path: PathBuf,
+        label: &str,
+        depth: u32,
+        has_children: bool,
+        is_collapsed: bool,
+    ) -> Self {
         let row: Self = glib::Object::new();
         *row.imp().path.borrow_mut() = path;
+        row.imp().has_children.set(has_children);
 
         let icon_name = folder_icon_name(&row.path());
         let icon = gtk4::Image::from_icon_name(icon_name);
@@ -1124,16 +1331,27 @@ impl FolderRow {
         if let Some(color) = folder_color {
             apply_icon_color(&icon, color);
         }
+        let disclosure = gtk4::Button::new();
+        disclosure.add_css_class("flat");
+        disclosure.add_css_class("collection-disclosure");
+        disclosure.set_icon_name(if is_collapsed {
+            "pan-end-symbolic"
+        } else {
+            "pan-down-symbolic"
+        });
+        disclosure.set_sensitive(has_children);
+        disclosure.set_opacity(if has_children { 1.0 } else { 0.0 });
         let name_label = gtk4::Label::new(Some(label));
         name_label.set_halign(gtk4::Align::Start);
         name_label.set_hexpand(true);
         name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
 
         let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-        hbox.set_margin_start(8);
+        hbox.set_margin_start(8 + (depth as i32 * 18));
         hbox.set_margin_end(8);
         hbox.set_margin_top(6);
         hbox.set_margin_bottom(6);
+        hbox.append(&disclosure);
         hbox.append(&icon);
         hbox.append(&name_label);
 
@@ -1147,6 +1365,10 @@ impl FolderRow {
 
     pub fn ignored(&self) -> bool {
         self.imp().ignored.get()
+    }
+
+    pub fn has_children(&self) -> bool {
+        self.imp().has_children.get()
     }
 
     pub fn set_ignored(&self, ignored: bool) {

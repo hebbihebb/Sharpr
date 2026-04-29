@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 
 use std::path::{Path, PathBuf};
 
-use crate::config::AppSettings;
+use crate::config::{AppSettings, FolderMode};
 use crate::duplicates::phash;
 use crate::library_index::{normalize_collection_tag, BasicImageInfo, Collection, LibraryIndex};
 use crate::model::library::{CachedImageData, RawImageEntry, SortOrder};
@@ -287,10 +287,127 @@ fn show_new_collection_dialog<F>(
     dialog.present(Some(&window));
 }
 
+fn show_new_library_dialog(
+    window: gtk4::Window,
+    state: Rc<RefCell<AppState>>,
+    sidebar: SidebarPane,
+    toast_overlay: libadwaita::ToastOverlay,
+) {
+    let dialog = libadwaita::AlertDialog::new(Some("Create Library"), None);
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("create", "Create");
+    dialog.set_default_response(Some("create"));
+    dialog.set_close_response("cancel");
+    dialog.set_response_appearance("create", libadwaita::ResponseAppearance::Suggested);
+
+    let name_entry = gtk4::Entry::new();
+    name_entry.set_placeholder_text(Some("Library name"));
+    let root_entry = gtk4::Entry::new();
+    root_entry.set_editable(false);
+    root_entry.set_hexpand(true);
+    let choose_button = gtk4::Button::with_label("Choose…");
+    let top_level = gtk4::CheckButton::with_label("Top level only");
+    let drill_down = gtk4::CheckButton::with_label("Drill into subfolders");
+    drill_down.set_group(Some(&top_level));
+    top_level.set_active(true);
+    let root_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    root_row.append(&root_entry);
+    root_row.append(&choose_button);
+
+    let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    box_.set_margin_top(6);
+    box_.append(&name_entry);
+    box_.append(&root_row);
+    box_.append(&top_level);
+    box_.append(&drill_down);
+    dialog.set_extra_child(Some(&box_));
+
+    {
+        let root_entry_c = root_entry.clone();
+        let window_c = window.clone();
+        choose_button.connect_clicked(move |_| {
+            let chooser = gtk4::FileDialog::new();
+            chooser.set_title("Choose Library Root");
+            let root_entry_inner = root_entry_c.clone();
+            chooser.select_folder(
+                Some(&window_c),
+                None::<&gio::Cancellable>,
+                move |result| {
+                    if let Ok(file) = result {
+                        if let Some(path) = file.path() {
+                            root_entry_inner.set_text(&path.to_string_lossy());
+                        }
+                    }
+                },
+            );
+        });
+    }
+
+    dialog.connect_response(None, move |_, response| {
+        if response != "create" {
+            return;
+        }
+        let root = PathBuf::from(root_entry.text().as_str());
+        let folder_mode = if drill_down.is_active() {
+            FolderMode::DrillDown
+        } else {
+            FolderMode::TopLevel
+        };
+        let created = {
+            let mut st = state.borrow_mut();
+            let result = st
+                .settings
+                .add_library(name_entry.text().as_str(), root.clone(), folder_mode);
+            match result {
+                Ok(id) => {
+                    st.settings.set_active_library(&id);
+                    st.disabled_folders = st
+                        .settings
+                        .active_library()
+                        .map(|library| library.ignored_folders.clone())
+                        .unwrap_or_default();
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
+        };
+        match created {
+            Ok(()) => {
+                sidebar.refresh_active_library(state.clone());
+                toast_overlay.add_toast(libadwaita::Toast::new("Library created"));
+            }
+            Err(err) => toast_overlay.add_toast(libadwaita::Toast::new(&err)),
+        }
+    });
+    dialog.present(Some(&window));
+}
+
+fn switch_active_library(
+    library_id: &str,
+    state: &Rc<RefCell<AppState>>,
+    sidebar: &SidebarPane,
+) {
+    {
+        let mut st = state.borrow_mut();
+        st.settings.set_active_library(library_id);
+        st.disabled_folders = st
+            .settings
+            .active_library()
+            .map(|library| library.ignored_folders.clone())
+            .unwrap_or_default();
+        st.selected_paths.clear();
+        st.scope = ViewScope::Search;
+        st.library.load_virtual(&[]);
+    }
+    sidebar.refresh_active_library(state.clone());
+}
+
 fn collection_paths_from_services(
     index: &LibraryIndex,
     tags: &crate::tags::TagDatabase,
     collection_id: i64,
+    active_root: Option<&Path>,
+    disabled_folders: &[PathBuf],
 ) -> Vec<PathBuf> {
     let effective_tags = index
         .collection_effective_tags(collection_id)
@@ -298,21 +415,25 @@ fn collection_paths_from_services(
     if effective_tags.is_empty() {
         return Vec::new();
     }
-    index
-        .filter_ignored_paths(tags.paths_for_all_tags(&effective_tags))
-        .unwrap_or_default()
+    filter_paths_for_library(tags.paths_for_all_tags(&effective_tags), active_root, disabled_folders)
 }
 
 fn collections_for_sidebar(state: &AppState) -> Vec<Collection> {
     let Some(index) = state.library_index.as_ref() else {
         return Vec::new();
     };
+    let active_root = state
+        .settings
+        .active_library()
+        .map(|library| library.root.as_path());
     let Some(tags) = state.tags.as_ref() else {
         return index.list_collections().unwrap_or_default();
     };
     let mut collections = index.list_collections().unwrap_or_default();
     for collection in &mut collections {
-        collection.item_count = collection_paths_from_services(index, tags, collection.id).len();
+        collection.item_count =
+            collection_paths_from_services(index, tags, collection.id, active_root, &state.disabled_folders)
+                .len();
     }
     collections
 }
@@ -374,11 +495,16 @@ fn apply_exact_tag_filter(
         let Some(tags_db) = state_ref.tags.as_ref() else {
             return;
         };
-        match selected_tags {
+        let active_root = state_ref
+            .settings
+            .active_library()
+            .map(|library| library.root.as_path());
+        let paths = match selected_tags {
             [] => return,
             [single] => tags_db.paths_for_tag(single),
             many => tags_db.paths_for_all_tags(many),
-        }
+        };
+        filter_paths_for_library(paths, active_root, &state_ref.disabled_folders)
     };
 
     {
@@ -497,6 +623,21 @@ fn path_is_disabled(path: &std::path::Path, disabled_folders: &[PathBuf]) -> boo
     disabled_folders
         .iter()
         .any(|folder| path.starts_with(folder))
+}
+
+fn path_in_active_library(path: &Path, active_root: Option<&Path>) -> bool {
+    active_root.map(|root| path.starts_with(root)).unwrap_or(true)
+}
+
+fn filter_paths_for_library(
+    paths: Vec<PathBuf>,
+    active_root: Option<&Path>,
+    disabled_folders: &[PathBuf],
+) -> Vec<PathBuf> {
+    paths.into_iter()
+        .filter(|path| path_in_active_library(path, active_root))
+        .filter(|path| !path_is_disabled(path, disabled_folders))
+        .collect()
 }
 
 fn queue_prefetch(
@@ -805,9 +946,9 @@ impl AppState {
                 (None, Some(message))
             }
         };
-        let disabled_folders = library_index
-            .as_ref()
-            .and_then(|index| index.ignored_folders().ok())
+        let disabled_folders = settings
+            .active_library()
+            .map(|library| library.ignored_folders.clone())
             .unwrap_or_default();
         let tags = crate::tags::TagDatabase::open().ok().map(Arc::new);
         if let (Some(index), Some(tags)) = (&library_index, &tags) {
@@ -1184,8 +1325,7 @@ impl SharprWindow {
                 state_c.borrow_mut().library.reset_for_folder(&path);
                 {
                     let mut st = state_c.borrow_mut();
-                    st.settings.last_folder = Some(path.clone());
-                    st.settings.save();
+                    st.settings.set_active_library_last_folder(Some(path.clone()));
                     st.selected_paths.clear();
                     st.scope = ViewScope::Folder(path.clone());
                 }
@@ -1591,75 +1731,82 @@ impl SharprWindow {
         {
             let state_c = state.clone();
             let sidebar_c = sidebar.clone();
+            sidebar.connect_library_selected(move |library_id| {
+                switch_active_library(&library_id, &state_c, &sidebar_c);
+            });
+        }
+
+        {
+            let state_c = state.clone();
+            let sidebar_c = sidebar.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            let window = self.clone().upcast::<gtk4::Window>();
+            sidebar.connect_library_create_requested(move || {
+                show_new_library_dialog(
+                    window.clone(),
+                    state_c.clone(),
+                    sidebar_c.clone(),
+                    toast_overlay_c.clone(),
+                );
+            });
+        }
+
+        {
+            let state_c = state.clone();
+            let sidebar_c = sidebar.clone();
             let filmstrip_c = filmstrip.clone();
             let viewer_c = viewer.clone();
             let toast_overlay_c = toast_overlay.clone();
             let window_weak = self.downgrade();
             sidebar.connect_folder_ignored_changed(move |path, ignored| {
-                let Some(index) = state_c.borrow().library_index.clone() else {
-                    toast_overlay_c.add_toast(libadwaita::Toast::new("Library index unavailable"));
-                    sidebar_c.set_folder_ignored(&path, !ignored);
-                    return;
+                let disabled_folders = {
+                    let mut st = state_c.borrow_mut();
+                    if ignored {
+                        if !st.disabled_folders.iter().any(|p| p == &path) {
+                            st.disabled_folders.push(path.clone());
+                        }
+                    } else {
+                        st.disabled_folders.retain(|p| !path.starts_with(p));
+                    }
+                    let disabled_folders = st.disabled_folders.clone();
+                    st.settings
+                        .set_active_library_ignored_folders(disabled_folders.clone());
+                    st.selected_paths
+                        .retain(|selected| !path_is_disabled(selected, &disabled_folders));
+
+                    if ignored
+                        && st
+                            .library
+                            .current_folder
+                            .as_deref()
+                            .map(|folder| folder.starts_with(&path))
+                            .unwrap_or(false)
+                    {
+                        st.library.load_virtual(&[]);
+                        st.scope = ViewScope::Search;
+                    } else if !matches!(st.scope, ViewScope::Folder(_)) {
+                        let visible_paths: Vec<PathBuf> = (0..st.library.image_count())
+                            .filter_map(|i| st.library.entry_at(i).map(|e| e.path()))
+                            .filter(|image_path| !path_is_disabled(image_path, &st.disabled_folders))
+                            .collect();
+                        st.library.load_virtual(&visible_paths);
+                    }
+                    st.disabled_folders.clone()
                 };
 
-                match index.set_folder_ignored(&path, ignored) {
-                    Ok(()) => {
-                        let disabled_folders = {
-                            let mut st = state_c.borrow_mut();
-                            if ignored {
-                                if !st.disabled_folders.iter().any(|p| p == &path) {
-                                    st.disabled_folders.push(path.clone());
-                                }
-                            } else {
-                                st.disabled_folders.retain(|p| !path.starts_with(p));
-                            }
-                            let disabled_folders = st.disabled_folders.clone();
-                            st.selected_paths
-                                .retain(|selected| !path_is_disabled(selected, &disabled_folders));
-
-                            if ignored
-                                && st
-                                    .library
-                                    .current_folder
-                                    .as_deref()
-                                    .map(|folder| folder.starts_with(&path))
-                                    .unwrap_or(false)
-                            {
-                                st.library.load_virtual(&[]);
-                                st.scope = ViewScope::Search;
-                            } else if !matches!(st.scope, ViewScope::Folder(_)) {
-                                let visible_paths: Vec<PathBuf> = (0..st.library.image_count())
-                                    .filter_map(|i| st.library.entry_at(i).map(|e| e.path()))
-                                    .filter(|image_path| {
-                                        !path_is_disabled(image_path, &st.disabled_folders)
-                                    })
-                                    .collect();
-                                st.library.load_virtual(&visible_paths);
-                            }
-                            st.disabled_folders.clone()
-                        };
-
-                        sidebar_c.set_ignored_folders(&disabled_folders);
-                        viewer_c.clear();
-                        filmstrip_c.refresh_virtual();
-                        if let Some(win) = window_weak.upgrade() {
-                            let _ = win.bump_thumbnail_generation("folder.ignored_changed");
-                            win.complete_thumbnail_ops();
-                        }
-                        let label = if ignored {
-                            "Folder disabled"
-                        } else {
-                            "Folder enabled"
-                        };
-                        toast_overlay_c.add_toast(libadwaita::Toast::new(label));
-                    }
-                    Err(err) => {
-                        sidebar_c.set_folder_ignored(&path, !ignored);
-                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                            "Could not update folder: {err}"
-                        )));
-                    }
+                sidebar_c.set_ignored_folders(&disabled_folders);
+                viewer_c.clear();
+                filmstrip_c.refresh_virtual();
+                if let Some(win) = window_weak.upgrade() {
+                    let _ = win.bump_thumbnail_generation("folder.ignored_changed");
+                    win.complete_thumbnail_ops();
                 }
+                let label = if ignored {
+                    "Folder disabled"
+                } else {
+                    "Folder enabled"
+                };
+                toast_overlay_c.add_toast(libadwaita::Toast::new(label));
             });
         }
 
@@ -1835,7 +1982,12 @@ impl SharprWindow {
 
                 let (indexed_paths, current_folder, metadata_cache) =
                     { state_c.borrow().library.bg_scan_quality_prep() };
-                let library_root = state_c.borrow().settings.library_root.clone();
+                let active_library = state_c.borrow().settings.active_library().cloned();
+                let library_root = active_library.as_ref().map(|library| library.root.clone());
+                let folder_mode = active_library
+                    .as_ref()
+                    .map(|library| library.folder_mode)
+                    .unwrap_or(FolderMode::TopLevel);
                 let disabled_folders = state_c.borrow().disabled_folders.clone();
                 let library_index = state_c.borrow().library_index.clone();
                 let op = state_c
@@ -1857,6 +2009,11 @@ impl SharprWindow {
                     if let Some(index) = library_index {
                         match index.images_by_quality(class) {
                             Ok(paths) if !paths.is_empty() => {
+                                let paths = filter_paths_for_library(
+                                    paths,
+                                    library_root.as_deref(),
+                                    &disabled_folders,
+                                );
                                 crate::bench_event!(
                                     "smart.quality.scan_finish",
                                     serde_json::json!({
@@ -1886,6 +2043,7 @@ impl SharprWindow {
                     let (new_indexed, new_cache, paths) =
                         crate::model::library::LibraryManager::compute_paths_for_quality_class(
                             library_root,
+                            folder_mode,
                             class,
                             indexed_paths,
                             current_folder,
@@ -2075,8 +2233,9 @@ impl SharprWindow {
                 content_stack.set_visible_child_name("viewer");
                 let paths = {
                     let state = state_c.borrow();
+                    let active_root = state.settings.active_library().map(|lib| lib.root.clone());
                     match (state.library_index.as_ref(), state.tags.as_ref()) {
-                        (Some(idx), Some(tags)) => collection_paths_from_services(idx, tags, id),
+                        (Some(idx), Some(tags)) => collection_paths_from_services(idx, tags, id, active_root.as_deref(), &state.disabled_folders),
                         _ => Vec::new(),
                     }
                 };
@@ -2260,7 +2419,11 @@ impl SharprWindow {
                     let new_name = name_clone.text().to_string();
                     let new_extra_tags = parse_collection_tags_input(tags_clone.text().as_str());
                     let selected_color = selected_color_clone.borrow().clone();
-                    let old_scope_paths = collection_paths_from_services(&idx, &tags_db, id);
+                    let (active_root_buf, disabled) = {
+                        let s = state_d.borrow();
+                        (s.settings.active_library().map(|lib| lib.root.clone()), s.disabled_folders.clone())
+                    };
+                    let old_scope_paths = collection_paths_from_services(&idx, &tags_db, id, active_root_buf.as_deref(), &disabled);
                     let old_primary = before.primary_tag.clone();
                     let new_primary = normalize_collection_tag(&new_name);
                     let added_extra_tags: Vec<String> = new_extra_tags
@@ -2292,7 +2455,11 @@ impl SharprWindow {
                             );
                             refresh_d();
                             if matches!(state_d.borrow().scope, ViewScope::Collection(active) if active == id) {
-                                let paths = collection_paths_from_services(&idx, &tags_db, id);
+                                let (active_root_buf, disabled) = {
+                                    let s = state_d.borrow();
+                                    (s.settings.active_library().map(|lib| lib.root.clone()), s.disabled_folders.clone())
+                                };
+                                let paths = collection_paths_from_services(&idx, &tags_db, id, active_root_buf.as_deref(), &disabled);
                                 state_d.borrow_mut().scope = ViewScope::Collection(id);
                                 load_virtual_async(&state_d, &paths);
                                 filmstrip_d.refresh_virtual();
@@ -2387,7 +2554,11 @@ impl SharprWindow {
                 let old_effective_tags =
                     idx.collection_effective_tags(source_id).unwrap_or_default();
                 let local_tags = collection_local_tags(&before);
-                let old_paths = collection_paths_from_services(&idx, &tags_db, source_id);
+                let (active_root_buf, disabled) = {
+                    let s = state_c.borrow();
+                    (s.settings.active_library().map(|lib| lib.root.clone()), s.disabled_folders.clone())
+                };
+                let old_paths = collection_paths_from_services(&idx, &tags_db, source_id, active_root_buf.as_deref(), &disabled);
                 let started = std::time::Instant::now();
                 match idx.reparent_collection(source_id, target_parent_id) {
                     Ok(()) => {
@@ -2430,7 +2601,11 @@ impl SharprWindow {
                         );
                         refresh_c();
                         if let ViewScope::Collection(active_id) = state_c.borrow().scope.clone() {
-                            let paths = collection_paths_from_services(&idx, &tags_db, active_id);
+                            let (active_root_buf2, disabled2) = {
+                                let s = state_c.borrow();
+                                (s.settings.active_library().map(|lib| lib.root.clone()), s.disabled_folders.clone())
+                            };
+                            let paths = collection_paths_from_services(&idx, &tags_db, active_id, active_root_buf2.as_deref(), &disabled2);
                             state_c.borrow_mut().scope = ViewScope::Collection(active_id);
                             load_virtual_async(&state_c, &paths);
                             filmstrip_c.refresh_virtual();
@@ -2580,7 +2755,11 @@ impl SharprWindow {
                         );
                         refresh_c();
                         if matches!(state_c.borrow().scope, ViewScope::Collection(a) if a == id) {
-                            let all_paths = collection_paths_from_services(&idx, &tags_db, id);
+                            let (active_root_buf, disabled) = {
+                                let s = state_c.borrow();
+                                (s.settings.active_library().map(|lib| lib.root.clone()), s.disabled_folders.clone())
+                            };
+                            let all_paths = collection_paths_from_services(&idx, &tags_db, id, active_root_buf.as_deref(), &disabled);
                             state_c.borrow_mut().scope = ViewScope::Collection(id);
                             load_virtual_async(&state_c, &all_paths);
                             filmstrip_c.refresh_virtual();
@@ -2685,11 +2864,20 @@ impl SharprWindow {
                     ViewScope::Collection(id) => library_index
                         .as_ref()
                         .and_then(|idx| {
-                            state_c
-                                .borrow()
-                                .tags
-                                .as_ref()
-                                .map(|tags| collection_paths_from_services(idx, tags, *id))
+                            let state_ref = state_c.borrow();
+                            let active_root = state_ref
+                                .settings
+                                .active_library()
+                                .map(|library| library.root.as_path());
+                            state_ref.tags.as_ref().map(|tags| {
+                                collection_paths_from_services(
+                                    idx,
+                                    tags,
+                                    *id,
+                                    active_root,
+                                    &state_ref.disabled_folders,
+                                )
+                            })
                         })
                         .unwrap_or_default(),
                     _ => {
@@ -3537,7 +3725,11 @@ impl SharprWindow {
                                 "duration_ms": crate::bench::duration_ms(started),
                             })
                         );
-                        let remaining = collection_paths_from_services(&idx, &tags_db, id);
+                        let (active_root_buf, disabled) = {
+                            let s = state_c.borrow();
+                            (s.settings.active_library().map(|lib| lib.root.clone()), s.disabled_folders.clone())
+                        };
+                        let remaining = collection_paths_from_services(&idx, &tags_db, id, active_root_buf.as_deref(), &disabled);
                         state_c.borrow_mut().scope = ViewScope::Collection(id);
                         load_virtual_async(&state_c, &remaining);
                         state_c.borrow_mut().selected_paths.clear();

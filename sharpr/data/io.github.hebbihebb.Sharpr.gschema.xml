@@ -16,6 +16,16 @@
       <summary>Custom library root folder</summary>
       <description>If set, sidebar scans this path instead of ~/Pictures.</description>
     </key>
+    <key name="libraries-json" type="s">
+      <default>"[]"</default>
+      <summary>Persisted library definitions</summary>
+      <description>JSON-encoded list of named libraries and their folder settings.</description>
+    </key>
+    <key name="active-library-id" type="s">
+      <default>""</default>
+      <summary>Active library identifier</summary>
+      <description>The id of the currently selected library.</description>
+    </key>
     <key name="upscaler-binary-path" type="s">
       <default>""</default>
       <summary>Custom Vulkan upscaler binary path</summary>
