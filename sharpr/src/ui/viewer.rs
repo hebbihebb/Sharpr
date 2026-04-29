@@ -2636,47 +2636,7 @@ fn install_viewer_osd_css() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         let provider = gtk4::CssProvider::new();
-        provider.load_from_string(
-            "
-            .tag-osd {
-                padding: 8px 10px;
-                border-radius: 16px;
-                background-color: rgba(28, 28, 30, 0.72);
-                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
-            }
-            .tag-osd-pill,
-            .tag-osd-add {
-                border-radius: 999px;
-                min-height: 28px;
-                background-color: rgba(255, 255, 255, 0.08);
-                color: white;
-            }
-            .tag-osd-pill {
-                padding: 0 10px;
-            }
-            .tag-osd-pill:hover,
-            .tag-osd-add:hover {
-                background-color: rgba(255, 255, 255, 0.14);
-            }
-            .tag-osd-add {
-                min-width: 28px;
-                padding: 0;
-            }
-            .tag-chip-neutral {
-                background-color: rgba(255, 255, 255, 0.10);
-                border-radius: 999px;
-            }
-            .tag-popover-chip {
-                padding: 4px 8px;
-            }
-            .zoom-osd {
-                padding: 10px 18px;
-                border-radius: 18px;
-                background-color: rgba(28, 28, 30, 0.78);
-                box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
-            }
-            ",
-        );
+        provider.load_from_resource("/io/github/hebbihebb/Sharpr/viewer-osd.css");
         if let Some(display) = gdk4::Display::default() {
             gtk4::style_context_add_provider_for_display(
                 &display,

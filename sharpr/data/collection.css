@@ -1,0 +1,11 @@
+.collection-child-row {
+    opacity: 0.94;
+}
+.collection-root-row {
+    opacity: 1.0;
+}
+.collection-disclosure {
+    min-width: 20px;
+    min-height: 20px;
+    padding: 0;
+}

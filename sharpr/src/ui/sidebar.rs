@@ -975,21 +975,7 @@ fn install_collection_css() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         let provider = gtk4::CssProvider::new();
-        provider.load_from_string(
-            "
-            .collection-child-row {
-                opacity: 0.94;
-            }
-            .collection-root-row {
-                opacity: 1.0;
-            }
-            .collection-disclosure {
-                min-width: 20px;
-                min-height: 20px;
-                padding: 0;
-            }
-            ",
-        );
+        provider.load_from_resource("/io/github/hebbihebb/Sharpr/collection.css");
         if let Some(display) = gtk4::gdk::Display::default() {
             gtk4::style_context_add_provider_for_display(
                 &display,
