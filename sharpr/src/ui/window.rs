@@ -1037,12 +1037,14 @@ impl SharprWindow {
         {
             let last_folder = self.imp().state.borrow().settings.last_folder.clone();
             if let Some(folder) = last_folder {
-                let upscaled_dir = folder.join("upscaled");
-                if let Ok(entries) = std::fs::read_dir(&upscaled_dir) {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name().to_string_lossy().into_owned();
-                        if name.contains(".pending-") || name.contains(".ncnn-intermediate") {
-                            let _ = std::fs::remove_file(entry.path());
+                for dir_name in ["exported", "upscaled"] {
+                    let output_dir = folder.join(dir_name);
+                    if let Ok(entries) = std::fs::read_dir(&output_dir) {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name().to_string_lossy().into_owned();
+                            if name.contains(".pending-") || name.contains(".ncnn-intermediate") {
+                                let _ = std::fs::remove_file(entry.path());
+                            }
                         }
                     }
                 }
@@ -2743,6 +2745,7 @@ impl SharprWindow {
             sidebar_toggle,
             preview_title_btn,
             commit_btn,
+            commit_menu_btn,
             discard_btn,
             edit_commit_btn,
             edit_discard_btn,
@@ -2792,7 +2795,11 @@ impl SharprWindow {
 
         // Give the viewer a reference to the Commit/Discard buttons so the
         // async upscale callback can show/hide them without extra clones.
-        viewer.set_comparison_buttons(commit_btn.clone(), discard_btn.clone());
+        viewer.set_comparison_buttons(
+            commit_btn.clone(),
+            commit_menu_btn.clone(),
+            discard_btn.clone(),
+        );
         viewer.set_edit_buttons(edit_commit_btn.clone(), edit_discard_btn.clone());
 
         // Commit / Discard buttons for the comparison view.
@@ -2805,7 +2812,58 @@ impl SharprWindow {
         {
             let viewer_c = viewer.clone();
             commit_btn.connect_clicked(move |_| {
-                viewer_c.commit_convert();
+                viewer_c.commit_convert_default();
+            });
+        }
+        {
+            let viewer_c = viewer.clone();
+            let menu = gtk4::Popover::new();
+            let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+            box_.set_margin_top(8);
+            box_.set_margin_bottom(8);
+            box_.set_margin_start(8);
+            box_.set_margin_end(8);
+            let save_copy_btn = gtk4::Button::with_label("Save to Exported Folder");
+            let replace_btn = gtk4::Button::with_label("Replace Original");
+            replace_btn.add_css_class("destructive-action");
+            let choose_btn = gtk4::Button::with_label("Choose Different Folder…");
+            box_.append(&save_copy_btn);
+            box_.append(&replace_btn);
+            box_.append(&choose_btn);
+            menu.set_child(Some(&box_));
+            commit_menu_btn.set_popover(Some(&menu));
+
+            let viewer_for_menu = viewer_c.clone();
+            let replace_for_menu = replace_btn.clone();
+            menu.connect_visible_notify(move |popover| {
+                if !popover.is_visible() {
+                    return;
+                }
+                let can_replace = viewer_for_menu.can_replace_current_convert();
+                replace_for_menu.set_sensitive(can_replace);
+                replace_for_menu.set_tooltip_text((!can_replace).then_some(
+                    "Replace Original is only available when the converted file keeps the same extension",
+                ));
+            });
+
+            let menu_pop = menu.clone();
+            let viewer_copy = viewer_c.clone();
+            save_copy_btn.connect_clicked(move |_| {
+                menu_pop.popdown();
+                viewer_copy.commit_convert_default();
+            });
+
+            let menu_pop = menu.clone();
+            let viewer_replace = viewer_c.clone();
+            replace_btn.connect_clicked(move |_| {
+                menu_pop.popdown();
+                viewer_replace.commit_convert_replace_original();
+            });
+
+            let viewer_choose = viewer_c.clone();
+            choose_btn.connect_clicked(move |_| {
+                menu.popdown();
+                viewer_choose.commit_convert_choose_folder();
             });
         }
         {
@@ -2862,6 +2920,7 @@ impl SharprWindow {
         ops_indicator.set_margin_end(12);
         ops_indicator.set_margin_bottom(16);
         sidebar_overlay.add_overlay(&ops_indicator);
+        viewer.set_ops_indicator(ops_indicator.clone());
 
         let sidebar_page = libadwaita::NavigationPage::builder()
             .title("Library")
@@ -4528,7 +4587,18 @@ impl SharprWindow {
                     });
                 }
 
-                let chosen_dest: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
+                let default_dest = sources
+                    .first()
+                    .map(|source| crate::export::default_export_dir(source));
+                if let Some(dest) = default_dest.as_ref() {
+                    dest_path_label.set_label(
+                        dest.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| dest.display().to_string())
+                            .as_str(),
+                    );
+                }
+                let chosen_dest: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(default_dest));
                 {
                     let chosen = chosen_dest.clone();
                     let lbl = dest_path_label.clone();
@@ -4828,7 +4898,21 @@ impl SharprWindow {
                     });
                 }
 
-                let chosen_dest: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
+                let default_dest = sources
+                    .first()
+                    .map(|source| crate::export::default_export_dir(source));
+                if let Some(dest) = default_dest.as_ref() {
+                    dest_label.set_label(
+                        dest.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| dest.display().to_string())
+                            .as_str(),
+                    );
+                }
+                if sources.len() == 1 {
+                    dest_row.set_visible(false);
+                }
+                let chosen_dest: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(default_dest));
                 {
                     let chosen = chosen_dest.clone();
                     let lbl = dest_label.clone();
@@ -5093,18 +5177,6 @@ impl SharprWindow {
                         viewer_c.start_upscale(p, scale, cli_model, proxy_btn);
                     } else {
                         // ── Downscale path ───────────────────────────────────
-                        let dest = match chosen_dest.borrow().clone() {
-                            Some(p) => p,
-                            None => {
-                                if let Some(w) = win_weak3.upgrade() {
-                                    w.add_toast(libadwaita::Toast::new(
-                                        "Choose a destination folder first",
-                                    ));
-                                }
-                                return;
-                            }
-                        };
-
                         let max_edge = match edge_drop.selected() {
                             1 => Some(1920u32),
                             2 => Some(2560u32),
@@ -5118,34 +5190,37 @@ impl SharprWindow {
                         };
                         let quality = quality_spin.value() as u8;
 
-                        let config = crate::export::ExportConfig {
-                            destination: dest.clone(),
-                            max_edge,
-                            format,
-                            quality,
-                        };
-
                         if sources.len() == 1 {
                             // Single image → comparison preview
                             let source = sources[0].clone();
-                            let win_weak_c = win_weak3.clone();
-                            let on_commit = Box::new(move |temp_path: PathBuf| {
-                                let final_path = crate::export::unique_output_path(
-                                    &dest, &source, format,
-                                );
-                                if final_path != temp_path {
-                                    let _ = std::fs::rename(&temp_path, &final_path);
-                                }
-                                if let Some(w) = win_weak_c.upgrade() {
-                                    w.add_toast(libadwaita::Toast::new("Image exported"));
-                                }
-                            });
+                            let config = crate::export::ExportConfig {
+                                destination: crate::export::default_export_dir(&source),
+                                max_edge,
+                                format,
+                                quality,
+                            };
                             viewer_c.start_downscale_preview(
-                                sources[0].clone(),
+                                source,
                                 config,
-                                on_commit,
                             );
                         } else {
+                            let dest = match chosen_dest.borrow().clone() {
+                                Some(p) => p,
+                                None => {
+                                    if let Some(w) = win_weak3.upgrade() {
+                                        w.add_toast(libadwaita::Toast::new(
+                                            "Choose a destination folder first",
+                                        ));
+                                    }
+                                    return;
+                                }
+                            };
+                            let config = crate::export::ExportConfig {
+                                destination: dest.clone(),
+                                max_edge,
+                                format,
+                                quality,
+                            };
                             // Batch → run directly with progress
                             let total = sources.len();
                             let op = state_cc
@@ -5206,7 +5281,7 @@ impl SharprWindow {
     }
 
     /// Build the viewer header bar.
-    /// Returns `(header, sidebar_toggle, preview_title_btn, commit_btn, discard_btn, edit_commit_btn, edit_discard_btn)`.
+    /// Returns `(header, sidebar_toggle, preview_title_btn, commit_btn, commit_menu_btn, discard_btn, edit_commit_btn, edit_discard_btn)`.
     /// Commit and Discard are initially hidden; the comparison view shows them.
     fn build_viewer_header(
         &self,
@@ -5216,6 +5291,7 @@ impl SharprWindow {
         gtk4::ToggleButton,
         gtk4::Button,
         gtk4::Button,
+        gtk4::MenuButton,
         gtk4::Button,
         gtk4::Button,
         gtk4::Button,
@@ -5232,13 +5308,20 @@ impl SharprWindow {
         preview_title_btn.set_visible(false);
 
         let commit_btn = gtk4::Button::with_label("Save");
-        commit_btn.set_tooltip_text(Some("Save upscaled image"));
+        commit_btn.set_tooltip_text(Some("Save to the exported folder"));
         commit_btn.add_css_class("suggested-action");
         commit_btn.set_visible(false);
         header.pack_end(&commit_btn);
 
+        let commit_menu_btn = gtk4::MenuButton::new();
+        commit_menu_btn.set_icon_name("pan-down-symbolic");
+        commit_menu_btn.set_tooltip_text(Some("More save options"));
+        commit_menu_btn.add_css_class("flat");
+        commit_menu_btn.set_visible(false);
+        header.pack_end(&commit_menu_btn);
+
         let discard_btn = gtk4::Button::with_label("Discard");
-        discard_btn.set_tooltip_text(Some("Discard upscaled image"));
+        discard_btn.set_tooltip_text(Some("Discard the pending converted image"));
         discard_btn.add_css_class("destructive-action");
         discard_btn.set_visible(false);
         header.pack_end(&discard_btn);
@@ -5262,6 +5345,7 @@ impl SharprWindow {
             sidebar_toggle,
             preview_title_btn,
             commit_btn,
+            commit_menu_btn,
             discard_btn,
             edit_commit_btn,
             edit_discard_btn,

@@ -4,6 +4,7 @@
 //! spinner and summary label.  Expanded: a GtkPopover listing each op with
 //! its own GtkProgressBar or status text.
 
+use std::rc::Rc;
 use std::sync::Once;
 
 use gtk4::glib;
@@ -18,6 +19,9 @@ struct OpRowWidgets {
     row: gtk4::ListBoxRow,
     progress_bar: gtk4::ProgressBar,
     status_label: gtk4::Label,
+    action_button: gtk4::Button,
+    action: Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>>,
+    persistent: std::cell::Cell<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +234,12 @@ impl OpsIndicator {
         status_label.set_halign(gtk4::Align::Start);
         status_label.set_visible(false);
 
+        let action_button = gtk4::Button::with_label("Open");
+        action_button.add_css_class("flat");
+        action_button.add_css_class("accent");
+        action_button.set_halign(gtk4::Align::Start);
+        action_button.set_visible(false);
+
         let row_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
         row_box.set_margin_top(8);
         row_box.set_margin_bottom(8);
@@ -238,6 +248,7 @@ impl OpsIndicator {
         row_box.append(&title_label);
         row_box.append(&progress_bar);
         row_box.append(&status_label);
+        row_box.append(&action_button);
 
         let row = gtk4::ListBoxRow::new();
         row.set_child(Some(&row_box));
@@ -247,12 +258,26 @@ impl OpsIndicator {
             lb.append(&row);
         }
 
+        let action: Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>> =
+            Rc::new(std::cell::RefCell::new(None));
+        {
+            let action = action.clone();
+            action_button.connect_clicked(move |_| {
+                if let Some(cb) = action.borrow().as_ref() {
+                    cb();
+                }
+            });
+        }
+
         imp.rows.borrow_mut().insert(
             id,
             OpRowWidgets {
                 row,
                 progress_bar,
                 status_label,
+                action_button,
+                action,
+                persistent: std::cell::Cell::new(false),
             },
         );
 
@@ -288,7 +313,9 @@ impl OpsIndicator {
         {
             let widget = self.clone();
             glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
-                widget.remove_op(id);
+                if !widget.op_is_persistent(id) {
+                    widget.remove_op(id);
+                }
             });
         }
     }
@@ -310,7 +337,9 @@ impl OpsIndicator {
         {
             let widget = self.clone();
             glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
-                widget.remove_op(id);
+                if !widget.op_is_persistent(id) {
+                    widget.remove_op(id);
+                }
             });
         }
     }
@@ -366,6 +395,37 @@ impl OpsIndicator {
             } else {
                 lbl.set_text(&format!("{} operations running", active));
             }
+        }
+    }
+
+    fn op_is_persistent(&self, id: u64) -> bool {
+        self.imp()
+            .rows
+            .borrow()
+            .get(&id)
+            .map(|row| row.persistent.get())
+            .unwrap_or(false)
+    }
+
+    pub fn set_op_action<F>(&self, id: u64, label: &str, action: F)
+    where
+        F: Fn() + 'static,
+    {
+        let rows = self.imp().rows.borrow();
+        if let Some(row) = rows.get(&id) {
+            row.action_button.set_label(label);
+            row.action_button.set_visible(true);
+            row.persistent.set(true);
+            *row.action.borrow_mut() = Some(Rc::new(action));
+        }
+    }
+
+    pub fn clear_op_action(&self, id: u64) {
+        let rows = self.imp().rows.borrow();
+        if let Some(row) = rows.get(&id) {
+            row.action_button.set_visible(false);
+            row.persistent.set(false);
+            row.action.borrow_mut().take();
         }
     }
 }
