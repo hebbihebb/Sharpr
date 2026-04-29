@@ -237,6 +237,7 @@ mod imp {
         pub zoom: Cell<f64>,
         pub zoom_mode: Cell<super::ZoomMode>,
         pub metadata_visible: Cell<bool>,
+        pub tag_chips_expanded: Cell<bool>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub pointer_pos: Cell<(f64, f64)>,
         pub drag_origin: Cell<Option<(f64, f64)>>,
@@ -532,6 +533,7 @@ mod imp {
                 zoom: Cell::new(1.0),
                 zoom_mode: Cell::new(super::ZoomMode::Fit),
                 metadata_visible: Cell::new(true),
+                tag_chips_expanded: Cell::new(false),
                 state: RefCell::new(None),
                 pointer_pos: Cell::new((0.0, 0.0)),
                 drag_origin: Cell::new(None),
@@ -1010,6 +1012,7 @@ impl ViewerPane {
         let imp = self.imp();
         let load_gen = imp.load_gen.get().wrapping_add(1);
         imp.load_gen.set(load_gen);
+        imp.tag_chips_expanded.set(false);
         imp.tag_popover.popdown();
         *imp.current_path.borrow_mut() = Some(path.clone());
         imp.pending_edit.set(false);
@@ -1974,7 +1977,8 @@ impl ViewerPane {
 
         let tags = db.tags_for_path(&path);
         const MAX_CHIPS: usize = 4;
-        let shown = tags.len().min(MAX_CHIPS);
+        let expanded = imp.tag_chips_expanded.get();
+        let shown = if expanded { tags.len() } else { tags.len().min(MAX_CHIPS) };
 
         for tag in &tags[..shown] {
             let chip = gtk4::Button::new();
@@ -2008,7 +2012,7 @@ impl ViewerPane {
             });
         }
 
-        if tags.len() > MAX_CHIPS {
+        if !expanded && tags.len() > MAX_CHIPS {
             let overflow = gtk4::Button::new();
             overflow.add_css_class("flat");
             overflow.add_css_class("tag-osd-pill");
@@ -2019,7 +2023,8 @@ impl ViewerPane {
             let viewer_weak = self.downgrade();
             overflow.connect_clicked(move |_| {
                 if let Some(viewer) = viewer_weak.upgrade() {
-                    viewer.open_tag_popover();
+                    viewer.imp().tag_chips_expanded.set(true);
+                    viewer.refresh_tag_summary();
                 }
             });
             imp.tag_chips_box.append(&overflow);
