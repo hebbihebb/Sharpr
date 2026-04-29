@@ -645,3 +645,77 @@ fn compute_hash(path: &Path) -> Option<u64> {
     let img = reader.decode().ok()?;
     Some(crate::duplicates::phash::dhash(&img))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_worker() -> ThumbnailWorker {
+        // spawn() creates background threads that block waiting for requests.
+        // We never send any requests, so they never touch GTK.
+        // Drop sends Shutdown to all threads, so cleanup is automatic.
+        let (worker, _result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        worker
+    }
+
+    #[test]
+    fn bump_generation_increments_monotonically() {
+        let worker = make_worker();
+        let gen1 = worker.bump_generation();
+        let gen2 = worker.bump_generation();
+        let gen3 = worker.bump_generation();
+        assert!(gen2 > gen1, "each bump must increase the generation");
+        assert!(gen3 > gen2, "each bump must increase the generation");
+    }
+
+    #[test]
+    fn current_generation_matches_last_bump() {
+        let worker = make_worker();
+        let bumped = worker.bump_generation();
+        assert_eq!(worker.current_generation(), bumped);
+    }
+
+    #[test]
+    fn pending_set_is_cleared_after_bump() {
+        let worker = make_worker();
+        {
+            let arc = worker.pending_set();
+            let mut pending = arc.lock().unwrap();
+            pending.insert(PathBuf::from("/fake/a.jpg"));
+            pending.insert(PathBuf::from("/fake/b.jpg"));
+            assert_eq!(pending.len(), 2);
+        }
+        worker.bump_generation();
+        let arc = worker.pending_set();
+        let pending = arc.lock().unwrap();
+        assert!(
+            pending.is_empty(),
+            "bump_generation must clear the in-flight dedup set"
+        );
+    }
+
+    #[test]
+    fn stale_request_generation_skipped_by_worker() {
+        // Send a thumbnail request with an old generation. The worker must skip
+        // it without producing a result. We can verify no result arrives within
+        // a short timeout because the decode path is bypassed before any file I/O.
+        let (worker, result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let current_gen = worker.current_generation();
+
+        // Bump so any request carrying current_gen is now stale.
+        worker.bump_generation();
+
+        let tx = worker.visible_sender();
+        let _ = tx.send_blocking(WorkerRequest::Thumbnail {
+            path: PathBuf::from("/nonexistent/stale.jpg"),
+            gen: current_gen, // stale generation
+        });
+
+        // Give the worker a moment to process (it should skip immediately).
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            result_rx.try_recv().is_err(),
+            "stale request must not produce a ThumbnailResult"
+        );
+    }
+}

@@ -116,4 +116,74 @@ mod tests {
             vec![vec![PathBuf::from("a.jpg"), PathBuf::from("b.jpg")]]
         );
     }
+
+    #[test]
+    fn all_identical_hashes_form_single_group() {
+        let hashes = vec![
+            (PathBuf::from("a.jpg"), 0u64),
+            (PathBuf::from("b.jpg"), 0u64),
+            (PathBuf::from("c.jpg"), 0u64),
+        ];
+        let groups = group_duplicates(&hashes);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 3);
+    }
+
+    #[test]
+    fn threshold_boundary_four_bits_groups_five_bits_does_not() {
+        // hamming(0, 0b1111) == 4 → same group
+        // hamming(0, 0b11111) == 5 → separate group
+        let hashes = vec![
+            (PathBuf::from("base.jpg"), 0u64),
+            (PathBuf::from("close.jpg"), 0b1111u64),    // 4 bits differ — within threshold
+            (PathBuf::from("far.jpg"), 0b11111u64),     // 5 bits differ — outside threshold
+        ];
+        let groups = group_duplicates(&hashes);
+        // Only base+close form a group; far is isolated
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].contains(&PathBuf::from("base.jpg")));
+        assert!(groups[0].contains(&PathBuf::from("close.jpg")));
+        assert!(!groups[0].contains(&PathBuf::from("far.jpg")));
+    }
+
+    #[test]
+    fn larger_groups_come_first_in_output() {
+        // Two groups: one triple (all hash 0) and one pair (hashes 1000 apart).
+        // The triple should appear before the pair.
+        let hashes = vec![
+            (PathBuf::from("t1.jpg"), 0u64),
+            (PathBuf::from("t2.jpg"), 0u64),
+            (PathBuf::from("t3.jpg"), 0u64),
+            // pair with hashes far from the triple but close to each other
+            (PathBuf::from("p1.jpg"), u64::MAX),
+            (PathBuf::from("p2.jpg"), u64::MAX),
+        ];
+        let groups = group_duplicates(&hashes);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].len(), 3, "triple should be first");
+        assert_eq!(groups[1].len(), 2, "pair should be second");
+    }
+
+    #[test]
+    fn no_groups_when_all_images_are_far_apart() {
+        // Each image differs by >> 4 bits from every other.
+        let hashes = vec![
+            (PathBuf::from("a.jpg"), 0u64),
+            (PathBuf::from("b.jpg"), 0xFFFF_0000_0000_0000u64),
+            (PathBuf::from("c.jpg"), 0x0000_FFFF_0000_0000u64),
+        ];
+        let groups = group_duplicates(&hashes);
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn empty_input_returns_empty_groups() {
+        assert!(group_duplicates(&[]).is_empty());
+    }
+
+    #[test]
+    fn single_image_returns_empty_groups() {
+        let hashes = vec![(PathBuf::from("solo.jpg"), 0u64)];
+        assert!(group_duplicates(&hashes).is_empty());
+    }
 }

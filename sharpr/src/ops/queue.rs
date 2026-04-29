@@ -132,4 +132,48 @@ mod tests {
             other => panic!("unexpected failed event: {other:?}"),
         }
     }
+
+    #[test]
+    fn dropped_handle_sends_no_terminal_event() {
+        let (queue, rx) = new_queue();
+        let handle = queue.add("Ephemeral");
+        let _ = rx.recv_blocking().unwrap(); // consume Added
+
+        // Drop without calling complete() or fail()
+        drop(handle);
+
+        // Channel should be empty — no Completed or Failed event
+        assert!(rx.try_recv().is_err(), "expected no terminal event after drop");
+    }
+
+    #[test]
+    fn cloned_queue_shares_monotonic_id_sequence() {
+        let (queue_a, rx) = new_queue();
+        let queue_b = queue_a.clone();
+
+        let ha = queue_a.add("from A");
+        let hb = queue_b.add("from B");
+
+        // Both Added events arrive
+        let _ = rx.recv_blocking().unwrap();
+        let _ = rx.recv_blocking().unwrap();
+
+        // IDs are globally monotonic regardless of which clone added them
+        assert!(hb.id > ha.id, "IDs must increase across cloned senders");
+    }
+
+    #[test]
+    fn multiple_concurrent_handles_all_have_unique_ids() {
+        let (queue, rx) = new_queue();
+        let handles: Vec<_> = (0..10).map(|i| queue.add(format!("op-{i}"))).collect();
+
+        // Drain the channel
+        for _ in 0..10 {
+            let _ = rx.recv_blocking().unwrap();
+        }
+
+        let ids: Vec<u64> = handles.iter().map(|h| h.id).collect();
+        let unique: std::collections::HashSet<u64> = ids.iter().cloned().collect();
+        assert_eq!(ids.len(), unique.len(), "every handle must have a unique ID");
+    }
 }

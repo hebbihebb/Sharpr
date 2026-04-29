@@ -106,4 +106,46 @@ mod tests {
         );
         assert!(filename.contains(&format!("-{}-", bytes.len())));
     }
+
+    #[test]
+    fn path_hash_is_deterministic_for_same_input() {
+        let a = stable_path_hash(std::path::Path::new("/home/user/photos/img.jpg"));
+        let b = stable_path_hash(std::path::Path::new("/home/user/photos/img.jpg"));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn path_hash_differs_for_different_paths() {
+        let a = stable_path_hash(std::path::Path::new("/photos/a.jpg"));
+        let b = stable_path_hash(std::path::Path::new("/photos/b.jpg"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn thumbnail_cache_path_changes_when_file_content_changes() {
+        let _guard = env_lock().lock().unwrap();
+        let path = temp_file_path();
+
+        std::fs::write(&path, b"version-one").unwrap();
+        let cache_v1 = thumbnail_cache_path(&path).unwrap();
+
+        // Re-write with different content — file size changes, so cache path must differ.
+        std::fs::write(&path, b"version-two-longer").unwrap();
+        let cache_v2 = thumbnail_cache_path(&path).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        assert_ne!(
+            cache_v1, cache_v2,
+            "cache path must change when file content (size) changes"
+        );
+    }
+
+    #[test]
+    fn thumbnail_cache_path_returns_none_for_nonexistent_file() {
+        let path = std::path::Path::new("/nonexistent/does/not/exist.jpg");
+        assert!(
+            thumbnail_cache_path(path).is_none(),
+            "should return None when file cannot be stat-ed"
+        );
+    }
 }

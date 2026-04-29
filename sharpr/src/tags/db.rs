@@ -405,6 +405,12 @@ impl TagDatabase {
                 PRIMARY KEY (path, tag)
             );
             CREATE INDEX IF NOT EXISTS idx_tag ON file_tags(tag);
+
+            CREATE TABLE IF NOT EXISTS image_quality (
+                path      TEXT    PRIMARY KEY,
+                sharpness REAL    NOT NULL,
+                mtime     INTEGER NOT NULL
+            );
             ",
         )?;
         Ok(Self {
@@ -556,6 +562,96 @@ mod tests {
 
         let paths = db.paths_for_all_tags(&["people".into(), "model".into()]);
         assert_eq!(paths, vec![a.clone()]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn upsert_and_get_sharpness_round_trip() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let root = temp_path("sharpness-rt");
+        std::fs::create_dir_all(&root).unwrap();
+        let img = root.join("sharp.jpg");
+        std::fs::write(&img, b"fake image data").unwrap();
+
+        let actual_mtime = file_mtime_secs(&img).expect("mtime must be readable");
+        db.upsert_sharpness(&img, 42.5, actual_mtime);
+
+        let got = db.get_sharpness(&img);
+        assert_eq!(got, Some(42.5), "should return the stored sharpness score");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn get_sharpness_returns_none_when_stored_mtime_is_stale() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let root = temp_path("sharpness-stale");
+        std::fs::create_dir_all(&root).unwrap();
+        let img = root.join("img.jpg");
+        std::fs::write(&img, b"data").unwrap();
+
+        // Store with mtime 0 — intentionally wrong.
+        db.upsert_sharpness(&img, 99.0, 0);
+
+        // get_sharpness checks the *actual* mtime vs stored; 0 won't match.
+        assert!(
+            db.get_sharpness(&img).is_none(),
+            "stale mtime must invalidate the cached score"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn insert_auto_tags_does_not_clobber_user_tags() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let root = temp_path("auto-tags");
+        std::fs::create_dir_all(&root).unwrap();
+        let img = root.join("img.jpg");
+        std::fs::write(&img, b"data").unwrap();
+
+        db.add_tag(&img, "people");
+        db.insert_auto_tags(&img, &["jpg".into(), "1080p".into()]);
+
+        let mut tags = db.tags_for_path(&img);
+        tags.sort();
+        assert_eq!(tags, vec!["1080p", "jpg", "people"],
+            "auto tags must be additive — user tag 'people' must survive");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn insert_auto_tags_is_idempotent() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let root = temp_path("auto-idempotent");
+        std::fs::create_dir_all(&root).unwrap();
+        let img = root.join("img.jpg");
+        std::fs::write(&img, b"data").unwrap();
+
+        db.insert_auto_tags(&img, &["jpg".into()]);
+        db.insert_auto_tags(&img, &["jpg".into()]); // second call must not duplicate
+
+        let tags = db.tags_for_path(&img);
+        assert_eq!(tags, vec!["jpg"], "duplicate auto-tag insert must be ignored");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn add_tag_normalizes_case_and_whitespace() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let root = temp_path("normalize");
+        std::fs::create_dir_all(&root).unwrap();
+        let img = root.join("img.jpg");
+        std::fs::write(&img, b"data").unwrap();
+
+        db.add_tag(&img, "  Portrait  ");
+        db.add_tag(&img, "PORTRAIT"); // should be deduped after normalization
+
+        let tags = db.tags_for_path(&img);
+        assert_eq!(tags, vec!["portrait"], "tags must be normalised to lowercase trimmed form");
 
         std::fs::remove_dir_all(root).unwrap();
     }
