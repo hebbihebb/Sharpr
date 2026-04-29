@@ -1090,6 +1090,14 @@ impl SharprWindow {
         }
 
         let content_stack = gtk4::Stack::new();
+
+        {
+            let content_stack_c = content_stack.clone();
+            viewer.connect_manage_tags(move || {
+                content_stack_c.set_visible_child_name("tags");
+            });
+        }
+
         let toast_overlay = libadwaita::ToastOverlay::new();
         *self.imp().toast_overlay.borrow_mut() = Some(toast_overlay.clone());
         let tag_browser = state.borrow().tags.clone().map(TagBrowser::new);

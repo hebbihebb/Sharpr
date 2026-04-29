@@ -60,45 +60,6 @@ fn collection_tag_color_map(
     tag_to_color
 }
 
-fn apply_tag_chip_tint(chip: &gtk4::Box, color: &str) {
-    use std::sync::{LazyLock, Mutex};
-
-    static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
-        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
-
-    let hex = color.trim_start_matches('#');
-    if hex.len() != 6 {
-        return;
-    }
-    let (Ok(r), Ok(g), Ok(b)) = (
-        u8::from_str_radix(&hex[0..2], 16),
-        u8::from_str_radix(&hex[2..4], 16),
-        u8::from_str_radix(&hex[4..6], 16),
-    ) else {
-        return;
-    };
-
-    let key = hex.to_lowercase();
-    let class_name = format!("tag-chip-color-{key}");
-
-    if let Ok(mut registered) = REGISTERED.lock() {
-        if registered.insert(key) {
-            let provider = gtk4::CssProvider::new();
-            provider.load_from_string(&format!(
-                ".{class_name} {{ background-color: rgba({r},{g},{b},0.25); border-radius: 999px; }}"
-            ));
-            if let Some(display) = gtk4::gdk::Display::default() {
-                gtk4::style_context_add_provider_for_display(
-                    &display,
-                    &provider,
-                    gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-                );
-            }
-        }
-    }
-    chip.add_css_class(&class_name);
-}
-
 fn apply_tag_icon_tint(icon: &gtk4::Image, color: &str) {
     use std::sync::{LazyLock, Mutex};
 
@@ -125,14 +86,6 @@ fn apply_tag_icon_tint(icon: &gtk4::Image, color: &str) {
     }
 
     icon.add_css_class(&class_name);
-}
-
-fn configure_tag_popover_chip(chip: &gtk4::Box) {
-    chip.add_css_class("tag-popover-chip");
-    chip.set_margin_start(2);
-    chip.set_margin_end(2);
-    chip.set_margin_top(2);
-    chip.set_margin_bottom(2);
 }
 
 fn apply_tag_osd_chip_tint(btn: &gtk4::Button, color: &str) {
@@ -215,10 +168,15 @@ mod imp {
         pub progress_bar: gtk4::ProgressBar,
         pub zoom_label: gtk4::Label,
         pub zoom_hide_source: RefCell<Option<glib::SourceId>>,
-        pub tag_anchor: gtk4::Box,
         pub tag_popover: gtk4::Popover,
-        pub tag_entry: gtk4::Entry,
-        pub tag_flowbox: gtk4::FlowBox,
+        pub tag_entry: gtk4::SearchEntry,
+        pub selected_list: gtk4::ListBox,
+        pub all_tags_list: gtk4::ListBox,
+        pub new_tag_btn: gtk4::Button,
+        pub new_tag_entry: gtk4::Entry,
+        pub new_tag_create_btn: gtk4::Button,
+        pub new_tag_cancel_btn: gtk4::Button,
+        pub manage_tags_btn: gtk4::Button,
         pub smart_tag_btn: gtk4::Button,
         pub smart_tag_spinner: gtk4::Spinner,
         pub suggestions_box: gtk4::Box,
@@ -261,6 +219,8 @@ mod imp {
         pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
         /// Called after a successful edit save so the filmstrip can refresh thumbnails.
         pub post_save_cb: RefCell<Option<Box<dyn Fn()>>>,
+        /// Called when the "Manage tags" button in the popover is clicked.
+        pub manage_tags_cb: RefCell<Option<Box<dyn Fn()>>>,
         /// Commit action for the active convert operation (downscale or upscale).
         /// Called with the temp output path when the user clicks Commit.
         pub pending_commit_fn: PendingCommitFn,
@@ -313,8 +273,6 @@ mod imp {
 
             let tag_chips_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
 
-            // tag_button and tag_label are kept in the struct for backward-compat
-            // but are no longer appended to tag_osd; chips are used instead.
             let tag_button = gtk4::Button::new();
             tag_button.add_css_class("flat");
             tag_button.add_css_class("tag-osd-pill");
@@ -353,20 +311,108 @@ mod imp {
             zoom_label.set_margin_bottom(16);
             zoom_label.set_visible(false);
 
-            let tag_anchor = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-            tag_anchor.set_halign(gtk4::Align::End);
-            tag_anchor.set_valign(gtk4::Align::Start);
-            tag_anchor.set_margin_top(12);
-            tag_anchor.set_margin_end(12);
-            tag_anchor.set_size_request(1, 1);
-
             let tag_popover = gtk4::Popover::new();
             tag_popover.set_has_arrow(true);
             tag_popover.set_autohide(true);
-            tag_popover.set_position(gtk4::PositionType::Bottom);
+            tag_popover.set_position(gtk4::PositionType::Top);
+            tag_popover.set_parent(&tag_add_button);
+            tag_popover.add_css_class("tag-popover");
 
-            let tag_entry = gtk4::Entry::new();
-            let tag_flowbox = gtk4::FlowBox::new();
+            let popover_vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+            popover_vbox.set_margin_start(12);
+            popover_vbox.set_margin_end(12);
+            popover_vbox.set_margin_top(12);
+            popover_vbox.set_margin_bottom(12);
+            popover_vbox.set_width_request(260);
+
+            let tag_entry = gtk4::SearchEntry::new();
+            tag_entry.set_placeholder_text(Some("Search tags..."));
+            tag_entry.set_hexpand(true);
+            popover_vbox.append(&tag_entry);
+
+            let popover_scroll = gtk4::ScrolledWindow::new();
+            popover_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+            popover_scroll.set_min_content_height(200);
+            popover_scroll.set_max_content_height(400);
+
+            let lists_vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+            popover_scroll.set_child(Some(&lists_vbox));
+            popover_vbox.append(&popover_scroll);
+
+            let selected_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+            let selected_header = gtk4::Label::new(Some("SELECTED"));
+            selected_header.set_halign(gtk4::Align::Start);
+            selected_header.add_css_class("dim-label");
+            selected_header.add_css_class("caption-heading");
+            let selected_list = gtk4::ListBox::new();
+            selected_list.set_selection_mode(gtk4::SelectionMode::None);
+            selected_list.add_css_class("rich-list");
+            selected_box.append(&selected_header);
+            selected_box.append(&selected_list);
+            lists_vbox.append(&selected_box);
+
+            let suggestions_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+            suggestions_box.set_visible(false);
+            let suggested_header = gtk4::Label::new(Some("SUGGESTED"));
+            suggested_header.set_halign(gtk4::Align::Start);
+            suggested_header.add_css_class("dim-label");
+            suggested_header.add_css_class("caption-heading");
+            let suggestions_flow = gtk4::FlowBox::new();
+            suggestions_flow.set_selection_mode(gtk4::SelectionMode::None);
+            suggestions_flow.set_row_spacing(4);
+            suggestions_flow.set_column_spacing(4);
+            suggestions_flow.set_homogeneous(false);
+            suggestions_flow.set_valign(gtk4::Align::Start);
+            suggestions_box.append(&suggested_header);
+            suggestions_box.append(&suggestions_flow);
+            lists_vbox.append(&suggestions_box);
+
+            let all_tags_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+            let all_tags_header = gtk4::Label::new(Some("ALL TAGS"));
+            all_tags_header.set_halign(gtk4::Align::Start);
+            all_tags_header.add_css_class("dim-label");
+            all_tags_header.add_css_class("caption-heading");
+            let all_tags_list = gtk4::ListBox::new();
+            all_tags_list.set_selection_mode(gtk4::SelectionMode::None);
+            all_tags_list.add_css_class("rich-list");
+            all_tags_box.append(&all_tags_header);
+            all_tags_box.append(&all_tags_list);
+            lists_vbox.append(&all_tags_box);
+
+            let action_bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+            action_bar.set_margin_top(4);
+
+            let new_tag_btn = gtk4::Button::with_label("+ New tag");
+            new_tag_btn.add_css_class("flat");
+            new_tag_btn.set_halign(gtk4::Align::Start);
+
+            let manage_tags_btn = gtk4::Button::with_label("Manage tags \u{2197}"); // Unicode arrow
+            manage_tags_btn.add_css_class("flat");
+            manage_tags_btn.set_halign(gtk4::Align::End);
+            manage_tags_btn.set_hexpand(true);
+
+            let new_tag_entry = gtk4::Entry::new();
+            new_tag_entry.set_placeholder_text(Some("Tag name"));
+            new_tag_entry.set_visible(false);
+            new_tag_entry.set_hexpand(true);
+
+            let new_tag_create_btn = gtk4::Button::with_label("Create");
+            new_tag_create_btn.add_css_class("suggested-action");
+            new_tag_create_btn.set_visible(false);
+
+            let new_tag_cancel_btn = gtk4::Button::with_label("Cancel");
+            new_tag_cancel_btn.add_css_class("flat");
+            new_tag_cancel_btn.set_visible(false);
+
+            action_bar.append(&new_tag_btn);
+            action_bar.append(&new_tag_entry);
+            action_bar.append(&new_tag_cancel_btn);
+            action_bar.append(&new_tag_create_btn);
+            action_bar.append(&manage_tags_btn);
+
+            popover_vbox.append(&action_bar);
+            tag_popover.set_child(Some(&popover_vbox));
+
             let smart_tag_btn = gtk4::Button::from_icon_name("starred-symbolic");
             smart_tag_btn.add_css_class("flat");
             smart_tag_btn.set_tooltip_text(Some("Suggest tags with AI"));
@@ -376,26 +422,16 @@ mod imp {
             smart_tag_spinner.set_visible(false);
             smart_tag_spinner.set_size_request(16, 16);
 
-            let suggestions_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-            suggestions_box.set_visible(false);
-
-            let suggestions_flow = gtk4::FlowBox::new();
-            suggestions_flow.set_selection_mode(gtk4::SelectionMode::None);
-            suggestions_flow.set_row_spacing(4);
-            suggestions_flow.set_column_spacing(4);
-            suggestions_flow.set_homogeneous(false);
-            suggestions_flow.set_valign(gtk4::Align::Start);
-
             let suggestions_add_all = gtk4::Button::with_label("Add All");
             suggestions_add_all.add_css_class("suggested-action");
             suggestions_add_all.set_halign(gtk4::Align::End);
             suggestions_add_all.set_visible(false);
+            suggestions_box.append(&suggestions_add_all);
 
             let tag_state = Rc::new(RefCell::new(TagPopoverState::default()));
 
             let overlay = gtk4::Overlay::new();
             overlay.set_child(Some(&scrolled_window));
-            overlay.add_overlay(&tag_anchor);
             overlay.add_overlay(&tag_osd);
             overlay.add_overlay(&metadata_chip);
             overlay.add_overlay(&spinner);
@@ -430,10 +466,15 @@ mod imp {
                 progress_bar,
                 zoom_label,
                 zoom_hide_source: RefCell::new(None),
-                tag_anchor,
                 tag_popover,
                 tag_entry,
-                tag_flowbox,
+                selected_list,
+                all_tags_list,
+                new_tag_btn,
+                new_tag_entry,
+                new_tag_create_btn,
+                new_tag_cancel_btn,
+                manage_tags_btn,
                 smart_tag_btn,
                 smart_tag_spinner,
                 suggestions_box,
@@ -461,6 +502,7 @@ mod imp {
                 preview_handle: RefCell::new(None),
                 metadata_handle: RefCell::new(None),
                 post_save_cb: RefCell::new(None),
+                manage_tags_cb: RefCell::new(None),
                 pending_commit_fn: RefCell::new(None),
             }
         }
@@ -781,6 +823,11 @@ impl ViewerPane {
     /// Used by the window to trigger filmstrip thumbnail refresh.
     pub fn set_post_save_callback(&self, cb: impl Fn() + 'static) {
         *self.imp().post_save_cb.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// Register a callback invoked when "Manage tags" is clicked in the popover.
+    pub fn connect_manage_tags(&self, cb: impl Fn() + 'static) {
+        *self.imp().manage_tags_cb.borrow_mut() = Some(Box::new(cb));
     }
 
     /// Clear the viewer (called when the folder changes).
@@ -1336,56 +1383,6 @@ impl ViewerPane {
     fn build_tag_popover(&self) {
         let imp = self.imp();
 
-        imp.tag_entry.set_placeholder_text(Some("Add tag"));
-        imp.tag_entry.set_hexpand(true);
-
-        imp.tag_flowbox
-            .set_selection_mode(gtk4::SelectionMode::None);
-        imp.tag_flowbox.set_row_spacing(6);
-        imp.tag_flowbox.set_column_spacing(6);
-        imp.tag_flowbox.set_max_children_per_line(8);
-        imp.tag_flowbox.set_homogeneous(false);
-        imp.tag_flowbox.set_valign(gtk4::Align::Start);
-
-        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-        content.set_margin_top(12);
-        content.set_margin_bottom(12);
-        content.set_margin_start(12);
-        content.set_margin_end(12);
-        content.set_size_request(380, -1);
-
-        let header_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-        let title = gtk4::Label::new(Some("Tags"));
-        title.set_halign(gtk4::Align::Start);
-        title.set_hexpand(true);
-        title.add_css_class("heading");
-        header_row.append(&title);
-        header_row.append(&imp.smart_tag_spinner);
-        header_row.append(&imp.smart_tag_btn);
-
-        let chips_scroll = gtk4::ScrolledWindow::new();
-        chips_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-        chips_scroll.set_min_content_height(100);
-        chips_scroll.set_max_content_height(220);
-        chips_scroll.set_propagate_natural_height(true);
-        chips_scroll.set_child(Some(&imp.tag_flowbox));
-
-        content.append(&header_row);
-        content.append(&imp.tag_entry);
-
-        let suggestions_label = gtk4::Label::new(Some("Suggestions"));
-        suggestions_label.set_halign(gtk4::Align::Start);
-        suggestions_label.add_css_class("dim-label");
-        imp.suggestions_box.append(&suggestions_label);
-        imp.suggestions_box.append(&imp.suggestions_flow);
-        imp.suggestions_box.append(&imp.suggestions_add_all);
-        content.append(&imp.suggestions_box);
-
-        content.append(&chips_scroll);
-
-        imp.tag_popover.set_child(Some(&content));
-        imp.tag_popover.set_parent(&imp.tag_anchor);
-
         let entry = imp.tag_entry.clone();
         imp.tag_popover.connect_show(move |_| {
             entry.grab_focus();
@@ -1414,24 +1411,96 @@ impl ViewerPane {
         imp.tag_entry.add_controller(key);
 
         let viewer_weak = self.downgrade();
-        imp.tag_entry.connect_activate(move |entry| {
-            let Some(viewer) = viewer_weak.upgrade() else {
-                return;
-            };
-            let text = entry.text();
+        imp.tag_entry.connect_search_changed(move |entry| {
+            if let Some(viewer) = viewer_weak.upgrade() {
+                viewer.filter_tag_lists(entry.text().as_str());
+            }
+        });
+
+        let new_tag_entry = imp.new_tag_entry.clone();
+        let new_tag_btn = imp.new_tag_btn.clone();
+        let new_tag_create_btn = imp.new_tag_create_btn.clone();
+        let new_tag_cancel_btn = imp.new_tag_cancel_btn.clone();
+        let manage_tags_btn = imp.manage_tags_btn.clone();
+
+        imp.new_tag_btn.connect_clicked({
+            let entry = new_tag_entry.clone();
+            let btn = new_tag_btn.clone();
+            let create_btn = new_tag_create_btn.clone();
+            let cancel_btn = new_tag_cancel_btn.clone();
+            let manage_btn = manage_tags_btn.clone();
+            move |_| {
+                btn.set_visible(false);
+                manage_btn.set_visible(false);
+                entry.set_visible(true);
+                create_btn.set_visible(true);
+                cancel_btn.set_visible(true);
+                entry.grab_focus();
+            }
+        });
+
+        let viewer_weak_manage = self.downgrade();
+        imp.manage_tags_btn.connect_clicked(move |_| {
+            if let Some(viewer) = viewer_weak_manage.upgrade() {
+                if let Some(cb) = viewer.imp().manage_tags_cb.borrow().as_ref() {
+                    cb();
+                }
+                viewer.imp().tag_popover.popdown();
+            }
+        });
+
+        let hide_new_tag_flow = {
+            let entry = new_tag_entry.clone();
+            let btn = new_tag_btn.clone();
+            let create_btn = new_tag_create_btn.clone();
+            let cancel_btn = new_tag_cancel_btn.clone();
+            let manage_btn = manage_tags_btn.clone();
+            move || {
+                entry.set_text("");
+                entry.set_visible(false);
+                create_btn.set_visible(false);
+                cancel_btn.set_visible(false);
+                btn.set_visible(true);
+                manage_btn.set_visible(true);
+            }
+        };
+
+        imp.new_tag_cancel_btn.connect_clicked({
+            let hide = hide_new_tag_flow.clone();
+            move |_| hide()
+        });
+
+        let handle_create_tag = move |viewer: &ViewerPane, text: &str| {
             let tag = text.trim();
             if tag.is_empty() {
                 return;
             }
             let state = viewer.imp().tag_state.borrow();
-            let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) else {
-                return;
-            };
-            db.add_tag(&path, tag);
-            entry.set_text("");
+            if let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) {
+                db.add_tag(&path, tag);
+            }
             drop(state);
             viewer.refresh_tag_chips();
             viewer.refresh_tag_summary();
+        };
+
+        let viewer_weak_create = self.downgrade();
+        let hide_clone1 = hide_new_tag_flow.clone();
+        let entry_clone = imp.new_tag_entry.clone();
+        imp.new_tag_create_btn.connect_clicked(move |_| {
+            if let Some(viewer) = viewer_weak_create.upgrade() {
+                handle_create_tag(&viewer, entry_clone.text().as_str());
+                hide_clone1();
+            }
+        });
+
+        let viewer_weak_activate = self.downgrade();
+        let hide_clone2 = hide_new_tag_flow.clone();
+        imp.new_tag_entry.connect_activate(move |entry| {
+            if let Some(viewer) = viewer_weak_activate.upgrade() {
+                handle_create_tag(&viewer, entry.text().as_str());
+                hide_clone2();
+            }
         });
 
         let viewer_weak = self.downgrade();
@@ -1440,11 +1509,9 @@ impl ViewerPane {
                 return;
             };
             let imp = viewer.imp();
-
             let Some((rgba, w, h)) = viewer.current_rgba_or_cached() else {
                 return;
             };
-
             let tagger = imp
                 .state
                 .borrow()
@@ -1453,7 +1520,6 @@ impl ViewerPane {
             let Some(tagger) = tagger else {
                 return;
             };
-
             let db_path = {
                 let state = imp.tag_state.borrow();
                 state.db.clone().zip(state.path.clone())
@@ -1492,7 +1558,6 @@ impl ViewerPane {
                 imp.smart_tag_spinner.set_spinning(false);
                 imp.smart_tag_spinner.set_visible(false);
                 imp.smart_tag_btn.set_visible(true);
-
                 if tags.is_empty() {
                     return;
                 }
@@ -1521,6 +1586,7 @@ impl ViewerPane {
                             }
                         }
                         if let Some(viewer) = viewer_weak3.upgrade() {
+                            viewer.refresh_tag_chips();
                             viewer.refresh_tag_summary();
                         }
                     });
@@ -1560,24 +1626,56 @@ impl ViewerPane {
 
             imp.suggestions_add_all.set_visible(false);
             imp.suggestions_box.set_visible(false);
+            viewer.refresh_tag_chips();
             viewer.refresh_tag_summary();
+        });
+    }
+
+    fn filter_tag_lists(&self, query: &str) {
+        let query = query.to_lowercase();
+        let imp = self.imp();
+
+        let q1 = query.clone();
+        imp.selected_list.set_filter_func(move |row| {
+            if q1.is_empty() {
+                return true;
+            }
+            if let Some(box_container) = row.child().and_then(|w| w.downcast::<gtk4::Box>().ok()) {
+                if let Some(label) = box_container
+                    .last_child()
+                    .and_then(|w| w.downcast::<gtk4::Label>().ok())
+                {
+                    return label.text().to_lowercase().contains(&q1);
+                }
+            }
+            true
+        });
+
+        let q2 = query.clone();
+        imp.all_tags_list.set_filter_func(move |row| {
+            if q2.is_empty() {
+                return true;
+            }
+            if let Some(box_container) = row.child().and_then(|w| w.downcast::<gtk4::Box>().ok()) {
+                if let Some(label) = box_container
+                    .last_child()
+                    .and_then(|w| w.downcast::<gtk4::Label>().ok())
+                {
+                    return label.text().to_lowercase().contains(&q2);
+                }
+            }
+            true
         });
     }
 
     fn refresh_tag_chips(&self) {
         let imp = self.imp();
-        while let Some(child) = imp.tag_flowbox.first_child() {
-            imp.tag_flowbox.remove(&child);
+        while let Some(child) = imp.selected_list.first_child() {
+            imp.selected_list.remove(&child);
         }
-
-        let tag_to_color = imp
-            .state
-            .borrow()
-            .as_ref()
-            .and_then(|state| state.borrow().library_index.clone())
-            .and_then(|index| index.list_collections().ok())
-            .map(|collections| collection_tag_color_map(&collections))
-            .unwrap_or_default();
+        while let Some(child) = imp.all_tags_list.first_child() {
+            imp.all_tags_list.remove(&child);
+        }
 
         let state = imp.tag_state.borrow();
         let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) else {
@@ -1585,52 +1683,98 @@ impl ViewerPane {
         };
         drop(state);
 
-        for tag in db.tags_for_path(&path) {
-            let chip = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-            chip.add_css_class("pill");
-            configure_tag_popover_chip(&chip);
-            let tag_color = tag_to_color.get(&tag).cloned();
-            if let Some(color) = tag_color.as_deref() {
-                apply_tag_chip_tint(&chip, color);
-            } else {
-                chip.add_css_class("tag-chip-neutral");
+        let active_tags = db.tags_for_path(&path);
+        let all_tags = db.all_tags();
+
+        let mut active_set = std::collections::HashSet::new();
+        for tag in active_tags {
+            active_set.insert(tag.clone());
+            self.create_tag_row(&imp.selected_list, &tag, true, &db, &path);
+        }
+
+        if let Some(parent) = imp
+            .selected_list
+            .parent()
+            .and_then(|w| w.downcast::<gtk4::Box>().ok())
+        {
+            parent.set_visible(!active_set.is_empty());
+        }
+
+        let mut available_count = 0;
+        for tag in all_tags {
+            if !active_set.contains(&tag.0) {
+                self.create_tag_row(&imp.all_tags_list, &tag.0, false, &db, &path);
+                available_count += 1;
             }
+        }
 
-            let tag_icon = gtk4::Image::from_icon_name("bookmark-new-symbolic");
-            tag_icon.set_pixel_size(12);
-            if let Some(color) = tag_color.as_deref() {
-                apply_tag_icon_tint(&tag_icon, color);
-            }
+        if let Some(parent) = imp
+            .all_tags_list
+            .parent()
+            .and_then(|w| w.downcast::<gtk4::Box>().ok())
+        {
+            parent.set_visible(available_count > 0);
+        }
+    }
 
-            let label = gtk4::Label::new(Some(&tag));
-            label.set_halign(gtk4::Align::Start);
+    fn create_tag_row(
+        &self,
+        list: &gtk4::ListBox,
+        tag: &str,
+        selected: bool,
+        db: &std::sync::Arc<crate::tags::TagDatabase>,
+        path: &PathBuf,
+    ) {
+        let row = gtk4::ListBoxRow::new();
+        row.set_selectable(false);
+        row.add_css_class("tag-popover-row");
 
-            let remove = gtk4::Button::from_icon_name("window-close-symbolic");
-            remove.add_css_class("flat");
-            remove.set_focus_on_click(false);
-            remove.set_tooltip_text(Some("Remove tag"));
+        let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        hbox.set_margin_top(6);
+        hbox.set_margin_bottom(6);
+        hbox.set_margin_start(8);
+        hbox.set_margin_end(8);
 
-            chip.append(&tag_icon);
-            chip.append(&label);
-            chip.append(&remove);
-            imp.tag_flowbox.insert(&chip, -1);
+        let icon_name = if selected {
+            "object-select-symbolic"
+        } else {
+            "radio-mixed-symbolic"
+        };
+        let icon = gtk4::Image::from_icon_name(icon_name);
+        if selected {
+            icon.add_css_class("accent");
+        } else {
+            icon.add_css_class("dim-label");
+        }
+        hbox.append(&icon);
 
-            let viewer_weak = self.downgrade();
-            let tag_name = tag.clone();
-            remove.connect_clicked(move |_| {
-                let Some(viewer) = viewer_weak.upgrade() else {
-                    return;
-                };
-                let state = viewer.imp().tag_state.borrow();
-                let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) else {
-                    return;
-                };
-                db.remove_tag(&path, &tag_name);
-                drop(state);
+        let label = gtk4::Label::new(Some(tag));
+        label.set_halign(gtk4::Align::Start);
+        label.set_hexpand(true);
+        hbox.append(&label);
+
+        row.set_child(Some(&hbox));
+
+        let viewer_weak = self.downgrade();
+        let tag_clone = tag.to_string();
+        let db_clone = db.clone();
+        let path_clone = path.clone();
+
+        let click = gtk4::GestureClick::new();
+        click.connect_released(move |_, _, _, _| {
+            if let Some(viewer) = viewer_weak.upgrade() {
+                if selected {
+                    db_clone.remove_tag(&path_clone, &tag_clone);
+                } else {
+                    db_clone.add_tag(&path_clone, &tag_clone);
+                }
                 viewer.refresh_tag_chips();
                 viewer.refresh_tag_summary();
-            });
-        }
+            }
+        });
+        row.add_controller(click);
+
+        list.append(&row);
     }
 
     fn refresh_tag_summary(&self) {
