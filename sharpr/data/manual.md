@@ -38,7 +38,9 @@ The model file is downloaded automatically on first use and stored in `~/.local/
 
 ### ComfyUI backend
 
-Start your local ComfyUI server, then open **Preferences**, select **ComfyUI** as the backend, and enter the server URL (default: `http://127.0.0.1:8188`). Use **Test Connection** to verify Sharpr can reach it. Sharpr uploads the image, runs a RealESRGAN ×4 workflow, and downloads the result automatically.
+For testing, first open **Preferences → Advanced** and enable **Show AI Upscale** so the upscale action appears in the main UI. Then open **Preferences → Upscaler**, confirm the **ComfyUI backend** toggle is on, and enter your server URL. On a remote machine over Tailscale, use the server IP directly, for example `http://100.121.114.22:8188`, rather than `localhost`.
+
+Use **Test Connection** to verify Sharpr can reach the server. When you run an upscale, Sharpr uploads the source image, runs the bundled RealESRGAN ×4 workflow, and downloads the result automatically. The current ComfyUI integration only switches between the standard and anime RealESRGAN models, and the remote workflow itself always executes at ×4.
 
 ## Library
 

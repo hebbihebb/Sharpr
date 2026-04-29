@@ -82,7 +82,7 @@
       <description>Base URL of the local ComfyUI server.</description>
     </key>
     <key name="comfyui-enabled" type="b">
-      <default>false</default>
+      <default>true</default>
       <summary>Enable ComfyUI backend</summary>
       <description>Show ComfyUI as an option in the upscale backend selector.</description>
     </key>

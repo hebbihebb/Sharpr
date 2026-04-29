@@ -958,12 +958,12 @@ impl ViewerPane {
     }
 
     fn show_convert_session(&self, session: Rc<ConvertSession>) {
-        self.imp().active_convert_op_id.set(Some(session.op_id));
-        self.clear_convert_action(session.op_id);
         let current = self.imp().current_path.borrow().clone();
         if current.as_ref() != Some(&session.source_path) {
             self.load_image(session.source_path.clone());
         }
+        self.imp().active_convert_op_id.set(Some(session.op_id));
+        self.clear_convert_action(session.op_id);
         self.show_comparison(session.source_path.clone(), session.temp_output.clone());
     }
 

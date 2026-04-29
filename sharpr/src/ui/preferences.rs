@@ -365,7 +365,7 @@ pub fn build_preferences_window(
 
     {
         let parent_c = parent.clone();
-        comfy_url_row.connect_apply(move |row| {
+        comfy_url_row.connect_changed(move |row| {
             parent_c
                 .app_state()
                 .borrow_mut()
@@ -383,6 +383,11 @@ pub fn build_preferences_window(
         let url_row_c = comfy_url_row.clone();
         test_button.connect_clicked(move |_| {
             let url = url_row_c.text().to_string();
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_comfyui_url(&url);
             let client = crate::upscale::backends::comfyui::ComfyUiClient::new(url);
             let parent_inner = parent_c.clone();
 

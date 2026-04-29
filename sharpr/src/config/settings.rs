@@ -92,7 +92,7 @@ impl Default for AppSettings {
             upscale_backend: "cli".into(),
             onnx_upscale_model: "swin2sr-lightweight-x2".into(),
             comfyui_url: "http://127.0.0.1:8188".into(),
-            comfyui_enabled: false,
+            comfyui_enabled: true,
             settings: gio::Settings::new("io.github.hebbihebb.Sharpr"),
         }
     }
@@ -137,6 +137,7 @@ impl AppSettings {
         let show_upscale_ui = settings.boolean("show-upscale-ui");
         let upscale_backend = match settings.string("upscale-backend").as_str() {
             "onnx" => "onnx".to_string(),
+            "comfyui" => "comfyui".to_string(),
             _ => "cli".to_string(),
         };
         let onnx_upscale_model = match settings.string("onnx-upscale-model").as_str() {
@@ -480,6 +481,16 @@ mod tests {
         );
         assert!(loaded.comfyui_enabled);
         assert!(loaded.show_upscale_ui);
+    }
+
+    #[test]
+    fn load_preserves_comfyui_backend() {
+        let settings = test_settings();
+        let _ = settings.set_string("upscale-backend", "comfyui");
+
+        let loaded = AppSettings::load_from_settings(settings);
+
+        assert_eq!(loaded.upscale_backend, "comfyui");
     }
 
     #[test]

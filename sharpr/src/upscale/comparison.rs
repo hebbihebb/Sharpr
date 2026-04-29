@@ -161,6 +161,8 @@ impl BeforeAfterViewer {
         let widget: Self = glib::Object::new();
         widget.set_hexpand(true);
         widget.set_vexpand(true);
+        widget.set_focusable(true);
+        widget.set_can_target(true);
         let shortcuts = gtk4::ShortcutController::new();
         shortcuts.set_scope(gtk4::ShortcutScope::Managed);
         shortcuts.add_shortcut(gtk4::Shortcut::new(
