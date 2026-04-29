@@ -53,7 +53,8 @@ mod imp {
         pub list_box: gtk4::ListBox,
         pub collection_list: gtk4::ListBox,
         pub library_menu_btn: gtk4::MenuButton,
-        pub library_label: gtk4::Label,
+        pub library_header_label: gtk4::Label,
+        pub active_library_label: gtk4::Label,
         pub folder_selected_cb: RefCell<Option<FolderSelectedCallback>>,
         pub folder_ignored_changed_cb: RefCell<Option<FolderIgnoredChangedCallback>>,
         pub library_create_requested_cb: RefCell<Option<LibraryCreateRequestedCallback>>,
@@ -84,7 +85,8 @@ mod imp {
                 list_box: gtk4::ListBox::new(),
                 collection_list: gtk4::ListBox::new(),
                 library_menu_btn: gtk4::MenuButton::new(),
-                library_label: gtk4::Label::new(None),
+                library_header_label: gtk4::Label::new(None),
+                active_library_label: gtk4::Label::new(None),
                 folder_selected_cb: RefCell::new(None),
                 folder_ignored_changed_cb: RefCell::new(None),
                 library_create_requested_cb: RefCell::new(None),
@@ -153,8 +155,8 @@ impl SidebarPane {
         open_btn.set_tooltip_text(Some("Open Folder"));
         header.pack_start(&open_btn);
 
-        imp.library_label.set_text("Library");
-        header.set_title_widget(Some(&imp.library_label));
+        imp.library_header_label.set_text("Library");
+        header.set_title_widget(Some(&imp.library_header_label));
 
         let widget_weak = self.downgrade();
         open_btn.connect_clicked(move |btn| {
@@ -236,6 +238,19 @@ impl SidebarPane {
         scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
         scroll.set_propagate_natural_height(true);
         scroll.set_child(Some(&imp.list_box));
+        let active_library_label = imp.active_library_label.clone();
+        active_library_label.add_css_class("caption-heading");
+        let active_library_name = state
+            .borrow()
+            .settings
+            .active_library()
+            .map(|lib| lib.name.clone())
+            .unwrap_or_else(|| "Library".to_string());
+        active_library_label.set_text(&active_library_name);
+        active_library_label.set_halign(gtk4::Align::Start);
+        active_library_label.set_margin_start(12);
+        active_library_label.set_margin_top(8);
+        active_library_label.set_margin_bottom(4);
         let library_menu_btn = imp.library_menu_btn.clone();
         library_menu_btn.set_icon_name("pan-down-symbolic");
         library_menu_btn.add_css_class("flat");
@@ -317,6 +332,7 @@ impl SidebarPane {
             });
 
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        vbox.append(&active_library_label);
         vbox.append(&scroll);
         vbox.append(&collections_header);
         vbox.append(&imp.collection_list);
@@ -414,7 +430,7 @@ impl SidebarPane {
             .active_library()
             .map(|lib| lib.name.clone())
             .unwrap_or_else(|| "Library".to_string());
-        self.imp().library_label.set_text(&active_name);
+        self.imp().active_library_label.set_text(&active_name);
         self.refresh_library_menu(state.clone());
         self.populate_default_folders(state);
     }
