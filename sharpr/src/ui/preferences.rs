@@ -687,6 +687,11 @@ fn present_library_editor(
         });
     }
 
+    let pref_window = group
+        .root()
+        .and_then(|r| r.downcast::<gtk4::Window>().ok())
+        .unwrap_or_else(|| window.clone());
+
     let parent_c = parent.clone();
     dialog.connect_response(None, move |_, response| {
         if response != "save" {
@@ -740,7 +745,7 @@ fn present_library_editor(
         }
     });
 
-    dialog.present(Some(&window));
+    dialog.present(Some(&pref_window));
 }
 
 fn library_subtitle(library: &LibraryConfig) -> String {

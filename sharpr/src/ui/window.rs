@@ -260,7 +260,8 @@ fn show_new_collection_dialog<F>(
         let selected_color = selected_color_clone.borrow().clone();
         if let Some(idx) = state_d.borrow().library_index.clone() {
             let started = std::time::Instant::now();
-            match idx.create_collection(None, &name, &extra_tags, selected_color.as_deref(), None) {
+            let library_id = state_d.borrow().settings.active_library().map(|l| l.id.clone()).unwrap_or_default();
+            match idx.create_collection(&library_id, None, &name, &extra_tags, selected_color.as_deref(), None) {
                 Ok(coll) => {
                     crate::bench_event!(
                         "collection.create",
@@ -422,17 +423,22 @@ fn collections_for_sidebar(state: &AppState) -> Vec<Collection> {
     let Some(index) = state.library_index.as_ref() else {
         return Vec::new();
     };
+    let library_id = state
+        .settings
+        .active_library()
+        .map(|lib| lib.id.clone())
+        .unwrap_or_default();
     let active_root = state
         .settings
         .active_library()
-        .map(|library| library.root.as_path());
+        .map(|library| library.root.clone());
     let Some(tags) = state.tags.as_ref() else {
-        return index.list_collections().unwrap_or_default();
+        return index.list_collections_for_library(Some(&library_id)).unwrap_or_default();
     };
-    let mut collections = index.list_collections().unwrap_or_default();
+    let mut collections = index.list_collections_for_library(Some(&library_id)).unwrap_or_default();
     for collection in &mut collections {
         collection.item_count =
-            collection_paths_from_services(index, tags, collection.id, active_root, &state.disabled_folders)
+            collection_paths_from_services(index, tags, collection.id, active_root.as_deref(), &state.disabled_folders)
                 .len();
     }
     collections
@@ -2198,7 +2204,8 @@ impl SharprWindow {
                 let Some(idx) = state_c.borrow().library_index.clone() else {
                     return;
                 };
-                match idx.create_collection(None, &tag, &[], None, None) {
+                let library_id = state_c.borrow().settings.active_library().map(|l| l.id.clone()).unwrap_or_default();
+                match idx.create_collection(&library_id, None, &tag, &[], None, None) {
                     Ok(coll) => {
                         refresh_c();
                         toast_c.add_toast(libadwaita::Toast::new(&format!(
@@ -2315,7 +2322,9 @@ impl SharprWindow {
                     }
                     if let Some(idx) = state_d.borrow().library_index.clone() {
                         let started = std::time::Instant::now();
+                        let library_id = state_d.borrow().settings.active_library().map(|l| l.id.clone()).unwrap_or_default();
                         match idx.create_collection(
+                            &library_id,
                             Some(parent_id),
                             name_clone.text().as_str(),
                             &parse_collection_tags_input(tags_clone.text().as_str()),
@@ -3591,7 +3600,8 @@ impl SharprWindow {
                             let started = std::time::Instant::now();
                             let extra_tags =
                                 parse_collection_tags_input(tags_entry_c.text().as_str());
-                            match idx.create_collection(None, &name, &extra_tags, None, None) {
+                            let library_id = state_dd.borrow().settings.active_library().map(|l| l.id.clone()).unwrap_or_default();
+                            match idx.create_collection(&library_id, None, &name, &extra_tags, None, None) {
                                 Ok(coll) => {
                                     let effective_tags =
                                         idx.collection_effective_tags(coll.id).unwrap_or_default();
