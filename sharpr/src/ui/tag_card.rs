@@ -28,15 +28,18 @@ impl TagCard {
 
         let preview_overlay = gtk4::Overlay::new();
         preview_overlay.add_css_class("tag-card-preview");
-        preview_overlay.set_size_request(-1, 136);
         preview_overlay.set_overflow(gtk4::Overflow::Hidden);
+
+        let preview_dummy = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        preview_dummy.set_size_request(-1, 136);
+        preview_overlay.set_child(Some(&preview_dummy));
 
         let picture = gtk4::Picture::new();
         picture.set_can_shrink(true);
         picture.set_content_fit(gtk4::ContentFit::Cover);
         picture.set_halign(gtk4::Align::Fill);
         picture.set_valign(gtk4::Align::Fill);
-        preview_overlay.set_child(Some(&picture));
+        preview_overlay.add_overlay(&picture);
 
         let placeholder = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
         placeholder.set_halign(gtk4::Align::Center);

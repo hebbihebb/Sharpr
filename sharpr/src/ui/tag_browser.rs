@@ -451,6 +451,7 @@ impl TagBrowser {
         let tag_name = tag.to_string();
         let gesture = gtk4::GestureClick::new();
         gesture.set_button(1);
+        gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
         gesture.connect_released(move |gesture, _, _, _| {
             let Some(widget) = widget_weak.upgrade() else {
                 return;
