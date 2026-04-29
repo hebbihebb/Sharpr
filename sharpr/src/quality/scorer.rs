@@ -115,38 +115,38 @@ fn score_dimensions(
 
 fn score_long_edge(long_edge: u32) -> u8 {
     match long_edge {
-        3840.. => 100,
-        3200..=3839 => 92,
-        2560..=3199 => 82,
-        1920..=2559 => 70,
-        1600..=1919 => 56,
-        1280..=1599 => 42,
-        1024..=1279 => 28,
-        _ => 14,
+        8000.. => 100,
+        6000..=7999 => 90,
+        4500..=5999 => 80,
+        3840..=4499 => 70,
+        2560..=3839 => 55,
+        1920..=2559 => 40,
+        1280..=1919 => 25,
+        _ => 10,
     }
 }
 
 fn score_megapixels(megapixels: f64) -> u8 {
     match megapixels {
-        mp if mp >= 12.0 => 100,
-        mp if mp >= 8.0 => 92,
-        mp if mp >= 5.0 => 80,
-        mp if mp >= 3.0 => 64,
-        mp if mp >= 2.0 => 50,
-        mp if mp >= 1.0 => 34,
-        _ => 18,
+        mp if mp >= 40.0 => 100,
+        mp if mp >= 24.0 => 90,
+        mp if mp >= 16.0 => 80,
+        mp if mp >= 10.0 => 70,
+        mp if mp >= 5.0 => 50,
+        mp if mp >= 2.0 => 30,
+        _ => 10,
     }
 }
 
 fn score_compression(format: &str, bpp: f64) -> u8 {
     let (floor, target) = match format {
-        "AVIF" | "HEIC" | "HEIF" => (0.08, 0.30),
-        "WEBP" => (0.10, 0.42),
-        "PNG" => (0.15, 1.10),
-        "TIFF" | "TIF" => (0.20, 1.40),
-        "BMP" => (0.20, 1.50),
-        "GIF" => (0.06, 0.20),
-        _ => (0.12, 0.72),
+        "AVIF" | "HEIC" | "HEIF" => (0.15, 0.60),
+        "WEBP" => (0.20, 0.80),
+        "PNG" => (0.30, 2.00),
+        "TIFF" | "TIF" => (0.40, 2.50),
+        "BMP" => (0.40, 2.50),
+        "GIF" => (0.10, 0.40),
+        _ => (0.25, 1.50),
     };
 
     if bpp <= floor {
@@ -188,7 +188,7 @@ fn build_reason(long_edge: u32, detail_score: u8, compression_score: u8, format:
         return "Low resolution for wallpaper use".to_string();
     }
 
-    if detail_score >= 88 && compression_score >= 74 {
+    if detail_score >= 70 && compression_score >= 74 {
         if matches!(
             format,
             "AVIF" | "HEIC" | "HEIF" | "WEBP" | "PNG" | "TIFF" | "TIF"
@@ -202,7 +202,7 @@ fn build_reason(long_edge: u32, detail_score: u8, compression_score: u8, format:
         return "Good resolution, heavy compression".to_string();
     }
 
-    if detail_score >= 68 {
+    if detail_score >= 50 {
         return "Good resolution, moderate compression".to_string();
     }
 
@@ -232,9 +232,9 @@ mod tests {
 
     #[test]
     fn high_resolution_efficient_image_scores_high() {
-        let score = score_raw(3840, 2160, 2_900_000, "AVIF");
-        assert!(score.score >= 85, "score was {}", score.score);
-        assert_eq!(score.class, QualityClass::Excellent);
+        let score = score_raw(3840, 2160, 5_800_000, "AVIF");
+        assert!(score.score >= 70, "score was {}", score.score);
+        assert_eq!(score.class, QualityClass::Good);
     }
 
     #[test]
@@ -245,16 +245,16 @@ mod tests {
     }
 
     #[test]
-    fn moderate_wallpaper_jpeg_lands_in_middle_bands() {
-        let score = score_raw(1920, 1080, 480_000, "JPEG");
+    fn moderate_wallpaper_jpeg_scores_poor_to_fair() {
+        let score = score_raw(1920, 1080, 800_000, "JPEG");
         assert!(
-            (45..=84).contains(&score.score),
+            (35..=65).contains(&score.score),
             "score was {}",
             score.score
         );
         assert!(matches!(
             score.class,
-            QualityClass::Fair | QualityClass::Good
+            QualityClass::Poor | QualityClass::Fair
         ));
     }
 }

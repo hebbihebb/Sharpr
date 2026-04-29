@@ -949,7 +949,9 @@ mod tests {
 
         let excellent = folder_b.join("excellent.bmp");
         let needs_upscale = folder_a.join("small.jpg");
-        write_bmp(&excellent, 3840, 2160);
+        // Use a larger lossless fixture so it still lands in the top bucket
+        // under the stricter metadata-based quality calibration.
+        write_bmp(&excellent, 6000, 4000);
         write_jpeg(&needs_upscale, 960, 640, 8);
 
         let mut settings = AppSettings::default();
