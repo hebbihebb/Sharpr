@@ -224,6 +224,9 @@ mod imp {
         /// Commit action for the active convert operation (downscale or upscale).
         /// Called with the temp output path when the user clicks Commit.
         pub pending_commit_fn: PendingCommitFn,
+        /// Last metadata-only quality score set for the displayed image, kept so
+        /// `apply_sharpness` can blend without re-reading metadata.
+        pub base_quality: RefCell<Option<crate::quality::QualityScore>>,
     }
 
     impl Default for ViewerPane {
@@ -504,6 +507,7 @@ mod imp {
                 post_save_cb: RefCell::new(None),
                 manage_tags_cb: RefCell::new(None),
                 pending_commit_fn: RefCell::new(None),
+                base_quality: RefCell::new(None),
             }
         }
     }
@@ -1171,12 +1175,25 @@ impl ViewerPane {
 
     fn set_quality_score(&self, quality: Option<&QualityScore>) {
         let imp = self.imp();
+        *imp.base_quality.borrow_mut() = quality.cloned();
         let Some(quality) = quality else {
             imp.metadata_chip.update_quality(None);
             return;
         };
-
         imp.metadata_chip.update_quality(Some(quality));
+    }
+
+    /// Blend a sharpness result into the quality display for the currently
+    /// shown image.  Does nothing if `path` doesn't match the displayed image.
+    pub fn apply_sharpness(&self, path: &std::path::Path, sharpness_norm: f64) {
+        let imp = self.imp();
+        if imp.current_path.borrow().as_deref() != Some(path) {
+            return;
+        }
+        let base = imp.base_quality.borrow().clone();
+        let Some(base) = base else { return };
+        let blended = crate::quality::scorer::blend_with_sharpness(&base, sharpness_norm);
+        imp.metadata_chip.update_quality(Some(&blended));
     }
 
     pub fn zoom_mode(&self) -> ZoomMode {

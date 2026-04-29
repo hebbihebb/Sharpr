@@ -24,11 +24,49 @@ impl TagDatabase {
                 PRIMARY KEY (path, tag)
             );
             CREATE INDEX IF NOT EXISTS idx_tag ON file_tags(tag);
+
+            CREATE TABLE IF NOT EXISTS image_quality (
+                path      TEXT    PRIMARY KEY,
+                sharpness REAL    NOT NULL,
+                mtime     INTEGER NOT NULL
+            );
             ",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Returns the stored sharpness variance for `path` if it was scored at
+    /// the current file mtime, or `None` if not yet scored or the file changed.
+    pub fn get_sharpness(&self, path: &Path) -> Option<f64> {
+        let current_mtime = file_mtime_secs(path)?;
+        let Ok(conn) = self.conn.lock() else { return None };
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT sharpness, mtime FROM image_quality WHERE path = ?1",
+            )
+            .ok()?;
+        let (score, stored_mtime) = stmt
+            .query_row(
+                rusqlite::params![path.to_string_lossy().as_ref()],
+                |row| Ok((row.get::<_, f64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .ok()?;
+        if stored_mtime as u64 == current_mtime {
+            Some(score)
+        } else {
+            None
+        }
+    }
+
+    /// Persist `score` (raw Laplacian variance) for `path` at the given file mtime.
+    pub fn upsert_sharpness(&self, path: &Path, score: f64, mtime: u64) {
+        let Ok(conn) = self.conn.lock() else { return };
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO image_quality (path, sharpness, mtime) VALUES (?1, ?2, ?3)",
+            rusqlite::params![path.to_string_lossy().as_ref(), score, mtime as i64],
+        );
     }
 
     /// Insert auto-generated tags (format, resolution) without touching any
@@ -373,6 +411,14 @@ impl TagDatabase {
             conn: Mutex::new(conn),
         })
     }
+}
+
+pub(crate) fn file_mtime_secs(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
 }
 
 fn prune_missing_paths(conn: &Connection, paths: Vec<PathBuf>) -> Vec<PathBuf> {

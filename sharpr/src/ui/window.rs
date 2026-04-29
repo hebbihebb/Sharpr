@@ -832,7 +832,7 @@ impl AppState {
 
 mod imp {
     use super::*;
-    use crate::thumbnails::worker::{HashResult, ThumbnailResult};
+    use crate::thumbnails::worker::{HashResult, SharpnessResult, ThumbnailResult};
     use async_channel::Receiver;
 
     pub struct SharprWindow {
@@ -844,6 +844,8 @@ mod imp {
         // Cloned receiver so the async task can hold it.
         pub result_rx: RefCell<Option<Receiver<ThumbnailResult>>>,
         pub hash_result_rx: RefCell<Option<Receiver<HashResult>>>,
+        pub sharpness_result_rx: RefCell<Option<Receiver<SharpnessResult>>>,
+        pub sharpness_backfill: RefCell<Option<crate::quality::backfill::SharpnessBackfill>>,
         pub(super) thumbnail_ops: RefCell<HashMap<PathBuf, ThumbnailOpState>>,
         pub toast_overlay: RefCell<Option<libadwaita::ToastOverlay>>,
         pub inline_search_entry: RefCell<Option<gtk4::SearchEntry>>,
@@ -864,6 +866,8 @@ mod imp {
                 metadata_worker: RefCell::new(None),
                 result_rx: RefCell::new(None),
                 hash_result_rx: RefCell::new(None),
+                sharpness_result_rx: RefCell::new(None),
+                sharpness_backfill: RefCell::new(None),
                 thumbnail_ops: RefCell::new(HashMap::new()),
                 toast_overlay: RefCell::new(None),
                 inline_search_entry: RefCell::new(None),
@@ -1007,10 +1011,22 @@ impl SharprWindow {
             .unwrap_or(4);
         // Double the thread count for I/O bound thumbnail loading, cap at 16.
         let thread_count = (cpu_count * 2).clamp(4, 16);
-        let (worker, result_rx, hash_result_rx) = ThumbnailWorker::spawn(thread_count);
+        let tags = self.imp().state.borrow().tags.clone();
+        let (worker, result_rx, hash_result_rx, sharpness_result_rx) =
+            ThumbnailWorker::spawn(thread_count, tags.clone());
+
+        if let Some(db) = tags {
+            let backfill = crate::quality::backfill::SharpnessBackfill::spawn(
+                db,
+                worker.sharpness_sender(),
+            );
+            *self.imp().sharpness_backfill.borrow_mut() = Some(backfill);
+        }
+
         *self.imp().thumbnail_worker.borrow_mut() = Some(worker);
         *self.imp().result_rx.borrow_mut() = Some(result_rx);
         *self.imp().hash_result_rx.borrow_mut() = Some(hash_result_rx);
+        *self.imp().sharpness_result_rx.borrow_mut() = Some(sharpness_result_rx);
 
         let (preview_worker, preview_result_rx) =
             crate::image_pipeline::worker::PreviewWorker::spawn();
@@ -1409,6 +1425,19 @@ impl SharprWindow {
 
                     viewer_rx.clear();
                     filmstrip_rx.refresh();
+
+                    // Queue unscored images into the idle sharpness backfill.
+                    if let Some(win) = window_weak_rx.upgrade() {
+                        if let Some(backfill) = win.imp().sharpness_backfill.borrow().as_ref() {
+                            let paths: Vec<_> = {
+                                let st = state_rx.borrow();
+                                (0..st.library.image_count())
+                                    .filter_map(|i| st.library.entry_at(i).map(|e| e.path()))
+                                    .collect()
+                            };
+                            backfill.enqueue(paths);
+                        }
+                    }
 
                     let thumb_total = state_rx.borrow().library.image_count();
                     crate::bench_event!(
@@ -2642,6 +2671,7 @@ impl SharprWindow {
         // Start draining thumbnail results.
         self.start_thumbnail_poll(state.clone(), filmstrip.clone(), tag_browser.clone());
         self.start_hash_poll(state.clone());
+        self.start_sharpness_poll(state.clone(), viewer.clone());
 
         // Quality filter in the filmstrip sort dropdown: re-derive paths from the
         // current scope intersected with the chosen quality class.
@@ -3994,6 +4024,26 @@ impl SharprWindow {
                         );
                     });
                 }
+            }
+        });
+    }
+
+    fn start_sharpness_poll(&self, state: Rc<RefCell<AppState>>, viewer: ViewerPane) {
+        let rx = self.imp().sharpness_result_rx.borrow().clone();
+        let Some(rx) = rx else { return };
+
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(result) = rx.recv().await {
+                let norm =
+                    crate::quality::blur::normalize_sharpness(result.score);
+
+                // Update the ImageEntry in the library model.
+                if let Some(entry) = state.borrow().library.entry_for_path(&result.path) {
+                    entry.set_sharpness_score(result.score);
+                }
+
+                // Update the viewer chip if this image is currently displayed.
+                viewer.apply_sharpness(result.path.as_path(), norm);
             }
         });
     }
