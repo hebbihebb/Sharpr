@@ -168,14 +168,8 @@ struct ConvertSession {
     source_path: PathBuf,
     temp_output: PathBuf,
     default_copy_dir: PathBuf,
+    filename_suffix: String,
     kind: ConvertKind,
-}
-
-#[derive(Clone, Debug)]
-enum SaveTarget {
-    DefaultCopy,
-    ChosenFolder(PathBuf),
-    ReplaceOriginal,
 }
 
 mod imp {
@@ -617,9 +611,6 @@ impl ViewerPane {
         if let Some(ref btn) = *imp.commit_btn.borrow() {
             btn.set_visible(visible);
         }
-        if let Some(ref btn) = *imp.commit_menu_btn.borrow() {
-            btn.set_visible(visible);
-        }
         if let Some(ref btn) = *imp.discard_btn.borrow() {
             btn.set_visible(visible);
         }
@@ -628,9 +619,6 @@ impl ViewerPane {
     fn set_comparison_buttons_sensitive(&self, sensitive: bool) {
         let imp = self.imp();
         if let Some(ref btn) = *imp.commit_btn.borrow() {
-            btn.set_sensitive(sensitive);
-        }
-        if let Some(ref btn) = *imp.commit_menu_btn.borrow() {
             btn.set_sensitive(sensitive);
         }
         if let Some(ref btn) = *imp.discard_btn.borrow() {
@@ -981,12 +969,6 @@ impl ViewerPane {
         if let Some(session) = session {
             self.show_convert_session(session);
         }
-    }
-
-    pub fn can_replace_current_convert(&self) -> bool {
-        self.current_convert_session()
-            .map(|session| extensions_match(&session.temp_output, &session.source_path))
-            .unwrap_or(false)
     }
 
     /// Register a callback invoked when "Manage tags" is clicked in the popover.
@@ -2141,6 +2123,7 @@ impl ViewerPane {
         };
 
         let backend_kind = UpscaleBackendKind::from_settings(&settings.upscale_backend);
+        let onnx_model = OnnxUpscaleModel::from_settings(&settings.onnx_upscale_model);
         let backend: Box<dyn UpscaleBackend> = match backend_kind {
             UpscaleBackendKind::Cli => {
                 let Some(bin) = binary else {
@@ -2149,9 +2132,7 @@ impl ViewerPane {
                 };
                 Box::new(CliBackend::new(bin))
             }
-            UpscaleBackendKind::Onnx => Box::new(OnnxBackend::new(
-                OnnxUpscaleModel::from_settings(&settings.onnx_upscale_model),
-            )),
+            UpscaleBackendKind::Onnx => Box::new(OnnxBackend::new(onnx_model)),
             UpscaleBackendKind::ComfyUi => Box::new(ComfyUiBackend::new(&settings.comfyui_url)),
         };
         if selected_dims == (0, 0) {
@@ -2174,7 +2155,13 @@ impl ViewerPane {
             UpscaleOutputFormat::from_settings(&settings.upscaler_output_format),
             UpscaleCompressionMode::from_settings(&settings.upscaler_compression_mode),
         );
-        let final_output = output_path_for_upscale(&path, output_format);
+        let output_dir = crate::export::resolve_output_dir(
+            settings.upscaled_output_dir.as_ref(),
+            crate::export::OutputFolderKind::Upscaled,
+        );
+        let filename_suffix = upscale_filename_suffix(backend_kind, model, onnx_model);
+        let final_output =
+            output_path_for_upscale(&path, &output_dir, &filename_suffix, output_format);
         let temp_output = pending_output_path(&final_output);
         let job = UpscaleJobConfig {
             source_dimensions: selected_dims,
@@ -2196,7 +2183,8 @@ impl ViewerPane {
             op_id: op.id,
             source_path: path.clone(),
             temp_output: temp_output.clone(),
-            default_copy_dir: crate::export::default_export_dir(&path),
+            default_copy_dir: output_dir,
+            filename_suffix,
             kind: ConvertKind::Upscale,
         });
         self.imp()
@@ -2325,7 +2313,11 @@ impl ViewerPane {
             op_id: op.id,
             source_path: source.clone(),
             temp_output: temp_path.clone(),
-            default_copy_dir: crate::export::default_export_dir(&source),
+            default_copy_dir: config.destination.clone(),
+            filename_suffix: config
+                .filename_suffix
+                .clone()
+                .unwrap_or_else(|| crate::export::export_filename_suffix(max_edge, format)),
             kind: ConvertKind::Downscale,
         });
         self.imp()
@@ -2425,36 +2417,10 @@ impl ViewerPane {
     }
 
     pub fn commit_convert_default(&self) {
-        self.commit_convert_to(SaveTarget::DefaultCopy);
+        self.commit_convert();
     }
 
-    pub fn commit_convert_replace_original(&self) {
-        self.commit_convert_to(SaveTarget::ReplaceOriginal);
-    }
-
-    pub fn commit_convert_choose_folder(&self) {
-        let Some(root) = self.root_window() else {
-            return;
-        };
-        let window: gtk4::Window = root.upcast();
-        let dialog = gtk4::FileDialog::new();
-        dialog.set_title("Choose Save Destination");
-        let weak = self.downgrade();
-        dialog.select_folder(Some(&window), None::<&gio::Cancellable>, move |result| {
-            let Some(viewer) = weak.upgrade() else {
-                return;
-            };
-            let Ok(folder) = result else {
-                return;
-            };
-            let Some(path) = folder.path() else {
-                return;
-            };
-            viewer.commit_convert_to(SaveTarget::ChosenFolder(path));
-        });
-    }
-
-    fn commit_convert_to(&self, target: SaveTarget) {
+    fn commit_convert(&self) {
         let Some(session) = self.current_convert_session() else {
             return;
         };
@@ -2466,9 +2432,8 @@ impl ViewerPane {
 
         let (tx, rx) = async_channel::bounded::<Result<PathBuf, String>>(1);
         let work_session = (*session).clone();
-        let work_target = target.clone();
         std::thread::spawn(move || {
-            let _ = tx.send_blocking(finalize_convert_session(&work_session, work_target));
+            let _ = tx.send_blocking(finalize_convert_session(&work_session));
         });
 
         let op = state
@@ -2487,12 +2452,7 @@ impl ViewerPane {
                     op.complete();
                     viewer.restore_view_mode();
                     viewer.finish_convert_session(session.op_id);
-
-                    if matches!(target, SaveTarget::ReplaceOriginal) {
-                        viewer.handle_replace_original_commit(&session, &final_path);
-                    } else {
-                        viewer.handle_copy_commit(&session, &final_path, &target);
-                    }
+                    viewer.handle_copy_commit(&session, &final_path);
                 }
                 Ok(Err(msg)) => {
                     op.fail(msg.clone());
@@ -2534,12 +2494,7 @@ impl ViewerPane {
         let _ = state.library.insert_path(path.to_path_buf());
     }
 
-    fn handle_copy_commit(
-        &self,
-        session: &ConvertSession,
-        final_path: &std::path::Path,
-        target: &SaveTarget,
-    ) {
+    fn handle_copy_commit(&self, session: &ConvertSession, final_path: &std::path::Path) {
         self.register_output_in_current_folder(final_path);
         if let Some(cb) = self.imp().post_save_cb.borrow().as_ref() {
             cb();
@@ -2552,40 +2507,12 @@ impl ViewerPane {
                 .to_path_buf();
             let msg = format!("{} saved", session.kind.label());
             let toast = libadwaita::Toast::new(&msg);
-            let label = match target {
-                SaveTarget::ChosenFolder(_) => "Open destination",
-                _ => "Open exported folder",
-            };
-            toast.set_button_label(Some(label));
+            toast.set_button_label(Some("Open destination"));
             toast.connect_button_clicked(move |_| {
                 let uri = gio::File::for_path(&dest_dir).uri();
                 let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
             });
             window.add_toast(toast);
-        }
-    }
-
-    fn handle_replace_original_commit(
-        &self,
-        session: &ConvertSession,
-        final_path: &std::path::Path,
-    ) {
-        let Some(state) = self.imp().state.borrow().as_ref().cloned() else {
-            return;
-        };
-        {
-            let mut state = state.borrow_mut();
-            state.library.invalidate_path_caches(final_path);
-        }
-        if let Some(cb) = self.imp().post_save_cb.borrow().as_ref() {
-            cb();
-        }
-        self.load_image(final_path.to_path_buf());
-        if let Some(window) = self.root_window() {
-            window.add_toast(libadwaita::Toast::new(&format!(
-                "{} replaced the original",
-                session.kind.label()
-            )));
         }
     }
 
@@ -2602,11 +2529,14 @@ impl ViewerPane {
 
 fn output_path_for_upscale(
     input_path: &std::path::Path,
+    destination_dir: &std::path::Path,
+    filename_suffix: &str,
     format: crate::upscale::UpscaleOutputFormat,
 ) -> PathBuf {
-    crate::export::unique_output_path_for_extension(
-        &crate::export::default_export_dir(input_path),
+    crate::export::unique_output_path_with_suffix(
+        destination_dir,
         input_path,
+        filename_suffix,
         format.extension(),
     )
 }
@@ -2629,29 +2559,20 @@ fn pending_output_path(final_output: &std::path::Path) -> PathBuf {
     final_output.with_file_name(file_name)
 }
 
-fn finalize_convert_session(
-    session: &ConvertSession,
-    target: SaveTarget,
-) -> Result<PathBuf, String> {
-    match target {
-        SaveTarget::DefaultCopy => finalize_copy_output(
-            &session.temp_output,
-            &session.source_path,
-            &session.default_copy_dir,
-        ),
-        SaveTarget::ChosenFolder(dir) => {
-            finalize_copy_output(&session.temp_output, &session.source_path, &dir)
-        }
-        SaveTarget::ReplaceOriginal => {
-            replace_original_output(&session.temp_output, &session.source_path)
-        }
-    }
+fn finalize_convert_session(session: &ConvertSession) -> Result<PathBuf, String> {
+    finalize_copy_output(
+        &session.temp_output,
+        &session.source_path,
+        &session.default_copy_dir,
+        &session.filename_suffix,
+    )
 }
 
 fn finalize_copy_output(
     temp_output: &std::path::Path,
     source_path: &std::path::Path,
     destination_dir: &std::path::Path,
+    filename_suffix: &str,
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(destination_dir).map_err(|err| {
         format!(
@@ -2663,40 +2584,28 @@ fn finalize_copy_output(
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or_default();
-    let final_path =
-        crate::export::unique_output_path_for_extension(destination_dir, source_path, ext);
+    let final_path = crate::export::unique_output_path_with_suffix(
+        destination_dir,
+        source_path,
+        filename_suffix,
+        ext,
+    );
     move_file(temp_output, &final_path)?;
     Ok(final_path)
 }
 
-fn replace_original_output(
-    temp_output: &std::path::Path,
-    source_path: &std::path::Path,
-) -> Result<PathBuf, String> {
-    if !extensions_match(temp_output, source_path) {
-        return Err(
-            "replace original requires the converted image format to match the source file extension"
-                .into(),
-        );
-    }
-
-    let file = gio::File::for_path(source_path);
-    file.trash(None::<&gio::Cancellable>)
-        .map_err(|err| format!("failed to move original to trash: {err}"))?;
-    move_file(temp_output, source_path)?;
-    Ok(source_path.to_path_buf())
-}
-
-fn extensions_match(left: &std::path::Path, right: &std::path::Path) -> bool {
-    let normalize = |path: &std::path::Path| {
-        path.extension().and_then(|ext| ext.to_str()).map(|ext| {
-            match ext.to_ascii_lowercase().as_str() {
-                "jpeg" => "jpg".to_string(),
-                other => other.to_string(),
-            }
-        })
+fn upscale_filename_suffix(
+    backend: crate::upscale::UpscaleBackendKind,
+    cli_model: crate::upscale::UpscaleModel,
+    onnx_model: crate::upscale::OnnxUpscaleModel,
+) -> String {
+    let model = match backend {
+        crate::upscale::UpscaleBackendKind::Onnx => onnx_model.settings_key(),
+        crate::upscale::UpscaleBackendKind::Cli | crate::upscale::UpscaleBackendKind::ComfyUi => {
+            cli_model.settings_key()
+        }
     };
-    normalize(left) == normalize(right)
+    format!("upscaled-{}-{model}", backend.settings_key())
 }
 
 fn move_file(src: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {

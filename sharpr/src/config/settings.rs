@@ -17,6 +17,10 @@ pub struct AppSettings {
     pub library_root: Option<PathBuf>,
     /// Optional custom path to the upscale binary.
     pub upscaler_binary_path: Option<PathBuf>,
+    /// Optional custom folder for saved upscaled images.
+    pub upscaled_output_dir: Option<PathBuf>,
+    /// Optional custom folder for saved downscaled/exported images.
+    pub export_output_dir: Option<PathBuf>,
     /// Default AI upscale model, stored as `"standard"` or `"anime"`.
     pub upscaler_default_model: String,
     /// Preferred output format: "auto", "jpeg", "png", or "webp".
@@ -55,6 +59,8 @@ impl std::fmt::Debug for AppSettings {
             .field("window_height", &self.window_height)
             .field("library_root", &self.library_root)
             .field("upscaler_binary_path", &self.upscaler_binary_path)
+            .field("upscaled_output_dir", &self.upscaled_output_dir)
+            .field("export_output_dir", &self.export_output_dir)
             .field("upscaler_default_model", &self.upscaler_default_model)
             .field("upscaler_output_format", &self.upscaler_output_format)
             .field("upscaler_compression_mode", &self.upscaler_compression_mode)
@@ -80,6 +86,8 @@ impl Default for AppSettings {
             window_height: 900,
             library_root: None,
             upscaler_binary_path: None,
+            upscaled_output_dir: None,
+            export_output_dir: None,
             upscaler_default_model: "standard".into(),
             upscaler_output_format: "auto".into(),
             upscaler_compression_mode: "auto".into(),
@@ -109,6 +117,8 @@ impl AppSettings {
         let window_height = settings.int("window-height").clamp(300, 4320);
         let library_root = string_path(&settings, "library-root");
         let upscaler_binary_path = string_path(&settings, "upscaler-binary-path");
+        let upscaled_output_dir = string_path(&settings, "upscaled-output-dir");
+        let export_output_dir = string_path(&settings, "export-output-dir");
         let upscaler_default_model = match settings.string("upscaler-default-model").as_str() {
             "anime" => "anime".to_string(),
             _ => "standard".to_string(),
@@ -162,6 +172,8 @@ impl AppSettings {
             window_height,
             library_root,
             upscaler_binary_path,
+            upscaled_output_dir,
+            export_output_dir,
             upscaler_default_model,
             upscaler_output_format,
             upscaler_compression_mode,
@@ -209,6 +221,22 @@ impl AppSettings {
         let _ = self
             .settings
             .set_string("upscaler-binary-path", &upscaler_binary_path);
+        let upscaled_output_dir = self
+            .upscaled_output_dir
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let _ = self
+            .settings
+            .set_string("upscaled-output-dir", &upscaled_output_dir);
+        let export_output_dir = self
+            .export_output_dir
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let _ = self
+            .settings
+            .set_string("export-output-dir", &export_output_dir);
         let model = if self.upscaler_default_model == "anime" {
             "anime"
         } else {
@@ -323,6 +351,26 @@ impl AppSettings {
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default();
         let _ = self.settings.set_string("upscaler-binary-path", &value);
+    }
+
+    pub fn set_upscaled_output_dir(&mut self, path: Option<PathBuf>) {
+        self.upscaled_output_dir = path;
+        let value = self
+            .upscaled_output_dir
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let _ = self.settings.set_string("upscaled-output-dir", &value);
+    }
+
+    pub fn set_export_output_dir(&mut self, path: Option<PathBuf>) {
+        self.export_output_dir = path;
+        let value = self
+            .export_output_dir
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let _ = self.settings.set_string("export-output-dir", &value);
     }
 
     pub fn set_upscaler_default_model(&mut self, model: &str) {
@@ -457,6 +505,8 @@ mod tests {
         let _ = settings.set_string("comfyui-url", "");
         let _ = settings.set_string("library-root", "/tmp/library");
         let _ = settings.set_string("upscaler-binary-path", "/tmp/upscaler");
+        let _ = settings.set_string("upscaled-output-dir", "/tmp/upscaled");
+        let _ = settings.set_string("export-output-dir", "/tmp/export");
         let _ = settings.set_boolean("comfyui-enabled", true);
         let _ = settings.set_boolean("show-upscale-ui", true);
 
@@ -479,6 +529,11 @@ mod tests {
             loaded.upscaler_binary_path,
             Some(PathBuf::from("/tmp/upscaler"))
         );
+        assert_eq!(
+            loaded.upscaled_output_dir,
+            Some(PathBuf::from("/tmp/upscaled"))
+        );
+        assert_eq!(loaded.export_output_dir, Some(PathBuf::from("/tmp/export")));
         assert!(loaded.comfyui_enabled);
         assert!(loaded.show_upscale_ui);
     }
@@ -503,6 +558,8 @@ mod tests {
             window_height: 50000,
             library_root: Some(PathBuf::from("/tmp/library")),
             upscaler_binary_path: Some(PathBuf::from("/tmp/upscaler")),
+            upscaled_output_dir: Some(PathBuf::from("/tmp/upscaled")),
+            export_output_dir: Some(PathBuf::from("/tmp/export")),
             upscaler_default_model: "weird".into(),
             upscaler_output_format: "bmp".into(),
             upscaler_compression_mode: "strange".into(),
@@ -530,6 +587,11 @@ mod tests {
             settings.string("upscaler-binary-path").as_str(),
             "/tmp/upscaler"
         );
+        assert_eq!(
+            settings.string("upscaled-output-dir").as_str(),
+            "/tmp/upscaled"
+        );
+        assert_eq!(settings.string("export-output-dir").as_str(), "/tmp/export");
         assert_eq!(
             settings.string("upscaler-default-model").as_str(),
             "standard"

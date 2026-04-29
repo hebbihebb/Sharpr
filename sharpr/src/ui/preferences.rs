@@ -68,6 +68,131 @@ pub fn build_preferences_window(
     library_group.add(&restart_note_row);
     library_page.add(&library_group);
 
+    let output_group = libadwaita::PreferencesGroup::new();
+    output_group.set_title("Output folders");
+
+    let upscaled_row = libadwaita::ActionRow::new();
+    upscaled_row.set_title("Upscaled output folder");
+    upscaled_row.set_subtitle(&output_folder_subtitle(
+        settings.upscaled_output_dir.as_ref(),
+        crate::export::OutputFolderKind::Upscaled,
+    ));
+    let upscaled_choose = gtk4::Button::with_label("Choose…");
+    let upscaled_reset = gtk4::Button::with_label("Reset");
+    upscaled_row.add_suffix(&upscaled_choose);
+    upscaled_row.add_suffix(&upscaled_reset);
+    upscaled_row.set_activatable_widget(Some(&upscaled_choose));
+
+    {
+        let parent_c = parent.clone();
+        let row_c = upscaled_row.clone();
+        let parent_window = parent.clone().upcast::<gtk4::Window>();
+        upscaled_choose.connect_clicked(move |_| {
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Choose Upscaled Output Folder");
+            let parent_inner = parent_c.clone();
+            let row_inner = row_c.clone();
+            dialog.select_folder(
+                Some(&parent_window),
+                None::<&gio::Cancellable>,
+                move |result| {
+                    if let Ok(file) = result {
+                        if let Some(path) = file.path() {
+                            parent_inner
+                                .app_state()
+                                .borrow_mut()
+                                .settings
+                                .set_upscaled_output_dir(Some(path.clone()));
+                            row_inner.set_subtitle(&output_folder_subtitle(
+                                Some(&path),
+                                crate::export::OutputFolderKind::Upscaled,
+                            ));
+                        }
+                    }
+                },
+            );
+        });
+    }
+
+    {
+        let parent_c = parent.clone();
+        let row_c = upscaled_row.clone();
+        upscaled_reset.connect_clicked(move |_| {
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_upscaled_output_dir(None);
+            row_c.set_subtitle(&output_folder_subtitle(
+                None,
+                crate::export::OutputFolderKind::Upscaled,
+            ));
+        });
+    }
+
+    let export_row = libadwaita::ActionRow::new();
+    export_row.set_title("Export output folder");
+    export_row.set_subtitle(&output_folder_subtitle(
+        settings.export_output_dir.as_ref(),
+        crate::export::OutputFolderKind::Export,
+    ));
+    let export_choose = gtk4::Button::with_label("Choose…");
+    let export_reset = gtk4::Button::with_label("Reset");
+    export_row.add_suffix(&export_choose);
+    export_row.add_suffix(&export_reset);
+    export_row.set_activatable_widget(Some(&export_choose));
+
+    {
+        let parent_c = parent.clone();
+        let row_c = export_row.clone();
+        let parent_window = parent.clone().upcast::<gtk4::Window>();
+        export_choose.connect_clicked(move |_| {
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Choose Export Output Folder");
+            let parent_inner = parent_c.clone();
+            let row_inner = row_c.clone();
+            dialog.select_folder(
+                Some(&parent_window),
+                None::<&gio::Cancellable>,
+                move |result| {
+                    if let Ok(file) = result {
+                        if let Some(path) = file.path() {
+                            parent_inner
+                                .app_state()
+                                .borrow_mut()
+                                .settings
+                                .set_export_output_dir(Some(path.clone()));
+                            row_inner.set_subtitle(&output_folder_subtitle(
+                                Some(&path),
+                                crate::export::OutputFolderKind::Export,
+                            ));
+                        }
+                    }
+                },
+            );
+        });
+    }
+
+    {
+        let parent_c = parent.clone();
+        let row_c = export_row.clone();
+        export_reset.connect_clicked(move |_| {
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_export_output_dir(None);
+            row_c.set_subtitle(&output_folder_subtitle(
+                None,
+                crate::export::OutputFolderKind::Export,
+            ));
+        });
+    }
+
+    output_group.add(&upscaled_row);
+    output_group.add(&export_row);
+    library_page.add(&output_group);
+
     let smart_group = libadwaita::PreferencesGroup::new();
     smart_group.set_title("Smart Tagging");
 
@@ -480,6 +605,15 @@ fn library_root_subtitle(path: Option<&PathBuf>) -> String {
     match path {
         Some(path) => path.to_string_lossy().into_owned(),
         None => "Sharpr scans this folder for images. Default: ~/Pictures".to_string(),
+    }
+}
+
+fn output_folder_subtitle(path: Option<&PathBuf>, kind: crate::export::OutputFolderKind) -> String {
+    match path {
+        Some(path) => path.to_string_lossy().into_owned(),
+        None => crate::export::default_output_dir(kind)
+            .to_string_lossy()
+            .into_owned(),
     }
 }
 

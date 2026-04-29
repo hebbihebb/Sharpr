@@ -2857,57 +2857,6 @@ impl SharprWindow {
         }
         {
             let viewer_c = viewer.clone();
-            let menu = gtk4::Popover::new();
-            let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-            box_.set_margin_top(8);
-            box_.set_margin_bottom(8);
-            box_.set_margin_start(8);
-            box_.set_margin_end(8);
-            let save_copy_btn = gtk4::Button::with_label("Save to Exported Folder");
-            let replace_btn = gtk4::Button::with_label("Replace Original");
-            replace_btn.add_css_class("destructive-action");
-            let choose_btn = gtk4::Button::with_label("Choose Different Folder…");
-            box_.append(&save_copy_btn);
-            box_.append(&replace_btn);
-            box_.append(&choose_btn);
-            menu.set_child(Some(&box_));
-            commit_menu_btn.set_popover(Some(&menu));
-
-            let viewer_for_menu = viewer_c.clone();
-            let replace_for_menu = replace_btn.clone();
-            menu.connect_visible_notify(move |popover| {
-                if !popover.is_visible() {
-                    return;
-                }
-                let can_replace = viewer_for_menu.can_replace_current_convert();
-                replace_for_menu.set_sensitive(can_replace);
-                replace_for_menu.set_tooltip_text((!can_replace).then_some(
-                    "Replace Original is only available when the converted file keeps the same extension",
-                ));
-            });
-
-            let menu_pop = menu.clone();
-            let viewer_copy = viewer_c.clone();
-            save_copy_btn.connect_clicked(move |_| {
-                menu_pop.popdown();
-                viewer_copy.commit_convert_default();
-            });
-
-            let menu_pop = menu.clone();
-            let viewer_replace = viewer_c.clone();
-            replace_btn.connect_clicked(move |_| {
-                menu_pop.popdown();
-                viewer_replace.commit_convert_replace_original();
-            });
-
-            let viewer_choose = viewer_c.clone();
-            choose_btn.connect_clicked(move |_| {
-                menu.popdown();
-                viewer_choose.commit_convert_choose_folder();
-            });
-        }
-        {
-            let viewer_c = viewer.clone();
             discard_btn.connect_clicked(move |_| {
                 viewer_c.discard_convert();
             });
@@ -4606,14 +4555,16 @@ impl SharprWindow {
                 content.set_margin_top(6);
                 content.set_margin_bottom(6);
 
-                let dest_path_label = gtk4::Label::new(Some("No folder selected"));
+                let dest_path_label = gtk4::Label::new(None);
                 dest_path_label.set_halign(gtk4::Align::Start);
                 dest_path_label.set_hexpand(true);
-                let choose_btn = gtk4::Button::with_label("Choose Folder…");
-                let dest_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+                let dest_label = gtk4::Label::new(Some("Saved to"));
+                dest_label.set_halign(gtk4::Align::Start);
+                dest_label.add_css_class("dim-label");
+                let dest_row = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
                 dest_row.set_margin_bottom(4);
+                dest_row.append(&dest_label);
                 dest_row.append(&dest_path_label);
-                dest_row.append(&choose_btn);
                 content.append(&dest_row);
 
                 let edge_drop = gtk4::DropDown::from_strings(&["Original", "1920px", "2560px"]);
@@ -4646,47 +4597,14 @@ impl SharprWindow {
                     });
                 }
 
-                let default_dest = sources
-                    .first()
-                    .map(|source| crate::export::default_export_dir(source));
-                if let Some(dest) = default_dest.as_ref() {
-                    dest_path_label.set_label(
-                        dest.file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| dest.display().to_string())
-                            .as_str(),
-                    );
-                }
-                let chosen_dest: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(default_dest));
-                {
-                    let chosen = chosen_dest.clone();
-                    let lbl = dest_path_label.clone();
-                    let win_weak2 = win.downgrade();
-                    choose_btn.connect_clicked(move |_| {
-                        let file_dialog = gtk4::FileDialog::new();
-                        file_dialog.set_title("Choose Export Destination");
-                        let chosen_c = chosen.clone();
-                        let lbl_c = lbl.clone();
-                        let parent = win_weak2.upgrade().map(|w| w.upcast::<gtk4::Window>());
-                        file_dialog.select_folder(
-                            parent.as_ref(),
-                            None::<&gio::Cancellable>,
-                            move |result| {
-                                if let Ok(f) = result {
-                                    if let Some(path) = f.path() {
-                                        *chosen_c.borrow_mut() = Some(path.clone());
-                                        lbl_c.set_label(
-                                            path.file_name()
-                                                .map(|n| n.to_string_lossy().into_owned())
-                                                .unwrap_or_else(|| path.display().to_string())
-                                                .as_str(),
-                                        );
-                                    }
-                                }
-                            },
-                        );
-                    });
-                }
+                let default_dest = {
+                    let st = state_c.borrow();
+                    crate::export::resolve_output_dir(
+                        st.settings.export_output_dir.as_ref(),
+                        crate::export::OutputFolderKind::Export,
+                    )
+                };
+                dest_path_label.set_label(default_dest.to_string_lossy().as_ref());
 
                 dialog.set_extra_child(Some(&content));
 
@@ -4696,16 +4614,12 @@ impl SharprWindow {
                     if response != "export" {
                         return;
                     }
-                    let dest = match chosen_dest.borrow().clone() {
-                        Some(p) => p,
-                        None => {
-                            if let Some(w) = win_weak3.upgrade() {
-                                w.add_toast(libadwaita::Toast::new(
-                                    "Choose a destination folder first",
-                                ));
-                            }
-                            return;
-                        }
+                    let dest = {
+                        let st = state_cc.borrow();
+                        crate::export::resolve_output_dir(
+                            st.settings.export_output_dir.as_ref(),
+                            crate::export::OutputFolderKind::Export,
+                        )
                     };
 
                     let max_edge = match edge_drop.selected() {
@@ -4725,6 +4639,9 @@ impl SharprWindow {
                         max_edge,
                         format,
                         quality,
+                        filename_suffix: Some(crate::export::export_filename_suffix(
+                            max_edge, format,
+                        )),
                     };
 
                     let total = sources.len();
@@ -4957,50 +4874,15 @@ impl SharprWindow {
                     });
                 }
 
-                let default_dest = sources
-                    .first()
-                    .map(|source| crate::export::default_export_dir(source));
-                if let Some(dest) = default_dest.as_ref() {
-                    dest_label.set_label(
-                        dest.file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| dest.display().to_string())
-                            .as_str(),
-                    );
-                }
-                if sources.len() == 1 {
-                    dest_row.set_visible(false);
-                }
-                let chosen_dest: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(default_dest));
-                {
-                    let chosen = chosen_dest.clone();
-                    let lbl = dest_label.clone();
-                    let win_weak2 = window_weak.clone();
-                    choose_btn.connect_clicked(move |_| {
-                        let file_dialog = gtk4::FileDialog::new();
-                        file_dialog.set_title("Choose Destination Folder");
-                        let chosen_c = chosen.clone();
-                        let lbl_c = lbl.clone();
-                        let parent = win_weak2.upgrade().map(|w| w.upcast::<gtk4::Window>());
-                        file_dialog.select_folder(
-                            parent.as_ref(),
-                            None::<&gio::Cancellable>,
-                            move |result| {
-                                if let Ok(f) = result {
-                                    if let Some(path) = f.path() {
-                                        *chosen_c.borrow_mut() = Some(path.clone());
-                                        lbl_c.set_label(
-                                            path.file_name()
-                                                .map(|n| n.to_string_lossy().into_owned())
-                                                .unwrap_or_else(|| path.display().to_string())
-                                                .as_str(),
-                                        );
-                                    }
-                                }
-                            },
-                        );
-                    });
-                }
+                let default_dest = {
+                    let st = state_c.borrow();
+                    crate::export::resolve_output_dir(
+                        st.settings.export_output_dir.as_ref(),
+                        crate::export::OutputFolderKind::Export,
+                    )
+                };
+                dest_label.set_label(default_dest.to_string_lossy().as_ref());
+                choose_btn.set_visible(false);
 
                 mode_stack.add_named(&ds_box, Some("downscale"));
 
@@ -5252,33 +5134,39 @@ impl SharprWindow {
                         if sources.len() == 1 {
                             // Single image → comparison preview
                             let source = sources[0].clone();
+                            let destination = {
+                                let st = state_cc.borrow();
+                                crate::export::resolve_output_dir(
+                                    st.settings.export_output_dir.as_ref(),
+                                    crate::export::OutputFolderKind::Export,
+                                )
+                            };
                             let config = crate::export::ExportConfig {
-                                destination: crate::export::default_export_dir(&source),
+                                destination,
                                 max_edge,
                                 format,
                                 quality,
+                                filename_suffix: Some(crate::export::export_filename_suffix(
+                                    max_edge, format,
+                                )),
                             };
-                            viewer_c.start_downscale_preview(
-                                source,
-                                config,
-                            );
+                            viewer_c.start_downscale_preview(source, config);
                         } else {
-                            let dest = match chosen_dest.borrow().clone() {
-                                Some(p) => p,
-                                None => {
-                                    if let Some(w) = win_weak3.upgrade() {
-                                        w.add_toast(libadwaita::Toast::new(
-                                            "Choose a destination folder first",
-                                        ));
-                                    }
-                                    return;
-                                }
+                            let dest = {
+                                let st = state_cc.borrow();
+                                crate::export::resolve_output_dir(
+                                    st.settings.export_output_dir.as_ref(),
+                                    crate::export::OutputFolderKind::Export,
+                                )
                             };
                             let config = crate::export::ExportConfig {
                                 destination: dest.clone(),
                                 max_edge,
                                 format,
                                 quality,
+                                filename_suffix: Some(crate::export::export_filename_suffix(
+                                    max_edge, format,
+                                )),
                             };
                             // Batch → run directly with progress
                             let total = sources.len();
@@ -5367,7 +5255,7 @@ impl SharprWindow {
         preview_title_btn.set_visible(false);
 
         let commit_btn = gtk4::Button::with_label("Save");
-        commit_btn.set_tooltip_text(Some("Save to the exported folder"));
+        commit_btn.set_tooltip_text(Some("Save to the configured output folder"));
         commit_btn.add_css_class("suggested-action");
         commit_btn.set_visible(false);
         header.pack_end(&commit_btn);

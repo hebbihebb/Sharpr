@@ -23,6 +23,21 @@ pub enum ExportFormat {
     Webp,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFolderKind {
+    Upscaled,
+    Export,
+}
+
+impl OutputFolderKind {
+    pub fn folder_name(self) -> &'static str {
+        match self {
+            Self::Upscaled => "Upscaled",
+            Self::Export => "Export",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExportConfig {
     pub destination: PathBuf,
@@ -31,6 +46,7 @@ pub struct ExportConfig {
     pub format: ExportFormat,
     /// JPEG quality, 1–100. Ignored for PNG and WebP (both written losslessly).
     pub quality: u8,
+    pub filename_suffix: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -79,7 +95,15 @@ pub fn export_image(source: &Path, config: &ExportConfig) -> Result<ExportResult
 
     let img = resize_if_needed(img, config.max_edge);
 
-    let output = unique_output_path(&config.destination, source, config.format);
+    let output = match config.filename_suffix.as_deref() {
+        Some(suffix) => unique_output_path_with_suffix(
+            &config.destination,
+            source,
+            suffix,
+            format_extension(config.format),
+        ),
+        None => unique_output_path(&config.destination, source, config.format),
+    };
 
     save_image(&img, &output, config.format, config.quality)?;
 
@@ -100,12 +124,29 @@ pub(crate) fn unique_output_path(dest_dir: &Path, source: &Path, format: ExportF
     unique_output_path_for_extension(dest_dir, source, format_extension(format))
 }
 
-/// Return the default sibling export folder for `source`.
-pub fn default_export_dir(source: &Path) -> PathBuf {
-    source
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("exported")
+/// Return the preferred root for user-facing exported images.
+pub fn pictures_root_dir() -> PathBuf {
+    dirs::picture_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join("Pictures")))
+        .unwrap_or_else(|| PathBuf::from("./Pictures"))
+}
+
+/// Return the built-in output folder for the given conversion kind.
+pub fn default_output_dir(kind: OutputFolderKind) -> PathBuf {
+    pictures_root_dir().join(kind.folder_name())
+}
+
+/// Resolve a configured output folder or fall back to the built-in one.
+pub fn resolve_output_dir(custom: Option<&PathBuf>, kind: OutputFolderKind) -> PathBuf {
+    custom.cloned().unwrap_or_else(|| default_output_dir(kind))
+}
+
+/// Build the suffix used for downscale/export output names.
+pub fn export_filename_suffix(max_edge: Option<u32>, format: ExportFormat) -> String {
+    let size = max_edge
+        .map(|edge| format!("{edge}px"))
+        .unwrap_or_else(|| "original".to_string());
+    format!("export-{size}-{}", format_extension(format))
 }
 
 /// Return a unique output path in `dest_dir` with an explicit file extension.
@@ -115,23 +156,71 @@ pub fn unique_output_path_for_extension(dest_dir: &Path, source: &Path, ext: &st
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
+    unique_output_path_for_stem(dest_dir, &stem, ext)
+}
 
-    let first = dest_dir.join(format!("{stem}.{ext}"));
+/// Return a unique output path in `dest_dir` using a human-readable suffix.
+pub fn unique_output_path_with_suffix(
+    dest_dir: &Path,
+    source: &Path,
+    suffix: &str,
+    ext: &str,
+) -> PathBuf {
+    let stem = source
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let stem = format!("{stem}-{}", sanitize_suffix(suffix));
+    unique_output_path_for_stem(dest_dir, &stem, ext)
+}
+
+fn unique_output_path_for_stem(dest_dir: &Path, stem: &str, ext: &str) -> PathBuf {
+    let first = path_for_stem_and_ext(dest_dir, stem, ext);
     if !first.exists() {
         return first;
     }
     for n in 1..=999u32 {
-        let candidate = dest_dir.join(format!("{stem}-{n}.{ext}"));
+        let candidate = path_for_stem_and_ext(dest_dir, &format!("{stem}-{n}"), ext);
         if !candidate.exists() {
             return candidate;
         }
     }
-    // Fallback: include a timestamp to guarantee uniqueness.
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    dest_dir.join(format!("{stem}-{ts}.{ext}"))
+    path_for_stem_and_ext(dest_dir, &format!("{stem}-{ts}"), ext)
+}
+
+fn path_for_stem_and_ext(dest_dir: &Path, stem: &str, ext: &str) -> PathBuf {
+    if ext.is_empty() {
+        dest_dir.join(stem)
+    } else {
+        dest_dir.join(format!("{stem}.{ext}"))
+    }
+}
+
+fn sanitize_suffix(suffix: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in suffix.chars() {
+        let normalized = match ch {
+            'A'..='Z' => ch.to_ascii_lowercase(),
+            'a'..='z' | '0'..='9' => ch,
+            _ => '-',
+        };
+        if normalized == '-' {
+            if !out.is_empty() && !last_dash {
+                out.push('-');
+            }
+            last_dash = true;
+        } else {
+            out.push(normalized);
+            last_dash = false;
+        }
+    }
+    out.trim_matches('-').to_string()
 }
 
 /// Decode `source`, resize when needed, and write to the explicit `output` path.
@@ -297,6 +386,60 @@ mod tests {
         let out = unique_output_path(&dir, &src, ExportFormat::Png);
         assert_eq!(out, dir.join("shot.png"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unique_path_with_suffix_appends_human_label() {
+        let dir = temp_dir("suffix");
+        let src = PathBuf::from("/photos/shot.jpg");
+        let out = unique_output_path_with_suffix(&dir, &src, "upscaled-comfyui-standard", "png");
+        assert_eq!(out, dir.join("shot-upscaled-comfyui-standard.png"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unique_path_with_suffix_still_increments() {
+        let dir = temp_dir("suffix-taken");
+        let src = PathBuf::from("/photos/shot.jpg");
+        std::fs::write(dir.join("shot-export-1920px-jpg.jpg"), b"").unwrap();
+        let out = unique_output_path_with_suffix(&dir, &src, "export-1920px-jpg", "jpg");
+        assert_eq!(out, dir.join("shot-export-1920px-jpg-1.jpg"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn export_suffix_includes_size_and_format() {
+        assert_eq!(
+            export_filename_suffix(Some(1920), ExportFormat::Jpeg),
+            "export-1920px-jpg"
+        );
+        assert_eq!(
+            export_filename_suffix(None, ExportFormat::Png),
+            "export-original-png"
+        );
+    }
+
+    #[test]
+    fn resolve_output_dir_prefers_custom_path() {
+        let custom = PathBuf::from("/tmp/custom-export");
+        let resolved = resolve_output_dir(Some(&custom), OutputFolderKind::Export);
+        assert_eq!(resolved, custom);
+    }
+
+    #[test]
+    fn default_output_dir_uses_expected_folder_names() {
+        assert_eq!(
+            default_output_dir(OutputFolderKind::Upscaled)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("Upscaled")
+        );
+        assert_eq!(
+            default_output_dir(OutputFolderKind::Export)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("Export")
+        );
     }
 
     #[test]

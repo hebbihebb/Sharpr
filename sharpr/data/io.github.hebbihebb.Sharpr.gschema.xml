@@ -21,6 +21,16 @@
       <summary>Custom Vulkan upscaler binary path</summary>
       <description>Override the auto-detected backend binary location.</description>
     </key>
+    <key name="upscaled-output-dir" type="s">
+      <default>""</default>
+      <summary>Custom folder for saved upscaled images</summary>
+      <description>If set, upscaled images save here instead of ~/Pictures/Upscaled.</description>
+    </key>
+    <key name="export-output-dir" type="s">
+      <default>""</default>
+      <summary>Custom folder for saved exported images</summary>
+      <description>If set, exported/downscaled images save here instead of ~/Pictures/Export.</description>
+    </key>
     <key name="upscaler-default-model" type="s">
       <default>"standard"</default>
       <summary>Default upscale model</summary>
