@@ -1127,6 +1127,7 @@ impl FolderRow {
         let name_label = gtk4::Label::new(Some(label));
         name_label.set_halign(gtk4::Align::Start);
         name_label.set_hexpand(true);
+        name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
 
         let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
         hbox.set_margin_start(8);

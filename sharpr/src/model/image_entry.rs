@@ -113,7 +113,11 @@ impl ImageEntry {
     /// Returns the raw Laplacian variance if it has been computed, or `None`.
     pub fn sharpness_score(&self) -> Option<f64> {
         let v = self.imp().sharpness_score.get();
-        if v.is_nan() { None } else { Some(v) }
+        if v.is_nan() {
+            None
+        } else {
+            Some(v)
+        }
     }
 
     pub fn set_sharpness_score(&self, score: f64) {

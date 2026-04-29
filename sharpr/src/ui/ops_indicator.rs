@@ -15,12 +15,14 @@ use gtk4::subclass::prelude::*;
 // Per-row data kept in the HashMap
 // ---------------------------------------------------------------------------
 
+pub type ActionCallback = Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>>;
+
 struct OpRowWidgets {
     row: gtk4::ListBoxRow,
     progress_bar: gtk4::ProgressBar,
     status_label: gtk4::Label,
     action_button: gtk4::Button,
-    action: Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>>,
+    action: ActionCallback,
     persistent: std::cell::Cell<bool>,
 }
 
@@ -258,8 +260,7 @@ impl OpsIndicator {
             lb.append(&row);
         }
 
-        let action: Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>> =
-            Rc::new(std::cell::RefCell::new(None));
+        let action: ActionCallback = Rc::new(std::cell::RefCell::new(None));
         {
             let action = action.clone();
             action_button.connect_clicked(move |_| {

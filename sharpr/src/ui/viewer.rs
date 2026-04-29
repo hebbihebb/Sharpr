@@ -928,6 +928,7 @@ impl ViewerPane {
 
     fn clear_convert_action(&self, op_id: u64) {
         if let Some(indicator) = self.imp().ops_indicator.borrow().as_ref() {
+            let indicator: &OpsIndicator = indicator;
             indicator.clear_op_action(op_id);
             indicator.remove_op(op_id);
         }
@@ -1914,7 +1915,7 @@ impl ViewerPane {
         tag: &str,
         selected: bool,
         db: &std::sync::Arc<crate::tags::TagDatabase>,
-        path: &PathBuf,
+        path: &std::path::Path,
     ) {
         let row = gtk4::ListBoxRow::new();
         row.set_selectable(false);
@@ -1949,7 +1950,7 @@ impl ViewerPane {
         let viewer_weak = self.downgrade();
         let tag_clone = tag.to_string();
         let db_clone = db.clone();
-        let path_clone = path.clone();
+        let path_clone = path.to_path_buf();
 
         let click = gtk4::GestureClick::new();
         click.connect_released(move |_, _, _, _| {

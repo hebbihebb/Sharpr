@@ -46,8 +46,8 @@ fn track_git_version_inputs() {
         std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string()),
     );
     // Walk up from the manifest dir to find the .git directory (may be a parent).
-    let git_dir = std::iter::successors(Some(manifest_dir.as_path()), |p| p.parent())
-        .find_map(|dir| {
+    let git_dir =
+        std::iter::successors(Some(manifest_dir.as_path()), |p| p.parent()).find_map(|dir| {
             let candidate = dir.join(".git");
             candidate.exists().then_some(candidate)
         });

@@ -23,34 +23,22 @@ impl SharpnessBackfill {
     /// Spawn the backfill thread.  Results are sent to `result_tx`, which
     /// should be the same sender that `ThumbnailWorker` uses so the window
     /// only needs one receiver.
-    pub fn spawn(
-        db: Arc<crate::tags::TagDatabase>,
-        result_tx: Sender<SharpnessResult>,
-    ) -> Self {
+    pub fn spawn(db: Arc<crate::tags::TagDatabase>, result_tx: Sender<SharpnessResult>) -> Self {
         let (queue_tx, queue_rx) = async_channel::unbounded::<PathBuf>();
 
         std::thread::Builder::new()
             .name("sharpr-sharpness-backfill".into())
             .spawn(move || {
-                loop {
-                    match queue_rx.recv_blocking() {
-                        Ok(path) => {
-                            if db.get_sharpness(&path).is_some() {
-                                continue;
-                            }
-                            if let Some(score) = score_from_cache(&path) {
-                                let mtime =
-                                    crate::tags::db::file_mtime_secs(&path).unwrap_or(0);
-                                db.upsert_sharpness(&path, score, mtime);
-                                let _ = result_tx.send_blocking(SharpnessResult {
-                                    path,
-                                    score,
-                                });
-                            }
-                            std::thread::sleep(Duration::from_millis(80));
-                        }
-                        Err(_) => break,
+                while let Ok(path) = queue_rx.recv_blocking() {
+                    if db.get_sharpness(&path).is_some() {
+                        continue;
                     }
+                    if let Some(score) = score_from_cache(&path) {
+                        let mtime = crate::tags::db::file_mtime_secs(&path).unwrap_or(0);
+                        db.upsert_sharpness(&path, score, mtime);
+                        let _ = result_tx.send_blocking(SharpnessResult { path, score });
+                    }
+                    std::thread::sleep(Duration::from_millis(80));
                 }
             })
             .ok();

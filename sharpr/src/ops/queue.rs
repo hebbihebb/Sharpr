@@ -143,7 +143,10 @@ mod tests {
         drop(handle);
 
         // Channel should be empty — no Completed or Failed event
-        assert!(rx.try_recv().is_err(), "expected no terminal event after drop");
+        assert!(
+            rx.try_recv().is_err(),
+            "expected no terminal event after drop"
+        );
     }
 
     #[test]
@@ -174,6 +177,10 @@ mod tests {
 
         let ids: Vec<u64> = handles.iter().map(|h| h.id).collect();
         let unique: std::collections::HashSet<u64> = ids.iter().cloned().collect();
-        assert_eq!(ids.len(), unique.len(), "every handle must have a unique ID");
+        assert_eq!(
+            ids.len(),
+            unique.len(),
+            "every handle must have a unique ID"
+        );
     }
 }

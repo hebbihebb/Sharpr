@@ -78,7 +78,12 @@ impl ThumbnailWorker {
     pub fn spawn(
         thread_count: usize,
         db: Option<Arc<crate::tags::TagDatabase>>,
-    ) -> (Self, Receiver<ThumbnailResult>, Receiver<HashResult>, Receiver<SharpnessResult>) {
+    ) -> (
+        Self,
+        Receiver<ThumbnailResult>,
+        Receiver<HashResult>,
+        Receiver<SharpnessResult>,
+    ) {
         let preload_workers = 4usize;
         let visible_workers = thread_count.saturating_sub(preload_workers).max(1);
 

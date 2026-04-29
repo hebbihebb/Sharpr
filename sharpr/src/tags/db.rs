@@ -41,17 +41,16 @@ impl TagDatabase {
     /// the current file mtime, or `None` if not yet scored or the file changed.
     pub fn get_sharpness(&self, path: &Path) -> Option<f64> {
         let current_mtime = file_mtime_secs(path)?;
-        let Ok(conn) = self.conn.lock() else { return None };
+        let Ok(conn) = self.conn.lock() else {
+            return None;
+        };
         let mut stmt = conn
-            .prepare_cached(
-                "SELECT sharpness, mtime FROM image_quality WHERE path = ?1",
-            )
+            .prepare_cached("SELECT sharpness, mtime FROM image_quality WHERE path = ?1")
             .ok()?;
         let (score, stored_mtime) = stmt
-            .query_row(
-                rusqlite::params![path.to_string_lossy().as_ref()],
-                |row| Ok((row.get::<_, f64>(0)?, row.get::<_, i64>(1)?)),
-            )
+            .query_row(rusqlite::params![path.to_string_lossy().as_ref()], |row| {
+                Ok((row.get::<_, f64>(0)?, row.get::<_, i64>(1)?))
+            })
             .ok()?;
         if stored_mtime as u64 == current_mtime {
             Some(score)
@@ -616,8 +615,11 @@ mod tests {
 
         let mut tags = db.tags_for_path(&img);
         tags.sort();
-        assert_eq!(tags, vec!["1080p", "jpg", "people"],
-            "auto tags must be additive — user tag 'people' must survive");
+        assert_eq!(
+            tags,
+            vec!["1080p", "jpg", "people"],
+            "auto tags must be additive — user tag 'people' must survive"
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -634,7 +636,11 @@ mod tests {
         db.insert_auto_tags(&img, &["jpg".into()]); // second call must not duplicate
 
         let tags = db.tags_for_path(&img);
-        assert_eq!(tags, vec!["jpg"], "duplicate auto-tag insert must be ignored");
+        assert_eq!(
+            tags,
+            vec!["jpg"],
+            "duplicate auto-tag insert must be ignored"
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -651,7 +657,11 @@ mod tests {
         db.add_tag(&img, "PORTRAIT"); // should be deduped after normalization
 
         let tags = db.tags_for_path(&img);
-        assert_eq!(tags, vec!["portrait"], "tags must be normalised to lowercase trimmed form");
+        assert_eq!(
+            tags,
+            vec!["portrait"],
+            "tags must be normalised to lowercase trimmed form"
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }
