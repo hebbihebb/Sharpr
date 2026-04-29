@@ -53,7 +53,7 @@ mod imp {
         pub list_box: gtk4::ListBox,
         pub collection_list: gtk4::ListBox,
         pub library_menu_btn: gtk4::MenuButton,
-        pub library_header_label: gtk4::Label,
+        pub library_header_label: libadwaita::WindowTitle,
         pub active_library_label: gtk4::Label,
         pub folder_selected_cb: RefCell<Option<FolderSelectedCallback>>,
         pub folder_ignored_changed_cb: RefCell<Option<FolderIgnoredChangedCallback>>,
@@ -85,7 +85,7 @@ mod imp {
                 list_box: gtk4::ListBox::new(),
                 collection_list: gtk4::ListBox::new(),
                 library_menu_btn: gtk4::MenuButton::new(),
-                library_header_label: gtk4::Label::new(None),
+                library_header_label: libadwaita::WindowTitle::new("Library", ""),
                 active_library_label: gtk4::Label::new(None),
                 folder_selected_cb: RefCell::new(None),
                 folder_ignored_changed_cb: RefCell::new(None),
@@ -155,7 +155,6 @@ impl SidebarPane {
         open_btn.set_tooltip_text(Some("Open Folder"));
         header.pack_start(&open_btn);
 
-        imp.library_header_label.set_text("Library");
         header.set_title_widget(Some(&imp.library_header_label));
 
         let widget_weak = self.downgrade();
@@ -246,7 +245,7 @@ impl SidebarPane {
             .active_library()
             .map(|lib| lib.name.clone())
             .unwrap_or_else(|| "Library".to_string());
-        active_library_label.set_text(&active_library_name);
+        set_bold_label_text(&active_library_label, &active_library_name);
         active_library_label.set_halign(gtk4::Align::Start);
         active_library_label.set_margin_start(12);
         active_library_label.set_margin_top(8);
@@ -430,7 +429,7 @@ impl SidebarPane {
             .active_library()
             .map(|lib| lib.name.clone())
             .unwrap_or_else(|| "Library".to_string());
-        self.imp().active_library_label.set_text(&active_name);
+        set_bold_label_text(&self.imp().active_library_label, &active_name);
         self.refresh_library_menu(state.clone());
         self.populate_default_folders(state);
     }
@@ -1064,6 +1063,11 @@ impl SidebarPane {
         self.set_folder_tree(&tree, &ignored_folders);
         self.select_folder(&path);
     }
+}
+
+fn set_bold_label_text(label: &gtk4::Label, text: &str) {
+    let escaped = glib::markup_escape_text(text);
+    label.set_markup(&format!("<b>{escaped}</b>"));
 }
 
 fn section_label(text: &str) -> gtk4::Label {
