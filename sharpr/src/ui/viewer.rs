@@ -647,28 +647,22 @@ impl ViewerPane {
         self.add_controller(shortcuts);
 
         // -----------------------------------------------------------------------
-        // Ctrl+Scroll → zoom
+        // Scroll → zoom
         // -----------------------------------------------------------------------
-        // Capture phase so we see Ctrl+Scroll before the ScrolledWindow
-        // consumes the event (which it does whenever there is scrollable overflow).
+        // Capture phase so we intercept scroll before the ScrolledWindow
+        // consumes it (which it does whenever there is scrollable overflow).
         let scroll = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
         scroll.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let w = self.downgrade();
         scroll.connect_scroll(move |ctrl, _dx, dy| {
-            if ctrl
-                .current_event_state()
-                .contains(gdk4::ModifierType::CONTROL_MASK)
-            {
-                if let Some(viewer) = w.upgrade() {
-                    if let Some((x, y)) = ctrl.current_event().and_then(|event| event.position()) {
-                        viewer.imp().pointer_pos.set((x, y));
-                    }
-                    let factor = if dy < 0.0 { 1.1 } else { 1.0 / 1.1 };
-                    viewer.apply_zoom(factor);
+            if let Some(viewer) = w.upgrade() {
+                if let Some((x, y)) = ctrl.current_event().and_then(|event| event.position()) {
+                    viewer.imp().pointer_pos.set((x, y));
                 }
-                return glib::Propagation::Stop;
+                let factor = if dy < 0.0 { 1.1 } else { 1.0 / 1.1 };
+                viewer.apply_zoom(factor);
             }
-            glib::Propagation::Proceed
+            glib::Propagation::Stop
         });
         self.add_controller(scroll);
 
