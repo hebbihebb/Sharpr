@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
+use crate::ui::viewer::ZoomMode;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DragMode {
     None,
@@ -26,6 +28,7 @@ mod imp {
         /// Divider position as a fraction of widget width in [0, 1].
         pub divider: Cell<f64>,
         pub zoom: Cell<f64>,
+        pub zoom_mode: Cell<ZoomMode>,
         pub pan_x: Cell<f64>,
         pub pan_y: Cell<f64>,
         pub before_texture: std::cell::RefCell<Option<gdk4::Texture>>,
@@ -41,6 +44,7 @@ mod imp {
             Self {
                 divider: Cell::new(0.5),
                 zoom: Cell::new(1.0),
+                zoom_mode: Cell::new(ZoomMode::Fit),
                 pan_x: Cell::new(0.0),
                 pan_y: Cell::new(0.0),
                 before_texture: std::cell::RefCell::new(None),
@@ -260,6 +264,7 @@ impl BeforeAfterViewer {
 
     pub fn reset_zoom(&self) {
         let imp = self.imp();
+        imp.zoom_mode.set(ZoomMode::Fit);
         imp.zoom.set(1.0);
         imp.pan_x.set(0.0);
         imp.pan_y.set(0.0);
@@ -413,6 +418,7 @@ impl BeforeAfterViewer {
         if (new_zoom - old_zoom).abs() < f64::EPSILON {
             return;
         }
+        imp.zoom_mode.set(ZoomMode::OneToOne);
 
         let w = self.width() as f64;
         let h = self.height() as f64;
@@ -458,6 +464,60 @@ impl BeforeAfterViewer {
         imp.pan_x.set(pan_x);
         imp.pan_y.set(pan_y);
         self.queue_draw();
+    }
+
+    pub fn apply_scroll_zoom(&self, factor: f64) {
+        self.apply_zoom(factor);
+    }
+
+    pub fn zoom_mode(&self) -> ZoomMode {
+        self.imp().zoom_mode.get()
+    }
+
+    pub fn set_zoom_mode(&self, mode: ZoomMode) {
+        let imp = self.imp();
+        if imp.zoom_mode.get() == mode {
+            return;
+        }
+
+        match mode {
+            ZoomMode::Fit => self.reset_zoom(),
+            ZoomMode::OneToOne => {
+                let fit_scale = self.fit_scale();
+                imp.zoom_mode.set(ZoomMode::OneToOne);
+                imp.zoom.set((1.0 / fit_scale.max(f64::EPSILON)).max(1.0));
+                imp.pan_x.set(0.0);
+                imp.pan_y.set(0.0);
+                imp.pan_origin.set(None);
+                imp.drag_mode.set(DragMode::None);
+                self.queue_draw();
+            }
+        }
+    }
+
+    fn fit_scale(&self) -> f64 {
+        let w = self.width() as f64;
+        let h = self.height() as f64;
+        if w <= 0.0 || h <= 0.0 {
+            return 1.0;
+        }
+
+        let imp = self.imp();
+        let (img_intrinsic_w, img_intrinsic_h) = {
+            let after = imp.after_texture.borrow();
+            let before = imp.before_texture.borrow();
+            if let Some(tex) = after.as_ref().or(before.as_ref()) {
+                (tex.width() as f64, tex.height() as f64)
+            } else {
+                return 1.0;
+            }
+        };
+
+        if img_intrinsic_w > 0.0 && img_intrinsic_h > 0.0 {
+            (w / img_intrinsic_w).min(h / img_intrinsic_h)
+        } else {
+            1.0
+        }
     }
 
     fn clamp_pan(&self, pan_x: f64, pan_y: f64, zoom: f64) -> (f64, f64) {

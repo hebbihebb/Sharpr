@@ -578,6 +578,10 @@ glib::wrapper! {
 }
 
 impl ViewerPane {
+    fn comparison_visible(&self) -> bool {
+        self.imp().stack.visible_child_name().as_deref() == Some("compare")
+    }
+
     pub fn new(state: Rc<RefCell<AppState>>) -> Self {
         let widget: Self = glib::Object::new();
         *widget.imp().state.borrow_mut() = Some(state);
@@ -726,7 +730,12 @@ impl ViewerPane {
                     viewer.imp().pointer_pos.set((x, y));
                 }
                 let factor = if dy < 0.0 { 1.1 } else { 1.0 / 1.1 };
-                viewer.apply_zoom(factor);
+                if viewer.comparison_visible() {
+                    viewer.imp().comparison.apply_scroll_zoom(factor);
+                    viewer.sync_zoom_button();
+                } else {
+                    viewer.apply_zoom(factor);
+                }
             }
             glib::Propagation::Stop
         });
@@ -1176,6 +1185,11 @@ impl ViewerPane {
     }
 
     pub fn reset_zoom(&self) {
+        if self.comparison_visible() {
+            self.imp().comparison.reset_zoom();
+            self.sync_zoom_button();
+            return;
+        }
         let imp = self.imp();
         imp.zoom.set(1.0);
         imp.zoom_mode.set(ZoomMode::Fit);
@@ -1192,6 +1206,15 @@ impl ViewerPane {
 
     /// Toggle between Fit and 1:1 pixel mode. Updates the stored button icon.
     pub fn toggle_zoom_mode(&self) {
+        if self.comparison_visible() {
+            let new_mode = match self.imp().comparison.zoom_mode() {
+                ZoomMode::Fit => ZoomMode::OneToOne,
+                ZoomMode::OneToOne => ZoomMode::Fit,
+            };
+            self.imp().comparison.set_zoom_mode(new_mode);
+            self.sync_zoom_button();
+            return;
+        }
         let imp = self.imp();
         let new_mode = match imp.zoom_mode.get() {
             ZoomMode::Fit => ZoomMode::OneToOne,
@@ -1301,7 +1324,7 @@ impl ViewerPane {
     fn sync_zoom_button(&self) {
         let imp = self.imp();
         if let Some(ref btn) = *imp.zoom_btn.borrow() {
-            match imp.zoom_mode.get() {
+            match self.zoom_mode() {
                 ZoomMode::Fit => {
                     btn.set_icon_name("zoom-fit-best-symbolic");
                     btn.set_tooltip_text(Some("1:1 Pixels (switch to actual size)"));
@@ -1357,14 +1380,23 @@ impl ViewerPane {
     }
 
     pub fn zoom_mode(&self) -> ZoomMode {
-        self.imp().zoom_mode.get()
+        if self.comparison_visible() {
+            self.imp().comparison.zoom_mode()
+        } else {
+            self.imp().zoom_mode.get()
+        }
     }
 
     pub fn set_zoom_mode(&self, mode: ZoomMode) {
-        if self.imp().zoom_mode.get() == mode {
+        if self.zoom_mode() == mode {
             return;
         }
-        self.toggle_zoom_mode();
+        if self.comparison_visible() {
+            self.imp().comparison.set_zoom_mode(mode);
+            self.sync_zoom_button();
+        } else {
+            self.toggle_zoom_mode();
+        }
     }
 
     /// Return the current image's RGBA pixels, checking the in-memory buffer
@@ -2355,6 +2387,8 @@ impl ViewerPane {
             imp.progress_bar.set_visible(false);
             viewer.set_comparison_buttons_visible(show_actions);
             imp.stack.set_visible_child_name("compare");
+            imp.comparison.grab_focus();
+            viewer.sync_zoom_button();
         });
     }
 
@@ -2489,6 +2523,7 @@ impl ViewerPane {
         imp.comparison.clear();
         self.set_comparison_buttons_visible(false);
         imp.stack.set_visible_child_name("view");
+        self.sync_zoom_button();
     }
 
     fn register_output_in_current_folder(&self, path: &std::path::Path) {
