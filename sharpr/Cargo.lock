@@ -2382,6 +2382,7 @@ dependencies = [
  "image",
  "itoa",
  "libadwaita",
+ "libwebp-sys",
  "memmap2",
  "ndarray 0.17.2",
  "ort",

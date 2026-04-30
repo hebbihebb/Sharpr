@@ -25,6 +25,7 @@ gdk4 = "0.9"
 # Image decoding and thumbnail generation (pure Rust, thread-safe)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp", "ico"] }
 webp = "0.3"
+libwebp-sys = "0.9"
 turbojpeg = "1.0"
 memmap2 = "0.9"
 

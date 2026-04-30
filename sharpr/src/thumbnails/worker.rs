@@ -424,6 +424,14 @@ fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
         return Some(result);
     }
 
+    if is_webp_path(path) {
+        let img = decode_webp_scaled(path, THUMB_HEIGHT)?;
+        let img = apply_exif_orientation(img, path);
+        let mut result = build_thumbnail_and_cache(path, img, "decoded_webp")?;
+        result.worker_ms = crate::bench::duration_ms(started);
+        return Some(result);
+    }
+
     let img = decode_with_image_crate(path)?;
     let img = apply_exif_orientation(img, path);
     let mut result = build_thumbnail_and_cache(path, img, "decoded_image")?;
@@ -467,12 +475,89 @@ fn decode_jpeg_scaled(path: &Path) -> Option<image::DynamicImage> {
     Some(image::DynamicImage::ImageRgba8(rgba))
 }
 
+fn is_webp_path(path: &Path) -> bool {
+    let by_extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "webp"))
+        .unwrap_or(false);
+    if by_extension {
+        return true;
+    }
+
+    let mut file = std::fs::File::open(path).ok();
+    let Some(file) = file.as_mut() else {
+        return false;
+    };
+    let mut magic = [0u8; 12];
+    std::io::Read::read_exact(file, &mut magic).is_ok()
+        && &magic[0..4] == b"RIFF"
+        && &magic[8..12] == b"WEBP"
+}
+
+fn decode_webp_scaled(path: &Path, min_short_edge: u32) -> Option<image::DynamicImage> {
+    let webp_data = std::fs::read(path).ok()?;
+    let mut config = libwebp_sys::WebPDecoderConfig::new().ok()?;
+    let status =
+        unsafe { libwebp_sys::WebPGetFeatures(webp_data.as_ptr(), webp_data.len(), &mut config.input) };
+    if status != libwebp_sys::VP8StatusCode::VP8_STATUS_OK {
+        return None;
+    }
+    if config.input.has_animation != 0 {
+        return None;
+    }
+
+    let src_width = u32::try_from(config.input.width).ok()?;
+    let src_height = u32::try_from(config.input.height).ok()?;
+    let (target_width, target_height) =
+        choose_thumbnail_webp_dimensions(src_width, src_height, min_short_edge);
+    let stride = usize::try_from(target_width).ok()?.checked_mul(4)?;
+    let mut rgba = vec![0u8; stride.checked_mul(usize::try_from(target_height).ok()?)?];
+
+    config.options.use_threads = 1;
+    let use_scaling = target_width != src_width || target_height != src_height;
+    config.options.use_scaling = i32::from(use_scaling);
+    config.options.scaled_width = i32::try_from(target_width).ok()?;
+    config.options.scaled_height = i32::try_from(target_height).ok()?;
+    config.output.colorspace = libwebp_sys::WEBP_CSP_MODE::MODE_RGBA;
+    config.output.width = i32::try_from(target_width).ok()?;
+    config.output.height = i32::try_from(target_height).ok()?;
+    config.output.is_external_memory = 1;
+    config.output.u.RGBA.rgba = rgba.as_mut_ptr();
+    config.output.u.RGBA.stride = i32::try_from(stride).ok()?;
+    config.output.u.RGBA.size = rgba.len();
+
+    let status = unsafe { libwebp_sys::WebPDecode(webp_data.as_ptr(), webp_data.len(), &mut config) };
+    if status != libwebp_sys::VP8StatusCode::VP8_STATUS_OK {
+        return None;
+    }
+
+    let rgba = image::RgbaImage::from_raw(target_width, target_height, rgba)?;
+    Some(image::DynamicImage::ImageRgba8(rgba))
+}
+
 fn decode_with_image_crate(path: &Path) -> Option<image::DynamicImage> {
     let file = std::fs::File::open(path).ok()?;
     let reader = image::ImageReader::new(std::io::BufReader::new(file))
         .with_guessed_format()
         .ok()?;
     reader.decode().ok()
+}
+
+fn choose_thumbnail_webp_dimensions(width: u32, height: u32, min_short_edge: u32) -> (u32, u32) {
+    if width == 0 || height == 0 {
+        return (width, height);
+    }
+
+    let short_edge = width.min(height);
+    if short_edge <= min_short_edge {
+        return (width, height);
+    }
+
+    let scale = min_short_edge as f64 / short_edge as f64;
+    let scaled_width = ((width as f64) * scale).round().max(1.0) as u32;
+    let scaled_height = ((height as f64) * scale).round().max(1.0) as u32;
+    (scaled_width, scaled_height)
 }
 
 fn build_thumbnail_and_cache(
@@ -722,5 +807,17 @@ mod tests {
             result_rx.try_recv().is_err(),
             "stale request must not produce a ThumbnailResult"
         );
+    }
+
+    #[test]
+    fn choose_thumbnail_webp_dimensions_scales_short_edge_to_target() {
+        let (w, h) = choose_thumbnail_webp_dimensions(4000, 3000, THUMB_HEIGHT);
+        assert_eq!((w, h), (213, 160));
+    }
+
+    #[test]
+    fn choose_thumbnail_webp_dimensions_keeps_small_images() {
+        let (w, h) = choose_thumbnail_webp_dimensions(120, 90, THUMB_HEIGHT);
+        assert_eq!((w, h), (120, 90));
     }
 }
