@@ -265,6 +265,40 @@ impl TagDatabase {
         );
     }
 
+    pub fn rename_path(&self, old_path: &Path, new_path: &Path) {
+        if old_path == new_path {
+            return;
+        }
+        let Ok(mut conn) = self.conn.lock() else {
+            return;
+        };
+        let tx = match conn.transaction() {
+            Ok(tx) => tx,
+            Err(_) => return,
+        };
+        let old_path_str = old_path.to_string_lossy();
+        let new_path_str = new_path.to_string_lossy();
+        let _ = tx.execute(
+            "INSERT OR IGNORE INTO file_tags (path, tag)
+             SELECT ?2, tag FROM file_tags WHERE path = ?1",
+            params![old_path_str.as_ref(), new_path_str.as_ref()],
+        );
+        let _ = tx.execute(
+            "DELETE FROM file_tags WHERE path = ?1",
+            params![old_path_str.as_ref()],
+        );
+        let _ = tx.execute(
+            "INSERT OR REPLACE INTO image_quality (path, sharpness, mtime)
+             SELECT ?2, sharpness, mtime FROM image_quality WHERE path = ?1",
+            params![old_path_str.as_ref(), new_path_str.as_ref()],
+        );
+        let _ = tx.execute(
+            "DELETE FROM image_quality WHERE path = ?1",
+            params![old_path_str.as_ref()],
+        );
+        let _ = tx.commit();
+    }
+
     pub fn paths_for_all_tags(&self, tags: &[String]) -> Vec<PathBuf> {
         let tags = normalized_unique_tags(tags);
         if tags.is_empty() {
@@ -693,6 +727,45 @@ mod tests {
 
         db.remove_tags_from_paths(std::slice::from_ref(&a), &["portrait".into()]);
         assert_eq!(db.tags_for_path(&a), vec!["people".to_string()]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rename_path_moves_tags_and_sharpness() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let root = temp_path("rename-path");
+        std::fs::create_dir_all(&root).unwrap();
+        let old = root.join("photo.jpg");
+        let new = root.join("photo.jxl");
+        std::fs::write(&old, b"data").unwrap();
+        std::fs::write(&new, b"data").unwrap();
+
+        db.add_tag(&old, "portrait");
+        db.upsert_sharpness(&old, 7.5, 123);
+
+        db.rename_path(&old, &new);
+
+        assert!(db.tags_for_path(&old).is_empty());
+        assert_eq!(db.tags_for_path(&new), vec!["portrait".to_string()]);
+
+        let conn = db.conn.lock().unwrap();
+        let new_quality: Option<(f64, i64)> = conn
+            .query_row(
+                "SELECT sharpness, mtime FROM image_quality WHERE path = ?1",
+                params![new.to_string_lossy().as_ref()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+        assert_eq!(new_quality, Some((7.5, 123)));
+        let old_quality: Option<i64> = conn
+            .query_row(
+                "SELECT COUNT(*) FROM image_quality WHERE path = ?1",
+                params![old.to_string_lossy().as_ref()],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(old_quality, Some(0));
 
         std::fs::remove_dir_all(root).unwrap();
     }

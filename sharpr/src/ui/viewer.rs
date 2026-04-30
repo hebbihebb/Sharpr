@@ -163,6 +163,21 @@ impl ConvertKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConvertDestinationMode {
+    Export,
+    Replace,
+}
+
+impl ConvertDestinationMode {
+    pub fn from_export_mode(mode: crate::export::ConvertDestinationMode) -> Self {
+        match mode {
+            crate::export::ConvertDestinationMode::Export => Self::Export,
+            crate::export::ConvertDestinationMode::Replace => Self::Replace,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ConvertSession {
     op_id: u64,
@@ -171,6 +186,7 @@ struct ConvertSession {
     default_copy_dir: PathBuf,
     filename_suffix: String,
     kind: ConvertKind,
+    destination_mode: ConvertDestinationMode,
 }
 
 mod imp {
@@ -2092,6 +2108,7 @@ impl ViewerPane {
         scale: u32,
         model: crate::upscale::UpscaleModel,
         trigger_btn: gtk4::Button,
+        destination_mode: ConvertDestinationMode,
     ) {
         use crate::model::ImageEntry;
         use crate::upscale::backend::UpscaleBackend;
@@ -2181,8 +2198,13 @@ impl ViewerPane {
         );
         let filename_suffix =
             upscale_filename_suffix(backend_kind, model, onnx_model, comfyui_workflow);
-        let final_output =
-            output_path_for_upscale(&path, &output_dir, &filename_suffix, output_format);
+        let final_output = output_path_for_convert(
+            destination_mode,
+            &path,
+            &output_dir,
+            &filename_suffix,
+            output_format.extension(),
+        );
         let temp_output = pending_output_path(&final_output);
         let op = ops_queue.add("Upscaling image");
         let session = Rc::new(ConvertSession {
@@ -2192,6 +2214,7 @@ impl ViewerPane {
             default_copy_dir: output_dir,
             filename_suffix,
             kind: ConvertKind::Upscale,
+            destination_mode,
         });
 
         let rx = if let Some(dir) = temp_output.parent() {
@@ -2280,6 +2303,7 @@ impl ViewerPane {
         scale: u32,
         model: crate::upscale::UpscaleModel,
         trigger_btn: gtk4::Button,
+        destination_mode: ConvertDestinationMode,
     ) {
         use crate::upscale::runner::UpscaleEvent;
         use crate::upscale::{
@@ -2364,11 +2388,12 @@ impl ViewerPane {
                         .then_some(settings.upscaler_gpu_id as u32),
                 };
                 let output_format = UpscaleRunner::select_output_format(&job);
-                let final_output = output_path_for_upscale(
+                let final_output = output_path_for_convert(
+                    destination_mode,
                     &source_path,
                     &output_dir,
                     &filename_suffix,
-                    output_format,
+                    output_format.extension(),
                 );
                 let temp_output = pending_output_path(&final_output);
                 let Some(backend) =
@@ -2432,7 +2457,8 @@ impl ViewerPane {
                     continue;
                 }
 
-                match finalize_copy_output(
+                match finalize_convert_output(
+                    destination_mode,
                     &temp_output,
                     &source_path,
                     &output_dir,
@@ -2441,7 +2467,11 @@ impl ViewerPane {
                     Ok(final_path) => {
                         completed += 1;
                         if let Some(viewer) = viewer_weak.upgrade() {
-                            viewer.register_output_in_current_folder(&final_path);
+                            viewer.handle_batch_convert_commit(
+                                &source_path,
+                                &final_path,
+                                destination_mode,
+                            );
                         }
                         op.progress(Some((completed + failed) as f32 / total as f32));
                     }
@@ -2494,7 +2524,12 @@ impl ViewerPane {
 
     /// Export `source` to a temp file in the destination folder, then show
     /// the before/after comparison.
-    pub fn start_downscale_preview(&self, source: PathBuf, config: crate::export::ExportConfig) {
+    pub fn start_downscale_preview(
+        &self,
+        source: PathBuf,
+        config: crate::export::ExportConfig,
+        destination_mode: crate::export::ConvertDestinationMode,
+    ) {
         let imp = self.imp();
         let ops_queue = {
             let st = imp.state.borrow();
@@ -2503,24 +2538,39 @@ impl ViewerPane {
             ops
         };
 
-        let ext = crate::export::format_extension(config.format);
-        let temp_path = pending_output_path(&crate::export::unique_output_path_for_extension(
-            &config.destination,
+        let max_edge = config.max_edge;
+        let format = config.format;
+        let quality = config.quality;
+        let ext = crate::export::format_extension(format);
+        let pending_suffix = config
+            .filename_suffix
+            .clone()
+            .unwrap_or_else(|| crate::export::export_filename_suffix(max_edge, format));
+        let temp_path = pending_output_path(&output_path_for_convert(
+            ConvertDestinationMode::from_export_mode(destination_mode),
             &source,
+            &config.destination,
+            &pending_suffix,
             ext,
         ));
 
         let source_c = source.clone();
         let temp_c = temp_path.clone();
-        let max_edge = config.max_edge;
-        let format = config.format;
-        let quality = config.quality;
 
         let (tx, rx) = async_channel::bounded::<Result<(), String>>(1);
         rayon::spawn(move || {
-            let result =
+            let result = (|| -> Result<(), String> {
+                if let Some(dir) = temp_c.parent() {
+                    std::fs::create_dir_all(dir).map_err(|err| {
+                        format!(
+                            "failed to create output directory {}: {err}",
+                            dir.display()
+                        )
+                    })?;
+                }
                 crate::export::export_to_path(&source_c, &temp_c, max_edge, format, quality)
-                    .map_err(|e| e.to_string());
+                    .map_err(|e| e.to_string())
+            })();
             let _ = tx.send_blocking(result);
         });
 
@@ -2536,6 +2586,7 @@ impl ViewerPane {
                 .clone()
                 .unwrap_or_else(|| crate::export::export_filename_suffix(max_edge, format)),
             kind: ConvertKind::Downscale,
+            destination_mode: ConvertDestinationMode::from_export_mode(destination_mode),
         });
         glib::MainContext::default().spawn_local(async move {
             if let Ok(result) = rx.recv().await {
@@ -2650,7 +2701,13 @@ impl ViewerPane {
                 Ok(Ok(final_path)) => {
                     op.complete();
                     viewer.handle_copy_commit(&session, &final_path);
-                    if viewer.imp().current_path.borrow().as_ref() == Some(&session.source_path) {
+                    if session.destination_mode == ConvertDestinationMode::Replace
+                        && viewer.imp().current_path.borrow().as_ref() == Some(&session.source_path)
+                    {
+                        viewer.load_image(final_path.clone());
+                    } else if viewer.imp().current_path.borrow().as_ref()
+                        == Some(&session.source_path)
+                    {
                         viewer.show_comparison_with_actions(
                             session.source_path.clone(),
                             final_path,
@@ -2703,6 +2760,11 @@ impl ViewerPane {
                     viewer.restore_view_mode();
                     viewer.finish_convert_session(session.op_id);
                     viewer.handle_copy_commit(&session, &final_path);
+                    if session.destination_mode == ConvertDestinationMode::Replace
+                        && viewer.imp().current_path.borrow().as_ref() != Some(&final_path)
+                    {
+                        viewer.load_image(final_path.clone());
+                    }
                 }
                 Ok(Err(msg)) => {
                     op.fail(msg.clone());
@@ -2744,8 +2806,61 @@ impl ViewerPane {
         let _ = state.library.insert_path(path.to_path_buf());
     }
 
+    fn update_replace_output_in_current_folder(
+        &self,
+        source_path: &std::path::Path,
+        final_path: &std::path::Path,
+    ) {
+        let Some(state_rc) = self.imp().state.borrow().as_ref().cloned() else {
+            return;
+        };
+        let tags_db = state_rc.borrow().tags.clone();
+        if let Some(tags_db) = tags_db.as_ref() {
+            tags_db.rename_path(source_path, final_path);
+        }
+
+        let mut state = state_rc.borrow_mut();
+        let selected_old = state.library.selected_index;
+        let old_index = state.library.index_of_path(source_path);
+        if source_path == final_path {
+            state.library.invalidate_path_caches(final_path);
+            return;
+        }
+        state.library.remove_path(source_path);
+        if state.selected_paths.remove(source_path) {
+            state.selected_paths.insert(final_path.to_path_buf());
+        }
+        let new_index = state.library.insert_path(final_path.to_path_buf());
+        if selected_old == old_index {
+            state.library.selected_index = new_index;
+        }
+    }
+
+    pub(crate) fn handle_batch_convert_commit(
+        &self,
+        source_path: &std::path::Path,
+        final_path: &std::path::Path,
+        destination_mode: ConvertDestinationMode,
+    ) {
+        match destination_mode {
+            ConvertDestinationMode::Export => self.register_output_in_current_folder(final_path),
+            ConvertDestinationMode::Replace => {
+                self.update_replace_output_in_current_folder(source_path, final_path)
+            }
+        }
+        if destination_mode == ConvertDestinationMode::Replace
+            && self.imp().current_path.borrow().as_deref() == Some(source_path)
+        {
+            self.load_image(final_path.to_path_buf());
+        }
+    }
+
     fn handle_copy_commit(&self, session: &ConvertSession, final_path: &std::path::Path) {
-        self.register_output_in_current_folder(final_path);
+        self.handle_batch_convert_commit(
+            &session.source_path,
+            final_path,
+            session.destination_mode,
+        );
         if let Some(cb) = self.imp().post_save_cb.borrow().as_ref() {
             cb();
         }
@@ -2777,18 +2892,24 @@ impl ViewerPane {
     }
 }
 
-fn output_path_for_upscale(
+fn output_path_for_convert(
+    destination_mode: ConvertDestinationMode,
     input_path: &std::path::Path,
     destination_dir: &std::path::Path,
     filename_suffix: &str,
-    format: crate::upscale::UpscaleOutputFormat,
+    ext: &str,
 ) -> PathBuf {
-    crate::export::unique_output_path_with_suffix(
-        destination_dir,
-        input_path,
-        filename_suffix,
-        format.extension(),
-    )
+    match destination_mode {
+        ConvertDestinationMode::Export => crate::export::unique_output_path_with_suffix(
+            destination_dir,
+            input_path,
+            filename_suffix,
+            ext,
+        ),
+        ConvertDestinationMode::Replace => {
+            crate::export::replacement_output_path_for_extension(input_path, ext)
+        }
+    }
 }
 
 fn load_upscale_source_dimensions(path: &std::path::Path) -> (u32, u32) {
@@ -2825,7 +2946,7 @@ fn make_upscale_backend(
     }
 }
 
-fn pending_output_path(final_output: &std::path::Path) -> PathBuf {
+pub(crate) fn pending_output_path(final_output: &std::path::Path) -> PathBuf {
     static PENDING_OUTPUT_SEQ: AtomicU64 = AtomicU64::new(1);
 
     let stem = final_output
@@ -2851,12 +2972,28 @@ fn pending_output_path(final_output: &std::path::Path) -> PathBuf {
 }
 
 fn finalize_convert_session(session: &ConvertSession) -> Result<PathBuf, String> {
-    finalize_copy_output(
+    finalize_convert_output(
+        session.destination_mode,
         &session.temp_output,
         &session.source_path,
         &session.default_copy_dir,
         &session.filename_suffix,
     )
+}
+
+fn finalize_convert_output(
+    destination_mode: ConvertDestinationMode,
+    temp_output: &std::path::Path,
+    source_path: &std::path::Path,
+    destination_dir: &std::path::Path,
+    filename_suffix: &str,
+) -> Result<PathBuf, String> {
+    match destination_mode {
+        ConvertDestinationMode::Export => {
+            finalize_copy_output(temp_output, source_path, destination_dir, filename_suffix)
+        }
+        ConvertDestinationMode::Replace => finalize_replace_output(temp_output, source_path),
+    }
 }
 
 fn finalize_copy_output(
@@ -2888,6 +3025,54 @@ fn finalize_copy_output(
         move_file(&preserved_temp, &preserved_final)?;
     }
     Ok(final_path)
+}
+
+pub(crate) fn finalize_replace_output(
+    temp_output: &std::path::Path,
+    source_path: &std::path::Path,
+) -> Result<PathBuf, String> {
+    let ext = temp_output
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let final_path = crate::export::replacement_output_path_for_extension(source_path, ext);
+    move_file(temp_output, &final_path)?;
+    let preserved_temp = crate::upscale::runner::preserved_png_temp_path(temp_output);
+    if preserved_temp.exists() {
+        let preserved_final = unique_png_sibling_path(&final_path);
+        move_file(&preserved_temp, &preserved_final)?;
+    }
+    if final_path != source_path {
+        trash_replaced_source(source_path)?;
+    }
+    Ok(final_path)
+}
+
+#[cfg(not(test))]
+fn trash_replaced_source(source_path: &std::path::Path) -> Result<(), String> {
+    // Schedule on the main thread: gio::File::trash() routes through GVfs/D-Bus and
+    // must not be called from rayon or std threads while the GTK main loop owns the
+    // global GLib main context — doing so deadlocks the background thread forever.
+    let path = source_path.to_path_buf();
+    glib::MainContext::default().invoke(move || {
+        if let Err(err) = gio::File::for_path(&path).trash(None::<&gio::Cancellable>) {
+            eprintln!(
+                "warning: failed to move {} to trash after replacement: {err}",
+                path.display()
+            );
+        }
+    });
+    Ok(())
+}
+
+#[cfg(test)]
+fn trash_replaced_source(source_path: &std::path::Path) -> Result<(), String> {
+    std::fs::remove_file(source_path).map_err(|err| {
+        format!(
+            "failed to remove original {} after replacement: {err}",
+            source_path.display()
+        )
+    })
 }
 
 fn unique_png_sibling_path(base_output: &std::path::Path) -> PathBuf {
@@ -2997,5 +3182,50 @@ mod tests {
             unique_png_sibling_path(&output),
             PathBuf::from("/tmp/photo-upscaled-comfyui.png")
         );
+    }
+
+    #[test]
+    fn finalize_replace_output_swaps_extension_and_removes_original() {
+        let root = std::env::temp_dir().join(format!(
+            "sharpr-viewer-replace-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("photo.jpg");
+        let temp = root.join("photo.pending.jxl");
+        std::fs::write(&source, b"old").unwrap();
+        std::fs::write(&temp, b"new").unwrap();
+
+        let final_path = finalize_replace_output(&temp, &source).unwrap();
+        assert_eq!(final_path, root.join("photo.jxl"));
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&final_path).unwrap(), b"new");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finalize_replace_output_overwrites_same_extension_in_place() {
+        let root = std::env::temp_dir().join(format!(
+            "sharpr-viewer-replace-same-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("photo.jpg");
+        let temp = root.join("photo.pending.jpg");
+        std::fs::write(&source, b"old").unwrap();
+        std::fs::write(&temp, b"new").unwrap();
+
+        let final_path = finalize_replace_output(&temp, &source).unwrap();
+        assert_eq!(final_path, source);
+        assert_eq!(std::fs::read(&final_path).unwrap(), b"new");
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Instant;
 
 use image::DynamicImage;
 use jpegxl_rs::encode::{EncoderFrame, EncoderResult, EncoderSpeed};
@@ -39,6 +40,7 @@ pub fn encode_path(
     lossless: bool,
     effort: u8,
 ) -> Result<(), String> {
+    let started = Instant::now();
     let quality = quality.clamp(0, 100) as f32;
     let mut encoder = encoder_builder()
         .has_alpha(image.color().has_alpha())
@@ -47,25 +49,73 @@ pub fn encode_path(
         .jpeg_quality(if lossless { 100.0 } else { quality })
         .build()
         .map_err(|err| format!("create JPEG XL encoder: {err}"))?;
+    crate::bench_event!(
+        "jxl.encode.start",
+        serde_json::json!({
+            "output": output.display().to_string(),
+            "width": image.width(),
+            "height": image.height(),
+            "has_alpha": image.color().has_alpha(),
+            "quality": quality,
+            "lossless": lossless,
+            "effort": effort,
+        }),
+    );
 
     let encoded: EncoderResult<u8> = if image.color().has_alpha() {
+        let rgba_started = Instant::now();
         let rgba = image.to_rgba8();
-        encoder
+        let rgba_ms = crate::bench::duration_ms(rgba_started);
+        let encode_started = Instant::now();
+        let result = encoder
             .encode_frame(
                 &EncoderFrame::new(rgba.as_raw()).num_channels(4),
                 rgba.width(),
                 rgba.height(),
             )
-            .map_err(|err| format!("encode JPEG XL {}: {err}", output.display()))?
+            .map_err(|err| format!("encode JPEG XL {}: {err}", output.display()))?;
+        crate::bench_event!(
+            "jxl.encode.stage",
+            serde_json::json!({
+                "output": output.display().to_string(),
+                "pixel_prep_ms": rgba_ms,
+                "encode_ms": crate::bench::duration_ms(encode_started),
+                "path": "rgba",
+            }),
+        );
+        result
     } else {
+        let rgb_started = Instant::now();
         let rgb = image.to_rgb8();
-        encoder
+        let rgb_ms = crate::bench::duration_ms(rgb_started);
+        let encode_started = Instant::now();
+        let result = encoder
             .encode(rgb.as_raw(), rgb.width(), rgb.height())
-            .map_err(|err| format!("encode JPEG XL {}: {err}", output.display()))?
+            .map_err(|err| format!("encode JPEG XL {}: {err}", output.display()))?;
+        crate::bench_event!(
+            "jxl.encode.stage",
+            serde_json::json!({
+                "output": output.display().to_string(),
+                "pixel_prep_ms": rgb_ms,
+                "encode_ms": crate::bench::duration_ms(encode_started),
+                "path": "rgb",
+            }),
+        );
+        result
     };
 
+    let write_started = Instant::now();
     std::fs::write(output, encoded.data)
-        .map_err(|err| format!("write JPEG XL {}: {err}", output.display()))
+        .map_err(|err| format!("write JPEG XL {}: {err}", output.display()))?;
+    crate::bench_event!(
+        "jxl.encode.done",
+        serde_json::json!({
+            "output": output.display().to_string(),
+            "write_ms": crate::bench::duration_ms(write_started),
+            "duration_ms": crate::bench::duration_ms(started),
+        }),
+    );
+    Ok(())
 }
 
 fn speed_for_effort(effort: u8) -> EncoderSpeed {

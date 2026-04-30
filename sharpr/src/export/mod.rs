@@ -6,6 +6,7 @@
 //! file in the destination folder.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use image::imageops::FilterType;
 
@@ -27,6 +28,12 @@ pub enum ExportFormat {
 pub enum OutputFolderKind {
     Upscaled,
     Export,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvertDestinationMode {
+    Export,
+    Replace,
 }
 
 impl OutputFolderKind {
@@ -81,9 +88,25 @@ impl std::fmt::Display for ExportError {
 ///
 /// Generates a unique output file name so existing files are never overwritten.
 pub fn export_image(source: &Path, config: &ExportConfig) -> Result<ExportResult, ExportError> {
-    let img = { apply_exif_orientation(decode_source_image(source)?, source) };
+    let started = Instant::now();
+    crate::bench_event!(
+        "export.image.start",
+        serde_json::json!({
+            "source": source.display().to_string(),
+            "destination": config.destination.display().to_string(),
+            "format": format_extension(config.format),
+            "max_edge": config.max_edge,
+            "quality": config.quality,
+        }),
+    );
 
+    let decode_started = Instant::now();
+    let img = { apply_exif_orientation(decode_source_image(source)?, source) };
+    let decode_ms = crate::bench::duration_ms(decode_started);
+
+    let resize_started = Instant::now();
     let img = resize_if_needed(img, config.max_edge);
+    let resize_ms = crate::bench::duration_ms(resize_started);
 
     let output = match config.filename_suffix.as_deref() {
         Some(suffix) => unique_output_path_with_suffix(
@@ -95,7 +118,19 @@ pub fn export_image(source: &Path, config: &ExportConfig) -> Result<ExportResult
         None => unique_output_path(&config.destination, source, config.format),
     };
 
+    let save_started = Instant::now();
     save_image(&img, &output, config.format, config.quality)?;
+    crate::bench_event!(
+        "export.image.done",
+        serde_json::json!({
+            "source": source.display().to_string(),
+            "output": output.display().to_string(),
+            "decode_ms": decode_ms,
+            "resize_ms": resize_ms,
+            "save_ms": crate::bench::duration_ms(save_started),
+            "duration_ms": crate::bench::duration_ms(started),
+        }),
+    );
 
     Ok(ExportResult {
         source: source.to_path_buf(),
@@ -165,6 +200,20 @@ pub fn unique_output_path_with_suffix(
     unique_output_path_for_stem(dest_dir, &stem, ext)
 }
 
+/// Return the in-place replacement path for `source` using the requested extension.
+pub fn replacement_output_path_for_extension(source: &Path, ext: &str) -> PathBuf {
+    let parent = source
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let stem = source
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    path_for_stem_and_ext(&parent, &stem, ext)
+}
+
 fn unique_output_path_for_stem(dest_dir: &Path, stem: &str, ext: &str) -> PathBuf {
     let first = path_for_stem_and_ext(dest_dir, stem, ext);
     if !first.exists() {
@@ -224,9 +273,37 @@ pub fn export_to_path(
     format: ExportFormat,
     quality: u8,
 ) -> Result<(), ExportError> {
+    let started = Instant::now();
+    crate::bench_event!(
+        "export.to_path.start",
+        serde_json::json!({
+            "source": source.display().to_string(),
+            "output": output.display().to_string(),
+            "format": format_extension(format),
+            "max_edge": max_edge,
+            "quality": quality,
+        }),
+    );
+    let decode_started = Instant::now();
     let img = { apply_exif_orientation(decode_source_image(source)?, source) };
+    let decode_ms = crate::bench::duration_ms(decode_started);
+    let resize_started = Instant::now();
     let img = resize_if_needed(img, max_edge);
-    save_image(&img, output, format, quality)
+    let resize_ms = crate::bench::duration_ms(resize_started);
+    let save_started = Instant::now();
+    save_image(&img, output, format, quality)?;
+    crate::bench_event!(
+        "export.to_path.done",
+        serde_json::json!({
+            "source": source.display().to_string(),
+            "output": output.display().to_string(),
+            "decode_ms": decode_ms,
+            "resize_ms": resize_ms,
+            "save_ms": crate::bench::duration_ms(save_started),
+            "duration_ms": crate::bench::duration_ms(started),
+        }),
+    );
+    Ok(())
 }
 
 /// Downscale `img` so its longest edge is at most `max_edge`. No-op when the
@@ -411,6 +488,13 @@ mod tests {
         let out = unique_output_path_with_suffix(&dir, &src, "export-1920px-jpg", "jpg");
         assert_eq!(out, dir.join("shot-export-1920px-jpg-1.jpg"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn replacement_output_path_uses_source_folder_and_new_extension() {
+        let src = PathBuf::from("/photos/shot.jpeg");
+        let out = replacement_output_path_for_extension(&src, "jxl");
+        assert_eq!(out, PathBuf::from("/photos/shot.jxl"));
     }
 
     #[test]

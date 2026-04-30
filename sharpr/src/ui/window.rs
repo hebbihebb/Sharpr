@@ -1352,8 +1352,9 @@ impl SharprWindow {
             let toast_overlay_c = toast_overlay.clone();
             let window_weak = self.downgrade();
             let content_stack = content_stack.clone();
-            Rc::new(move |path: PathBuf| {
-                if path_is_disabled(&path, &state_c.borrow().disabled_folders) {
+            let open_folder_now: Rc<dyn Fn(PathBuf)> = Rc::new(move |path: PathBuf| {
+                let disabled_folders = state_c.borrow().disabled_folders.clone();
+                if path_is_disabled(&path, &disabled_folders) {
                     toast_overlay_c.add_toast(libadwaita::Toast::new("Folder is disabled"));
                     sidebar_c.set_folder_ignored(&path, true);
                     return;
@@ -1371,13 +1372,10 @@ impl SharprWindow {
                 }
                 content_stack.set_visible_child_name("viewer");
                 let cache_max = AppSettings::load().thumbnail_cache_max as usize;
-                state_c
-                    .borrow_mut()
-                    .library
-                    .set_thumbnail_cache_max(cache_max);
-                state_c.borrow_mut().library.reset_for_folder(&path);
                 {
                     let mut st = state_c.borrow_mut();
+                    st.library.set_thumbnail_cache_max(cache_max);
+                    st.library.reset_for_folder(&path);
                     st.settings
                         .set_active_library_last_folder(Some(path.clone()));
                     st.selected_paths.clear();
@@ -1771,6 +1769,15 @@ impl SharprWindow {
                         state_rx.clone(),
                     );
                 });
+            });
+            let state_retry = state.clone();
+            Rc::new(move |path: PathBuf| {
+                if state_retry.try_borrow_mut().is_err() {
+                    let open_folder_retry = open_folder_now.clone();
+                    glib::idle_add_local_once(move || open_folder_retry(path));
+                    return;
+                }
+                open_folder_now(path);
             })
         };
 
@@ -4963,7 +4970,13 @@ impl SharprWindow {
                                 3 => 4,
                                 _ => 0,
                             };
-                            viewer.start_upscale(p.clone(), scale, cli_model, proxy_btn);
+                            viewer.start_upscale(
+                                p.clone(),
+                                scale,
+                                cli_model,
+                                proxy_btn,
+                                crate::ui::viewer::ConvertDestinationMode::Export,
+                            );
                         },
                     );
                 }
@@ -5165,7 +5178,7 @@ impl SharprWindow {
                     saved_backend,
                     saved_cli_model,
                     saved_upscale_compress_output,
-                    saved_upscale_compressed_format,
+                    _saved_upscale_compressed_format,
                     saved_upscale_keep_raw_png_sidecar,
                     saved_onnx_model,
                     saved_comfyui_workflow,
@@ -5236,6 +5249,20 @@ impl SharprWindow {
                 mode_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
                 mode_stack.set_transition_duration(120);
 
+                let destination_lbl = gtk4::Label::new(Some("Destination"));
+                destination_lbl.set_halign(gtk4::Align::Start);
+                let destination_drop = gtk4::DropDown::from_strings(&["Export", "Replace"]);
+                destination_drop.set_selected(0);
+
+                let replace_warning = gtk4::Label::new(Some(
+                    "Converted image will replace the original in its current folder.",
+                ));
+                replace_warning.set_halign(gtk4::Align::Start);
+                replace_warning.set_wrap(true);
+                replace_warning.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+                replace_warning.add_css_class("dim-label");
+                replace_warning.set_visible(false);
+
                 // ── Upscale widgets (created unconditionally so they are in
                 //    scope for the connect_response closure regardless of
                 //    show_upscale; they are only *added to the UI* when
@@ -5248,11 +5275,7 @@ impl SharprWindow {
                 upscale_compress_check.set_active(saved_upscale_compress_output);
                 let upscale_fmt_drop =
                     gtk4::DropDown::from_strings(&["JPEG XL", "WebP", "JPEG"]);
-                upscale_fmt_drop.set_selected(match saved_upscale_compressed_format.as_str() {
-                    "webp" => 1,
-                    "jpeg" => 2,
-                    _ => 0,
-                });
+                upscale_fmt_drop.set_selected(0);
                 let upscale_keep_png_check =
                     gtk4::CheckButton::with_label("Keep raw PNG sidecar");
                 upscale_keep_png_check.set_active(saved_upscale_keep_raw_png_sidecar);
@@ -5306,15 +5329,6 @@ impl SharprWindow {
                 // ── Downscale pane ───────────────────────────────────────────
                 let ds_box = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
 
-                let dest_label = gtk4::Label::new(Some("No folder selected"));
-                dest_label.set_halign(gtk4::Align::Start);
-                dest_label.set_hexpand(true);
-                let choose_btn = gtk4::Button::with_label("Choose Folder…");
-                let dest_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-                dest_row.append(&dest_label);
-                dest_row.append(&choose_btn);
-                ds_box.append(&dest_row);
-
                 let edge_lbl = gtk4::Label::new(Some("Max size"));
                 edge_lbl.set_halign(gtk4::Align::Start);
                 let edge_drop =
@@ -5345,15 +5359,18 @@ impl SharprWindow {
                     });
                 }
 
-                let default_dest = {
-                    let st = state_c.borrow();
-                    crate::export::resolve_output_dir(
-                        st.settings.export_output_dir.as_ref(),
-                        crate::export::OutputFolderKind::Export,
-                    )
+                let refresh_destination_ui = {
+                    let destination_drop = destination_drop.clone();
+                    let replace_warning = replace_warning.clone();
+                    move || {
+                        replace_warning.set_visible(destination_drop.selected() == 1);
+                    }
                 };
-                dest_label.set_label(default_dest.to_string_lossy().as_ref());
-                choose_btn.set_visible(false);
+                refresh_destination_ui();
+                {
+                    let refresh = refresh_destination_ui.clone();
+                    destination_drop.connect_selected_notify(move |_| refresh());
+                }
 
                 mode_stack.add_named(&ds_box, Some("downscale"));
 
@@ -5580,6 +5597,9 @@ impl SharprWindow {
                 }
 
                 mode_stack.set_visible_child_name("downscale");
+                content.append(&destination_lbl);
+                content.append(&destination_drop);
+                content.append(&replace_warning);
                 content.append(&mode_stack);
                 dialog.set_extra_child(Some(&content));
 
@@ -5595,8 +5615,30 @@ impl SharprWindow {
                     }
 
                     let is_upscale = show_upscale && !downscale_radio.is_active();
-
-                    if is_upscale {
+                    let destination_mode = if destination_drop.selected() == 1 {
+                        crate::export::ConvertDestinationMode::Replace
+                    } else {
+                        crate::export::ConvertDestinationMode::Export
+                    };
+                    let run_convert: Rc<dyn Fn()> = Rc::new({
+                        let state_cc = state_cc.clone();
+                        let banner_cc = banner_cc.clone();
+                        let action_weak_c = action_weak_c.clone();
+                        let viewer_c = viewer_c.clone();
+                        let sources = sources.clone();
+                        let win_weak3 = win_weak3.clone();
+                        let onnx_btn = onnx_btn.clone();
+                        let comfyui_btn = comfyui_btn.clone();
+                        let onnx_drop = onnx_drop.clone();
+                        let upscale_compress_check = upscale_compress_check.clone();
+                        let upscale_fmt_drop = upscale_fmt_drop.clone();
+                        let upscale_keep_png_check = upscale_keep_png_check.clone();
+                        let anime_btn = anime_btn.clone();
+                        let scale_drop = scale_drop.clone();
+                        let edge_drop = edge_drop.clone();
+                        let fmt_drop = fmt_drop.clone();
+                        let quality_spin = quality_spin.clone();
+                        move || if is_upscale {
                         // ── AI Upscale path ──────────────────────────────────
                         let backend_kind2 = if onnx_btn.is_active() {
                             UpscaleBackendKind::Onnx
@@ -5665,14 +5707,25 @@ impl SharprWindow {
                             3 => 4,
                             _ => 0,
                         };
+                        let viewer_destination_mode =
+                            crate::ui::viewer::ConvertDestinationMode::from_export_mode(
+                                destination_mode,
+                            );
                         if sources.len() == 1 {
-                            viewer_c.start_upscale(sources[0].clone(), scale, cli_model, proxy_btn);
+                            viewer_c.start_upscale(
+                                sources[0].clone(),
+                                scale,
+                                cli_model,
+                                proxy_btn,
+                                viewer_destination_mode,
+                            );
                         } else {
                             viewer_c.start_upscale_batch(
                                 sources.clone(),
                                 scale,
                                 cli_model,
                                 proxy_btn,
+                                viewer_destination_mode,
                             );
                         }
                     } else {
@@ -5692,25 +5745,130 @@ impl SharprWindow {
                         let quality = quality_spin.value() as u8;
 
                         if sources.len() == 1 {
-                            // Single image → comparison preview
                             let source = sources[0].clone();
-                            let destination = {
-                                let st = state_cc.borrow();
-                                crate::export::resolve_output_dir(
-                                    st.settings.export_output_dir.as_ref(),
-                                    crate::export::OutputFolderKind::Export,
-                                )
-                            };
-                            let config = crate::export::ExportConfig {
-                                destination,
-                                max_edge,
-                                format,
-                                quality,
-                                filename_suffix: Some(crate::export::export_filename_suffix(
-                                    max_edge, format,
-                                )),
-                            };
-                            viewer_c.start_downscale_preview(source, config);
+                            if destination_mode == crate::export::ConvertDestinationMode::Replace {
+                                let total = 1usize;
+                                let op = state_cc.borrow().ops.add("Converting image");
+                                let viewer_single = viewer_c.clone();
+                                let win_weak_c = win_weak3.clone();
+                                let viewer_destination_mode =
+                                    crate::ui::viewer::ConvertDestinationMode::from_export_mode(
+                                        destination_mode,
+                                    );
+                                let (tx, rx) =
+                                    async_channel::bounded::<Result<(PathBuf, PathBuf), String>>(1);
+                                rayon::spawn(move || {
+                                    let started = std::time::Instant::now();
+                                    let output =
+                                        crate::export::replacement_output_path_for_extension(
+                                            &source,
+                                            crate::export::format_extension(format),
+                                        );
+                                    let temp = crate::ui::viewer::pending_output_path(&output);
+                                    crate::bench_event!(
+                                        "convert.replace_single.start",
+                                        serde_json::json!({
+                                            "source": source.display().to_string(),
+                                            "output": output.display().to_string(),
+                                            "temp_output": temp.display().to_string(),
+                                            "format": crate::export::format_extension(format),
+                                            "max_edge": max_edge,
+                                            "quality": quality,
+                                        }),
+                                    );
+                                    let export_started = std::time::Instant::now();
+                                    let result = crate::export::export_to_path(
+                                        &source,
+                                        &temp,
+                                        max_edge,
+                                        format,
+                                        quality,
+                                    )
+                                    .map_err(|e| e.to_string())
+                                    .and_then(|_| {
+                                        crate::bench_event!(
+                                            "convert.replace_single.export_done",
+                                            serde_json::json!({
+                                                "source": source.display().to_string(),
+                                                "temp_output": temp.display().to_string(),
+                                                "export_ms": crate::bench::duration_ms(export_started),
+                                            }),
+                                        );
+                                        let finalize_started = std::time::Instant::now();
+                                        crate::ui::viewer::finalize_replace_output(&temp, &source)
+                                            .inspect(|final_path| {
+                                                crate::bench_event!(
+                                                    "convert.replace_single.finalize_done",
+                                                    serde_json::json!({
+                                                        "source": source.display().to_string(),
+                                                        "final_output": final_path.display().to_string(),
+                                                        "finalize_ms": crate::bench::duration_ms(finalize_started),
+                                                        "duration_ms": crate::bench::duration_ms(started),
+                                                    }),
+                                                );
+                                            })
+                                    })
+                                    .map(|final_path| (source.clone(), final_path))
+                                    .map_err(|e| format!("{}: {e}", source.display()));
+                                    let _ = tx.send_blocking(result);
+                                });
+                                glib::MainContext::default().spawn_local(async move {
+                                    match rx.recv().await {
+                                        Ok(Ok((source_path, final_path))) => {
+                                            viewer_single.handle_batch_convert_commit(
+                                                &source_path,
+                                                &final_path,
+                                                viewer_destination_mode,
+                                            );
+                                            if let Some(cb) =
+                                                viewer_single.imp().post_save_cb.borrow().as_ref()
+                                            {
+                                                cb();
+                                            }
+                                            op.progress(Some(1.0 / total as f32));
+                                            op.complete();
+                                            if let Some(w) = win_weak_c.upgrade() {
+                                                w.add_toast(libadwaita::Toast::new(
+                                                    "Image converted",
+                                                ));
+                                            }
+                                        }
+                                        Ok(Err(e)) => {
+                                            op.fail(e.clone());
+                                            if let Some(w) = win_weak_c.upgrade() {
+                                                let alert = libadwaita::AlertDialog::new(
+                                                    Some("Convert Failed"),
+                                                    Some(&e),
+                                                );
+                                                alert.add_response("ok", "OK");
+                                                alert.present(Some(&w));
+                                            }
+                                        }
+                                        Err(_) => {
+                                            op.fail("Convert operation was cancelled");
+                                        }
+                                    }
+                                });
+                            } else {
+                                // Single image → comparison preview
+                                let destination = {
+                                    let st = state_cc.borrow();
+                                    crate::export::resolve_output_dir(
+                                        st.settings.export_output_dir.as_ref(),
+                                        crate::export::OutputFolderKind::Export,
+                                    )
+                                };
+                                let config = crate::export::ExportConfig {
+                                    destination,
+                                    max_edge,
+                                    format,
+                                    quality,
+                                    filename_suffix: Some(crate::export::export_filename_suffix(
+                                        max_edge, format,
+                                    )),
+                                };
+                                viewer_c.start_downscale_preview(source, config, destination_mode);
+                            }
                         } else {
                             let dest = {
                                 let st = state_cc.borrow();
@@ -5733,15 +5891,44 @@ impl SharprWindow {
                             let op = state_cc
                                 .borrow()
                                 .ops
-                                .add(format!("Exporting {total} image(s)"));
+                                .add(format!("Converting {total} image(s)"));
                             let win_weak_c = win_weak3.clone();
+                            let viewer_batch = viewer_c.clone();
+                            let viewer_destination_mode =
+                                crate::ui::viewer::ConvertDestinationMode::from_export_mode(
+                                    destination_mode,
+                                );
                             let srcs = sources.clone();
-                            let (tx, rx) = async_channel::unbounded::<Result<(), String>>();
+                            let (tx, rx) =
+                                async_channel::unbounded::<Result<(PathBuf, PathBuf), String>>();
                             rayon::spawn(move || {
                                 for src in &srcs {
-                                    let result = crate::export::export_image(src, &config)
-                                        .map(|_| ())
-                                        .map_err(|e| format!("{}: {e}", src.display()));
+                                    let result = if destination_mode
+                                        == crate::export::ConvertDestinationMode::Replace
+                                    {
+                                        let output = crate::export::replacement_output_path_for_extension(
+                                            src,
+                                            crate::export::format_extension(config.format),
+                                        );
+                                        let temp = crate::ui::viewer::pending_output_path(&output);
+                                        crate::export::export_to_path(
+                                            src,
+                                            &temp,
+                                            config.max_edge,
+                                            config.format,
+                                            config.quality,
+                                        )
+                                        .map_err(|e| e.to_string())
+                                        .and_then(|_| {
+                                            crate::ui::viewer::finalize_replace_output(&temp, src)
+                                        })
+                                        .map(|final_path| (src.clone(), final_path))
+                                    } else {
+                                        crate::export::export_image(src, &config)
+                                            .map(|result| (src.clone(), result.output))
+                                            .map_err(|e| e.to_string())
+                                    }
+                                    .map_err(|e| format!("{}: {e}", src.display()));
                                     let _ = tx.send_blocking(result);
                                 }
                             });
@@ -5750,7 +5937,14 @@ impl SharprWindow {
                                 let mut failed = 0usize;
                                 while let Ok(result) = rx.recv().await {
                                     match result {
-                                        Ok(()) => ok += 1,
+                                        Ok((source_path, final_path)) => {
+                                            ok += 1;
+                                            viewer_batch.handle_batch_convert_commit(
+                                                &source_path,
+                                                &final_path,
+                                                viewer_destination_mode,
+                                            );
+                                        }
                                         Err(e) => {
                                             failed += 1;
                                             eprintln!("export error: {e}");
@@ -5759,18 +5953,24 @@ impl SharprWindow {
                                     let done = ok + failed;
                                     op.progress(Some(done as f32 / total as f32));
                                 }
+                                if ok > 0 {
+                                    if let Some(cb) = viewer_batch.imp().post_save_cb.borrow().as_ref()
+                                    {
+                                        cb();
+                                    }
+                                }
                                 if failed == 0 {
                                     op.complete();
                                     let msg = if ok == 1 {
-                                        "Image exported".to_string()
+                                        "Image converted".to_string()
                                     } else {
-                                        format!("{ok} images exported")
+                                        format!("{ok} images converted")
                                     };
                                     if let Some(w) = win_weak_c.upgrade() {
                                         w.add_toast(libadwaita::Toast::new(&msg));
                                     }
                                 } else {
-                                    let msg = format!("{ok}/{total} exported, {failed} failed");
+                                    let msg = format!("{ok}/{total} converted, {failed} failed");
                                     op.fail(msg.clone());
                                     if let Some(w) = win_weak_c.upgrade() {
                                         w.add_toast(libadwaita::Toast::new(&msg));
@@ -5778,7 +5978,37 @@ impl SharprWindow {
                                 }
                             });
                         }
+                    }});
+
+                    if destination_mode == crate::export::ConvertDestinationMode::Replace
+                        && sources.len() > 1
+                    {
+                        let confirm = libadwaita::AlertDialog::new(
+                            Some("Replace originals?"),
+                            Some(
+                                "Sharpr will delete each original only after its converted replacement has been written successfully.",
+                            ),
+                        );
+                        confirm.add_response("cancel", "Cancel");
+                        confirm.add_response("replace", "Replace");
+                        confirm.set_default_response(Some("replace"));
+                        confirm.set_close_response("cancel");
+                        confirm.set_response_appearance(
+                            "replace",
+                            libadwaita::ResponseAppearance::Destructive,
+                        );
+                        let run_convert = run_convert.clone();
+                        confirm.connect_response(None, move |_, response| {
+                            if response == "replace" {
+                                run_convert();
+                            }
+                        });
+                        if let Some(win) = win_weak3.upgrade() {
+                            confirm.present(Some(&win));
+                        }
+                        return;
                     }
+                    run_convert();
                 });
 
                 dialog.present(Some(&win));
