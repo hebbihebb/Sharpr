@@ -43,10 +43,10 @@ impl UpscaleModel {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpscaleOutputFormat {
-    Auto,
     Jpeg,
     Png,
     Webp,
+    Jxl,
 }
 
 impl UpscaleOutputFormat {
@@ -55,16 +55,16 @@ impl UpscaleOutputFormat {
             "jpeg" => Self::Jpeg,
             "png" => Self::Png,
             "webp" => Self::Webp,
-            _ => Self::Auto,
+            _ => Self::Jxl,
         }
     }
 
     pub fn extension(self) -> &'static str {
         match self {
-            Self::Auto => "png",
             Self::Jpeg => "jpg",
             Self::Png => "png",
             Self::Webp => "webp",
+            Self::Jxl => "jxl",
         }
     }
 }
@@ -92,7 +92,9 @@ pub struct UpscaleJobConfig {
     pub requested_scale: u32,
     pub execution_scale: u32,
     pub model: UpscaleModel,
-    pub output_format: UpscaleOutputFormat,
+    pub compress_output: bool,
+    pub compressed_format: UpscaleOutputFormat,
+    pub keep_raw_png_sidecar: bool,
     pub compression_mode: UpscaleCompressionMode,
     pub quality: u8,
     pub tile_size: Option<u32>,

@@ -312,16 +312,31 @@ pub fn build_preferences_window(
         });
     }
 
+    let compress_row = libadwaita::SwitchRow::new();
+    compress_row.set_title("Compress completed output");
+    compress_row
+        .set_subtitle("Re-encode the backend PNG into a delivery format when the job finishes");
+    compress_row.set_active(settings.upscale_compress_output);
+
+    {
+        let parent_c = parent.clone();
+        compress_row.connect_active_notify(move |row| {
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_upscale_compress_output(row.is_active());
+        });
+    }
+
     let output_row = libadwaita::ComboRow::new();
-    output_row.set_title("Output format");
-    output_row.set_subtitle("Auto keeps Sharpr in charge of the final save format");
-    let output_choices =
-        gtk4::StringList::new(&["Auto", "JPEG (lossy)", "WebP (lossless)", "PNG (lossless)"]);
+    output_row.set_title("Compressed format");
+    output_row.set_subtitle("JPEG XL is the default compressed delivery format");
+    let output_choices = gtk4::StringList::new(&["JPEG XL", "WebP", "JPEG"]);
     output_row.set_model(Some(&output_choices));
-    output_row.set_selected(match settings.upscaler_output_format.as_str() {
-        "jpeg" => 1,
-        "webp" => 2,
-        "png" => 3,
+    output_row.set_selected(match settings.upscale_compressed_format.as_str() {
+        "webp" => 1,
+        "jpeg" => 2,
         _ => 0,
     });
 
@@ -332,12 +347,27 @@ pub fn build_preferences_window(
                 .app_state()
                 .borrow_mut()
                 .settings
-                .set_upscaler_output_format(match row.selected() {
-                    1 => "jpeg",
-                    2 => "webp",
-                    3 => "png",
-                    _ => "auto",
+                .set_upscale_compressed_format(match row.selected() {
+                    1 => "webp",
+                    2 => "jpeg",
+                    _ => "jxl",
                 });
+        });
+    }
+
+    let keep_png_row = libadwaita::SwitchRow::new();
+    keep_png_row.set_title("Keep raw PNG sidecar");
+    keep_png_row.set_subtitle("Save the uncompressed backend PNG alongside the compressed result");
+    keep_png_row.set_active(settings.upscale_keep_raw_png_sidecar);
+
+    {
+        let parent_c = parent.clone();
+        keep_png_row.connect_active_notify(move |row| {
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_upscale_keep_raw_png_sidecar(row.is_active());
         });
     }
 
@@ -368,7 +398,7 @@ pub fn build_preferences_window(
 
     let quality_row = libadwaita::ActionRow::new();
     quality_row.set_title("Lossy quality");
-    quality_row.set_subtitle("Used when Sharpr saves the final result as JPEG");
+    quality_row.set_subtitle("Used when Sharpr saves the final result as JPEG XL, WebP, or JPEG");
     let quality_adj =
         gtk4::Adjustment::new(settings.upscaler_quality as f64, 50.0, 100.0, 1.0, 5.0, 0.0);
     let quality_spin = gtk4::SpinButton::new(Some(&quality_adj), 1.0, 0);
@@ -385,6 +415,26 @@ pub fn build_preferences_window(
                 .settings
                 .set_upscaler_quality(spin.value() as i32);
         });
+    }
+
+    let refresh_compression_rows = {
+        let output_row = output_row.clone();
+        let keep_png_row = keep_png_row.clone();
+        let compression_row = compression_row.clone();
+        let quality_row = quality_row.clone();
+        let compress_row = compress_row.clone();
+        move || {
+            let enabled = compress_row.is_active();
+            output_row.set_sensitive(enabled);
+            keep_png_row.set_sensitive(enabled);
+            compression_row.set_sensitive(enabled);
+            quality_row.set_sensitive(enabled);
+        }
+    };
+    refresh_compression_rows();
+    {
+        let refresh = refresh_compression_rows.clone();
+        compress_row.connect_active_notify(move |_| refresh());
     }
 
     let tile_row = libadwaita::ActionRow::new();
@@ -436,7 +486,9 @@ pub fn build_preferences_window(
 
     upscaler_group.add(&binary_row);
     upscaler_group.add(&model_row);
+    upscaler_group.add(&compress_row);
     upscaler_group.add(&output_row);
+    upscaler_group.add(&keep_png_row);
     upscaler_group.add(&compression_row);
     upscaler_group.add(&quality_row);
     upscaler_group.add(&tile_row);

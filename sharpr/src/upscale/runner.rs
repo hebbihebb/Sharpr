@@ -52,24 +52,11 @@ impl UpscaleRunner {
         }
     }
 
-    pub fn select_output_format(
-        input: &Path,
-        preferred: UpscaleOutputFormat,
-        compression_mode: UpscaleCompressionMode,
-    ) -> UpscaleOutputFormat {
-        if preferred != UpscaleOutputFormat::Auto {
-            return preferred;
-        }
-
-        if source_has_alpha(input).unwrap_or(false) {
-            return UpscaleOutputFormat::Webp;
-        }
-
-        match compression_mode {
-            UpscaleCompressionMode::Lossless => UpscaleOutputFormat::Webp,
-            UpscaleCompressionMode::Auto | UpscaleCompressionMode::Lossy => {
-                UpscaleOutputFormat::Jpeg
-            }
+    pub fn select_output_format(config: &UpscaleJobConfig) -> UpscaleOutputFormat {
+        if config.compress_output {
+            config.compressed_format
+        } else {
+            UpscaleOutputFormat::Png
         }
     }
 }
@@ -135,7 +122,7 @@ fn run_subprocess(
     match child.wait() {
         Ok(status) if status.success() => {
             send(UpscaleEvent::Progress(None));
-            match finalize_output(&input, &intermediate, &output, config) {
+            match finalize_output(&intermediate, &output, config) {
                 Ok(()) => send(UpscaleEvent::Done(output)),
                 Err(err) => send(UpscaleEvent::Failed(err)),
             }
@@ -149,18 +136,16 @@ fn run_subprocess(
 }
 
 pub(crate) fn finalize_output(
-    input: &Path,
     intermediate: &Path,
     output: &Path,
     config: UpscaleJobConfig,
 ) -> Result<(), String> {
-    let result = finalize_output_without_cleanup(input, intermediate, output, config);
+    let result = finalize_output_without_cleanup(intermediate, output, config);
     let _ = std::fs::remove_file(intermediate); // always clean up temp file
     result
 }
 
 pub(crate) fn finalize_output_without_cleanup(
-    input: &Path,
     intermediate: &Path,
     output: &Path,
     config: UpscaleJobConfig,
@@ -170,8 +155,7 @@ pub(crate) fn finalize_output_without_cleanup(
     use std::fs::File;
     use std::io::BufReader;
 
-    let target_format =
-        UpscaleRunner::select_output_format(input, config.output_format, config.compression_mode);
+    let target_format = UpscaleRunner::select_output_format(&config);
     let (input_w, input_h) = config.source_dimensions;
     if input_w == 0 || input_h == 0 {
         return Err("source dimensions are unavailable".to_string());
@@ -200,6 +184,16 @@ pub(crate) fn finalize_output_without_cleanup(
             intermediate_image.resize_exact(target_w, target_h, FilterType::Lanczos3)
         };
 
+    if config.compress_output && config.keep_raw_png_sidecar {
+        save_image(
+            final_image.clone(),
+            &preserved_png_temp_path(output),
+            UpscaleOutputFormat::Png,
+            UpscaleCompressionMode::Lossless,
+            100,
+        )?;
+    }
+
     save_image(
         final_image,
         output,
@@ -207,6 +201,14 @@ pub(crate) fn finalize_output_without_cleanup(
         config.compression_mode,
         config.quality,
     )
+}
+
+pub(crate) fn preserved_png_temp_path(output: &Path) -> PathBuf {
+    let stem = output
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("upscaled");
+    output.with_file_name(format!("{stem}.preserved.png"))
 }
 
 pub(crate) fn save_image(
@@ -219,15 +221,13 @@ pub(crate) fn save_image(
     use image::codecs::jpeg::JpegEncoder;
     use image::codecs::png::{CompressionType, FilterType, PngEncoder};
     use image::{ExtendedColorType, ImageEncoder};
-    use std::fs::File;
     use std::io::{BufWriter, Write};
-
-    let file = File::create(output)
-        .map_err(|err| format!("failed to create output {}: {err}", output.display()))?;
-    let mut writer = BufWriter::new(file);
 
     match format {
         UpscaleOutputFormat::Jpeg => {
+            let file = std::fs::File::create(output)
+                .map_err(|err| format!("failed to create output {}: {err}", output.display()))?;
+            let writer = BufWriter::new(file);
             let rgb = image.to_rgb8();
             let encoder = JpegEncoder::new_with_quality(writer, quality.clamp(50, 100));
             encoder
@@ -239,7 +239,17 @@ pub(crate) fn save_image(
                 )
                 .map_err(|err| format!("failed to encode JPEG output: {err}"))
         }
-        UpscaleOutputFormat::Png | UpscaleOutputFormat::Auto => {
+        UpscaleOutputFormat::Jxl => crate::jxl::encode_path(
+            &image,
+            output,
+            quality.clamp(50, 100),
+            matches!(compression_mode, UpscaleCompressionMode::Lossless),
+            7,
+        ),
+        UpscaleOutputFormat::Png => {
+            let file = std::fs::File::create(output)
+                .map_err(|err| format!("failed to create output {}: {err}", output.display()))?;
+            let writer = BufWriter::new(file);
             let rgba = image.to_rgba8();
             let encoder = PngEncoder::new_with_quality(
                 writer,
@@ -261,6 +271,9 @@ pub(crate) fn save_image(
                 .map_err(|err| format!("failed to encode PNG output: {err}"))
         }
         UpscaleOutputFormat::Webp => {
+            let file = std::fs::File::create(output)
+                .map_err(|err| format!("failed to create output {}: {err}", output.display()))?;
+            let mut writer = BufWriter::new(file);
             if image.color().has_alpha() {
                 let rgba = image.to_rgba8();
                 let encoded = if matches!(compression_mode, UpscaleCompressionMode::Lossless) {
@@ -288,23 +301,6 @@ pub(crate) fn save_image(
             }
         }
     }
-}
-
-fn source_has_alpha(path: &Path) -> Result<bool, String> {
-    use image::ImageDecoder;
-    use image::ImageReader;
-    use std::fs::File;
-    use std::io::BufReader;
-
-    let reader = ImageReader::new(BufReader::new(
-        File::open(path).map_err(|err| format!("failed to open source image: {err}"))?,
-    ))
-    .with_guessed_format()
-    .map_err(|err| format!("failed to detect source format: {err}"))?;
-    let decoder = reader
-        .into_decoder()
-        .map_err(|err| format!("failed to inspect source decoder: {err}"))?;
-    Ok(decoder.color_type().has_alpha())
 }
 
 fn intermediate_output_path(output: &Path) -> PathBuf {
@@ -350,7 +346,9 @@ mod tests {
             requested_scale: 2,
             execution_scale: 2,
             model: crate::upscale::UpscaleModel::Standard,
-            output_format: format,
+            compress_output: format != UpscaleOutputFormat::Png,
+            compressed_format: format,
+            keep_raw_png_sidecar: false,
             compression_mode: UpscaleCompressionMode::Lossy,
             quality: 80,
             tile_size: None,
@@ -377,7 +375,6 @@ mod tests {
             .unwrap();
 
         finalize_output(
-            &input,
             &intermediate,
             &output,
             sample_config(UpscaleOutputFormat::Webp),
@@ -419,7 +416,6 @@ mod tests {
             .unwrap();
 
         finalize_output_without_cleanup(
-            &input,
             &intermediate,
             &output,
             sample_config(UpscaleOutputFormat::Webp),
@@ -435,6 +431,68 @@ mod tests {
                 .format(),
             Some(ImageFormat::WebP)
         );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn finalize_output_writes_preserved_png_sidecar_for_lossy_output() {
+        let dir = temp_dir("preserved-sidecar");
+        let input = dir.join("input.png");
+        let intermediate = dir.join("intermediate.png");
+        let output = dir.join("output.webp");
+        let preserved = preserved_png_temp_path(&output);
+
+        let src = ImageBuffer::from_fn(4, 3, |x, y| {
+            Rgba([(x * 10) as u8, (y * 20) as u8, 200, 255])
+        });
+        src.save_with_format(&input, ImageFormat::Png).unwrap();
+
+        let upscaled =
+            ImageBuffer::from_fn(8, 6, |x, y| Rgba([255, (x * 5) as u8, (y * 7) as u8, 255]));
+        upscaled
+            .save_with_format(&intermediate, ImageFormat::Png)
+            .unwrap();
+
+        let mut config = sample_config(UpscaleOutputFormat::Webp);
+        config.keep_raw_png_sidecar = true;
+
+        finalize_output_without_cleanup(&intermediate, &output, config).unwrap();
+
+        assert!(preserved.exists());
+        assert_eq!(
+            image::ImageReader::open(&preserved)
+                .unwrap()
+                .with_guessed_format()
+                .unwrap()
+                .format(),
+            Some(ImageFormat::Png)
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn finalize_output_skips_preserved_png_sidecar_by_default() {
+        let dir = temp_dir("no-sidecar");
+        let intermediate = dir.join("intermediate.png");
+        let output = dir.join("output.jxl");
+        let preserved = preserved_png_temp_path(&output);
+
+        let upscaled =
+            ImageBuffer::from_fn(8, 6, |x, y| Rgba([255, (x * 5) as u8, (y * 7) as u8, 255]));
+        upscaled
+            .save_with_format(&intermediate, ImageFormat::Png)
+            .unwrap();
+
+        finalize_output_without_cleanup(
+            &intermediate,
+            &output,
+            sample_config(UpscaleOutputFormat::Jxl),
+        )
+        .unwrap();
+
+        assert!(!preserved.exists());
 
         let _ = std::fs::remove_dir_all(dir);
     }

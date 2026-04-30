@@ -58,7 +58,7 @@ impl SortOrder {
 
 /// Known image file extensions (lower-case).
 const IMAGE_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
+    "jpg", "jpeg", "jxl", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
 ];
 
 #[derive(Clone)]

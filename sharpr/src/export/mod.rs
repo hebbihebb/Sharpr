@@ -1,8 +1,7 @@
 //! Export pipeline for writing user-visible copies without overwriting sources.
 //! `export_image` decodes the source with EXIF orientation applied, optionally
 //! downscales with Lanczos3, then writes into the destination directory.
-//! Supported output formats are JPEG, PNG, and WebP; WebP is always lossless in
-//! the current implementation.
+//! Supported output formats are JPEG, JPEG XL, PNG, and WebP.
 //! `unique_output_path` guarantees that exports never overwrite an existing
 //! file in the destination folder.
 
@@ -19,6 +18,7 @@ use crate::metadata::orientation::apply_exif_orientation;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFormat {
     Jpeg,
+    Jxl,
     Png,
     Webp,
 }
@@ -81,17 +81,7 @@ impl std::fmt::Display for ExportError {
 ///
 /// Generates a unique output file name so existing files are never overwritten.
 pub fn export_image(source: &Path, config: &ExportConfig) -> Result<ExportResult, ExportError> {
-    let img = {
-        let file = std::fs::File::open(source)
-            .map_err(|e| ExportError::Io(format!("open {}: {e}", source.display())))?;
-        let reader = image::ImageReader::new(std::io::BufReader::new(file))
-            .with_guessed_format()
-            .map_err(|e| ExportError::Decode(e.to_string()))?;
-        let decoded = reader
-            .decode()
-            .map_err(|e| ExportError::Decode(e.to_string()))?;
-        apply_exif_orientation(decoded, source)
-    };
+    let img = { apply_exif_orientation(decode_source_image(source)?, source) };
 
     let img = resize_if_needed(img, config.max_edge);
 
@@ -234,17 +224,7 @@ pub fn export_to_path(
     format: ExportFormat,
     quality: u8,
 ) -> Result<(), ExportError> {
-    let img = {
-        let file = std::fs::File::open(source)
-            .map_err(|e| ExportError::Io(format!("open {}: {e}", source.display())))?;
-        let reader = image::ImageReader::new(std::io::BufReader::new(file))
-            .with_guessed_format()
-            .map_err(|e| ExportError::Decode(e.to_string()))?;
-        let decoded = reader
-            .decode()
-            .map_err(|e| ExportError::Decode(e.to_string()))?;
-        apply_exif_orientation(decoded, source)
-    };
+    let img = { apply_exif_orientation(decode_source_image(source)?, source) };
     let img = resize_if_needed(img, max_edge);
     save_image(&img, output, format, quality)
 }
@@ -275,9 +255,25 @@ pub(crate) fn resize_if_needed(
 pub fn format_extension(format: ExportFormat) -> &'static str {
     match format {
         ExportFormat::Jpeg => "jpg",
+        ExportFormat::Jxl => "jxl",
         ExportFormat::Png => "png",
         ExportFormat::Webp => "webp",
     }
+}
+
+fn decode_source_image(source: &Path) -> Result<image::DynamicImage, ExportError> {
+    if crate::jxl::is_jxl_path(source) {
+        return crate::jxl::decode_path(source).map_err(ExportError::Decode);
+    }
+
+    let file = std::fs::File::open(source)
+        .map_err(|e| ExportError::Io(format!("open {}: {e}", source.display())))?;
+    let reader = image::ImageReader::new(std::io::BufReader::new(file))
+        .with_guessed_format()
+        .map_err(|e| ExportError::Decode(e.to_string()))?;
+    reader
+        .decode()
+        .map_err(|e| ExportError::Decode(e.to_string()))
 }
 
 fn save_image(
@@ -291,12 +287,11 @@ fn save_image(
     use image::{ExtendedColorType, ImageEncoder};
     use std::io::{BufWriter, Write};
 
-    let file = std::fs::File::create(output)
-        .map_err(|e| ExportError::Io(format!("create {}: {e}", output.display())))?;
-    let mut writer = BufWriter::new(file);
-
     match format {
         ExportFormat::Jpeg => {
+            let file = std::fs::File::create(output)
+                .map_err(|e| ExportError::Io(format!("create {}: {e}", output.display())))?;
+            let writer = BufWriter::new(file);
             let rgb = img.to_rgb8();
             JpegEncoder::new_with_quality(writer, quality.clamp(1, 100))
                 .write_image(
@@ -307,7 +302,13 @@ fn save_image(
                 )
                 .map_err(|e| ExportError::Encode(e.to_string()))
         }
+        ExportFormat::Jxl => {
+            crate::jxl::encode_path(img, output, quality, false, 7).map_err(ExportError::Encode)
+        }
         ExportFormat::Png => {
+            let file = std::fs::File::create(output)
+                .map_err(|e| ExportError::Io(format!("create {}: {e}", output.display())))?;
+            let writer = BufWriter::new(file);
             let rgba = img.to_rgba8();
             PngEncoder::new_with_quality(writer, CompressionType::Default, PngFilter::Adaptive)
                 .write_image(
@@ -319,6 +320,9 @@ fn save_image(
                 .map_err(|e| ExportError::Encode(e.to_string()))
         }
         ExportFormat::Webp => {
+            let file = std::fs::File::create(output)
+                .map_err(|e| ExportError::Io(format!("create {}: {e}", output.display())))?;
+            let mut writer = BufWriter::new(file);
             if img.color().has_alpha() {
                 let rgba = img.to_rgba8();
                 let encoded = webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
@@ -378,6 +382,15 @@ mod tests {
         let src = PathBuf::from("/photos/shot.jpg");
         let out = unique_output_path(&dir, &src, ExportFormat::Png);
         assert_eq!(out, dir.join("shot.png"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unique_path_uses_jxl_extension() {
+        let dir = temp_dir("jxl-ext");
+        let src = PathBuf::from("/photos/shot.jpg");
+        let out = unique_output_path(&dir, &src, ExportFormat::Jxl);
+        assert_eq!(out, dir.join("shot.jxl"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

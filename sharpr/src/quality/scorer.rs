@@ -164,6 +164,7 @@ fn score_megapixels(megapixels: f64) -> u8 {
 fn score_compression(format: &str, bpp: f64) -> u8 {
     let (floor, target) = match format {
         "AVIF" | "HEIC" | "HEIF" => (0.15, 0.60),
+        "JXL" => (0.18, 0.70),
         "WEBP" => (0.20, 0.80),
         "PNG" => (0.30, 2.00),
         "TIFF" | "TIF" => (0.40, 2.50),
@@ -187,6 +188,7 @@ fn score_compression(format: &str, bpp: f64) -> u8 {
 fn score_format(format: &str) -> u8 {
     match format {
         "PNG" | "TIFF" | "TIF" => 96,
+        "JXL" => 95,
         "AVIF" | "HEIC" | "HEIF" => 94,
         "WEBP" => 90,
         "JPEG" | "JPG" => 76,
@@ -214,7 +216,7 @@ fn build_reason(long_edge: u32, detail_score: u8, compression_score: u8, format:
     if detail_score >= 70 && compression_score >= 74 {
         if matches!(
             format,
-            "AVIF" | "HEIC" | "HEIF" | "WEBP" | "PNG" | "TIFF" | "TIF"
+            "AVIF" | "HEIC" | "HEIF" | "JXL" | "WEBP" | "PNG" | "TIFF" | "TIF"
         ) {
             return "High resolution, efficient format".to_string();
         }

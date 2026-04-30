@@ -561,6 +561,12 @@ impl Default for BeforeAfterViewer {
 }
 
 fn decode_rgba(path: &PathBuf) -> Option<(Vec<u8>, i32, i32)> {
+    if crate::jxl::is_jxl_path(path) {
+        let rgba = crate::jxl::decode_path(path).ok()?.into_rgba8();
+        let (w, h) = (rgba.width() as i32, rgba.height() as i32);
+        return Some((rgba.into_raw(), w, h));
+    }
+
     use image::ImageReader;
     use std::io::BufReader;
     let file = std::fs::File::open(path).ok()?;

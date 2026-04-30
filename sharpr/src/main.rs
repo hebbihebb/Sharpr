@@ -4,6 +4,7 @@ mod config;
 mod duplicates;
 mod export;
 mod image_pipeline;
+mod jxl;
 mod library_index;
 mod metadata;
 mod model;

@@ -62,8 +62,12 @@ pub struct AppSettings {
     pub export_output_dir: Option<PathBuf>,
     /// Default AI upscale model, stored as `"standard"` or `"anime"`.
     pub upscaler_default_model: String,
-    /// Preferred output format: "auto", "jpeg", "png", or "webp".
-    pub upscaler_output_format: String,
+    /// Whether to compress the completed upscale result after the raw PNG is produced.
+    pub upscale_compress_output: bool,
+    /// Preferred compressed output format: "jxl", "webp", or "jpeg".
+    pub upscale_compressed_format: String,
+    /// Whether to keep the raw PNG alongside the compressed result.
+    pub upscale_keep_raw_png_sidecar: bool,
     /// Compression mode: "auto", "lossy", or "lossless".
     pub upscaler_compression_mode: String,
     /// Lossy quality target for JPEG-based output decisions.
@@ -105,7 +109,12 @@ impl std::fmt::Debug for AppSettings {
             .field("upscaled_output_dir", &self.upscaled_output_dir)
             .field("export_output_dir", &self.export_output_dir)
             .field("upscaler_default_model", &self.upscaler_default_model)
-            .field("upscaler_output_format", &self.upscaler_output_format)
+            .field("upscale_compress_output", &self.upscale_compress_output)
+            .field("upscale_compressed_format", &self.upscale_compressed_format)
+            .field(
+                "upscale_keep_raw_png_sidecar",
+                &self.upscale_keep_raw_png_sidecar,
+            )
             .field("upscaler_compression_mode", &self.upscaler_compression_mode)
             .field("upscaler_quality", &self.upscaler_quality)
             .field("upscaler_tile_size", &self.upscaler_tile_size)
@@ -138,7 +147,9 @@ impl Default for AppSettings {
             upscaled_output_dir: None,
             export_output_dir: None,
             upscaler_default_model: "standard".into(),
-            upscaler_output_format: "auto".into(),
+            upscale_compress_output: true,
+            upscale_compressed_format: "jxl".into(),
+            upscale_keep_raw_png_sidecar: false,
             upscaler_compression_mode: "auto".into(),
             upscaler_quality: 90,
             upscaler_tile_size: 0,
@@ -173,12 +184,40 @@ impl AppSettings {
             "anime" => "anime".to_string(),
             _ => "standard".to_string(),
         };
-        let upscaler_output_format = match settings.string("upscaler-output-format").as_str() {
-            "jpeg" => "jpeg".to_string(),
-            "png" => "png".to_string(),
-            "webp" => "webp".to_string(),
-            _ => "auto".to_string(),
-        };
+        let legacy_output_format = settings.string("upscaler-output-format");
+        let mut upscale_compress_output = settings.boolean("upscale-compress-output");
+        let mut upscale_compressed_format =
+            match settings.string("upscale-compressed-format").as_str() {
+                "jpeg" => "jpeg".to_string(),
+                "webp" => "webp".to_string(),
+                _ => "jxl".to_string(),
+            };
+        let upscale_keep_raw_png_sidecar = settings.boolean("upscale-keep-raw-png-sidecar");
+        let has_new_output_settings = settings.user_value("upscale-compress-output").is_some()
+            || settings.user_value("upscale-compressed-format").is_some()
+            || settings
+                .user_value("upscale-keep-raw-png-sidecar")
+                .is_some();
+        if !has_new_output_settings {
+            match legacy_output_format.as_str() {
+                "jpeg" => {
+                    upscale_compress_output = true;
+                    upscale_compressed_format = "jpeg".to_string();
+                }
+                "webp" => {
+                    upscale_compress_output = true;
+                    upscale_compressed_format = "webp".to_string();
+                }
+                "png" => {
+                    upscale_compress_output = false;
+                    upscale_compressed_format = "jxl".to_string();
+                }
+                _ => {
+                    upscale_compress_output = true;
+                    upscale_compressed_format = "jxl".to_string();
+                }
+            }
+        }
         let upscaler_compression_mode = match settings.string("upscaler-compression-mode").as_str()
         {
             "lossy" => "lossy".to_string(),
@@ -244,7 +283,9 @@ impl AppSettings {
             upscaled_output_dir,
             export_output_dir,
             upscaler_default_model,
-            upscaler_output_format,
+            upscale_compress_output,
+            upscale_compressed_format,
+            upscale_keep_raw_png_sidecar,
             upscaler_compression_mode,
             upscaler_quality,
             upscaler_tile_size,
@@ -320,13 +361,32 @@ impl AppSettings {
             "standard"
         };
         let _ = self.settings.set_string("upscaler-default-model", model);
-        let output_format = match self.upscaler_output_format.as_str() {
-            "jpeg" | "png" | "webp" => self.upscaler_output_format.as_str(),
-            _ => "auto",
+        let _ = self
+            .settings
+            .set_boolean("upscale-compress-output", self.upscale_compress_output);
+        let compressed_format = match self.upscale_compressed_format.as_str() {
+            "jpeg" | "webp" => self.upscale_compressed_format.as_str(),
+            _ => "jxl",
         };
         let _ = self
             .settings
-            .set_string("upscaler-output-format", output_format);
+            .set_string("upscale-compressed-format", compressed_format);
+        let _ = self.settings.set_boolean(
+            "upscale-keep-raw-png-sidecar",
+            self.upscale_keep_raw_png_sidecar,
+        );
+        let legacy_output_format = if !self.upscale_compress_output {
+            "png"
+        } else {
+            match compressed_format {
+                "jpeg" => "jpeg",
+                "webp" => "webp",
+                _ => "auto",
+            }
+        };
+        let _ = self
+            .settings
+            .set_string("upscaler-output-format", legacy_output_format);
         let compression_mode = match self.upscaler_compression_mode.as_str() {
             "lossy" | "lossless" => self.upscaler_compression_mode.as_str(),
             _ => "auto",
@@ -570,16 +630,30 @@ impl AppSettings {
             .set_string("upscaler-default-model", &self.upscaler_default_model);
     }
 
-    pub fn set_upscaler_output_format(&mut self, value: &str) {
-        self.upscaler_output_format = match value {
+    pub fn set_upscale_compress_output(&mut self, value: bool) {
+        self.upscale_compress_output = value;
+        let _ = self
+            .settings
+            .set_boolean("upscale-compress-output", self.upscale_compress_output);
+    }
+
+    pub fn set_upscale_compressed_format(&mut self, value: &str) {
+        self.upscale_compressed_format = match value {
             "jpeg" => "jpeg".to_string(),
-            "png" => "png".to_string(),
             "webp" => "webp".to_string(),
-            _ => "auto".to_string(),
+            _ => "jxl".to_string(),
         };
         let _ = self
             .settings
-            .set_string("upscaler-output-format", &self.upscaler_output_format);
+            .set_string("upscale-compressed-format", &self.upscale_compressed_format);
+    }
+
+    pub fn set_upscale_keep_raw_png_sidecar(&mut self, value: bool) {
+        self.upscale_keep_raw_png_sidecar = value;
+        let _ = self.settings.set_boolean(
+            "upscale-keep-raw-png-sidecar",
+            self.upscale_keep_raw_png_sidecar,
+        );
     }
 
     pub fn set_upscaler_compression_mode(&mut self, value: &str) {
@@ -814,6 +888,9 @@ mod tests {
         let _ = settings.set_int("thumbnail-cache-max", 2);
         let _ = settings.set_string("upscaler-default-model", "bogus");
         let _ = settings.set_string("upscaler-output-format", "tiff");
+        let _ = settings.set_boolean("upscale-compress-output", true);
+        let _ = settings.set_string("upscale-compressed-format", "heic");
+        let _ = settings.set_boolean("upscale-keep-raw-png-sidecar", true);
         let _ = settings.set_string("upscaler-compression-mode", "zip");
         let _ = settings.set_string("smart-tagger-model", "resnet34");
         let _ = settings.set_string("upscale-backend", "mystery");
@@ -836,7 +913,9 @@ mod tests {
         assert_eq!(loaded.upscaler_gpu_id, 16);
         assert_eq!(loaded.thumbnail_cache_max, 100);
         assert_eq!(loaded.upscaler_default_model, "standard");
-        assert_eq!(loaded.upscaler_output_format, "auto");
+        assert!(loaded.upscale_compress_output);
+        assert_eq!(loaded.upscale_compressed_format, "jxl");
+        assert!(loaded.upscale_keep_raw_png_sidecar);
         assert_eq!(loaded.upscaler_compression_mode, "auto");
         assert_eq!(loaded.smart_tagger_model, "resnet50-v1-7");
         assert_eq!(loaded.upscale_backend, "cli");
@@ -870,6 +949,18 @@ mod tests {
     }
 
     #[test]
+    fn load_migrates_legacy_upscale_output_format() {
+        let settings = test_settings();
+        let _ = settings.set_string("upscaler-output-format", "webp");
+
+        let loaded = AppSettings::load_from_settings(settings);
+
+        assert!(loaded.upscale_compress_output);
+        assert_eq!(loaded.upscale_compressed_format, "webp");
+        assert!(!loaded.upscale_keep_raw_png_sidecar);
+    }
+
+    #[test]
     fn save_clamps_and_normalizes_persisted_values() {
         let settings = test_settings();
         let library = LibraryConfig {
@@ -892,7 +983,9 @@ mod tests {
             upscaled_output_dir: Some(PathBuf::from("/tmp/upscaled")),
             export_output_dir: Some(PathBuf::from("/tmp/export")),
             upscaler_default_model: "weird".into(),
-            upscaler_output_format: "bmp".into(),
+            upscale_compress_output: false,
+            upscale_compressed_format: "bmp".into(),
+            upscale_keep_raw_png_sidecar: true,
             upscaler_compression_mode: "strange".into(),
             upscaler_quality: 1000,
             upscaler_tile_size: -7,
@@ -930,7 +1023,10 @@ mod tests {
             settings.string("upscaler-default-model").as_str(),
             "standard"
         );
-        assert_eq!(settings.string("upscaler-output-format").as_str(), "auto");
+        assert!(!settings.boolean("upscale-compress-output"));
+        assert_eq!(settings.string("upscale-compressed-format").as_str(), "jxl");
+        assert!(settings.boolean("upscale-keep-raw-png-sidecar"));
+        assert_eq!(settings.string("upscaler-output-format").as_str(), "png");
         assert_eq!(
             settings.string("upscaler-compression-mode").as_str(),
             "auto"

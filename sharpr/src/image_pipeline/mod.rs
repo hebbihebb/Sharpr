@@ -116,44 +116,7 @@ pub fn decode_preview(
         }
     }
 
-    let file = File::open(path).map_err(|e| {
-        crate::bench_event!(
-            "preview.decode.fail",
-            serde_json::json!({
-                "path": path.display().to_string(),
-                "reason": "open_failed",
-                "error": e.to_string(),
-            }),
-        );
-        PreviewDecodeError::OpenFailed
-    })?;
-    let reader = image::ImageReader::new(BufReader::new(file))
-        .with_guessed_format()
-        .map_err(|e| {
-            crate::bench_event!(
-                "preview.decode.fail",
-                serde_json::json!({
-                    "path": path.display().to_string(),
-                    "reason": "format_detect_failed",
-                    "error": e.to_string(),
-                }),
-            );
-            PreviewDecodeError::FormatDetectFailed
-        })?;
-    let img = apply_exif_orientation(
-        reader.decode().map_err(|e| {
-            crate::bench_event!(
-                "preview.decode.fail",
-                serde_json::json!({
-                    "path": path.display().to_string(),
-                    "reason": "decode_failed",
-                    "error": e.to_string(),
-                }),
-            );
-            PreviewDecodeError::DecodeFailed
-        })?,
-        path,
-    );
+    let img = apply_exif_orientation(decode_full_image(path)?, path);
     let rgba = img.into_rgba8();
     if rgba.width() == 0 || rgba.height() == 0 {
         crate::bench_event!(
@@ -213,6 +176,58 @@ fn decode_embedded_preview(path: &Path) -> Option<PreviewImage> {
         height: rgba.height(),
         rgba: rgba.into_raw(),
         source: PreviewSource::EmbeddedPreview,
+    })
+}
+
+fn decode_full_image(path: &Path) -> Result<image::DynamicImage, PreviewDecodeError> {
+    if crate::jxl::is_jxl_path(path) {
+        return crate::jxl::decode_path(path).map_err(|e| {
+            crate::bench_event!(
+                "preview.decode.fail",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "reason": "decode_failed",
+                    "error": e,
+                }),
+            );
+            PreviewDecodeError::DecodeFailed
+        });
+    }
+
+    let file = File::open(path).map_err(|e| {
+        crate::bench_event!(
+            "preview.decode.fail",
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "reason": "open_failed",
+                "error": e.to_string(),
+            }),
+        );
+        PreviewDecodeError::OpenFailed
+    })?;
+    let reader = image::ImageReader::new(BufReader::new(file))
+        .with_guessed_format()
+        .map_err(|e| {
+            crate::bench_event!(
+                "preview.decode.fail",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "reason": "format_detect_failed",
+                    "error": e.to_string(),
+                }),
+            );
+            PreviewDecodeError::FormatDetectFailed
+        })?;
+    reader.decode().map_err(|e| {
+        crate::bench_event!(
+            "preview.decode.fail",
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "reason": "decode_failed",
+                "error": e.to_string(),
+            }),
+        );
+        PreviewDecodeError::DecodeFailed
     })
 }
 
@@ -288,8 +303,9 @@ fn decode_jpeg_rgba_scaled(path: &Path) -> Option<PreviewImage> {
 fn decode_webp_rgba_scaled(path: &Path, min_long_edge: u32) -> Option<PreviewImage> {
     let webp_data = std::fs::read(path).ok()?;
     let mut config = libwebp_sys::WebPDecoderConfig::new().ok()?;
-    let status =
-        unsafe { libwebp_sys::WebPGetFeatures(webp_data.as_ptr(), webp_data.len(), &mut config.input) };
+    let status = unsafe {
+        libwebp_sys::WebPGetFeatures(webp_data.as_ptr(), webp_data.len(), &mut config.input)
+    };
     if status != libwebp_sys::VP8StatusCode::VP8_STATUS_OK {
         return None;
     }
@@ -317,7 +333,8 @@ fn decode_webp_rgba_scaled(path: &Path, min_long_edge: u32) -> Option<PreviewIma
     config.output.u.RGBA.stride = i32::try_from(stride).ok()?;
     config.output.u.RGBA.size = rgba.len();
 
-    let status = unsafe { libwebp_sys::WebPDecode(webp_data.as_ptr(), webp_data.len(), &mut config) };
+    let status =
+        unsafe { libwebp_sys::WebPDecode(webp_data.as_ptr(), webp_data.len(), &mut config) };
     if status != libwebp_sys::VP8StatusCode::VP8_STATUS_OK {
         return None;
     }
@@ -369,11 +386,7 @@ fn choose_jpeg_scale_factor_for_dims(
     turbojpeg::ScalingFactor::ONE
 }
 
-pub(crate) fn choose_scaled_dimensions(
-    width: u32,
-    height: u32,
-    min_long_edge: u32,
-) -> (u32, u32) {
+pub(crate) fn choose_scaled_dimensions(width: u32, height: u32, min_long_edge: u32) -> (u32, u32) {
     if width == 0 || height == 0 {
         return (width, height);
     }

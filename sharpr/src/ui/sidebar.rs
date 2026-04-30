@@ -28,7 +28,7 @@ type DropPathsToCollectionCallback = Box<dyn Fn(i64, Vec<std::path::PathBuf>) + 
 type TagPromotedToCollectionCallback = Box<dyn Fn(String) + 'static>;
 
 const IMAGE_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
+    "jpg", "jpeg", "jxl", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
 ];
 
 #[derive(Clone, Debug)]

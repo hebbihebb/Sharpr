@@ -48,8 +48,23 @@
     </key>
     <key name="upscaler-output-format" type="s">
       <default>"auto"</default>
-      <summary>Upscaler output format</summary>
-      <description>One of "auto", "jpeg", "png", or "webp".</description>
+      <summary>Legacy upscaler output format</summary>
+      <description>Legacy migration key from earlier Sharpr versions.</description>
+    </key>
+    <key name="upscale-compress-output" type="b">
+      <default>true</default>
+      <summary>Compress completed upscale output</summary>
+      <description>If enabled, Sharpr re-encodes the final PNG result into the selected compressed format.</description>
+    </key>
+    <key name="upscale-compressed-format" type="s">
+      <default>"jxl"</default>
+      <summary>Compressed upscale output format</summary>
+      <description>One of "jxl", "webp", or "jpeg".</description>
+    </key>
+    <key name="upscale-keep-raw-png-sidecar" type="b">
+      <default>false</default>
+      <summary>Keep raw PNG sidecar after compression</summary>
+      <description>If enabled, Sharpr keeps the raw PNG alongside the compressed upscale result.</description>
     </key>
     <key name="upscaler-compression-mode" type="s">
       <default>"auto"</default>
@@ -59,7 +74,7 @@
     <key name="upscaler-quality" type="i">
       <default>90</default>
       <summary>Upscaler lossy quality</summary>
-      <description>Lossy encoder quality target used for JPEG output.</description>
+      <description>Lossy encoder quality target used for JPEG XL, WebP, or JPEG output.</description>
     </key>
     <key name="upscaler-tile-size" type="i">
       <default>0</default>

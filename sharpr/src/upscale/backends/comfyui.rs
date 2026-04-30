@@ -6,8 +6,8 @@ use serde_json::{json, Value};
 
 use crate::upscale::{
     backend::UpscaleBackend,
-    runner::{finalize_output, finalize_output_without_cleanup, UpscaleEvent, UpscaleRunner},
-    ComfyUiWorkflow, UpscaleJobConfig, UpscaleOutputFormat,
+    runner::{finalize_output, UpscaleEvent},
+    ComfyUiWorkflow, UpscaleJobConfig,
 };
 
 /// Thin HTTP client for a local ComfyUI server.
@@ -261,28 +261,13 @@ impl UpscaleBackend for ComfyUiBackend {
             // 5. Download to a temporary PNG, then re-encode through Sharpr's
             // normal output pipeline so ComfyUI results respect the selected
             // format and compression settings.
-            let target_format = UpscaleRunner::select_output_format(
-                &input,
-                config.output_format,
-                config.compression_mode,
-            );
-            let downloaded = if target_format == UpscaleOutputFormat::Webp {
-                comfy_preserved_temp_png_path(&output)
-            } else {
-                comfy_download_path(&output)
-            };
+            let downloaded = comfy_download_path(&output);
             if let Err(e) = client.download_output(&f, &downloaded) {
                 let _ = tx.send_blocking(UpscaleEvent::Failed(e));
                 return;
             }
 
-            let finalize = if target_format == UpscaleOutputFormat::Webp {
-                finalize_output_without_cleanup
-            } else {
-                finalize_output
-            };
-
-            if let Err(e) = finalize(&input, &downloaded, &output, config) {
+            if let Err(e) = finalize_output(&downloaded, &output, config) {
                 let _ = tx.send_blocking(UpscaleEvent::Failed(e));
                 return;
             }
@@ -308,26 +293,4 @@ fn comfy_download_path(output: &Path) -> PathBuf {
         .and_then(|value| value.to_str())
         .unwrap_or("upscaled");
     output.with_file_name(format!("{stem}.comfy-download.png"))
-}
-
-fn comfy_preserved_temp_png_path(output: &Path) -> PathBuf {
-    let stem = output
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("upscaled");
-    output.with_file_name(format!("{stem}.comfy-preserved.png"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn preserved_temp_png_path_uses_temp_stem() {
-        let path = PathBuf::from("/tmp/photo-upscaled-comfyui.pending-123-1.webp");
-        assert_eq!(
-            comfy_preserved_temp_png_path(&path),
-            PathBuf::from("/tmp/photo-upscaled-comfyui.pending-123-1.comfy-preserved.png")
-        );
-    }
 }

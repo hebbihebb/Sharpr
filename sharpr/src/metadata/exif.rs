@@ -165,6 +165,10 @@ fn extension_format(path: &Path) -> String {
 }
 
 fn read_dimensions_with_image(path: &Path) -> Option<(u32, u32)> {
+    if crate::jxl::is_jxl_path(path) {
+        return crate::jxl::image_dimensions(path).ok();
+    }
+
     use image::ImageReader;
     use std::fs::File;
     use std::io::BufReader;

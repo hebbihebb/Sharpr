@@ -6,7 +6,7 @@ use ort::value::Tensor;
 
 use crate::upscale::{
     backend::UpscaleBackend,
-    runner::{save_image, UpscaleEvent, UpscaleRunner},
+    runner::{preserved_png_temp_path, save_image, UpscaleEvent, UpscaleRunner},
     tiling::{process_tiled, TileConfig},
     OnnxUpscaleModel, UpscaleJobConfig,
 };
@@ -66,10 +66,14 @@ fn run_onnx_job(
 
     send(UpscaleEvent::Progress(None));
 
-    let decoded = match image::open(&input) {
+    let decoded = match if crate::jxl::is_jxl_path(&input) {
+        crate::jxl::decode_path(&input)
+    } else {
+        image::open(&input).map_err(|e| format!("Failed to open input: {e}"))
+    } {
         Ok(img) => img,
         Err(e) => {
-            send(UpscaleEvent::Failed(format!("Failed to open input: {e}")));
+            send(UpscaleEvent::Failed(e));
             return;
         }
     };
@@ -152,8 +156,20 @@ fn run_onnx_job(
         image::DynamicImage::ImageRgb8(final_rgb)
     };
 
-    let target_format =
-        UpscaleRunner::select_output_format(&input, config.output_format, config.compression_mode);
+    let target_format = UpscaleRunner::select_output_format(&config);
+
+    if config.compress_output && config.keep_raw_png_sidecar {
+        if let Err(e) = save_image(
+            final_image.clone(),
+            &preserved_png_temp_path(&output),
+            crate::upscale::UpscaleOutputFormat::Png,
+            crate::upscale::UpscaleCompressionMode::Lossless,
+            100,
+        ) {
+            send(UpscaleEvent::Failed(e));
+            return;
+        }
+    }
 
     match save_image(
         final_image,

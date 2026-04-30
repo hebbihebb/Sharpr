@@ -498,8 +498,9 @@ fn is_webp_path(path: &Path) -> bool {
 fn decode_webp_scaled(path: &Path, min_short_edge: u32) -> Option<image::DynamicImage> {
     let webp_data = std::fs::read(path).ok()?;
     let mut config = libwebp_sys::WebPDecoderConfig::new().ok()?;
-    let status =
-        unsafe { libwebp_sys::WebPGetFeatures(webp_data.as_ptr(), webp_data.len(), &mut config.input) };
+    let status = unsafe {
+        libwebp_sys::WebPGetFeatures(webp_data.as_ptr(), webp_data.len(), &mut config.input)
+    };
     if status != libwebp_sys::VP8StatusCode::VP8_STATUS_OK {
         return None;
     }
@@ -527,7 +528,8 @@ fn decode_webp_scaled(path: &Path, min_short_edge: u32) -> Option<image::Dynamic
     config.output.u.RGBA.stride = i32::try_from(stride).ok()?;
     config.output.u.RGBA.size = rgba.len();
 
-    let status = unsafe { libwebp_sys::WebPDecode(webp_data.as_ptr(), webp_data.len(), &mut config) };
+    let status =
+        unsafe { libwebp_sys::WebPDecode(webp_data.as_ptr(), webp_data.len(), &mut config) };
     if status != libwebp_sys::VP8StatusCode::VP8_STATUS_OK {
         return None;
     }
@@ -537,6 +539,10 @@ fn decode_webp_scaled(path: &Path, min_short_edge: u32) -> Option<image::Dynamic
 }
 
 fn decode_with_image_crate(path: &Path) -> Option<image::DynamicImage> {
+    if crate::jxl::is_jxl_path(path) {
+        return crate::jxl::decode_path(path).ok();
+    }
+
     let file = std::fs::File::open(path).ok()?;
     let reader = image::ImageReader::new(std::io::BufReader::new(file))
         .with_guessed_format()

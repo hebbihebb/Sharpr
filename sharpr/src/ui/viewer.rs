@@ -2156,11 +2156,25 @@ impl ViewerPane {
                 scale
             }
         };
-        let output_format = UpscaleRunner::select_output_format(
-            &path,
-            UpscaleOutputFormat::from_settings(&settings.upscaler_output_format),
-            UpscaleCompressionMode::from_settings(&settings.upscaler_compression_mode),
-        );
+        let job = UpscaleJobConfig {
+            source_dimensions: selected_dims,
+            requested_scale,
+            execution_scale: model.native_scale(),
+            model,
+            compress_output: settings.upscale_compress_output,
+            compressed_format: UpscaleOutputFormat::from_settings(
+                &settings.upscale_compressed_format,
+            ),
+            keep_raw_png_sidecar: settings.upscale_keep_raw_png_sidecar,
+            compression_mode: UpscaleCompressionMode::from_settings(
+                &settings.upscaler_compression_mode,
+            ),
+            quality: settings.upscaler_quality.clamp(50, 100) as u8,
+            tile_size: (settings.upscaler_tile_size > 0)
+                .then_some(settings.upscaler_tile_size as u32),
+            gpu_id: (settings.upscaler_gpu_id >= 0).then_some(settings.upscaler_gpu_id as u32),
+        };
+        let output_format = UpscaleRunner::select_output_format(&job);
         let output_dir = crate::export::resolve_output_dir(
             settings.upscaled_output_dir.as_ref(),
             crate::export::OutputFolderKind::Upscaled,
@@ -2170,21 +2184,6 @@ impl ViewerPane {
         let final_output =
             output_path_for_upscale(&path, &output_dir, &filename_suffix, output_format);
         let temp_output = pending_output_path(&final_output);
-        let job = UpscaleJobConfig {
-            source_dimensions: selected_dims,
-            requested_scale,
-            execution_scale: model.native_scale(),
-            model,
-            output_format,
-            compression_mode: UpscaleCompressionMode::from_settings(
-                &settings.upscaler_compression_mode,
-            ),
-            quality: settings.upscaler_quality.clamp(50, 100) as u8,
-            tile_size: (settings.upscaler_tile_size > 0)
-                .then_some(settings.upscaler_tile_size as u32),
-            gpu_id: (settings.upscaler_gpu_id >= 0).then_some(settings.upscaler_gpu_id as u32),
-        };
-
         let op = ops_queue.add("Upscaling image");
         let session = Rc::new(ConvertSession {
             op_id: op.id,
@@ -2345,11 +2344,26 @@ impl ViewerPane {
                 } else {
                     scale
                 };
-                let output_format = UpscaleRunner::select_output_format(
-                    &source_path,
-                    UpscaleOutputFormat::from_settings(&settings.upscaler_output_format),
-                    UpscaleCompressionMode::from_settings(&settings.upscaler_compression_mode),
-                );
+                let job = UpscaleJobConfig {
+                    source_dimensions: source_dims,
+                    requested_scale,
+                    execution_scale: model.native_scale(),
+                    model,
+                    compress_output: settings.upscale_compress_output,
+                    compressed_format: UpscaleOutputFormat::from_settings(
+                        &settings.upscale_compressed_format,
+                    ),
+                    keep_raw_png_sidecar: settings.upscale_keep_raw_png_sidecar,
+                    compression_mode: UpscaleCompressionMode::from_settings(
+                        &settings.upscaler_compression_mode,
+                    ),
+                    quality: settings.upscaler_quality.clamp(50, 100) as u8,
+                    tile_size: (settings.upscaler_tile_size > 0)
+                        .then_some(settings.upscaler_tile_size as u32),
+                    gpu_id: (settings.upscaler_gpu_id >= 0)
+                        .then_some(settings.upscaler_gpu_id as u32),
+                };
+                let output_format = UpscaleRunner::select_output_format(&job);
                 let final_output = output_path_for_upscale(
                     &source_path,
                     &output_dir,
@@ -2364,22 +2378,6 @@ impl ViewerPane {
                     op.fail("No compatible upscale backend is available");
                     return;
                 };
-                let job = UpscaleJobConfig {
-                    source_dimensions: source_dims,
-                    requested_scale,
-                    execution_scale: model.native_scale(),
-                    model,
-                    output_format,
-                    compression_mode: UpscaleCompressionMode::from_settings(
-                        &settings.upscaler_compression_mode,
-                    ),
-                    quality: settings.upscaler_quality.clamp(50, 100) as u8,
-                    tile_size: (settings.upscaler_tile_size > 0)
-                        .then_some(settings.upscaler_tile_size as u32),
-                    gpu_id: (settings.upscaler_gpu_id >= 0)
-                        .then_some(settings.upscaler_gpu_id as u32),
-                };
-
                 let rx = if let Some(dir) = temp_output.parent() {
                     match std::fs::create_dir_all(dir) {
                         Ok(()) => backend.run(source_path.clone(), temp_output.clone(), job),
@@ -2884,20 +2882,12 @@ fn finalize_copy_output(
         ext,
     );
     move_file(temp_output, &final_path)?;
-    let preserved_temp = comfy_preserved_temp_png_path(temp_output);
+    let preserved_temp = crate::upscale::runner::preserved_png_temp_path(temp_output);
     if preserved_temp.exists() {
         let preserved_final = unique_png_sibling_path(&final_path);
         move_file(&preserved_temp, &preserved_final)?;
     }
     Ok(final_path)
-}
-
-fn comfy_preserved_temp_png_path(temp_output: &std::path::Path) -> PathBuf {
-    let stem = temp_output
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("upscaled");
-    temp_output.with_file_name(format!("{stem}.comfy-preserved.png"))
 }
 
 fn unique_png_sibling_path(base_output: &std::path::Path) -> PathBuf {
@@ -2924,7 +2914,7 @@ fn unique_png_sibling_path(base_output: &std::path::Path) -> PathBuf {
 
 fn cleanup_upscale_temp_artifacts(temp_output: &std::path::Path) {
     let _ = std::fs::remove_file(temp_output);
-    let _ = std::fs::remove_file(comfy_preserved_temp_png_path(temp_output));
+    let _ = std::fs::remove_file(crate::upscale::runner::preserved_png_temp_path(temp_output));
 }
 
 fn upscale_filename_suffix(
@@ -2995,8 +2985,8 @@ mod tests {
     fn comfy_preserved_temp_png_uses_temp_stem() {
         let temp = PathBuf::from("/tmp/photo-upscaled-comfyui.pending-12-3.webp");
         assert_eq!(
-            comfy_preserved_temp_png_path(&temp),
-            PathBuf::from("/tmp/photo-upscaled-comfyui.pending-12-3.comfy-preserved.png")
+            crate::upscale::runner::preserved_png_temp_path(&temp),
+            PathBuf::from("/tmp/photo-upscaled-comfyui.pending-12-3.preserved.png")
         );
     }
 
