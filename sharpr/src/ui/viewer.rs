@@ -2252,6 +2252,7 @@ impl ViewerPane {
                         let vimp = viewer.imp();
                         vimp.progress_bar.set_visible(false);
                         trigger_btn.set_sensitive(true);
+                        cleanup_upscale_temp_artifacts(&session.temp_output);
                         let dialog =
                             libadwaita::AlertDialog::new(Some("Upscale Failed"), Some(&msg));
                         dialog.add_response("ok", "OK");
@@ -2424,7 +2425,7 @@ impl ViewerPane {
                 }
 
                 if let Some(msg) = job_failed {
-                    let _ = std::fs::remove_file(&temp_output);
+                    cleanup_upscale_temp_artifacts(&temp_output);
                     failed += 1;
                     if first_error.is_none() {
                         first_error = Some(format!("{}: {msg}", source_path.display()));
@@ -2724,7 +2725,7 @@ impl ViewerPane {
         let Some(session) = self.current_convert_session() else {
             return;
         };
-        let _ = std::fs::remove_file(&session.temp_output);
+        cleanup_upscale_temp_artifacts(&session.temp_output);
         self.restore_view_mode();
         self.finish_convert_session(session.op_id);
     }
@@ -2883,7 +2884,47 @@ fn finalize_copy_output(
         ext,
     );
     move_file(temp_output, &final_path)?;
+    let preserved_temp = comfy_preserved_temp_png_path(temp_output);
+    if preserved_temp.exists() {
+        let preserved_final = unique_png_sibling_path(&final_path);
+        move_file(&preserved_temp, &preserved_final)?;
+    }
     Ok(final_path)
+}
+
+fn comfy_preserved_temp_png_path(temp_output: &std::path::Path) -> PathBuf {
+    let stem = temp_output
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("upscaled");
+    temp_output.with_file_name(format!("{stem}.comfy-preserved.png"))
+}
+
+fn unique_png_sibling_path(base_output: &std::path::Path) -> PathBuf {
+    let stem = base_output
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("upscaled");
+    let parent = base_output
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let candidate = parent.join(format!("{stem}.png"));
+    if !candidate.exists() {
+        return candidate;
+    }
+    for idx in 1.. {
+        let candidate = parent.join(format!("{stem}-{idx}.png"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
+fn cleanup_upscale_temp_artifacts(temp_output: &std::path::Path) {
+    let _ = std::fs::remove_file(temp_output);
+    let _ = std::fs::remove_file(comfy_preserved_temp_png_path(temp_output));
 }
 
 fn upscale_filename_suffix(
@@ -2892,18 +2933,25 @@ fn upscale_filename_suffix(
     onnx_model: crate::upscale::OnnxUpscaleModel,
     comfyui_workflow: crate::upscale::ComfyUiWorkflow,
 ) -> String {
-    let model = match backend {
-        crate::upscale::UpscaleBackendKind::Onnx => onnx_model.settings_key(),
-        crate::upscale::UpscaleBackendKind::Cli => cli_model.settings_key(),
+    match backend {
+        crate::upscale::UpscaleBackendKind::Cli => match cli_model {
+            crate::upscale::UpscaleModel::Standard => "upscaled".to_string(),
+            crate::upscale::UpscaleModel::Anime => "upscaled-anime".to_string(),
+        },
+        crate::upscale::UpscaleBackendKind::Onnx => {
+            format!("upscaled-onnx-{}", onnx_model.settings_key())
+        }
         crate::upscale::UpscaleBackendKind::ComfyUi => {
             if comfyui_workflow.uses_sharpr_model_picker() {
-                cli_model.settings_key()
+                match cli_model {
+                    crate::upscale::UpscaleModel::Standard => "upscaled-comfyui".to_string(),
+                    crate::upscale::UpscaleModel::Anime => "upscaled-comfyui-anime".to_string(),
+                }
             } else {
-                comfyui_workflow.settings_key()
+                format!("upscaled-{}", comfyui_workflow.settings_key())
             }
         }
-    };
-    format!("upscaled-{}-{model}", backend.settings_key())
+    }
 }
 
 fn move_file(src: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
@@ -2937,4 +2985,27 @@ fn install_viewer_osd_css() {
             );
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn comfy_preserved_temp_png_uses_temp_stem() {
+        let temp = PathBuf::from("/tmp/photo-upscaled-comfyui.pending-12-3.webp");
+        assert_eq!(
+            comfy_preserved_temp_png_path(&temp),
+            PathBuf::from("/tmp/photo-upscaled-comfyui.pending-12-3.comfy-preserved.png")
+        );
+    }
+
+    #[test]
+    fn unique_png_sibling_path_uses_final_output_stem() {
+        let output = PathBuf::from("/tmp/photo-upscaled-comfyui.webp");
+        assert_eq!(
+            unique_png_sibling_path(&output),
+            PathBuf::from("/tmp/photo-upscaled-comfyui.png")
+        );
+    }
 }

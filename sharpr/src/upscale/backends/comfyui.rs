@@ -5,7 +5,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 
 use crate::upscale::{
-    backend::UpscaleBackend, runner::UpscaleEvent, ComfyUiWorkflow, UpscaleJobConfig,
+    backend::UpscaleBackend,
+    runner::{finalize_output, finalize_output_without_cleanup, UpscaleEvent, UpscaleRunner},
+    ComfyUiWorkflow, UpscaleJobConfig, UpscaleOutputFormat,
 };
 
 /// Thin HTTP client for a local ComfyUI server.
@@ -213,9 +215,7 @@ impl UpscaleBackend for ComfyUiBackend {
                     if let Some(inputs) = node.get_mut("inputs") {
                         let model_name = match config.model {
                             crate::upscale::UpscaleModel::Standard => "RealESRGAN_x4plus.pth",
-                            crate::upscale::UpscaleModel::Anime => {
-                                "RealESRGAN_x4plus_anime.pth"
-                            }
+                            crate::upscale::UpscaleModel::Anime => "RealESRGAN_x4plus_anime.pth",
                         };
                         inputs["model_name"] = json!(model_name);
                     }
@@ -258,8 +258,31 @@ impl UpscaleBackend for ComfyUiBackend {
             };
             let _ = tx.send_blocking(UpscaleEvent::Progress(Some(0.8)));
 
-            // 5. Download
-            if let Err(e) = client.download_output(&f, &output) {
+            // 5. Download to a temporary PNG, then re-encode through Sharpr's
+            // normal output pipeline so ComfyUI results respect the selected
+            // format and compression settings.
+            let target_format = UpscaleRunner::select_output_format(
+                &input,
+                config.output_format,
+                config.compression_mode,
+            );
+            let downloaded = if target_format == UpscaleOutputFormat::Webp {
+                comfy_preserved_temp_png_path(&output)
+            } else {
+                comfy_download_path(&output)
+            };
+            if let Err(e) = client.download_output(&f, &downloaded) {
+                let _ = tx.send_blocking(UpscaleEvent::Failed(e));
+                return;
+            }
+
+            let finalize = if target_format == UpscaleOutputFormat::Webp {
+                finalize_output_without_cleanup
+            } else {
+                finalize_output
+            };
+
+            if let Err(e) = finalize(&input, &downloaded, &output, config) {
                 let _ = tx.send_blocking(UpscaleEvent::Failed(e));
                 return;
             }
@@ -276,5 +299,35 @@ fn workflow_template(workflow: ComfyUiWorkflow) -> &'static str {
     match workflow {
         ComfyUiWorkflow::Esrgan => include_str!("comfy_preset.json"),
         ComfyUiWorkflow::SeedVr2 => include_str!("comfy_seedvr2.json"),
+    }
+}
+
+fn comfy_download_path(output: &Path) -> PathBuf {
+    let stem = output
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("upscaled");
+    output.with_file_name(format!("{stem}.comfy-download.png"))
+}
+
+fn comfy_preserved_temp_png_path(output: &Path) -> PathBuf {
+    let stem = output
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("upscaled");
+    output.with_file_name(format!("{stem}.comfy-preserved.png"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preserved_temp_png_path_uses_temp_stem() {
+        let path = PathBuf::from("/tmp/photo-upscaled-comfyui.pending-123-1.webp");
+        assert_eq!(
+            comfy_preserved_temp_png_path(&path),
+            PathBuf::from("/tmp/photo-upscaled-comfyui.pending-123-1.comfy-preserved.png")
+        );
     }
 }

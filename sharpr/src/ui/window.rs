@@ -4541,6 +4541,7 @@ impl SharprWindow {
                 let (
                     saved_backend,
                     saved_cli_model,
+                    saved_upscale_output_format,
                     saved_onnx_model,
                     saved_comfyui_workflow,
                     comfyui_enabled,
@@ -4558,6 +4559,7 @@ impl SharprWindow {
                     (
                         st.settings.upscale_backend.clone(),
                         st.settings.upscaler_default_model.clone(),
+                        st.settings.upscaler_output_format.clone(),
                         st.settings.onnx_upscale_model.clone(),
                         st.settings.comfyui_workflow.clone(),
                         st.settings.comfyui_enabled,
@@ -4609,6 +4611,23 @@ impl SharprWindow {
                     scale_dropdown.set_selected(0);
                     scale_box.append(&scale_dropdown);
                     content.append(&scale_box);
+
+                    let format_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+                    let format_label = gtk4::Label::new(Some("Output format"));
+                    format_label.set_halign(gtk4::Align::Start);
+                    format_box.append(&format_label);
+                    let output_format_dropdown =
+                        gtk4::DropDown::from_strings(&["Auto", "JPEG", "WebP", "PNG"]);
+                    output_format_dropdown.set_selected(
+                        match saved_upscale_output_format.as_str() {
+                            "jpeg" => 1,
+                            "webp" => 2,
+                            "png" => 3,
+                            _ => 0,
+                        },
+                    );
+                    format_box.append(&output_format_dropdown);
+                    content.append(&format_box);
 
                     let advanced_expander = gtk4::Expander::new(Some("Advanced"));
                     advanced_expander.set_expanded(false);
@@ -4877,6 +4896,14 @@ impl SharprWindow {
                                 st.settings.set_upscale_backend(chosen_backend.settings_key());
                                 st.settings
                                     .set_onnx_upscale_model(chosen_onnx_model.settings_key());
+                                st.settings.set_upscaler_output_format(
+                                    match output_format_dropdown.selected() {
+                                        1 => "jpeg",
+                                        2 => "webp",
+                                        3 => "png",
+                                        _ => "auto",
+                                    },
+                                );
                                 st.settings.set_upscaler_default_model(
                                     if anime_btn.is_active() { "anime" } else { "standard" },
                                 );
@@ -5104,6 +5131,7 @@ impl SharprWindow {
                     show_upscale,
                     saved_backend,
                     saved_cli_model,
+                    saved_upscale_output_format,
                     saved_onnx_model,
                     saved_comfyui_workflow,
                     comfyui_enabled,
@@ -5134,6 +5162,7 @@ impl SharprWindow {
                         st.settings.show_upscale_ui,
                         st.settings.upscale_backend.clone(),
                         st.settings.upscaler_default_model.clone(),
+                        st.settings.upscaler_output_format.clone(),
                         st.settings.onnx_upscale_model.clone(),
                         st.settings.comfyui_workflow.clone(),
                         st.settings.comfyui_enabled,
@@ -5177,6 +5206,14 @@ impl SharprWindow {
                 let scale_drop =
                     gtk4::DropDown::from_strings(&["Smart (auto)", "2×", "3×", "4×"]);
                 scale_drop.set_selected(0);
+                let upscale_fmt_drop =
+                    gtk4::DropDown::from_strings(&["Auto", "JPEG", "WebP", "PNG"]);
+                upscale_fmt_drop.set_selected(match saved_upscale_output_format.as_str() {
+                    "jpeg" => 1,
+                    "webp" => 2,
+                    "png" => 3,
+                    _ => 0,
+                });
 
                 let cli_btn = gtk4::CheckButton::with_label(
                     "CLI Upscaler (realesrgan, GPU-accelerated)",
@@ -5300,6 +5337,11 @@ impl SharprWindow {
                     scale_lbl.set_halign(gtk4::Align::Start);
                     us_box.append(&scale_lbl);
                     us_box.append(&scale_drop);
+
+                    let upscale_fmt_lbl = gtk4::Label::new(Some("Output format"));
+                    upscale_fmt_lbl.set_halign(gtk4::Align::Start);
+                    us_box.append(&upscale_fmt_lbl);
+                    us_box.append(&upscale_fmt_drop);
 
                     let adv_expander = gtk4::Expander::new(Some("Advanced"));
                     adv_expander.set_expanded(false);
@@ -5519,6 +5561,14 @@ impl SharprWindow {
                             let mut st = state_cc.borrow_mut();
                             st.settings.set_upscale_backend(backend_kind2.settings_key());
                             st.settings.set_onnx_upscale_model(chosen_onnx.settings_key());
+                            st.settings.set_upscaler_output_format(
+                                match upscale_fmt_drop.selected() {
+                                    1 => "jpeg",
+                                    2 => "webp",
+                                    3 => "png",
+                                    _ => "auto",
+                                },
+                            );
                             st.settings.set_upscaler_default_model(
                                 if anime_btn.is_active() { "anime" } else { "standard" },
                             );

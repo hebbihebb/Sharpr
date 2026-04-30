@@ -148,7 +148,18 @@ fn run_subprocess(
     }
 }
 
-fn finalize_output(
+pub(crate) fn finalize_output(
+    input: &Path,
+    intermediate: &Path,
+    output: &Path,
+    config: UpscaleJobConfig,
+) -> Result<(), String> {
+    let result = finalize_output_without_cleanup(input, intermediate, output, config);
+    let _ = std::fs::remove_file(intermediate); // always clean up temp file
+    result
+}
+
+pub(crate) fn finalize_output_without_cleanup(
     input: &Path,
     intermediate: &Path,
     output: &Path,
@@ -189,15 +200,13 @@ fn finalize_output(
             intermediate_image.resize_exact(target_w, target_h, FilterType::Lanczos3)
         };
 
-    let result = save_image(
+    save_image(
         final_image,
         output,
         target_format,
         config.compression_mode,
         config.quality,
-    );
-    let _ = std::fs::remove_file(intermediate); // always clean up temp file
-    result
+    )
 }
 
 pub(crate) fn save_image(
@@ -209,14 +218,13 @@ pub(crate) fn save_image(
 ) -> Result<(), String> {
     use image::codecs::jpeg::JpegEncoder;
     use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-    use image::codecs::webp::WebPEncoder;
     use image::{ExtendedColorType, ImageEncoder};
     use std::fs::File;
-    use std::io::BufWriter;
+    use std::io::{BufWriter, Write};
 
     let file = File::create(output)
         .map_err(|err| format!("failed to create output {}: {err}", output.display()))?;
-    let writer = BufWriter::new(file);
+    let mut writer = BufWriter::new(file);
 
     match format {
         UpscaleOutputFormat::Jpeg => {
@@ -253,28 +261,30 @@ pub(crate) fn save_image(
                 .map_err(|err| format!("failed to encode PNG output: {err}"))
         }
         UpscaleOutputFormat::Webp => {
-            // image 0.25 only exposes lossless WebP encoding; lossy WebP would
-            // require an additional `webp` crate dependency.
             if image.color().has_alpha() {
                 let rgba = image.to_rgba8();
-                WebPEncoder::new_lossless(writer)
-                    .write_image(
-                        rgba.as_raw(),
-                        rgba.width(),
-                        rgba.height(),
-                        ExtendedColorType::Rgba8,
-                    )
-                    .map_err(|err| format!("failed to encode WebP output: {err}"))
+                let encoded = if matches!(compression_mode, UpscaleCompressionMode::Lossless) {
+                    webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
+                        .encode_lossless()
+                } else {
+                    webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
+                        .encode(quality.clamp(1, 100) as f32)
+                };
+                writer
+                    .write_all(encoded.as_ref())
+                    .map_err(|err| format!("failed to write WebP output: {err}"))
             } else {
                 let rgb = image.to_rgb8();
-                WebPEncoder::new_lossless(writer)
-                    .write_image(
-                        rgb.as_raw(),
-                        rgb.width(),
-                        rgb.height(),
-                        ExtendedColorType::Rgb8,
-                    )
-                    .map_err(|err| format!("failed to encode WebP output: {err}"))
+                let encoded = if matches!(compression_mode, UpscaleCompressionMode::Lossless) {
+                    webp::Encoder::from_rgb(rgb.as_raw(), rgb.width(), rgb.height())
+                        .encode_lossless()
+                } else {
+                    webp::Encoder::from_rgb(rgb.as_raw(), rgb.width(), rgb.height())
+                        .encode(quality.clamp(1, 100) as f32)
+                };
+                writer
+                    .write_all(encoded.as_ref())
+                    .map_err(|err| format!("failed to write WebP output: {err}"))
             }
         }
     }
@@ -320,4 +330,112 @@ fn parse_progress(line: &str) -> Option<f32> {
         return Some((val / 100.0).clamp(0.0, 1.0));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{ImageBuffer, ImageFormat, Rgba};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sharpr-upscale-runner-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sample_config(format: UpscaleOutputFormat) -> UpscaleJobConfig {
+        UpscaleJobConfig {
+            source_dimensions: (4, 3),
+            requested_scale: 2,
+            execution_scale: 2,
+            model: crate::upscale::UpscaleModel::Standard,
+            output_format: format,
+            compression_mode: UpscaleCompressionMode::Lossy,
+            quality: 80,
+            tile_size: None,
+            gpu_id: None,
+        }
+    }
+
+    #[test]
+    fn finalize_output_writes_valid_webp() {
+        let dir = temp_dir("finalize-webp");
+        let input = dir.join("input.png");
+        let intermediate = dir.join("intermediate.png");
+        let output = dir.join("output.webp");
+
+        let src = ImageBuffer::from_fn(4, 3, |x, y| {
+            Rgba([(x * 10) as u8, (y * 20) as u8, 200, 255])
+        });
+        src.save_with_format(&input, ImageFormat::Png).unwrap();
+
+        let upscaled =
+            ImageBuffer::from_fn(8, 6, |x, y| Rgba([255, (x * 5) as u8, (y * 7) as u8, 255]));
+        upscaled
+            .save_with_format(&intermediate, ImageFormat::Png)
+            .unwrap();
+
+        finalize_output(
+            &input,
+            &intermediate,
+            &output,
+            sample_config(UpscaleOutputFormat::Webp),
+        )
+        .unwrap();
+
+        assert!(!intermediate.exists());
+        let decoded = image::open(&output).unwrap();
+        assert_eq!(decoded.width(), 8);
+        assert_eq!(decoded.height(), 6);
+        assert_eq!(
+            image::ImageReader::open(&output)
+                .unwrap()
+                .with_guessed_format()
+                .unwrap()
+                .format(),
+            Some(ImageFormat::WebP)
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn finalize_output_without_cleanup_keeps_intermediate() {
+        let dir = temp_dir("keep-intermediate");
+        let input = dir.join("input.png");
+        let intermediate = dir.join("intermediate.png");
+        let output = dir.join("output.webp");
+
+        let src = ImageBuffer::from_fn(4, 3, |x, y| {
+            Rgba([(x * 10) as u8, (y * 20) as u8, 200, 255])
+        });
+        src.save_with_format(&input, ImageFormat::Png).unwrap();
+
+        let upscaled =
+            ImageBuffer::from_fn(8, 6, |x, y| Rgba([255, (x * 5) as u8, (y * 7) as u8, 255]));
+        upscaled
+            .save_with_format(&intermediate, ImageFormat::Png)
+            .unwrap();
+
+        finalize_output_without_cleanup(
+            &input,
+            &intermediate,
+            &output,
+            sample_config(UpscaleOutputFormat::Webp),
+        )
+        .unwrap();
+
+        assert!(intermediate.exists());
+        assert_eq!(
+            image::ImageReader::open(&output)
+                .unwrap()
+                .with_guessed_format()
+                .unwrap()
+                .format(),
+            Some(ImageFormat::WebP)
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
