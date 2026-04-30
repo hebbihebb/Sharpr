@@ -126,6 +126,40 @@ impl UpscaleBackendKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ComfyUiWorkflow {
+    #[default]
+    Esrgan,
+    SeedVr2,
+}
+
+impl ComfyUiWorkflow {
+    pub fn from_settings(value: &str) -> Self {
+        match value {
+            "seedvr2" => Self::SeedVr2,
+            _ => Self::Esrgan,
+        }
+    }
+
+    pub fn settings_key(self) -> &'static str {
+        match self {
+            Self::Esrgan => "esrgan",
+            Self::SeedVr2 => "seedvr2",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Esrgan => "ESRGAN",
+            Self::SeedVr2 => "SeedVR2",
+        }
+    }
+
+    pub fn uses_sharpr_model_picker(self) -> bool {
+        matches!(self, Self::Esrgan)
+    }
+}
+
 /// Static metadata for an ONNX upscale model.
 pub struct OnnxModelInfo {
     pub filename: &'static str,

@@ -477,6 +477,32 @@ pub fn build_preferences_window(
         });
     }
 
+    let comfy_workflow_row = libadwaita::ComboRow::new();
+    comfy_workflow_row.set_title("Workflow preset");
+    comfy_workflow_row.set_subtitle("Choose which bundled ComfyUI prompt Sharpr submits");
+    let comfy_workflow_choices = gtk4::StringList::new(&["ESRGAN", "SeedVR2"]);
+    comfy_workflow_row.set_model(Some(&comfy_workflow_choices));
+    comfy_workflow_row.set_selected(if settings.comfyui_workflow == "seedvr2" {
+        1
+    } else {
+        0
+    });
+
+    {
+        let parent_c = parent.clone();
+        comfy_workflow_row.connect_selected_notify(move |row| {
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_comfyui_workflow(if row.selected() == 1 {
+                    "seedvr2"
+                } else {
+                    "esrgan"
+                });
+        });
+    }
+
     let test_row = libadwaita::ActionRow::new();
     let test_button = gtk4::Button::with_label("Test Connection");
     test_row.add_suffix(&test_button);
@@ -517,6 +543,7 @@ pub fn build_preferences_window(
 
     comfy_group.add(&comfy_enabled_row);
     comfy_group.add(&comfy_url_row);
+    comfy_group.add(&comfy_workflow_row);
     comfy_group.add(&test_row);
     upscaler_page.add(&comfy_group);
 

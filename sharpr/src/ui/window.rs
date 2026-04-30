@@ -4538,7 +4538,14 @@ impl SharprWindow {
                 let Some(viewer) = viewer_weak.upgrade() else { return };
 
                 // For CLI, lazily detect the binary once.
-                let (saved_backend, saved_cli_model, saved_onnx_model, comfyui_enabled, ops_queue) = {
+                let (
+                    saved_backend,
+                    saved_cli_model,
+                    saved_onnx_model,
+                    saved_comfyui_workflow,
+                    comfyui_enabled,
+                    ops_queue,
+                ) = {
                     let mut st = state_c.borrow_mut();
                     if st.upscale_binary.is_none() {
                         st.upscale_binary = AppSettings::load()
@@ -4552,12 +4559,15 @@ impl SharprWindow {
                         st.settings.upscale_backend.clone(),
                         st.settings.upscaler_default_model.clone(),
                         st.settings.onnx_upscale_model.clone(),
+                        st.settings.comfyui_workflow.clone(),
                         st.settings.comfyui_enabled,
                         st.ops.clone(),
                     )
                 };
 
                 let backend_kind = UpscaleBackendKind::from_settings(&saved_backend);
+                let comfyui_workflow =
+                    crate::upscale::ComfyUiWorkflow::from_settings(&saved_comfyui_workflow);
                 if backend_kind == UpscaleBackendKind::Cli
                     && state_c.borrow().upscale_binary.is_none()
                 {
@@ -4640,7 +4650,7 @@ impl SharprWindow {
 
                     // CLI page
                     let cli_page = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-                    let cli_model_label = gtk4::Label::new(Some("CLI Model"));
+                    let cli_model_label = gtk4::Label::new(Some("Model"));
                     cli_model_label.set_halign(gtk4::Align::Start);
                     let standard_btn =
                         gtk4::CheckButton::with_label("Standard – best for photos");
@@ -4652,9 +4662,18 @@ impl SharprWindow {
                     } else {
                         standard_btn.set_active(true);
                     }
+                    let comfyui_note = gtk4::Label::new(Some(&format!(
+                        "{} uses a fixed server-side workflow and ignores Sharpr's model toggle.",
+                        comfyui_workflow.display_name()
+                    )));
+                    comfyui_note.set_halign(gtk4::Align::Start);
+                    comfyui_note.add_css_class("dim-label");
+                    comfyui_note.set_wrap(true);
+                    comfyui_note.set_visible(false);
                     cli_page.append(&cli_model_label);
                     cli_page.append(&standard_btn);
                     cli_page.append(&anime_btn);
+                    cli_page.append(&comfyui_note);
                     backend_stack.add_named(&cli_page, Some("cli"));
 
                     // ONNX page
@@ -4767,16 +4786,56 @@ impl SharprWindow {
                     onnx_page.append(&download_row);
                     backend_stack.add_named(&onnx_page, Some("onnx"));
 
-                    {
+                    let refresh_cli_model_ui = {
+                        let standard_btn = standard_btn.clone();
+                        let anime_btn = anime_btn.clone();
+                        let comfyui_btn = comfyui_btn.clone();
+                        let comfyui_note = comfyui_note.clone();
+                        move || {
+                            let fixed_model = comfyui_btn.is_active()
+                                && !comfyui_workflow.uses_sharpr_model_picker();
+                            standard_btn.set_sensitive(!fixed_model);
+                            anime_btn.set_sensitive(!fixed_model);
+                            comfyui_note.set_visible(fixed_model);
+                        }
+                    };
+                    let sync_backend_stack = {
                         let stack_c = backend_stack.clone();
-                        onnx_btn.connect_toggled(move |btn| {
-                            stack_c.set_visible_child_name(if btn.is_active() { "onnx" } else { "cli" });
+                        let onnx_btn = onnx_btn.clone();
+                        move || {
+                            stack_c.set_visible_child_name(if onnx_btn.is_active() {
+                                "onnx"
+                            } else {
+                                "cli"
+                            });
+                        }
+                    };
+                    refresh_cli_model_ui();
+                    sync_backend_stack();
+                    {
+                        let refresh = refresh_cli_model_ui.clone();
+                        let sync = sync_backend_stack.clone();
+                        onnx_btn.connect_toggled(move |_| {
+                            sync();
+                            refresh();
                         });
                     }
-                    backend_stack.set_visible_child_name(match backend_kind {
-                        UpscaleBackendKind::Onnx => "onnx",
-                        _ => "cli",
-                    });
+                    {
+                        let refresh = refresh_cli_model_ui.clone();
+                        let sync = sync_backend_stack.clone();
+                        cli_btn.connect_toggled(move |_| {
+                            sync();
+                            refresh();
+                        });
+                    }
+                    {
+                        let refresh = refresh_cli_model_ui.clone();
+                        let sync = sync_backend_stack.clone();
+                        comfyui_btn.connect_toggled(move |_| {
+                            sync();
+                            refresh();
+                        });
+                    }
                     advanced_box.append(&backend_stack);
 
                     advanced_expander.set_child(Some(&advanced_box));
@@ -5046,6 +5105,7 @@ impl SharprWindow {
                     saved_backend,
                     saved_cli_model,
                     saved_onnx_model,
+                    saved_comfyui_workflow,
                     comfyui_enabled,
                     ops_queue,
                 ) = {
@@ -5075,12 +5135,15 @@ impl SharprWindow {
                         st.settings.upscale_backend.clone(),
                         st.settings.upscaler_default_model.clone(),
                         st.settings.onnx_upscale_model.clone(),
+                        st.settings.comfyui_workflow.clone(),
                         st.settings.comfyui_enabled,
                         st.ops.clone(),
                     )
                 };
 
                 let backend_kind = UpscaleBackendKind::from_settings(&saved_backend);
+                let comfyui_workflow =
+                    crate::upscale::ComfyUiWorkflow::from_settings(&saved_comfyui_workflow);
 
                 // ── Dialog ──────────────────────────────────────────────────
                 let dialog = libadwaita::AlertDialog::new(Some("Convert"), None);
@@ -5253,11 +5316,20 @@ impl SharprWindow {
                     be_stack.set_transition_duration(120);
 
                     let cli_page = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-                    let cli_model_lbl = gtk4::Label::new(Some("CLI Model"));
+                    let cli_model_lbl = gtk4::Label::new(Some("Model"));
                     cli_model_lbl.set_halign(gtk4::Align::Start);
+                    let comfyui_note = gtk4::Label::new(Some(&format!(
+                        "{} uses a fixed server-side workflow and ignores Sharpr's model toggle.",
+                        comfyui_workflow.display_name()
+                    )));
+                    comfyui_note.set_halign(gtk4::Align::Start);
+                    comfyui_note.add_css_class("dim-label");
+                    comfyui_note.set_wrap(true);
+                    comfyui_note.set_visible(false);
                     cli_page.append(&cli_model_lbl);
                     cli_page.append(&standard_btn);
                     cli_page.append(&anime_btn);
+                    cli_page.append(&comfyui_note);
                     be_stack.add_named(&cli_page, Some("cli"));
 
                     let onnx_page = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
@@ -5348,16 +5420,56 @@ impl SharprWindow {
                     onnx_page.append(&dl_row);
                     be_stack.add_named(&onnx_page, Some("onnx"));
 
-                    {
+                    let refresh_cli_model_ui = {
+                        let standard_btn = standard_btn.clone();
+                        let anime_btn = anime_btn.clone();
+                        let comfyui_btn = comfyui_btn.clone();
+                        let comfyui_note = comfyui_note.clone();
+                        move || {
+                            let fixed_model = comfyui_btn.is_active()
+                                && !comfyui_workflow.uses_sharpr_model_picker();
+                            standard_btn.set_sensitive(!fixed_model);
+                            anime_btn.set_sensitive(!fixed_model);
+                            comfyui_note.set_visible(fixed_model);
+                        }
+                    };
+                    let sync_backend_stack = {
                         let stack_c = be_stack.clone();
-                        onnx_btn.connect_toggled(move |btn| {
-                            stack_c.set_visible_child_name(if btn.is_active() { "onnx" } else { "cli" });
+                        let onnx_btn = onnx_btn.clone();
+                        move || {
+                            stack_c.set_visible_child_name(if onnx_btn.is_active() {
+                                "onnx"
+                            } else {
+                                "cli"
+                            });
+                        }
+                    };
+                    refresh_cli_model_ui();
+                    sync_backend_stack();
+                    {
+                        let refresh = refresh_cli_model_ui.clone();
+                        let sync = sync_backend_stack.clone();
+                        onnx_btn.connect_toggled(move |_| {
+                            sync();
+                            refresh();
                         });
                     }
-                    be_stack.set_visible_child_name(match backend_kind {
-                        UpscaleBackendKind::Onnx => "onnx",
-                        _ => "cli",
-                    });
+                    {
+                        let refresh = refresh_cli_model_ui.clone();
+                        let sync = sync_backend_stack.clone();
+                        cli_btn.connect_toggled(move |_| {
+                            sync();
+                            refresh();
+                        });
+                    }
+                    {
+                        let refresh = refresh_cli_model_ui.clone();
+                        let sync = sync_backend_stack.clone();
+                        comfyui_btn.connect_toggled(move |_| {
+                            sync();
+                            refresh();
+                        });
+                    }
                     adv_box.append(&be_stack);
                     adv_expander.set_child(Some(&adv_box));
                     us_box.append(&adv_expander);

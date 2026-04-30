@@ -2126,6 +2126,8 @@ impl ViewerPane {
 
         let backend_kind = UpscaleBackendKind::from_settings(&settings.upscale_backend);
         let onnx_model = OnnxUpscaleModel::from_settings(&settings.onnx_upscale_model);
+        let comfyui_workflow =
+            crate::upscale::ComfyUiWorkflow::from_settings(&settings.comfyui_workflow);
         let backend: Box<dyn UpscaleBackend> = match backend_kind {
             UpscaleBackendKind::Cli => {
                 let Some(bin) = binary else {
@@ -2135,7 +2137,9 @@ impl ViewerPane {
                 Box::new(CliBackend::new(bin))
             }
             UpscaleBackendKind::Onnx => Box::new(OnnxBackend::new(onnx_model)),
-            UpscaleBackendKind::ComfyUi => Box::new(ComfyUiBackend::new(&settings.comfyui_url)),
+            UpscaleBackendKind::ComfyUi => {
+                Box::new(ComfyUiBackend::new(&settings.comfyui_url, comfyui_workflow))
+            }
         };
         if selected_dims == (0, 0) {
             let meta = crate::metadata::ImageMetadata::load(&path);
@@ -2161,7 +2165,8 @@ impl ViewerPane {
             settings.upscaled_output_dir.as_ref(),
             crate::export::OutputFolderKind::Upscaled,
         );
-        let filename_suffix = upscale_filename_suffix(backend_kind, model, onnx_model);
+        let filename_suffix =
+            upscale_filename_suffix(backend_kind, model, onnx_model, comfyui_workflow);
         let final_output =
             output_path_for_upscale(&path, &output_dir, &filename_suffix, output_format);
         let temp_output = pending_output_path(&final_output);
@@ -2303,11 +2308,14 @@ impl ViewerPane {
 
         let backend_kind = UpscaleBackendKind::from_settings(&settings.upscale_backend);
         let onnx_model = OnnxUpscaleModel::from_settings(&settings.onnx_upscale_model);
+        let comfyui_workflow =
+            crate::upscale::ComfyUiWorkflow::from_settings(&settings.comfyui_workflow);
         let output_dir = crate::export::resolve_output_dir(
             settings.upscaled_output_dir.as_ref(),
             crate::export::OutputFolderKind::Upscaled,
         );
-        let filename_suffix = upscale_filename_suffix(backend_kind, model, onnx_model);
+        let filename_suffix =
+            upscale_filename_suffix(backend_kind, model, onnx_model, comfyui_workflow);
         let total = paths.len();
         let op = ops_queue.add(format!("Upscaling {total} image(s)"));
         let viewer_weak = self.downgrade();
@@ -2811,9 +2819,10 @@ fn make_upscale_backend(
         crate::upscale::UpscaleBackendKind::Onnx => {
             Some(Box::new(OnnxBackend::new(onnx_model)) as Box<dyn UpscaleBackend>)
         }
-        crate::upscale::UpscaleBackendKind::ComfyUi => {
-            Some(Box::new(ComfyUiBackend::new(&settings.comfyui_url)) as Box<dyn UpscaleBackend>)
-        }
+        crate::upscale::UpscaleBackendKind::ComfyUi => Some(Box::new(ComfyUiBackend::new(
+            &settings.comfyui_url,
+            crate::upscale::ComfyUiWorkflow::from_settings(&settings.comfyui_workflow),
+        )) as Box<dyn UpscaleBackend>),
     }
 }
 
@@ -2881,11 +2890,17 @@ fn upscale_filename_suffix(
     backend: crate::upscale::UpscaleBackendKind,
     cli_model: crate::upscale::UpscaleModel,
     onnx_model: crate::upscale::OnnxUpscaleModel,
+    comfyui_workflow: crate::upscale::ComfyUiWorkflow,
 ) -> String {
     let model = match backend {
         crate::upscale::UpscaleBackendKind::Onnx => onnx_model.settings_key(),
-        crate::upscale::UpscaleBackendKind::Cli | crate::upscale::UpscaleBackendKind::ComfyUi => {
-            cli_model.settings_key()
+        crate::upscale::UpscaleBackendKind::Cli => cli_model.settings_key(),
+        crate::upscale::UpscaleBackendKind::ComfyUi => {
+            if comfyui_workflow.uses_sharpr_model_picker() {
+                cli_model.settings_key()
+            } else {
+                comfyui_workflow.settings_key()
+            }
         }
     };
     format!("upscaled-{}-{model}", backend.settings_key())

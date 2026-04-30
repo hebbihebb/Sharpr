@@ -4,7 +4,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use crate::upscale::{backend::UpscaleBackend, runner::UpscaleEvent, UpscaleJobConfig};
+use crate::upscale::{
+    backend::UpscaleBackend, runner::UpscaleEvent, ComfyUiWorkflow, UpscaleJobConfig,
+};
 
 /// Thin HTTP client for a local ComfyUI server.
 pub struct ComfyUiClient {
@@ -153,12 +155,14 @@ impl ComfyUiClient {
 /// Upscale backend that delegates to a local ComfyUI server.
 pub struct ComfyUiBackend {
     pub client: ComfyUiClient,
+    pub workflow: ComfyUiWorkflow,
 }
 
 impl ComfyUiBackend {
-    pub fn new(base_url: impl Into<String>) -> Self {
+    pub fn new(base_url: impl Into<String>, workflow: ComfyUiWorkflow) -> Self {
         Self {
             client: ComfyUiClient::new(base_url),
+            workflow,
         }
     }
 }
@@ -172,6 +176,7 @@ impl UpscaleBackend for ComfyUiBackend {
     ) -> async_channel::Receiver<UpscaleEvent> {
         let (tx, rx) = async_channel::bounded(4);
         let client = self.client;
+        let workflow_mode = self.workflow;
 
         std::thread::spawn(move || {
             let _ = tx.send_blocking(UpscaleEvent::Progress(Some(0.1)));
@@ -187,7 +192,7 @@ impl UpscaleBackend for ComfyUiBackend {
             let _ = tx.send_blocking(UpscaleEvent::Progress(Some(0.3)));
 
             // 2. Prepare workflow
-            let workflow_str = include_str!("comfy_preset.json");
+            let workflow_str = workflow_template(workflow_mode);
             let mut workflow: Value = match serde_json::from_str(workflow_str) {
                 Ok(v) => v,
                 Err(e) => {
@@ -203,14 +208,17 @@ impl UpscaleBackend for ComfyUiBackend {
                 }
             }
 
-            // Patch model
-            if let Some(node) = workflow.get_mut("3") {
-                if let Some(inputs) = node.get_mut("inputs") {
-                    let model_name = match config.model {
-                        crate::upscale::UpscaleModel::Standard => "RealESRGAN_x4plus.pth",
-                        crate::upscale::UpscaleModel::Anime => "RealESRGAN_x4plus_anime.pth",
-                    };
-                    inputs["model_name"] = json!(model_name);
+            if workflow_mode.uses_sharpr_model_picker() {
+                if let Some(node) = workflow.get_mut("3") {
+                    if let Some(inputs) = node.get_mut("inputs") {
+                        let model_name = match config.model {
+                            crate::upscale::UpscaleModel::Standard => "RealESRGAN_x4plus.pth",
+                            crate::upscale::UpscaleModel::Anime => {
+                                "RealESRGAN_x4plus_anime.pth"
+                            }
+                        };
+                        inputs["model_name"] = json!(model_name);
+                    }
                 }
             }
 
@@ -261,5 +269,12 @@ impl UpscaleBackend for ComfyUiBackend {
         });
 
         rx
+    }
+}
+
+fn workflow_template(workflow: ComfyUiWorkflow) -> &'static str {
+    match workflow {
+        ComfyUiWorkflow::Esrgan => include_str!("comfy_preset.json"),
+        ComfyUiWorkflow::SeedVr2 => include_str!("comfy_seedvr2.json"),
     }
 }

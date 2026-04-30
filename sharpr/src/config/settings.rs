@@ -84,6 +84,8 @@ pub struct AppSettings {
     pub onnx_upscale_model: String,
     /// Base URL of the local ComfyUI server.
     pub comfyui_url: String,
+    /// Active ComfyUI workflow preset: "esrgan" or "seedvr2".
+    pub comfyui_workflow: String,
     /// Whether the ComfyUI backend option is shown in the upscale dialog.
     pub comfyui_enabled: bool,
     settings: gio::Settings,
@@ -113,6 +115,7 @@ impl std::fmt::Debug for AppSettings {
             .field("upscale_backend", &self.upscale_backend)
             .field("onnx_upscale_model", &self.onnx_upscale_model)
             .field("comfyui_url", &self.comfyui_url)
+            .field("comfyui_workflow", &self.comfyui_workflow)
             .field("comfyui_enabled", &self.comfyui_enabled)
             .finish()
     }
@@ -146,6 +149,7 @@ impl Default for AppSettings {
             upscale_backend: "cli".into(),
             onnx_upscale_model: "swin2sr-lightweight-x2".into(),
             comfyui_url: "http://127.0.0.1:8188".into(),
+            comfyui_workflow: "esrgan".into(),
             comfyui_enabled: true,
             settings: gio::Settings::new("io.github.hebbihebb.Sharpr"),
         }
@@ -209,6 +213,10 @@ impl AppSettings {
                 val.to_string()
             }
         };
+        let comfyui_workflow = match settings.string("comfyui-workflow").as_str() {
+            "seedvr2" => "seedvr2".to_string(),
+            _ => "esrgan".to_string(),
+        };
         let comfyui_enabled = settings.boolean("comfyui-enabled");
 
         let mut libraries = parse_libraries_json(settings.string("libraries-json").as_str());
@@ -247,6 +255,7 @@ impl AppSettings {
             upscale_backend,
             onnx_upscale_model,
             comfyui_url,
+            comfyui_workflow,
             comfyui_enabled,
             settings,
         }
@@ -359,6 +368,13 @@ impl AppSettings {
         };
         let _ = self.settings.set_string("onnx-upscale-model", onnx_model);
         let _ = self.settings.set_string("comfyui-url", &self.comfyui_url);
+        let comfyui_workflow = match self.comfyui_workflow.as_str() {
+            "seedvr2" => "seedvr2",
+            _ => "esrgan",
+        };
+        let _ = self
+            .settings
+            .set_string("comfyui-workflow", comfyui_workflow);
         let _ = self
             .settings
             .set_boolean("comfyui-enabled", self.comfyui_enabled);
@@ -470,6 +486,16 @@ impl AppSettings {
     pub fn set_comfyui_url(&mut self, value: &str) {
         self.comfyui_url = value.to_string();
         let _ = self.settings.set_string("comfyui-url", &self.comfyui_url);
+    }
+
+    pub fn set_comfyui_workflow(&mut self, value: &str) {
+        self.comfyui_workflow = match value {
+            "seedvr2" => "seedvr2".to_string(),
+            _ => "esrgan".to_string(),
+        };
+        let _ = self
+            .settings
+            .set_string("comfyui-workflow", &self.comfyui_workflow);
     }
 
     pub fn set_comfyui_enabled(&mut self, value: bool) {
@@ -793,6 +819,7 @@ mod tests {
         let _ = settings.set_string("upscale-backend", "mystery");
         let _ = settings.set_string("onnx-upscale-model", "unknown");
         let _ = settings.set_string("comfyui-url", "");
+        let _ = settings.set_string("comfyui-workflow", "mystery");
         let _ = settings.set_string("library-root", "/tmp/library");
         let _ = settings.set_string("libraries-json", "[]");
         let _ = settings.set_string("upscaler-binary-path", "/tmp/upscaler");
@@ -815,6 +842,7 @@ mod tests {
         assert_eq!(loaded.upscale_backend, "cli");
         assert_eq!(loaded.onnx_upscale_model, "swin2sr-lightweight-x2");
         assert_eq!(loaded.comfyui_url, "http://127.0.0.1:8188");
+        assert_eq!(loaded.comfyui_workflow, "esrgan");
         assert_eq!(loaded.library_root, Some(PathBuf::from("/tmp/library")));
         assert_eq!(loaded.libraries.len(), 1);
         assert_eq!(loaded.libraries[0].root, PathBuf::from("/tmp/library"));
@@ -875,6 +903,7 @@ mod tests {
             upscale_backend: "mystery".into(),
             onnx_upscale_model: "broken".into(),
             comfyui_url: "http://localhost:9000".into(),
+            comfyui_workflow: "unknown".into(),
             comfyui_enabled: true,
             settings: settings.clone(),
         };
@@ -923,6 +952,7 @@ mod tests {
             settings.string("comfyui-url").as_str(),
             "http://localhost:9000"
         );
+        assert_eq!(settings.string("comfyui-workflow").as_str(), "esrgan");
         assert!(settings.boolean("comfyui-enabled"));
         assert!(settings.boolean("show-upscale-ui"));
     }

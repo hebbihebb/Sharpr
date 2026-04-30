@@ -101,6 +101,11 @@
       <summary>ComfyUI server URL</summary>
       <description>Base URL of the local ComfyUI server.</description>
     </key>
+    <key name="comfyui-workflow" type="s">
+      <default>"esrgan"</default>
+      <summary>ComfyUI workflow preset</summary>
+      <description>One of "esrgan" or "seedvr2".</description>
+    </key>
     <key name="comfyui-enabled" type="b">
       <default>true</default>
       <summary>Enable ComfyUI backend</summary>
