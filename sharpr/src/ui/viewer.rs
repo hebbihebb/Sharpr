@@ -2266,6 +2266,225 @@ impl ViewerPane {
         });
     }
 
+    /// Spawn background upscale jobs for multiple images without entering the
+    /// comparison flow. Outputs are written directly into the configured
+    /// upscaled folder.
+    pub fn start_upscale_batch(
+        &self,
+        paths: Vec<PathBuf>,
+        scale: u32,
+        model: crate::upscale::UpscaleModel,
+        trigger_btn: gtk4::Button,
+    ) {
+        use crate::upscale::runner::UpscaleEvent;
+        use crate::upscale::{
+            OnnxUpscaleModel, UpscaleBackendKind, UpscaleCompressionMode, UpscaleJobConfig,
+            UpscaleOutputFormat, UpscaleRunner,
+        };
+
+        if paths.is_empty() {
+            trigger_btn.set_sensitive(true);
+            return;
+        }
+
+        let (binary, settings, ops_queue) = {
+            let st = self.imp().state.borrow();
+            let Some(ref rc) = *st else {
+                trigger_btn.set_sensitive(true);
+                return;
+            };
+            let state = rc.borrow();
+            (
+                state.upscale_binary.clone(),
+                state.settings.clone(),
+                state.ops.clone(),
+            )
+        };
+
+        let backend_kind = UpscaleBackendKind::from_settings(&settings.upscale_backend);
+        let onnx_model = OnnxUpscaleModel::from_settings(&settings.onnx_upscale_model);
+        let output_dir = crate::export::resolve_output_dir(
+            settings.upscaled_output_dir.as_ref(),
+            crate::export::OutputFolderKind::Upscaled,
+        );
+        let filename_suffix = upscale_filename_suffix(backend_kind, model, onnx_model);
+        let total = paths.len();
+        let op = ops_queue.add(format!("Upscaling {total} image(s)"));
+        let viewer_weak = self.downgrade();
+
+        glib::MainContext::default().spawn_local(async move {
+            let mut completed = 0usize;
+            let mut failed = 0usize;
+            let mut first_error: Option<String> = None;
+
+            for source_path in paths {
+                let source_dims = load_upscale_source_dimensions(&source_path);
+                if source_dims == (0, 0) {
+                    failed += 1;
+                    if first_error.is_none() {
+                        first_error = Some(format!(
+                            "{}: source dimensions are unavailable",
+                            source_path.display()
+                        ));
+                    }
+                    op.progress(Some((completed + failed) as f32 / total as f32));
+                    continue;
+                }
+
+                let requested_scale = if scale == 0 {
+                    UpscaleRunner::smart_scale(source_dims.0, source_dims.1)
+                } else {
+                    scale
+                };
+                let output_format = UpscaleRunner::select_output_format(
+                    &source_path,
+                    UpscaleOutputFormat::from_settings(&settings.upscaler_output_format),
+                    UpscaleCompressionMode::from_settings(&settings.upscaler_compression_mode),
+                );
+                let final_output = output_path_for_upscale(
+                    &source_path,
+                    &output_dir,
+                    &filename_suffix,
+                    output_format,
+                );
+                let temp_output = pending_output_path(&final_output);
+                let Some(backend) =
+                    make_upscale_backend(backend_kind, binary.clone(), onnx_model, &settings)
+                else {
+                    trigger_btn.set_sensitive(true);
+                    op.fail("No compatible upscale backend is available");
+                    return;
+                };
+                let job = UpscaleJobConfig {
+                    source_dimensions: source_dims,
+                    requested_scale,
+                    execution_scale: model.native_scale(),
+                    model,
+                    output_format,
+                    compression_mode: UpscaleCompressionMode::from_settings(
+                        &settings.upscaler_compression_mode,
+                    ),
+                    quality: settings.upscaler_quality.clamp(50, 100) as u8,
+                    tile_size: (settings.upscaler_tile_size > 0)
+                        .then_some(settings.upscaler_tile_size as u32),
+                    gpu_id: (settings.upscaler_gpu_id >= 0)
+                        .then_some(settings.upscaler_gpu_id as u32),
+                };
+
+                let rx = if let Some(dir) = temp_output.parent() {
+                    match std::fs::create_dir_all(dir) {
+                        Ok(()) => backend.run(source_path.clone(), temp_output.clone(), job),
+                        Err(err) => {
+                            failed += 1;
+                            if first_error.is_none() {
+                                first_error = Some(format!(
+                                    "{}: failed to create output directory {}: {err}",
+                                    source_path.display(),
+                                    dir.display()
+                                ));
+                            }
+                            op.progress(Some((completed + failed) as f32 / total as f32));
+                            continue;
+                        }
+                    }
+                } else {
+                    backend.run(source_path.clone(), temp_output.clone(), job)
+                };
+
+                let mut job_failed = None;
+                while let Ok(event) = rx.recv().await {
+                    match event {
+                        UpscaleEvent::Progress(Some(progress)) => {
+                            op.progress(Some((completed as f32 + progress) / total as f32));
+                        }
+                        UpscaleEvent::Progress(None) => {}
+                        UpscaleEvent::Done(out_path) => {
+                            if out_path != temp_output {
+                                eprintln!(
+                                    "Upscale output path mismatch: expected {}, got {}",
+                                    temp_output.display(),
+                                    out_path.display()
+                                );
+                            }
+                            break;
+                        }
+                        UpscaleEvent::Failed(msg) => {
+                            job_failed = Some(msg);
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(msg) = job_failed {
+                    let _ = std::fs::remove_file(&temp_output);
+                    failed += 1;
+                    if first_error.is_none() {
+                        first_error = Some(format!("{}: {msg}", source_path.display()));
+                    }
+                    op.progress(Some((completed + failed) as f32 / total as f32));
+                    continue;
+                }
+
+                match finalize_copy_output(
+                    &temp_output,
+                    &source_path,
+                    &output_dir,
+                    &filename_suffix,
+                ) {
+                    Ok(final_path) => {
+                        completed += 1;
+                        if let Some(viewer) = viewer_weak.upgrade() {
+                            viewer.register_output_in_current_folder(&final_path);
+                        }
+                        op.progress(Some((completed + failed) as f32 / total as f32));
+                    }
+                    Err(msg) => {
+                        failed += 1;
+                        if first_error.is_none() {
+                            first_error = Some(format!("{}: {msg}", source_path.display()));
+                        }
+                        op.progress(Some((completed + failed) as f32 / total as f32));
+                    }
+                }
+            }
+
+            trigger_btn.set_sensitive(true);
+
+            if let Some(viewer) = viewer_weak.upgrade() {
+                if completed > 0 {
+                    if let Some(cb) = viewer.imp().post_save_cb.borrow().as_ref() {
+                        cb();
+                    }
+                }
+                if failed == 0 {
+                    op.complete();
+                    if let Some(window) = viewer.root_window() {
+                        let message = if completed == 1 {
+                            "Image upscaled".to_string()
+                        } else {
+                            format!("{completed} images upscaled")
+                        };
+                        window.add_toast(libadwaita::Toast::new(&message));
+                    }
+                } else {
+                    let message = format!("{completed}/{total} upscaled, {failed} failed");
+                    op.fail(first_error.unwrap_or(message.clone()));
+                    if let Some(window) = viewer.root_window() {
+                        window.add_toast(libadwaita::Toast::new(&message));
+                    }
+                }
+            } else if failed == 0 {
+                op.complete();
+            } else {
+                op.fail(
+                    first_error.unwrap_or_else(|| {
+                        format!("{completed}/{total} upscaled, {failed} failed")
+                    }),
+                );
+            }
+        });
+    }
+
     /// Export `source` to a temp file in the destination folder, then show
     /// the before/after comparison.
     pub fn start_downscale_preview(&self, source: PathBuf, config: crate::export::ExportConfig) {
@@ -2563,6 +2782,39 @@ fn output_path_for_upscale(
         filename_suffix,
         format.extension(),
     )
+}
+
+fn load_upscale_source_dimensions(path: &std::path::Path) -> (u32, u32) {
+    let meta = crate::metadata::ImageMetadata::load(path);
+    if meta.width > 0 && meta.height > 0 {
+        (meta.width, meta.height)
+    } else {
+        (0, 0)
+    }
+}
+
+fn make_upscale_backend(
+    backend_kind: crate::upscale::UpscaleBackendKind,
+    binary: Option<PathBuf>,
+    onnx_model: crate::upscale::OnnxUpscaleModel,
+    settings: &crate::config::settings::AppSettings,
+) -> Option<Box<dyn crate::upscale::backend::UpscaleBackend>> {
+    use crate::upscale::backend::UpscaleBackend;
+    use crate::upscale::backends::cli::CliBackend;
+    use crate::upscale::backends::onnx::OnnxBackend;
+    use crate::upscale::ComfyUiBackend;
+
+    match backend_kind {
+        crate::upscale::UpscaleBackendKind::Cli => {
+            binary.map(|bin| Box::new(CliBackend::new(bin)) as Box<dyn UpscaleBackend>)
+        }
+        crate::upscale::UpscaleBackendKind::Onnx => {
+            Some(Box::new(OnnxBackend::new(onnx_model)) as Box<dyn UpscaleBackend>)
+        }
+        crate::upscale::UpscaleBackendKind::ComfyUi => {
+            Some(Box::new(ComfyUiBackend::new(&settings.comfyui_url)) as Box<dyn UpscaleBackend>)
+        }
+    }
 }
 
 fn pending_output_path(final_output: &std::path::Path) -> PathBuf {

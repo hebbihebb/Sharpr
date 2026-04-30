@@ -93,6 +93,29 @@ fn parse_collection_tags_input(input: &str) -> Vec<String> {
     tags
 }
 
+fn effective_selected_paths(state: &AppState) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = state
+        .selected_paths
+        .iter()
+        .filter(|path| state.library.entry_for_path(path).is_some())
+        .cloned()
+        .collect();
+    if paths.is_empty() {
+        if let Some(entry) = state.library.selected_entry() {
+            paths.push(entry.path());
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn remove_path_from_action_selection(state: &mut AppState, path: &Path) {
+    state.selected_paths.remove(path);
+    state
+        .selected_paths
+        .retain(|selected| state.library.entry_for_path(selected).is_some());
+}
+
 const SWATCH_PALETTE: &[&str] = &[
     "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
 ];
@@ -4017,10 +4040,15 @@ impl SharprWindow {
                         if let Some(tags) = state_d.borrow().tags.clone() {
                             tags.remove_path(&path);
                         }
-                        state_d.borrow_mut().library.remove_path(&path);
+                        {
+                            let mut state = state_d.borrow_mut();
+                            state.library.remove_path(&path);
+                            remove_path_from_action_selection(&mut state, &path);
+                        }
                         let new_count = state_d.borrow().library.image_count();
                         if new_count == 0 {
                             viewer_d.clear();
+                            filmstrip_d.refresh_multi_selection_visuals();
                         } else {
                             let new_index = index.min(new_count - 1);
                             filmstrip_d.navigate_to(new_index);
@@ -4029,8 +4057,9 @@ impl SharprWindow {
                                 .library
                                 .entry_at(new_index)
                                 .map(|e: ImageEntry| e.path());
-                            if let Some(p) = next_path {
-                                viewer_d.load_image(p);
+                            if let Some(next_path) = next_path {
+                                viewer_d.load_image(next_path.clone());
+                                filmstrip_d.set_action_selection_to_path(&next_path);
                             }
                         }
                     }
@@ -4052,10 +4081,15 @@ impl SharprWindow {
                     if let Some(tags) = state_tr.borrow().tags.clone() {
                         tags.remove_path(&path);
                     }
-                    state_tr.borrow_mut().library.remove_path(&path);
+                    {
+                        let mut state = state_tr.borrow_mut();
+                        state.library.remove_path(&path);
+                        remove_path_from_action_selection(&mut state, &path);
+                    }
                     let new_count = state_tr.borrow().library.image_count();
                     if new_count == 0 {
                         viewer_tr.clear();
+                        filmstrip_tr.refresh_multi_selection_visuals();
                     } else {
                         let index = state_tr.borrow().library.selected_index.unwrap_or(0);
                         let new_index = index.min(new_count - 1);
@@ -4066,7 +4100,8 @@ impl SharprWindow {
                             .entry_at(new_index)
                             .map(|e: ImageEntry| e.path());
                         if let Some(p) = next_path {
-                            viewer_tr.load_image(p);
+                            viewer_tr.load_image(p.clone());
+                            filmstrip_tr.set_action_selection_to_path(&p);
                         }
                     }
                 }
@@ -4829,15 +4864,11 @@ impl SharprWindow {
 
                 let sources: Vec<PathBuf> = {
                     let st = state_c.borrow();
-                    if !st.selected_paths.is_empty() {
-                        let mut v: Vec<PathBuf> = st.selected_paths.iter().cloned().collect();
-                        v.sort();
-                        v
-                    } else if let Some(entry) = st.library.selected_entry() {
-                        vec![entry.path()]
-                    } else {
+                    let sources = effective_selected_paths(&st);
+                    if sources.is_empty() {
                         return;
-                    }
+                    };
+                    sources
                 };
 
                 let dialog = libadwaita::AlertDialog::new(Some("Export Images"), None);
@@ -4887,7 +4918,7 @@ impl SharprWindow {
                     let ql = quality_label.clone();
                     let qs = quality_spin.clone();
                     fmt_drop.connect_selected_notify(move |drop| {
-                        let visible = drop.selected() == 0;
+                        let visible = drop.selected() != 2;
                         ql.set_visible(visible);
                         qs.set_visible(visible);
                     });
@@ -5028,9 +5059,11 @@ impl SharprWindow {
                         st.upscale_binary = UpscaleDetector::find_realesrgan();
                     }
                     let srcs = if !st.selected_paths.is_empty() {
-                        let mut v: Vec<PathBuf> = st.selected_paths.iter().cloned().collect();
-                        v.sort();
-                        v
+                        let selected = effective_selected_paths(&st);
+                        if selected.is_empty() {
+                            return;
+                        }
+                        selected
                     } else if let Some(entry) = st.library.selected_entry() {
                         vec![entry.path()]
                     } else {
@@ -5164,7 +5197,7 @@ impl SharprWindow {
                     let ql = quality_lbl.clone();
                     let qs = quality_spin.clone();
                     fmt_drop.connect_selected_notify(move |drop| {
-                        let visible = drop.selected() == 0;
+                        let visible = drop.selected() != 2;
                         ql.set_visible(visible);
                         qs.set_visible(visible);
                     });
@@ -5379,13 +5412,6 @@ impl SharprWindow {
                             );
                         }
 
-                        let path = state_cc
-                            .borrow()
-                            .library
-                            .selected_entry()
-                            .map(|e: ImageEntry| e.path());
-                        let Some(p) = path else { return };
-
                         if let Some(action) = action_weak_c.upgrade() {
                             action.set_enabled(false);
                         }
@@ -5411,7 +5437,16 @@ impl SharprWindow {
                             3 => 4,
                             _ => 0,
                         };
-                        viewer_c.start_upscale(p, scale, cli_model, proxy_btn);
+                        if sources.len() == 1 {
+                            viewer_c.start_upscale(sources[0].clone(), scale, cli_model, proxy_btn);
+                        } else {
+                            viewer_c.start_upscale_batch(
+                                sources.clone(),
+                                scale,
+                                cli_model,
+                                proxy_btn,
+                            );
+                        }
                     } else {
                         // ── Downscale path ───────────────────────────────────
                         let max_edge = match edge_drop.selected() {

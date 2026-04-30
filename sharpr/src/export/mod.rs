@@ -44,7 +44,7 @@ pub struct ExportConfig {
     /// Longest edge of the output image; `None` means no resize.
     pub max_edge: Option<u32>,
     pub format: ExportFormat,
-    /// JPEG quality, 1–100. Ignored for PNG and WebP (both written losslessly).
+    /// Lossy output quality, 1-100. Used for JPEG and WebP; ignored for PNG.
     pub quality: u8,
     pub filename_suffix: Option<String>,
 }
@@ -288,13 +288,12 @@ fn save_image(
 ) -> Result<(), ExportError> {
     use image::codecs::jpeg::JpegEncoder;
     use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
-    use image::codecs::webp::WebPEncoder;
     use image::{ExtendedColorType, ImageEncoder};
-    use std::io::BufWriter;
+    use std::io::{BufWriter, Write};
 
     let file = std::fs::File::create(output)
         .map_err(|e| ExportError::Io(format!("create {}: {e}", output.display())))?;
-    let writer = BufWriter::new(file);
+    let mut writer = BufWriter::new(file);
 
     match format {
         ExportFormat::Jpeg => {
@@ -322,24 +321,18 @@ fn save_image(
         ExportFormat::Webp => {
             if img.color().has_alpha() {
                 let rgba = img.to_rgba8();
-                WebPEncoder::new_lossless(writer)
-                    .write_image(
-                        rgba.as_raw(),
-                        rgba.width(),
-                        rgba.height(),
-                        ExtendedColorType::Rgba8,
-                    )
-                    .map_err(|e| ExportError::Encode(e.to_string()))
+                let encoded = webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
+                    .encode(quality.clamp(1, 100) as f32);
+                writer
+                    .write_all(encoded.as_ref())
+                    .map_err(|e| ExportError::Io(format!("write {}: {e}", output.display())))
             } else {
                 let rgb = img.to_rgb8();
-                WebPEncoder::new_lossless(writer)
-                    .write_image(
-                        rgb.as_raw(),
-                        rgb.width(),
-                        rgb.height(),
-                        ExtendedColorType::Rgb8,
-                    )
-                    .map_err(|e| ExportError::Encode(e.to_string()))
+                let encoded = webp::Encoder::from_rgb(rgb.as_raw(), rgb.width(), rgb.height())
+                    .encode(quality.clamp(1, 100) as f32);
+                writer
+                    .write_all(encoded.as_ref())
+                    .map_err(|e| ExportError::Io(format!("write {}: {e}", output.display())))
             }
         }
     }
@@ -417,6 +410,33 @@ mod tests {
             export_filename_suffix(None, ExportFormat::Png),
             "export-original-png"
         );
+    }
+
+    #[test]
+    fn webp_quality_affects_lossy_output_size() {
+        let dir = temp_dir("webp-quality");
+        let low_path = dir.join("low.webp");
+        let high_path = dir.join("high.webp");
+        let mut rgba = image::RgbaImage::new(256, 256);
+        for (x, y, pixel) in rgba.enumerate_pixels_mut() {
+            *pixel = image::Rgba([
+                (x % 256) as u8,
+                (y % 256) as u8,
+                ((x * 13 + y * 7) % 256) as u8,
+                255,
+            ]);
+        }
+        let img = image::DynamicImage::ImageRgba8(rgba);
+
+        save_image(&img, &low_path, ExportFormat::Webp, 20).unwrap();
+        save_image(&img, &high_path, ExportFormat::Webp, 95).unwrap();
+
+        let low_size = std::fs::metadata(&low_path).unwrap().len();
+        let high_size = std::fs::metadata(&high_path).unwrap().len();
+        assert_ne!(low_size, high_size);
+        assert!(low_size < high_size);
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

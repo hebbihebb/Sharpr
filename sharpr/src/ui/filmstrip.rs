@@ -553,9 +553,12 @@ impl FilmstripPane {
             gesture_ctrl.set_button(1);
             item_box.add_controller(gesture_ctrl.clone());
 
+            let gesture_primary = gtk4::GestureClick::new();
+            gesture_primary.set_button(1);
+            item_box.add_controller(gesture_primary.clone());
+
             let list_item_weak = list_item.downgrade();
             let widget_weak_ctrl = widget_weak_setup.clone();
-            let item_box_weak = item_box.downgrade();
             gesture_ctrl.connect_released(move |gesture, _, _, _| {
                 let modifiers = gesture.current_event_state();
                 if !modifiers.contains(gdk4::ModifierType::CONTROL_MASK) {
@@ -571,29 +574,26 @@ impl FilmstripPane {
                 let Some(widget) = widget_weak_ctrl.upgrade() else {
                     return;
                 };
-                let is_now_selected = widget
-                    .imp()
-                    .state
-                    .borrow()
-                    .as_ref()
-                    .map(|s| {
-                        let mut s = s.borrow_mut();
-                        if s.selected_paths.contains(&path) {
-                            s.selected_paths.remove(&path);
-                            false
-                        } else {
-                            s.selected_paths.insert(path);
-                            true
-                        }
-                    })
-                    .unwrap_or(false);
-                if let Some(ib) = item_box_weak.upgrade() {
-                    if is_now_selected {
-                        ib.add_css_class("multi-selected");
-                    } else {
-                        ib.remove_css_class("multi-selected");
-                    }
+                widget.toggle_action_selection_path(&path);
+            });
+
+            let list_item_weak = list_item.downgrade();
+            let widget_weak_primary = widget_weak_setup.clone();
+            gesture_primary.connect_released(move |gesture, _, _, _| {
+                let modifiers = gesture.current_event_state();
+                if modifiers.contains(gdk4::ModifierType::CONTROL_MASK) {
+                    return;
                 }
+                let Some(list_item) = list_item_weak.upgrade() else {
+                    return;
+                };
+                let Some(path) = list_item_path(&list_item) else {
+                    return;
+                };
+                let Some(widget) = widget_weak_primary.upgrade() else {
+                    return;
+                };
+                widget.set_action_selection_to_path(&path);
             });
 
             // Drag source: drag this item (or all multi-selected items) to a sidebar collection.
@@ -791,6 +791,9 @@ impl FilmstripPane {
 
             // Restore multi-select visual state when items are recycled.
             if let Some(ib) = item_box {
+                unsafe {
+                    ib.set_data("fs-path", entry.path());
+                }
                 let is_selected = widget_weak_bind
                     .upgrade()
                     .and_then(|w| {
@@ -799,7 +802,10 @@ impl FilmstripPane {
                             .borrow()
                             .as_ref()
                             .and_then(|s| s.try_borrow().ok())
-                            .map(|s| s.selected_paths.contains(&entry.path()))
+                            .map(|s| {
+                                s.selected_paths.len() > 1
+                                    && s.selected_paths.contains(&entry.path())
+                            })
                     })
                     .unwrap_or(false);
                 if is_selected {
@@ -1464,6 +1470,52 @@ impl FilmstripPane {
         if let Some(state) = self.imp().state.borrow().as_ref() {
             state.borrow_mut().selected_paths.clear();
         }
+        self.refresh_multi_selection_visuals();
+    }
+
+    pub fn set_action_selection_to_path(&self, path: &Path) {
+        if let Some(state) = self.imp().state.borrow().as_ref() {
+            let mut state = state.borrow_mut();
+            state.selected_paths.clear();
+            if state.library.entry_for_path(path).is_some() {
+                state.selected_paths.insert(path.to_path_buf());
+            }
+        }
+        self.refresh_multi_selection_visuals();
+    }
+
+    pub fn toggle_action_selection_path(&self, path: &Path) {
+        if let Some(state) = self.imp().state.borrow().as_ref() {
+            let mut state = state.borrow_mut();
+            if state.selected_paths.is_empty() {
+                if let Some(current) = state.library.selected_entry().map(|entry| entry.path()) {
+                    state.selected_paths.insert(current);
+                }
+            }
+            if state.selected_paths.contains(path) {
+                state.selected_paths.remove(path);
+            } else if state.library.entry_for_path(path).is_some() {
+                state.selected_paths.insert(path.to_path_buf());
+            }
+        }
+        self.refresh_multi_selection_visuals();
+    }
+
+    pub fn refresh_multi_selection_visuals(&self) {
+        let selected_paths = self
+            .imp()
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|state| state.try_borrow().ok())
+            .map(|state| state.selected_paths.clone())
+            .unwrap_or_default();
+        let show_multi = selected_paths.len() > 1;
+        sync_visible_selection_classes(
+            self.imp().list_view.upcast_ref::<gtk4::Widget>(),
+            &selected_paths,
+            show_multi,
+        );
     }
 }
 
@@ -1492,6 +1544,32 @@ fn list_item_path(list_item: &gtk4::ListItem) -> Option<PathBuf> {
         .item()
         .and_downcast::<ImageEntry>()
         .map(|entry| entry.path())
+}
+
+fn sync_visible_selection_classes(
+    widget: &gtk4::Widget,
+    selected_paths: &std::collections::HashSet<PathBuf>,
+    show_multi: bool,
+) {
+    if let Some(item_box) = widget.downcast_ref::<gtk4::Box>() {
+        let is_selected = unsafe {
+            item_box
+                .data::<PathBuf>("fs-path")
+                .map(|path| show_multi && selected_paths.contains(path.as_ref()))
+                .unwrap_or(false)
+        };
+        if is_selected {
+            item_box.add_css_class("multi-selected");
+        } else {
+            item_box.remove_css_class("multi-selected");
+        }
+    }
+
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        sync_visible_selection_classes(&current, selected_paths, show_multi);
+        child = current.next_sibling();
+    }
 }
 
 fn launch_default_for_path(path: &Path) {
