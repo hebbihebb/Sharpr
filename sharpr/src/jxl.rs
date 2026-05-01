@@ -4,6 +4,7 @@ use std::time::Instant;
 use image::DynamicImage;
 use jpegxl_rs::encode::{EncoderFrame, EncoderResult, EncoderSpeed};
 use jpegxl_rs::image::ToDynamic;
+use jpegxl_rs::parallel::threads_runner::ThreadsRunner;
 use jpegxl_rs::{decoder_builder, encoder_builder};
 
 pub fn is_jxl_path(path: &Path) -> bool {
@@ -15,9 +16,13 @@ pub fn is_jxl_path(path: &Path) -> bool {
 
 pub fn decode_path(path: &Path) -> Result<DynamicImage, String> {
     let data = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
-    decoder_builder()
+    let parallel_runner = ThreadsRunner::new(None, None)
+        .ok_or_else(|| "create JPEG XL thread pool".to_string())?;
+    let decoder = decoder_builder()
+        .parallel_runner(&parallel_runner)
         .build()
-        .map_err(|err| format!("create JPEG XL decoder: {err}"))?
+        .map_err(|err| format!("create JPEG XL decoder: {err}"))?;
+    decoder
         .decode_to_image(&data)
         .map_err(|err| format!("decode JPEG XL {}: {err}", path.display()))?
         .ok_or_else(|| format!("decode JPEG XL {}: no image data returned", path.display()))
@@ -42,11 +47,14 @@ pub fn encode_path(
 ) -> Result<(), String> {
     let started = Instant::now();
     let quality = quality.clamp(0, 100) as f32;
+    let parallel_runner = ThreadsRunner::new(None, None)
+        .ok_or_else(|| "create JPEG XL thread pool".to_string())?;
     let mut encoder = encoder_builder()
         .has_alpha(image.color().has_alpha())
         .lossless(lossless)
         .speed(speed_for_effort(effort))
         .jpeg_quality(if lossless { 100.0 } else { quality })
+        .parallel_runner(&parallel_runner)
         .build()
         .map_err(|err| format!("create JPEG XL encoder: {err}"))?;
     crate::bench_event!(
