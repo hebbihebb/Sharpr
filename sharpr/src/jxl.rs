@@ -7,6 +7,9 @@ use jpegxl_rs::image::ToDynamic;
 use jpegxl_rs::parallel::threads_runner::ThreadsRunner;
 use jpegxl_rs::{decoder_builder, encoder_builder};
 
+const DEFAULT_DECODE_WORKERS: usize = 2;
+const THUMBNAIL_DECODE_WORKERS: usize = 1;
+
 pub fn is_jxl_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -15,8 +18,16 @@ pub fn is_jxl_path(path: &Path) -> bool {
 }
 
 pub fn decode_path(path: &Path) -> Result<DynamicImage, String> {
+    decode_path_with_num_workers(path, DEFAULT_DECODE_WORKERS)
+}
+
+pub fn decode_path_for_thumbnail(path: &Path) -> Result<DynamicImage, String> {
+    decode_path_with_num_workers(path, THUMBNAIL_DECODE_WORKERS)
+}
+
+fn decode_path_with_num_workers(path: &Path, num_workers: usize) -> Result<DynamicImage, String> {
     let data = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
-    let parallel_runner = ThreadsRunner::new(None, None)
+    let parallel_runner = ThreadsRunner::new(None, Some(num_workers.max(1)))
         .ok_or_else(|| "create JPEG XL thread pool".to_string())?;
     let decoder = decoder_builder()
         .parallel_runner(&parallel_runner)

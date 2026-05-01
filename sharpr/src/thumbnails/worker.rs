@@ -134,6 +134,21 @@ impl ThumbnailWorker {
                                 }),
                             );
                             if let Some(result) = generate_thumbnail(&path) {
+                                if gen != gen_arc.load(Ordering::Relaxed) {
+                                    crate::bench_event!(
+                                        "thumbnail.stale_result",
+                                        serde_json::json!({
+                                            "path": path.display().to_string(),
+                                            "pool": "visible",
+                                            "gen": gen,
+                                            "duration_ms": result.worker_ms,
+                                        }),
+                                    );
+                                    if let Ok(mut pending) = pending_paths.lock() {
+                                        pending.remove(&path);
+                                    }
+                                    continue;
+                                }
                                 crate::bench_event!(
                                     "thumbnail.finish",
                                     serde_json::json!({
@@ -244,6 +259,21 @@ impl ThumbnailWorker {
                             }),
                         );
                         if let Some(result) = generate_thumbnail(&path) {
+                            if gen != gen_arc.load(Ordering::Relaxed) {
+                                crate::bench_event!(
+                                    "thumbnail.stale_result",
+                                    serde_json::json!({
+                                        "path": path.display().to_string(),
+                                        "pool": "preload",
+                                        "gen": gen,
+                                        "duration_ms": result.worker_ms,
+                                    }),
+                                );
+                                if let Ok(mut pending) = pending_paths.lock() {
+                                    pending.remove(&path);
+                                }
+                                continue;
+                            }
                             crate::bench_event!(
                                 "thumbnail.finish",
                                 serde_json::json!({
@@ -433,7 +463,7 @@ fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
     }
 
     if crate::jxl::is_jxl_path(path) {
-        let img = crate::jxl::decode_path(path).ok()?;
+        let img = crate::jxl::decode_path_for_thumbnail(path).ok()?;
         let img = apply_exif_orientation(img, path);
         let (target_width, target_height) =
             choose_thumbnail_webp_dimensions(img.width(), img.height(), THUMB_HEIGHT);
@@ -448,7 +478,7 @@ fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
         } else {
             img
         };
-        let mut result = build_thumbnail_and_cache(path, img, "decoded_jxl")?;
+        let mut result = build_thumbnail_and_cache_exact(path, img, "decoded_jxl")?;
         result.worker_ms = crate::bench::duration_ms(started);
         return Some(result);
     }
@@ -614,6 +644,30 @@ fn build_thumbnail_and_cache(
         rgba_bytes,
         width: thumb_w,
         height: thumb_h,
+        source,
+        worker_ms: 0,
+    })
+}
+
+fn build_thumbnail_and_cache_exact(
+    path: &Path,
+    img: image::DynamicImage,
+    source: &'static str,
+) -> Option<ThumbnailResult> {
+    let rgba = img.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let rgba_bytes = rgba.into_raw();
+    write_thumbnail_cache(path, &rgba_bytes, width, height);
+
+    Some(ThumbnailResult {
+        path: path.to_path_buf(),
+        rgba_bytes,
+        width,
+        height,
         source,
         worker_ms: 0,
     })
@@ -863,6 +917,53 @@ mod tests {
             assert!(
                 started.elapsed() < std::time::Duration::from_secs(10),
                 "timed out waiting for JXL thumbnail result"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn jxl_preview_and_thumbnail_can_decode_concurrently() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("docs/wallpaper-37181-export-original-jxl-1.jxl");
+        let (thumb_worker, thumb_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let (preview_worker, preview_rx) = crate::image_pipeline::worker::PreviewWorker::spawn();
+
+        let gen = thumb_worker.current_generation();
+        thumb_worker
+            .visible_sender()
+            .send_blocking(WorkerRequest::Thumbnail {
+                path: path.clone(),
+                gen,
+            })
+            .unwrap();
+        preview_worker.handle().request(path.clone(), 1);
+
+        let started = std::time::Instant::now();
+        let mut got_thumb = false;
+        let mut got_preview = false;
+        loop {
+            if !got_thumb {
+                if let Ok(result) = thumb_rx.try_recv() {
+                    assert_eq!(result.path, path);
+                    got_thumb = true;
+                }
+            }
+            if !got_preview {
+                if let Ok(result) = preview_rx.try_recv() {
+                    assert_eq!(result.path, path);
+                    assert!(result.image.is_ok(), "preview decode should succeed");
+                    got_preview = true;
+                }
+            }
+            if got_thumb && got_preview {
+                break;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "timed out waiting for concurrent JXL decode results"
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
