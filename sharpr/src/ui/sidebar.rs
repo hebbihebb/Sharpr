@@ -216,6 +216,14 @@ impl SidebarPane {
                 widget.imp().suppress_folder_signal.set(false);
                 return;
             }
+            crate::bench_event!(
+                "sidebar.folder_selected_ui",
+                serde_json::json!({
+                    "path": folder_row.path().display().to_string(),
+                    "has_children": folder_row.has_children(),
+                    "ignored": false,
+                }),
+            );
             widget.clear_collection_selection();
             widget.emit_folder_selected(folder_row.path());
         });
@@ -228,6 +236,13 @@ impl SidebarPane {
             let Some(folder_row) = row.downcast_ref::<FolderRow>() else {
                 return;
             };
+            crate::bench_event!(
+                "sidebar.folder_row_activated",
+                serde_json::json!({
+                    "path": folder_row.path().display().to_string(),
+                    "has_children": folder_row.has_children(),
+                }),
+            );
             if folder_row.has_children() {
                 widget.toggle_folder_collapsed(folder_row.path());
             }
@@ -518,6 +533,7 @@ impl SidebarPane {
 
     pub fn select_folder(&self, path: &Path) {
         let mut child = self.imp().list_box.first_child();
+        let mut matched = false;
         while let Some(widget) = child {
             let next = widget.next_sibling();
             if let Ok(row) = widget.downcast::<FolderRow>() {
@@ -525,11 +541,19 @@ impl SidebarPane {
                     self.imp().suppress_folder_signal.set(true);
                     self.imp().list_box.select_row(Some(&row));
                     self.imp().suppress_folder_signal.set(false);
+                    matched = true;
                     break;
                 }
             }
             child = next;
         }
+        crate::bench_event!(
+            "sidebar.select_folder",
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "matched": matched,
+            }),
+        );
     }
 
     fn clear_folder_selection(&self) {
@@ -547,6 +571,12 @@ impl SidebarPane {
     }
 
     fn emit_folder_selected(&self, path: PathBuf) {
+        crate::bench_event!(
+            "sidebar.folder_selected_emit",
+            serde_json::json!({
+                "path": path.display().to_string(),
+            }),
+        );
         if let Some(cb) = self.imp().folder_selected_cb.borrow().as_ref() {
             cb(path);
         }
@@ -1041,12 +1071,22 @@ impl SidebarPane {
 
     fn toggle_folder_collapsed(&self, path: PathBuf) {
         let imp = self.imp();
-        {
+        let now_collapsed = {
             let mut collapsed = imp.collapsed_folder_paths.borrow_mut();
             if !collapsed.insert(path.clone()) {
                 collapsed.remove(&path);
+                false
+            } else {
+                true
             }
-        }
+        };
+        crate::bench_event!(
+            "sidebar.folder_toggle",
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "collapsed": now_collapsed,
+            }),
+        );
         let tree = imp.folder_tree.borrow().clone();
         let ignored_folders = imp.ignored_folders.borrow().clone();
         self.set_folder_tree(&tree, &ignored_folders);

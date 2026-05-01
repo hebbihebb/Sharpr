@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 
 static LOGGER: OnceLock<Option<BenchLogger>> = OnceLock::new();
 static START: OnceLock<Instant> = OnceLock::new();
+const DEFAULT_LOG_FILE_LIMIT: usize = 20;
 
 #[derive(Clone)]
 struct BenchLogger {
@@ -19,8 +20,8 @@ struct BenchLogger {
 pub fn init() {
     let _ = START.set(Instant::now());
     let enabled = std::env::var("SHARPR_BENCH")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
-        .unwrap_or(false);
+        .map(|value| !matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
+        .unwrap_or(true);
 
     let _ = LOGGER.set(if enabled { BenchLogger::spawn() } else { None });
 
@@ -143,12 +144,13 @@ fn event_with_logger(logger: &BenchLogger, name: &str, fields: Value) {
 fn log_path() -> PathBuf {
     std::env::var_os("SHARPR_BENCH_LOG")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("sharpr-bench.jsonl"))
+        .unwrap_or_else(default_log_path)
 }
 
 fn open_log_file(path: &PathBuf) -> Option<File> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
+        trim_old_log_files(parent);
     }
     OpenOptions::new()
         .create(true)
@@ -156,6 +158,54 @@ fn open_log_file(path: &PathBuf) -> Option<File> {
         .truncate(true)
         .open(path)
         .ok()
+}
+
+fn default_log_path() -> PathBuf {
+    let base_dir = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
+    let log_dir = base_dir.join("sharpr").join("logs");
+    let session = format!("run-{}-{}.jsonl", unix_ms(), std::process::id());
+    log_dir.join(session)
+}
+
+fn trim_old_log_files(dir: &std::path::Path) {
+    let Ok(limit) = std::env::var("SHARPR_BENCH_LOG_LIMIT")
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()
+    else {
+        return;
+    };
+    let limit = limit.unwrap_or(DEFAULT_LOG_FILE_LIMIT);
+    if limit == 0 {
+        return;
+    }
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    let mut files: Vec<_> = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            let file_name = path.file_name()?.to_str()?;
+            if !(file_name.starts_with("run-") && file_name.ends_with(".jsonl")) {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .collect();
+
+    if files.len() < limit {
+        return;
+    }
+
+    files.sort_by_key(|(modified, _)| *modified);
+    let remove_count = files.len().saturating_sub(limit.saturating_sub(1));
+    for (_, path) in files.into_iter().take(remove_count) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 fn elapsed_ms() -> u128 {
