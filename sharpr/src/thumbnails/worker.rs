@@ -446,7 +446,7 @@ fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
         } else {
             img
         };
-        let mut result = build_thumbnail_and_cache(path, img, "decoded_jxl")?;
+        let mut result = build_thumbnail_and_cache_exact(path, img, "decoded_jxl")?;
         result.worker_ms = crate::bench::duration_ms(started);
         return Some(result);
     }
@@ -617,6 +617,30 @@ fn build_thumbnail_and_cache(
     })
 }
 
+fn build_thumbnail_and_cache_exact(
+    path: &Path,
+    img: image::DynamicImage,
+    source: &'static str,
+) -> Option<ThumbnailResult> {
+    let rgba = img.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let rgba_bytes = rgba.into_raw();
+    write_thumbnail_cache(path, &rgba_bytes, width, height);
+
+    Some(ThumbnailResult {
+        path: path.to_path_buf(),
+        rgba_bytes,
+        width,
+        height,
+        source,
+        worker_ms: 0,
+    })
+}
+
 fn load_cached_thumbnail(path: &Path) -> Option<ThumbnailResult> {
     let cache_path = thumbnail_cache_path(path)?;
     if !cache_path.exists() {
@@ -764,6 +788,7 @@ fn compute_hash(path: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn make_worker() -> ThumbnailWorker {
         // spawn() creates background threads that block waiting for requests.
@@ -832,6 +857,78 @@ mod tests {
             result_rx.try_recv().is_err(),
             "stale request must not produce a ThumbnailResult"
         );
+    }
+
+    #[test]
+    fn jxl_thumbnail_worker_emits_result_for_real_sample() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("docs/wallpaper-37181-export-original-jxl-1.jxl");
+        let (worker, result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let gen = worker.current_generation();
+        worker.visible_sender().send_blocking(WorkerRequest::Thumbnail {
+            path: path.clone(),
+            gen,
+        }).unwrap();
+
+        let started = std::time::Instant::now();
+        loop {
+            if let Ok(result) = result_rx.try_recv() {
+                assert_eq!(result.path, path);
+                assert!(result.width > 0 && result.height > 0);
+                break;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "timed out waiting for JXL thumbnail result"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn jxl_preview_and_thumbnail_can_decode_concurrently() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("docs/wallpaper-37181-export-original-jxl-1.jxl");
+        let (thumb_worker, thumb_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let (preview_worker, preview_rx) = crate::image_pipeline::worker::PreviewWorker::spawn();
+
+        let gen = thumb_worker.current_generation();
+        thumb_worker.visible_sender().send_blocking(WorkerRequest::Thumbnail {
+            path: path.clone(),
+            gen,
+        }).unwrap();
+        preview_worker.handle().request(path.clone(), 1);
+
+        let started = std::time::Instant::now();
+        let mut got_thumb = false;
+        let mut got_preview = false;
+        loop {
+            if !got_thumb {
+                if let Ok(result) = thumb_rx.try_recv() {
+                    assert_eq!(result.path, path);
+                    got_thumb = true;
+                }
+            }
+            if !got_preview {
+                if let Ok(result) = preview_rx.try_recv() {
+                    assert_eq!(result.path, path);
+                    assert!(result.image.is_ok(), "preview decode should succeed");
+                    got_preview = true;
+                }
+            }
+            if got_thumb && got_preview {
+                break;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "timed out waiting for concurrent JXL decode results"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]
