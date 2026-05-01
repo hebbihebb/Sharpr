@@ -24,6 +24,13 @@ pub enum PreviewDecodeMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewPrefetchDecision {
+    Allow,
+    SkipUnsupportedFormat,
+    SkipLargeDimensions,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewSource {
     EmbeddedPreview,
     ScaledJpeg,
@@ -451,6 +458,52 @@ fn preview_mode_label(mode: PreviewDecodeMode) -> &'static str {
     }
 }
 
+const PREFETCH_MAX_PIXELS: u64 = 16_000_000;
+
+pub fn preview_prefetch_decision(
+    path: &Path,
+    dimensions: Option<(u32, u32)>,
+) -> PreviewPrefetchDecision {
+    if !prefetch_supports_scaled_decode(path) {
+        return PreviewPrefetchDecision::SkipUnsupportedFormat;
+    }
+
+    if dimensions
+        .map(|(width, height)| u64::from(width) * u64::from(height) > PREFETCH_MAX_PIXELS)
+        .unwrap_or(false)
+    {
+        return PreviewPrefetchDecision::SkipLargeDimensions;
+    }
+
+    PreviewPrefetchDecision::Allow
+}
+
+pub fn preview_prefetch_reason_label(decision: PreviewPrefetchDecision) -> Option<&'static str> {
+    match decision {
+        PreviewPrefetchDecision::Allow => None,
+        PreviewPrefetchDecision::SkipUnsupportedFormat => Some("unsupported_prefetch_format"),
+        PreviewPrefetchDecision::SkipLargeDimensions => Some("prefetch_cost_limit"),
+    }
+}
+
+fn prefetch_supports_scaled_decode(path: &Path) -> bool {
+    is_jpeg_extension(path) || is_webp_extension(path) || crate::jxl::is_jxl_path(path)
+}
+
+fn is_jpeg_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "jpg" | "jpeg"))
+        .unwrap_or(false)
+}
+
+fn is_webp_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("webp"))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,5 +563,34 @@ mod tests {
             unique.len(),
             "all error labels must be distinct"
         );
+    }
+
+    #[test]
+    fn prefetch_skips_png_full_decode_path() {
+        let decision = preview_prefetch_decision(std::path::Path::new("/tmp/photo.png"), None);
+        assert_eq!(decision, PreviewPrefetchDecision::SkipUnsupportedFormat);
+    }
+
+    #[test]
+    fn prefetch_allows_webp_jpeg_and_jxl_scaled_paths() {
+        assert_eq!(
+            preview_prefetch_decision(std::path::Path::new("/tmp/photo.webp"), None),
+            PreviewPrefetchDecision::Allow
+        );
+        assert_eq!(
+            preview_prefetch_decision(std::path::Path::new("/tmp/photo.jpeg"), None),
+            PreviewPrefetchDecision::Allow
+        );
+        assert_eq!(
+            preview_prefetch_decision(std::path::Path::new("/tmp/photo.jxl"), None),
+            PreviewPrefetchDecision::Allow
+        );
+    }
+
+    #[test]
+    fn prefetch_skips_large_images_when_dimensions_are_known() {
+        let decision =
+            preview_prefetch_decision(std::path::Path::new("/tmp/photo.jpg"), Some((5000, 4000)));
+        assert_eq!(decision, PreviewPrefetchDecision::SkipLargeDimensions);
     }
 }

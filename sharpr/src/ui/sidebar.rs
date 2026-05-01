@@ -243,7 +243,7 @@ impl SidebarPane {
                     "has_children": folder_row.has_children(),
                 }),
             );
-            if folder_row.has_children() {
+            if folder_row_activation_toggles_collapse(folder_row.has_children()) {
                 widget.toggle_folder_collapsed(folder_row.path());
             }
         });
@@ -1426,6 +1426,18 @@ fn row_is_ignored(path: &Path, ignored_folders: &[PathBuf]) -> bool {
         .any(|folder| path.starts_with(folder))
 }
 
+fn folder_row_activation_toggles_collapse(_has_children: bool) -> bool {
+    false
+}
+
+fn folder_disclosure_icon_name(is_collapsed: bool) -> &'static str {
+    if is_collapsed {
+        "pan-end-symbolic"
+    } else {
+        "pan-down-symbolic"
+    }
+}
+
 mod folder_row_imp {
     use super::*;
 
@@ -1475,11 +1487,7 @@ impl FolderRow {
         let disclosure = gtk4::Button::new();
         disclosure.add_css_class("flat");
         disclosure.add_css_class("collection-disclosure");
-        disclosure.set_icon_name(if is_collapsed {
-            "pan-end-symbolic"
-        } else {
-            "pan-down-symbolic"
-        });
+        disclosure.set_icon_name(folder_disclosure_icon_name(is_collapsed));
         disclosure.set_sensitive(has_children);
         disclosure.set_opacity(if has_children { 1.0 } else { 0.0 });
         *row.imp().disclosure_button.borrow_mut() = Some(disclosure.clone());
@@ -1743,5 +1751,17 @@ mod tests {
         let selected = preferred_initial_folder_path(&tree, &entries, &ignored).unwrap();
 
         assert_eq!(selected, PathBuf::from("/Pictures/Backup"));
+    }
+
+    #[test]
+    fn selecting_folder_with_children_does_not_toggle_collapse() {
+        assert!(!folder_row_activation_toggles_collapse(true));
+        assert!(!folder_row_activation_toggles_collapse(false));
+    }
+
+    #[test]
+    fn disclosure_toggle_keeps_expand_and_collapse_icons() {
+        assert_eq!(folder_disclosure_icon_name(true), "pan-end-symbolic");
+        assert_eq!(folder_disclosure_icon_name(false), "pan-down-symbolic");
     }
 }

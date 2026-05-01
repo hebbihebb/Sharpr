@@ -857,10 +857,13 @@ mod tests {
             .join("docs/wallpaper-37181-export-original-jxl-1.jxl");
         let (worker, result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
         let gen = worker.current_generation();
-        worker.visible_sender().send_blocking(WorkerRequest::Thumbnail {
-            path: path.clone(),
-            gen,
-        }).unwrap();
+        worker
+            .visible_sender()
+            .send_blocking(WorkerRequest::Thumbnail {
+                path: path.clone(),
+                gen,
+            })
+            .unwrap();
 
         let started = std::time::Instant::now();
         loop {
@@ -884,7 +887,8 @@ mod tests {
             .unwrap()
             .join("docs/wallpaper-37181-export-original-jxl-1.jxl");
         let (thumb_worker, thumb_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
-        let (preview_worker, preview_rx) = crate::image_pipeline::worker::PreviewWorker::spawn();
+        let (preview_worker, preview_rx, _prefetch_rx) =
+            crate::image_pipeline::worker::PreviewWorker::spawn();
 
         let gen = thumb_worker.current_generation();
         thumb_worker
@@ -894,7 +898,7 @@ mod tests {
                 gen,
             })
             .unwrap();
-        preview_worker.handle().request(path.clone(), 1);
+        preview_worker.handle().request_viewer(path.clone(), 1);
 
         let started = std::time::Instant::now();
         let mut got_thumb = false;

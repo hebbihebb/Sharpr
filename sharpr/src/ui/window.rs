@@ -53,6 +53,8 @@ pub struct AppState {
     pub scope: ViewScope,
     /// Folders disabled by the user. Images under these paths must not be indexed or shown.
     pub disabled_folders: Vec<PathBuf>,
+    /// Monotonic context for preview prefetch requests tied to filmstrip selection.
+    pub preview_prefetch_gen: u64,
 }
 
 /// The single content scope currently loaded into the filmstrip.
@@ -565,15 +567,10 @@ fn apply_exact_tag_filter(
     apply_scope_to_sidebar(&scope, sidebar);
     filmstrip.refresh_virtual();
 
-    let first_path = state
-        .borrow()
-        .library
-        .entry_at(0)
-        .map(|entry: ImageEntry| entry.path());
-    if let Some(path) = first_path {
+    let has_first = state.borrow().library.entry_at(0).is_some();
+    if has_first {
         state.borrow_mut().library.selected_index = Some(0);
         filmstrip.navigate_to(0);
-        viewer.load_image(path);
     } else {
         viewer.clear();
     }
@@ -589,7 +586,7 @@ struct PrefetchRequest {
 
 struct PrefetchResult {
     request: PrefetchRequest,
-    image: crate::image_pipeline::PreviewImage,
+    image: Result<crate::image_pipeline::PreviewImage, crate::image_pipeline::PreviewDecodeError>,
 }
 
 struct ThumbnailOpState {
@@ -627,43 +624,30 @@ enum FolderOpenResult {
     },
 }
 
-fn trigger_prefetch(state: &Rc<RefCell<AppState>>, index: u32) {
+fn trigger_prefetch(
+    state: &Rc<RefCell<AppState>>,
+    preview_handle: &crate::image_pipeline::worker::PreviewHandle,
+    index: u32,
+) {
+    let prefetch_gen = {
+        let mut state_ref = state.borrow_mut();
+        state_ref.preview_prefetch_gen = state_ref.preview_prefetch_gen.wrapping_add(1);
+        state_ref.library.clear_all_prefetch_in_flight();
+        state_ref.preview_prefetch_gen
+    };
     let count = state.borrow().library.image_count();
-    // Create a channel to receive decoded bytes back on the main thread.
-    let (tx, rx) = async_channel::unbounded::<PrefetchResult>();
 
     for delta in [-1i32, 1i32] {
-        queue_prefetch(state, &tx, count, index as i32 + delta, delta, 1);
+        queue_prefetch(
+            state,
+            preview_handle,
+            prefetch_gen,
+            count,
+            index as i32 + delta,
+            delta,
+            1,
+        );
     }
-
-    // Drain results onto the main thread (channel closes when both senders drop).
-    let state_drain = state.clone();
-    let tx_drain = tx.clone();
-    glib::MainContext::default().spawn_local(async move {
-        while let Ok(result) = rx.recv().await {
-            let PrefetchResult { request, image } = result;
-            {
-                state_drain.borrow_mut().library.insert_prefetch(
-                    request.path.clone(),
-                    image.rgba,
-                    image.width,
-                    image.height,
-                );
-            }
-
-            if request.distance < 3 {
-                let next_index = request.index as i32 + request.direction;
-                queue_prefetch(
-                    &state_drain,
-                    &tx_drain,
-                    count,
-                    next_index,
-                    request.direction,
-                    request.distance + 1,
-                );
-            }
-        }
-    });
 }
 
 fn path_is_disabled(path: &std::path::Path, disabled_folders: &[PathBuf]) -> bool {
@@ -692,7 +676,8 @@ fn filter_paths_for_library(
 
 fn queue_prefetch(
     state: &Rc<RefCell<AppState>>,
-    tx: &async_channel::Sender<PrefetchResult>,
+    preview_handle: &crate::image_pipeline::worker::PreviewHandle,
+    prefetch_gen: u64,
     count: u32,
     index: i32,
     direction: i32,
@@ -711,6 +696,27 @@ fn queue_prefetch(
     };
     let Some(path) = path else { return };
 
+    let dimensions = {
+        let state_ref = state.borrow();
+        state_ref
+            .library
+            .entry_for_path(&path)
+            .and_then(|entry| entry.dimensions())
+    };
+
+    let decision = crate::image_pipeline::preview_prefetch_decision(&path, dimensions);
+    if let Some(reason) = crate::image_pipeline::preview_prefetch_reason_label(decision) {
+        crate::bench_event!(
+            "preview.request_skipped",
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "role": "prefetch",
+                "reason": reason,
+            }),
+        );
+        return;
+    }
+
     {
         let mut state_ref = state.borrow_mut();
         if state_ref.library.prefetch_pending(&path) {
@@ -719,21 +725,62 @@ fn queue_prefetch(
         state_ref.library.mark_prefetch_in_flight(path.clone());
     }
 
-    let request = PrefetchRequest {
+    crate::bench_event!(
+        "preview.request_enqueued",
+        serde_json::json!({
+            "path": path.display().to_string(),
+            "role": "prefetch",
+            "source": "filmstrip_prefetch",
+            "gen": prefetch_gen,
+            "distance": distance,
+        }),
+    );
+
+    preview_handle.request_prefetch(
         path,
-        index: index as u32,
-        direction,
-        distance,
-    };
-    let tx = tx.clone();
-    rayon::spawn(move || {
-        if let Ok(image) = crate::image_pipeline::decode_preview(
-            &request.path,
-            crate::image_pipeline::PreviewDecodeMode::Prefetch,
-        ) {
-            let _ = tx.send_blocking(PrefetchResult { request, image });
+        prefetch_gen,
+        crate::image_pipeline::worker::PrefetchRequestContext {
+            index: index as u32,
+            direction,
+            distance,
+        },
+    );
+}
+
+fn handle_prefetch_result(
+    state: &Rc<RefCell<AppState>>,
+    preview_handle: &crate::image_pipeline::worker::PreviewHandle,
+    result: PrefetchResult,
+) {
+    let PrefetchResult { request, image } = result;
+    let count = state.borrow().library.image_count();
+    state
+        .borrow_mut()
+        .library
+        .clear_prefetch_in_flight(&request.path);
+
+    if let Ok(image) = image {
+        state.borrow_mut().library.insert_prefetch(
+            request.path.clone(),
+            image.rgba,
+            image.width,
+            image.height,
+        );
+
+        if request.distance < 3 {
+            let next_index = request.index as i32 + request.direction;
+            let prefetch_gen = state.borrow().preview_prefetch_gen;
+            queue_prefetch(
+                state,
+                preview_handle,
+                prefetch_gen,
+                count,
+                next_index,
+                request.direction,
+                request.distance + 1,
+            );
         }
-    });
+    }
 }
 
 fn start_metadata_indexer(
@@ -1020,6 +1067,7 @@ impl AppState {
             selected_paths: HashSet::new(),
             scope: ViewScope::default(),
             disabled_folders,
+            preview_prefetch_gen: 0,
         }
     }
 }
@@ -1200,7 +1248,7 @@ impl SharprWindow {
         *self.imp().hash_result_rx.borrow_mut() = Some(hash_result_rx);
         *self.imp().sharpness_result_rx.borrow_mut() = Some(sharpness_result_rx);
 
-        let (preview_worker, preview_result_rx) =
+        let (preview_worker, preview_result_rx, prefetch_result_rx) =
             crate::image_pipeline::worker::PreviewWorker::spawn();
         *self.imp().preview_worker.borrow_mut() = Some(preview_worker);
 
@@ -1269,6 +1317,27 @@ impl SharprWindow {
 
         if let Some(worker) = self.imp().preview_worker.borrow().as_ref() {
             viewer.set_preview_worker(worker.handle(), preview_result_rx);
+            let preview_handle = worker.handle();
+            let state_prefetch = state.clone();
+            glib::MainContext::default().spawn_local(async move {
+                while let Ok(result) = prefetch_result_rx.recv().await {
+                    let request = result.prefetch.map(|prefetch| PrefetchRequest {
+                        path: result.path.clone(),
+                        index: prefetch.index,
+                        direction: prefetch.direction,
+                        distance: prefetch.distance,
+                    });
+                    let Some(request) = request else { continue };
+                    handle_prefetch_result(
+                        &state_prefetch,
+                        &preview_handle,
+                        PrefetchResult {
+                            request,
+                            image: result.image,
+                        },
+                    );
+                }
+            });
         }
 
         if let Some(worker) = self.imp().metadata_worker.borrow().as_ref() {
@@ -1669,14 +1738,6 @@ impl SharprWindow {
                     if let Some(index) = target_index {
                         state_rx.borrow_mut().library.selected_index = Some(index);
                         filmstrip_rx.navigate_to(index);
-                        let path = state_rx
-                            .borrow()
-                            .library
-                            .entry_at(index)
-                            .map(|e: ImageEntry| e.path());
-                        if let Some(path) = path {
-                            viewer_rx.load_image(path);
-                        }
                     }
 
                     // If we showed cached rows, wait for the reconciled result and apply
@@ -1744,14 +1805,6 @@ impl SharprWindow {
                                     if let Some(idx) = target {
                                         state_rx.borrow_mut().library.selected_index = Some(idx);
                                         filmstrip_rx.navigate_to(idx);
-                                        let p = state_rx
-                                            .borrow()
-                                            .library
-                                            .entry_at(idx)
-                                            .map(|e| e.path());
-                                        if let Some(p) = p {
-                                            viewer_rx.load_image(p);
-                                        }
                                     }
                                 }
                             }
@@ -2010,14 +2063,9 @@ impl SharprWindow {
                     let scope = state_rx.borrow().scope.clone();
                     apply_scope_to_sidebar(&scope, &sidebar_rx);
                     filmstrip_rx.refresh_virtual();
-                    let first = state_rx
-                        .borrow()
-                        .library
-                        .entry_at(0)
-                        .map(|e: ImageEntry| e.path());
-                    if let Some(p) = first {
+                    let has_first = state_rx.borrow().library.entry_at(0).is_some();
+                    if has_first {
                         filmstrip_rx.navigate_to(0);
-                        viewer_rx.load_image(p);
                     } else {
                         viewer_rx.clear();
                     }
@@ -2198,16 +2246,10 @@ impl SharprWindow {
                     apply_scope_to_sidebar(&scope, &sidebar_rx);
                     viewer_rx.clear();
                     filmstrip_rx.refresh_virtual();
-                    let first = state_rx
-                        .borrow()
-                        .library
-                        .entry_at(0)
-                        .map(|e: crate::model::ImageEntry| e.path());
-
-                    if let Some(path) = first {
+                    let has_first = state_rx.borrow().library.entry_at(0).is_some();
+                    if has_first {
                         state_rx.borrow_mut().library.selected_index = Some(0);
                         filmstrip_rx.navigate_to(0);
-                        viewer_rx.load_image(path);
                     }
                     op.complete();
                 });
@@ -2339,15 +2381,10 @@ impl SharprWindow {
                 let scope = state_c.borrow().scope.clone();
                 apply_scope_to_sidebar(&scope, &sidebar_c);
                 filmstrip_c.refresh_virtual();
-                let first = state_c
-                    .borrow()
-                    .library
-                    .entry_at(0)
-                    .map(|e: ImageEntry| e.path());
-                if let Some(p) = first {
+                let has_first = state_c.borrow().library.entry_at(0).is_some();
+                if has_first {
                     state_c.borrow_mut().library.selected_index = Some(0);
                     filmstrip_c.navigate_to(0);
-                    viewer_c.load_image(p);
                 } else {
                     viewer_c.clear();
                     toast_overlay_c.add_toast(libadwaita::Toast::new("No images in collection"));
@@ -2553,15 +2590,10 @@ impl SharprWindow {
                                 filmstrip_d.refresh_virtual();
                                 let scope = state_d.borrow().scope.clone();
                                 apply_scope_to_sidebar(&scope, &sidebar_d);
-                                let first = state_d
-                                    .borrow()
-                                    .library
-                                    .entry_at(0)
-                                    .map(|e: ImageEntry| e.path());
-                                if let Some(path) = first {
+                                let has_first = state_d.borrow().library.entry_at(0).is_some();
+                                if has_first {
                                     state_d.borrow_mut().library.selected_index = Some(0);
                                     filmstrip_d.navigate_to(0);
-                                    viewer_d.load_image(path);
                                 } else {
                                     viewer_d.clear();
                                 }
@@ -2717,15 +2749,10 @@ impl SharprWindow {
                             filmstrip_c.refresh_virtual();
                             let scope = state_c.borrow().scope.clone();
                             apply_scope_to_sidebar(&scope, &sidebar_c);
-                            let first = state_c
-                                .borrow()
-                                .library
-                                .entry_at(0)
-                                .map(|e: ImageEntry| e.path());
-                            if let Some(path) = first {
+                            let has_first = state_c.borrow().library.entry_at(0).is_some();
+                            if has_first {
                                 state_c.borrow_mut().library.selected_index = Some(0);
                                 filmstrip_c.navigate_to(0);
-                                viewer_c.load_image(path);
                             } else {
                                 viewer_c.clear();
                             }
@@ -2828,7 +2855,6 @@ impl SharprWindow {
         // Drag-and-drop from filmstrip to sidebar collection row.
         {
             let filmstrip_c = filmstrip.clone();
-            let viewer_c = viewer.clone();
             let state_c = state.clone();
             let toast_overlay_c = toast_overlay.clone();
             let refresh_c = refresh_sidebar_collections.clone();
@@ -2878,15 +2904,10 @@ impl SharprWindow {
                             state_c.borrow_mut().scope = ViewScope::Collection(id);
                             load_virtual_async(&state_c, &all_paths);
                             filmstrip_c.refresh_virtual();
-                            let first = state_c
-                                .borrow()
-                                .library
-                                .entry_at(0)
-                                .map(|e: ImageEntry| e.path());
-                            if let Some(p) = first {
+                            let has_first = state_c.borrow().library.entry_at(0).is_some();
+                            if has_first {
                                 state_c.borrow_mut().library.selected_index = Some(0);
                                 filmstrip_c.navigate_to(0);
-                                viewer_c.load_image(p);
                             }
                         }
                         toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
@@ -2925,6 +2946,12 @@ impl SharprWindow {
         {
             let viewer_c = viewer.clone();
             let state_c = state.clone();
+            let preview_handle = self
+                .imp()
+                .preview_worker
+                .borrow()
+                .as_ref()
+                .map(|worker| worker.handle());
             filmstrip.connect_image_selected(move |index| {
                 let path = {
                     let Ok(mut state) = state_c.try_borrow_mut() else {
@@ -2941,7 +2968,9 @@ impl SharprWindow {
                 }
 
                 // Queue prefetch for the images immediately before and after this one.
-                trigger_prefetch(&state_c, index);
+                if let Some(handle) = preview_handle.as_ref() {
+                    trigger_prefetch(&state_c, handle, index);
+                }
             });
         }
 
@@ -3048,15 +3077,10 @@ impl SharprWindow {
                     }
                     load_virtual_async(&state_rx, &paths);
                     filmstrip_rx.refresh_virtual();
-                    let first = state_rx
-                        .borrow()
-                        .library
-                        .entry_at(0)
-                        .map(|e: ImageEntry| e.path());
-                    if let Some(p) = first {
+                    let has_first = state_rx.borrow().library.entry_at(0).is_some();
+                    if has_first {
                         state_rx.borrow_mut().library.selected_index = Some(0);
                         filmstrip_rx.navigate_to(0);
-                        viewer_rx.load_image(p);
                     } else {
                         viewer_rx.clear();
                     }
@@ -3415,17 +3439,18 @@ impl SharprWindow {
                                 apply_scope_to_sidebar(&scope, &sidebar_ui);
                                 viewer_ui.clear();
                                 filmstrip_ui.refresh_virtual();
-                                let first_path = state_ui.try_borrow().ok().and_then(|state| {
-                                    state.library.entry_at(0).map(|e: ImageEntry| e.path())
-                                });
-                                if let Some(path) = first_path {
+                                let has_first = state_ui
+                                    .try_borrow()
+                                    .ok()
+                                    .and_then(|state| state.library.entry_at(0))
+                                    .is_some();
+                                if has_first {
                                     if let Ok(mut state) = state_ui.try_borrow_mut() {
                                         state.library.selected_index = Some(0);
                                     } else {
                                         return;
                                     }
                                     filmstrip_ui.navigate_to(0);
-                                    viewer_ui.load_image(path);
                                 }
                             }
                         });
@@ -3871,15 +3896,10 @@ impl SharprWindow {
                         load_virtual_async(&state_c, &remaining);
                         state_c.borrow_mut().selected_paths.clear();
                         filmstrip_c.refresh_virtual();
-                        let first = state_c
-                            .borrow()
-                            .library
-                            .entry_at(0)
-                            .map(|e: ImageEntry| e.path());
-                        if let Some(p) = first {
+                        let has_first = state_c.borrow().library.entry_at(0).is_some();
+                        if has_first {
                             state_c.borrow_mut().library.selected_index = Some(0);
                             filmstrip_c.navigate_to(0);
-                            viewer_c.load_image(p);
                         } else {
                             viewer_c.clear();
                         }
@@ -3941,7 +3961,7 @@ impl SharprWindow {
 
         let make_action = |state: Rc<RefCell<AppState>>,
                            filmstrip: FilmstripPane,
-                           viewer: ViewerPane,
+                           _viewer: ViewerPane,
                            delta: i32| {
             gtk4::CallbackAction::new(move |_, _| {
                 let new_index = {
@@ -3952,14 +3972,6 @@ impl SharprWindow {
                 };
                 if let Some(index) = new_index {
                     filmstrip.navigate_to(index);
-                    let path = state
-                        .borrow()
-                        .library
-                        .entry_at(index)
-                        .map(|e: ImageEntry| e.path());
-                    if let Some(p) = path {
-                        viewer.load_image(p);
-                    }
                 }
                 glib::Propagation::Stop
             })
@@ -4069,7 +4081,6 @@ impl SharprWindow {
                                 .entry_at(new_index)
                                 .map(|e: ImageEntry| e.path());
                             if let Some(next_path) = next_path {
-                                viewer_d.load_image(next_path.clone());
                                 filmstrip_d.set_action_selection_to_path(&next_path);
                             }
                         }
@@ -4111,7 +4122,6 @@ impl SharprWindow {
                             .entry_at(new_index)
                             .map(|e: ImageEntry| e.path());
                         if let Some(p) = next_path {
-                            viewer_tr.load_image(p.clone());
                             filmstrip_tr.set_action_selection_to_path(&p);
                         }
                     }

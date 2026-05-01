@@ -502,6 +502,14 @@ impl LibraryManager {
         self.prefetch_in_flight.insert(path);
     }
 
+    pub fn clear_prefetch_in_flight(&mut self, path: &Path) {
+        self.prefetch_in_flight.remove(path);
+    }
+
+    pub fn clear_all_prefetch_in_flight(&mut self) {
+        self.prefetch_in_flight.clear();
+    }
+
     /// Store completed prefetch bytes. Evicts LRU entries to stay within the
     /// byte budget. Oversized single images are not cached but still decode fine.
     pub fn insert_prefetch(&mut self, path: PathBuf, bytes: Vec<u8>, width: u32, height: u32) {
@@ -798,7 +806,7 @@ impl LibraryManager {
         cached
     }
 
-fn is_image(path: &Path) -> bool {
+    fn is_image(path: &Path) -> bool {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             return false;
         };

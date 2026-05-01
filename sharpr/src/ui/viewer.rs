@@ -1137,7 +1137,16 @@ impl ViewerPane {
         // Send the decode request to the shared worker pool. Results are drained
         // by the persistent loop installed in set_preview_worker().
         if let Some(ref handle) = *imp.preview_handle.borrow() {
-            handle.request(path.clone(), load_gen);
+            crate::bench_event!(
+                "preview.request_enqueued",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "role": "viewer",
+                    "source": "viewer_selection",
+                    "gen": load_gen,
+                }),
+            );
+            handle.request_viewer(path.clone(), load_gen);
         }
 
         // Metadata loads via the shared worker; result drains in set_metadata_worker loop.
@@ -2562,10 +2571,7 @@ impl ViewerPane {
             let result = (|| -> Result<(), String> {
                 if let Some(dir) = temp_c.parent() {
                     std::fs::create_dir_all(dir).map_err(|err| {
-                        format!(
-                            "failed to create output directory {}: {err}",
-                            dir.display()
-                        )
+                        format!("failed to create output directory {}: {err}", dir.display())
                     })?;
                 }
                 crate::export::export_to_path(&source_c, &temp_c, max_edge, format, quality)
