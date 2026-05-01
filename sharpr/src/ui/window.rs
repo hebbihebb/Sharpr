@@ -1643,7 +1643,11 @@ impl SharprWindow {
 
                     if let Some(win) = window_weak_rx.upgrade() {
                         if let Some(handle) = thumb_op {
-                            win.imp().thumbnail_ops.borrow_mut().insert(
+                            let mut thumbnail_ops = win.imp().thumbnail_ops.borrow_mut();
+                            if let Some(old) = thumbnail_ops.remove(&path_rx) {
+                                old.handle.complete();
+                            }
+                            thumbnail_ops.insert(
                                 path_rx.clone(),
                                 ThumbnailOpState {
                                     total: thumb_total,
