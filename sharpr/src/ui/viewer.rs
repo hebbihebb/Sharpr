@@ -1131,6 +1131,23 @@ impl ViewerPane {
         }
 
         // ── Slow path: submit to the bounded preview worker pool. ──────────────
+
+        // Show a low-resolution thumbnail placeholder if available
+        let cached_thumbnail = imp
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|rc| rc.borrow().library.cached_thumbnail(&path));
+
+        if let Some(thumbnail) = cached_thumbnail {
+            let paintable = thumbnail.upcast_ref::<gdk4::Paintable>();
+            imp.picture.set_paintable(Some(paintable));
+            
+            // Stretch the thumbnail to fit the viewport seamlessly
+            imp.picture.set_halign(gtk4::Align::Fill);
+            imp.picture.set_valign(gtk4::Align::Fill);
+        }
+
         imp.spinner.start();
         imp.spinner.set_visible(true);
 
@@ -1202,6 +1219,11 @@ impl ViewerPane {
         let imp = self.imp();
         imp.zoom.set(1.0);
         imp.zoom_mode.set(ZoomMode::Fit);
+        
+        // Restore standard alignment in case it was stretched for a thumbnail placeholder
+        imp.picture.set_halign(gtk4::Align::Center);
+        imp.picture.set_valign(gtk4::Align::Center);
+
         self.update_picture_zoom();
         imp.scrolled_window.hadjustment().set_value(0.0);
         imp.scrolled_window.vadjustment().set_value(0.0);
