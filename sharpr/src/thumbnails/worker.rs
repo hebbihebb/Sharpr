@@ -462,27 +462,6 @@ fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
         return Some(result);
     }
 
-    if crate::jxl::is_jxl_path(path) {
-        let img = crate::jxl::decode_path_for_thumbnail(path).ok()?;
-        let img = apply_exif_orientation(img, path);
-        let (target_width, target_height) =
-            choose_thumbnail_webp_dimensions(img.width(), img.height(), THUMB_HEIGHT);
-        let img = if target_width != img.width() || target_height != img.height() {
-            let rgba = img.into_rgba8();
-            image::DynamicImage::ImageRgba8(image::imageops::resize(
-                &rgba,
-                target_width,
-                target_height,
-                image::imageops::FilterType::Triangle,
-            ))
-        } else {
-            img
-        };
-        let mut result = build_thumbnail_and_cache_exact(path, img, "decoded_jxl")?;
-        result.worker_ms = crate::bench::duration_ms(started);
-        return Some(result);
-    }
-
     let img = decode_with_image_crate(path)?;
     let img = apply_exif_orientation(img, path);
     let mut result = build_thumbnail_and_cache(path, img, "decoded_image")?;
@@ -644,30 +623,6 @@ fn build_thumbnail_and_cache(
         rgba_bytes,
         width: thumb_w,
         height: thumb_h,
-        source,
-        worker_ms: 0,
-    })
-}
-
-fn build_thumbnail_and_cache_exact(
-    path: &Path,
-    img: image::DynamicImage,
-    source: &'static str,
-) -> Option<ThumbnailResult> {
-    let rgba = img.into_rgba8();
-    let (width, height) = rgba.dimensions();
-    if width == 0 || height == 0 {
-        return None;
-    }
-
-    let rgba_bytes = rgba.into_raw();
-    write_thumbnail_cache(path, &rgba_bytes, width, height);
-
-    Some(ThumbnailResult {
-        path: path.to_path_buf(),
-        rgba_bytes,
-        width,
-        height,
         source,
         worker_ms: 0,
     })
