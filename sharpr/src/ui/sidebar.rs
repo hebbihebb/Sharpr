@@ -1366,6 +1366,12 @@ fn directory_contains_images(dir: &Path) -> bool {
 }
 
 fn is_image_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if name.contains(".pending-") || name.contains(".ncnn-intermediate") {
+        return false;
+    }
     path.extension()
         .map(|ext| {
             let ext = ext.to_string_lossy().to_lowercase();

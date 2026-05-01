@@ -798,7 +798,13 @@ impl LibraryManager {
         cached
     }
 
-    fn is_image(path: &Path) -> bool {
+fn is_image(path: &Path) -> bool {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        if name.contains(".pending-") || name.contains(".ncnn-intermediate") {
+            return false;
+        }
         path.extension()
             .map(|ext| {
                 let low = ext.to_string_lossy().to_lowercase();
@@ -1146,10 +1152,14 @@ mod tests {
 
         let img_a = root.join("a.JPG");
         let img_b = root.join("B.bmp");
+        let pending = root.join("x.pending-123.png");
+        let intermediate = root.join("y.ncnn-intermediate.webp");
         let txt = root.join("note.txt");
 
         write_jpeg(&img_a, 640, 480, 80);
         write_bmp(&img_b, 320, 200);
+        write_bmp(&pending, 64, 64);
+        write_bmp(&intermediate, 64, 64);
         std::fs::write(&txt, b"not an image").unwrap();
 
         let entries = LibraryManager::scan_folder_raw(&root);
@@ -1168,6 +1178,17 @@ mod tests {
         assert!(entries[1].file_size > 0);
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn is_image_rejects_transient_upscale_artifacts() {
+        assert!(!LibraryManager::is_image(Path::new(
+            "/tmp/example.pending-123.png"
+        )));
+        assert!(!LibraryManager::is_image(Path::new(
+            "/tmp/example.ncnn-intermediate.webp"
+        )));
+        assert!(LibraryManager::is_image(Path::new("/tmp/example.webp")));
     }
 
     #[test]
