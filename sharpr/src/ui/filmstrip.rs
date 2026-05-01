@@ -29,8 +29,10 @@ type QualityFilterChangedCallback = Box<dyn Fn(Option<QualityClass>) + 'static>;
 type SaveSearchAsCollectionCallback = Box<dyn Fn(&str) + 'static>;
 
 const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
-const BUFFER_ROWS: u32 = 2000;
+const BUFFER_ROWS: u32 = 24;
 const FALLBACK_VISIBLE_ROWS: u32 = 40;
+const MAX_PRELOAD_ENQUEUE_PER_PASS: usize = 24;
+const THUMBNAIL_RESCHEDULE_DEBOUNCE_MS: u64 = 30;
 const COLLECTION_COLOR_PALETTE: &[&str] = &[
     "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
 ];
@@ -148,6 +150,7 @@ mod imp {
         pub thumbnail_gen: RefCell<Option<Arc<std::sync::atomic::AtomicU64>>>,
         pub pending_thumbnails: RefCell<Option<Arc<Mutex<std::collections::HashSet<PathBuf>>>>>,
         pub pending_notify_count: std::sync::atomic::AtomicU32,
+        pub refresh_schedule_pending: Cell<bool>,
         pub tag_root_color: RefCell<HashMap<String, String>>,
         pub cached_tags: RefCell<Option<std::sync::Arc<crate::tags::TagDatabase>>>,
     }
@@ -204,6 +207,7 @@ mod imp {
                 thumbnail_gen: RefCell::new(None),
                 pending_thumbnails: RefCell::new(None),
                 pending_notify_count: std::sync::atomic::AtomicU32::new(0),
+                refresh_schedule_pending: Cell::new(false),
                 tag_root_color: RefCell::new(HashMap::new()),
                 cached_tags: RefCell::new(None),
             }
@@ -1060,19 +1064,26 @@ impl FilmstripPane {
         imp.selection_model.set_model(None::<&gio::ListStore>);
         imp.selection_model.set_model(Some(&store));
         self.schedule_visible_thumbnails();
+        if imp.refresh_schedule_pending.replace(true) {
+            return;
+        }
         let widget = self.downgrade();
-        glib::idle_add_local(move || {
+        glib::timeout_add_local(
+            std::time::Duration::from_millis(THUMBNAIL_RESCHEDULE_DEBOUNCE_MS),
+            move || {
             let Some(filmstrip) = widget.upgrade() else {
                 return glib::ControlFlow::Break;
             };
             let page_size = filmstrip.imp().scroll.vadjustment().page_size();
             filmstrip.schedule_visible_thumbnails();
             if page_size > 0.0 {
+                filmstrip.imp().refresh_schedule_pending.set(false);
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
             }
-        });
+            },
+        );
     }
 
     pub fn refresh_virtual(&self) {
@@ -1111,10 +1122,14 @@ impl FilmstripPane {
         }
 
         // Throttle UI updates: increment counter and only spawn the idle
-        // task if it's the first pending notification.
+        // task if it's the first pending notification. A short debounce keeps
+        // large thumbnail batches from rescheduling the filmstrip on every
+        // single completion.
         if imp.pending_notify_count.fetch_add(1, Ordering::Relaxed) == 0 {
             let widget_weak = self.downgrade();
-            glib::idle_add_local(move || {
+            glib::timeout_add_local(
+                std::time::Duration::from_millis(THUMBNAIL_RESCHEDULE_DEBOUNCE_MS),
+                move || {
                 if let Some(widget) = widget_weak.upgrade() {
                     widget
                         .imp()
@@ -1123,7 +1138,8 @@ impl FilmstripPane {
                     widget.schedule_visible_thumbnails();
                 }
                 glib::ControlFlow::Break
-            });
+                },
+            );
         }
     }
 
@@ -1231,7 +1247,10 @@ impl FilmstripPane {
             visible_enqueued += 1;
         }
 
-        for path in preload_worker_paths {
+        for path in preload_worker_paths
+            .into_iter()
+            .take(MAX_PRELOAD_ENQUEUE_PER_PASS)
+        {
             let should_enqueue = {
                 let Ok(mut pending) = pending_set.lock() else {
                     continue;
