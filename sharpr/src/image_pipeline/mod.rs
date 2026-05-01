@@ -1,6 +1,7 @@
 //! Shared preview decode pipeline for viewer loads and prefetch work.
 //! It tries three decode strategies in priority order: embedded EXIF preview,
-//! turbojpeg scaled JPEG decode, then a full `image::ImageReader` fallback.
+//! turbojpeg scaled JPEG decode, JXL embedded preview frames for preview-only
+//! loads, then a full `image::ImageReader` fallback.
 //! EXIF orientation is applied consistently in all three paths before pixels
 //! are returned to the caller.
 //! Callers should use `decode_preview(path, mode)` and handle
@@ -11,6 +12,7 @@ pub mod worker;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
+use std::time::Instant;
 
 use crate::metadata::orientation::apply_exif_orientation;
 
@@ -33,6 +35,7 @@ pub enum PreviewPrefetchDecision {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewSource {
     EmbeddedPreview,
+    EmbeddedJxlPreview,
     ScaledJpeg,
     ScaledWebp,
     ScaledJxl,
@@ -125,13 +128,13 @@ pub fn decode_preview(
     }
 
     if crate::jxl::is_jxl_path(path) {
-        if let Some(img) = decode_jxl_rgba_scaled(path, MIN_VIEWER_LONG_EDGE as u32) {
+        if let Some(img) = decode_jxl_for_preview(path, mode, MIN_VIEWER_LONG_EDGE as u32) {
             crate::bench_event!(
                 "preview.decode.finish",
                 serde_json::json!({
                     "path": path.display().to_string(),
                     "mode": preview_mode_label(mode),
-                    "source": "scaled_jxl",
+                    "source": preview_source_label(img.source),
                     "width": img.width,
                     "height": img.height,
                 }),
@@ -291,6 +294,179 @@ fn is_webp_path(path: &Path) -> bool {
     std::io::Read::read_exact(file, &mut magic).is_ok()
         && &magic[0..4] == b"RIFF"
         && &magic[8..12] == b"WEBP"
+}
+
+fn decode_jxl_for_preview(
+    path: &Path,
+    mode: PreviewDecodeMode,
+    min_long_edge: u32,
+) -> Option<PreviewImage> {
+    decode_jxl_for_preview_with(
+        path,
+        mode,
+        min_long_edge,
+        || crate::jxl::preview_info(path),
+        || crate::jxl::decode_embedded_preview(path),
+        || decode_jxl_rgba_scaled(path, min_long_edge),
+    )
+}
+
+fn decode_jxl_for_preview_with<I, D, F>(
+    path: &Path,
+    mode: PreviewDecodeMode,
+    min_long_edge: u32,
+    inspect_preview: I,
+    decode_embedded_preview: D,
+    fallback_decode: F,
+) -> Option<PreviewImage>
+where
+    I: FnOnce() -> Result<Option<crate::jxl::EmbeddedPreviewInfo>, String>,
+    D: FnOnce() -> Result<Option<crate::jxl::DecodedEmbeddedPreview>, String>,
+    F: FnOnce() -> Option<PreviewImage>,
+{
+    let attempted_at = Instant::now();
+    crate::bench_event!(
+        "jxl.preview_frame.attempt",
+        serde_json::json!({
+            "path": path.display().to_string(),
+            "mode": preview_mode_label(mode),
+        }),
+    );
+
+    let preview_decision = match inspect_preview() {
+        Ok(Some(info)) if info.width.max(info.height) >= min_long_edge => {
+            JxlPreviewDecision::UseEmbeddedPreview
+        }
+        Ok(Some(info)) => {
+            JxlPreviewDecision::Fallback("preview_too_small", Some((info.width, info.height)))
+        }
+        Ok(None) => JxlPreviewDecision::Fallback("no_preview", None),
+        Err(err) => JxlPreviewDecision::FallbackWithError("inspect_failed", err),
+    };
+
+    if matches!(preview_decision, JxlPreviewDecision::UseEmbeddedPreview) {
+        match decode_embedded_preview() {
+            Ok(Some(preview)) => {
+                let image =
+                    image::RgbaImage::from_raw(preview.width, preview.height, preview.rgba)?;
+                let image = apply_exif_orientation(image::DynamicImage::ImageRgba8(image), path)
+                    .into_rgba8();
+                crate::bench_event!(
+                    "jxl.preview_frame.used",
+                    serde_json::json!({
+                        "path": path.display().to_string(),
+                        "mode": preview_mode_label(mode),
+                        "width": image.width(),
+                        "height": image.height(),
+                        "duration_ms": crate::bench::duration_ms(attempted_at),
+                    }),
+                );
+                return Some(PreviewImage {
+                    width: image.width(),
+                    height: image.height(),
+                    rgba: image.into_raw(),
+                    source: PreviewSource::EmbeddedJxlPreview,
+                });
+            }
+            Ok(None) => {
+                return log_jxl_preview_fallback(
+                    path,
+                    mode,
+                    attempted_at,
+                    "preview_missing_during_decode",
+                    None,
+                    fallback_decode,
+                );
+            }
+            Err(err) => {
+                return log_jxl_preview_fallback(
+                    path,
+                    mode,
+                    attempted_at,
+                    "preview_decode_failed",
+                    Some(err),
+                    fallback_decode,
+                );
+            }
+        }
+    }
+
+    match preview_decision {
+        JxlPreviewDecision::UseEmbeddedPreview => None,
+        JxlPreviewDecision::Fallback(reason, dimensions) => {
+            log_jxl_preview_fallback_with_dimensions(
+                path,
+                mode,
+                attempted_at,
+                reason,
+                dimensions,
+                None,
+                fallback_decode,
+            )
+        }
+        JxlPreviewDecision::FallbackWithError(reason, error) => log_jxl_preview_fallback(
+            path,
+            mode,
+            attempted_at,
+            reason,
+            Some(error),
+            fallback_decode,
+        ),
+    }
+}
+
+fn log_jxl_preview_fallback<F>(
+    path: &Path,
+    mode: PreviewDecodeMode,
+    attempted_at: Instant,
+    reason: &'static str,
+    error: Option<String>,
+    fallback_decode: F,
+) -> Option<PreviewImage>
+where
+    F: FnOnce() -> Option<PreviewImage>,
+{
+    log_jxl_preview_fallback_with_dimensions(
+        path,
+        mode,
+        attempted_at,
+        reason,
+        None,
+        error,
+        fallback_decode,
+    )
+}
+
+fn log_jxl_preview_fallback_with_dimensions<F>(
+    path: &Path,
+    mode: PreviewDecodeMode,
+    attempted_at: Instant,
+    reason: &'static str,
+    dimensions: Option<(u32, u32)>,
+    error: Option<String>,
+    fallback_decode: F,
+) -> Option<PreviewImage>
+where
+    F: FnOnce() -> Option<PreviewImage>,
+{
+    let inspect_ms = crate::bench::duration_ms(attempted_at);
+    let fallback_started = Instant::now();
+    let image = fallback_decode();
+    crate::bench_event!(
+        "jxl.preview_frame.fallback",
+        serde_json::json!({
+            "path": path.display().to_string(),
+            "mode": preview_mode_label(mode),
+            "reason": reason,
+            "preview_check_ms": inspect_ms,
+            "fallback_decode_ms": crate::bench::duration_ms(fallback_started),
+            "success": image.is_some(),
+            "preview_width": dimensions.map(|(width, _)| width),
+            "preview_height": dimensions.map(|(_, height)| height),
+            "error": error,
+        }),
+    );
+    image
 }
 
 fn decode_jpeg_rgba_scaled(path: &Path) -> Option<PreviewImage> {
@@ -458,6 +634,23 @@ fn preview_mode_label(mode: PreviewDecodeMode) -> &'static str {
     }
 }
 
+fn preview_source_label(source: PreviewSource) -> &'static str {
+    match source {
+        PreviewSource::EmbeddedPreview => "embedded_preview",
+        PreviewSource::EmbeddedJxlPreview => "embedded_jxl_preview",
+        PreviewSource::ScaledJpeg => "scaled_jpeg",
+        PreviewSource::ScaledWebp => "scaled_webp",
+        PreviewSource::ScaledJxl => "scaled_jxl",
+        PreviewSource::FullDecode => "full_decode",
+    }
+}
+
+enum JxlPreviewDecision {
+    UseEmbeddedPreview,
+    Fallback(&'static str, Option<(u32, u32)>),
+    FallbackWithError(&'static str, String),
+}
+
 const PREFETCH_MAX_PIXELS: u64 = 16_000_000;
 
 pub fn preview_prefetch_decision(
@@ -507,6 +700,30 @@ fn is_webp_extension(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{ImageFormat, Rgba, RgbaImage};
+    use std::cell::Cell;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(name: &str, ext: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "sharpr-preview-{name}-{}-{nanos}.{ext}",
+            std::process::id()
+        ))
+    }
+
+    fn sample_preview_image(source: PreviewSource) -> PreviewImage {
+        PreviewImage {
+            rgba: vec![255, 0, 0, 255],
+            width: 1,
+            height: 1,
+            source,
+        }
+    }
 
     #[test]
     fn choose_scale_prefers_smallest_factor_that_meets_target() {
@@ -533,6 +750,82 @@ mod tests {
             PreviewDecodeMode::Viewer,
         );
         assert!(matches!(result, Err(PreviewDecodeError::OpenFailed)));
+    }
+
+    #[test]
+    fn jxl_preview_path_prefers_embedded_preview_when_available() {
+        let fallback_called = Cell::new(false);
+        let result = decode_jxl_for_preview_with(
+            Path::new("/tmp/photo.jxl"),
+            PreviewDecodeMode::Viewer,
+            1280,
+            || {
+                Ok(Some(crate::jxl::EmbeddedPreviewInfo {
+                    width: 1600,
+                    height: 900,
+                }))
+            },
+            || {
+                Ok(Some(crate::jxl::DecodedEmbeddedPreview {
+                    rgba: vec![0, 1, 2, 3],
+                    width: 1,
+                    height: 1,
+                }))
+            },
+            || {
+                fallback_called.set(true);
+                Some(sample_preview_image(PreviewSource::ScaledJxl))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.source, PreviewSource::EmbeddedJxlPreview);
+        assert!(!fallback_called.get());
+    }
+
+    #[test]
+    fn jxl_preview_path_falls_back_when_preview_is_absent() {
+        let fallback_called = Cell::new(false);
+        let result = decode_jxl_for_preview_with(
+            Path::new("/tmp/photo.jxl"),
+            PreviewDecodeMode::Prefetch,
+            1280,
+            || Ok(None),
+            || unreachable!("preview decode should not run when preview is absent"),
+            || {
+                fallback_called.set(true);
+                Some(sample_preview_image(PreviewSource::ScaledJxl))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.source, PreviewSource::ScaledJxl);
+        assert!(fallback_called.get());
+    }
+
+    #[test]
+    fn jxl_preview_path_falls_back_when_preview_decode_fails() {
+        let fallback_called = Cell::new(false);
+        let result = decode_jxl_for_preview_with(
+            Path::new("/tmp/photo.jxl"),
+            PreviewDecodeMode::Viewer,
+            1280,
+            || {
+                Ok(Some(crate::jxl::EmbeddedPreviewInfo {
+                    width: 1600,
+                    height: 900,
+                }))
+            },
+            || Err("boom".into()),
+            || {
+                fallback_called.set(true);
+                Some(sample_preview_image(PreviewSource::ScaledJxl))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.source, PreviewSource::ScaledJxl);
+        assert!(fallback_called.get());
     }
 
     #[test]
@@ -592,5 +885,20 @@ mod tests {
         let decision =
             preview_prefetch_decision(std::path::Path::new("/tmp/photo.jpg"), Some((5000, 4000)));
         assert_eq!(decision, PreviewPrefetchDecision::SkipLargeDimensions);
+    }
+
+    #[test]
+    fn non_jxl_preview_decode_path_is_unchanged() {
+        let path = temp_path("png-full", "png");
+        let mut rgba = RgbaImage::new(2, 2);
+        rgba.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+        image::DynamicImage::ImageRgba8(rgba)
+            .save_with_format(&path, ImageFormat::Png)
+            .unwrap();
+
+        let result = decode_preview(&path, PreviewDecodeMode::Viewer).unwrap();
+        assert_eq!(result.source, PreviewSource::FullDecode);
+
+        let _ = std::fs::remove_file(path);
     }
 }

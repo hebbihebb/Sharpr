@@ -2480,6 +2480,7 @@ dependencies = [
  "image",
  "itoa",
  "jpegxl-rs",
+ "jpegxl-sys",
  "libadwaita",
  "libwebp-sys",
  "memmap2",
