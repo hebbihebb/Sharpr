@@ -48,3 +48,10 @@ Before finalizing any execution, ensure you run the project's quality checks:
 - `src/metadata/`: The rexiv2 EXIF/XMP wrapper.
 - `src/upscale/`: NCNN subprocess runner.
 - `src/config/`: JSON settings/GSettings.
+
+## Git Workflow & Conventions
+- **Task Commits:** When a task is completed, commit the task immediately. After committing, always use `cargo build` so the user can immediately test the application.
+- **Bug Fixes:** If a bug is found and fixed related to recent work, amend it to the previous commit rather than creating a new one.
+- **Pushing Changes:** Only push when explicitly told to do so by the user.
+- **Pre-Push Checks:** Before pushing, review git status and ensure the working directory is clean and the branch is properly merged.
+- **Direct Pushes:** Do not create a Pull Request (PR). Push directly to `main` unless actively working on a different branch.
