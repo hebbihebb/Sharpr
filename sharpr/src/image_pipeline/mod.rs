@@ -28,6 +28,7 @@ pub enum PreviewSource {
     EmbeddedPreview,
     ScaledJpeg,
     ScaledWebp,
+    ScaledJxl,
     FullDecode,
 }
 
@@ -108,6 +109,22 @@ pub fn decode_preview(
                     "path": path.display().to_string(),
                     "mode": preview_mode_label(mode),
                     "source": "scaled_webp",
+                    "width": img.width,
+                    "height": img.height,
+                }),
+            );
+            return Ok(img);
+        }
+    }
+
+    if crate::jxl::is_jxl_path(path) {
+        if let Some(img) = decode_jxl_rgba_scaled(path, MIN_VIEWER_LONG_EDGE as u32) {
+            crate::bench_event!(
+                "preview.decode.finish",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "mode": preview_mode_label(mode),
+                    "source": "scaled_jxl",
                     "width": img.width,
                     "height": img.height,
                 }),
@@ -346,6 +363,29 @@ fn decode_webp_rgba_scaled(path: &Path, min_long_edge: u32) -> Option<PreviewIma
         height: image.height(),
         rgba: image.into_raw(),
         source: PreviewSource::ScaledWebp,
+    })
+}
+
+fn decode_jxl_rgba_scaled(path: &Path, min_long_edge: u32) -> Option<PreviewImage> {
+    let img = crate::jxl::decode_path(path).ok()?;
+    let img = apply_exif_orientation(img, path);
+    let (target_width, target_height) =
+        choose_scaled_dimensions(img.width(), img.height(), min_long_edge);
+    let img = if target_width != img.width() || target_height != img.height() {
+        img.resize(
+            target_width,
+            target_height,
+            image::imageops::FilterType::Lanczos3,
+        )
+    } else {
+        img
+    };
+    let rgba = img.into_rgba8();
+    Some(PreviewImage {
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: rgba.into_raw(),
+        source: PreviewSource::ScaledJxl,
     })
 }
 

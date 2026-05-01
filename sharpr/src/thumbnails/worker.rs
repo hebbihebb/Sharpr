@@ -432,6 +432,25 @@ fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
         return Some(result);
     }
 
+    if crate::jxl::is_jxl_path(path) {
+        let img = crate::jxl::decode_path(path).ok()?;
+        let img = apply_exif_orientation(img, path);
+        let (target_width, target_height) =
+            choose_thumbnail_webp_dimensions(img.width(), img.height(), THUMB_HEIGHT);
+        let img = if target_width != img.width() || target_height != img.height() {
+            img.resize(
+                target_width,
+                target_height,
+                image::imageops::FilterType::Lanczos3,
+            )
+        } else {
+            img
+        };
+        let mut result = build_thumbnail_and_cache(path, img, "decoded_jxl")?;
+        result.worker_ms = crate::bench::duration_ms(started);
+        return Some(result);
+    }
+
     let img = decode_with_image_crate(path)?;
     let img = apply_exif_orientation(img, path);
     let mut result = build_thumbnail_and_cache(path, img, "decoded_image")?;
