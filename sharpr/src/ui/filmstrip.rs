@@ -1071,17 +1071,17 @@ impl FilmstripPane {
         glib::timeout_add_local(
             std::time::Duration::from_millis(THUMBNAIL_RESCHEDULE_DEBOUNCE_MS),
             move || {
-            let Some(filmstrip) = widget.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            let page_size = filmstrip.imp().scroll.vadjustment().page_size();
-            filmstrip.schedule_visible_thumbnails();
-            if page_size > 0.0 {
-                filmstrip.imp().refresh_schedule_pending.set(false);
-                glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
-            }
+                let Some(filmstrip) = widget.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                let page_size = filmstrip.imp().scroll.vadjustment().page_size();
+                filmstrip.schedule_visible_thumbnails();
+                if page_size > 0.0 {
+                    filmstrip.imp().refresh_schedule_pending.set(false);
+                    glib::ControlFlow::Break
+                } else {
+                    glib::ControlFlow::Continue
+                }
             },
         );
     }
@@ -1130,14 +1130,14 @@ impl FilmstripPane {
             glib::timeout_add_local(
                 std::time::Duration::from_millis(THUMBNAIL_RESCHEDULE_DEBOUNCE_MS),
                 move || {
-                if let Some(widget) = widget_weak.upgrade() {
-                    widget
-                        .imp()
-                        .pending_notify_count
-                        .store(0, Ordering::Relaxed);
-                    widget.schedule_visible_thumbnails();
-                }
-                glib::ControlFlow::Break
+                    if let Some(widget) = widget_weak.upgrade() {
+                        widget
+                            .imp()
+                            .pending_notify_count
+                            .store(0, Ordering::Relaxed);
+                        widget.schedule_visible_thumbnails();
+                    }
+                    glib::ControlFlow::Break
                 },
             );
         }
