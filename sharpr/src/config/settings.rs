@@ -743,11 +743,9 @@ fn sanitize_libraries(libraries: &mut Vec<LibraryConfig>) {
         if library.name.is_empty() {
             library.name = default_library_name(&library.root);
         }
-        library.ignored_folders = library
+        library
             .ignored_folders
-            .into_iter()
-            .filter(|path| path.starts_with(&library.root))
-            .collect();
+            .retain(|path| path.starts_with(&library.root));
         if library
             .last_folder
             .as_ref()

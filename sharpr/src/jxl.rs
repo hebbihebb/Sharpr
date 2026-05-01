@@ -188,22 +188,16 @@ fn decode_basic_info(data: &[u8]) -> Result<Option<JxlBasicInfo>, String> {
     decoder.set_input(data)?;
 
     let mut basic_info = MaybeUninit::<JxlBasicInfo>::uninit();
-    loop {
-        match decoder.process_input() {
-            JxlDecoderStatus::BasicInfo => {
-                decoder.get_basic_info(&mut basic_info)?;
-                return Ok(Some(unsafe { basic_info.assume_init() }));
-            }
-            JxlDecoderStatus::NeedMoreInput | JxlDecoderStatus::Success => return Ok(None),
-            JxlDecoderStatus::Error => {
-                return Err("decode JPEG XL basic info: decoder error".into())
-            }
-            status => {
-                return Err(format!(
-                    "decode JPEG XL basic info: unexpected decoder status {status:?}"
-                ))
-            }
+    match decoder.process_input() {
+        JxlDecoderStatus::BasicInfo => {
+            decoder.get_basic_info(&mut basic_info)?;
+            Ok(Some(unsafe { basic_info.assume_init() }))
         }
+        JxlDecoderStatus::NeedMoreInput | JxlDecoderStatus::Success => Ok(None),
+        JxlDecoderStatus::Error => Err("decode JPEG XL basic info: decoder error".into()),
+        status => Err(format!(
+            "decode JPEG XL basic info: unexpected decoder status {status:?}"
+        )),
     }
 }
 
