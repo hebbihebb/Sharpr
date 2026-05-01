@@ -1624,4 +1624,40 @@ mod tests {
 
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn test_basic_info_from_path() {
+        let temp_dir = std::env::temp_dir().join(format!("sharpr-test-{}", now_secs()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // 1. Valid file with extension
+        let file_path = temp_dir.join("test.jpg");
+        std::fs::write(&file_path, b"test data").unwrap();
+        let info = basic_info_from_path(&temp_dir, file_path.clone());
+        assert_eq!(info.path, file_path);
+        assert_eq!(info.folder_path, temp_dir);
+        assert_eq!(info.filename, "test.jpg");
+        assert_eq!(info.extension, "jpg");
+        assert_eq!(info.file_size, 9);
+        assert!(info.modified_secs.is_some());
+
+        // 2. File without extension
+        let file_no_ext = temp_dir.join("no_extension");
+        std::fs::write(&file_no_ext, b"more data").unwrap();
+        let info = basic_info_from_path(&temp_dir, file_no_ext.clone());
+        assert_eq!(info.filename, "no_extension");
+        assert_eq!(info.extension, "");
+        assert_eq!(info.file_size, 9);
+
+        // 3. Non-existent file
+        let non_existent = temp_dir.join("does_not_exist.png");
+        let info = basic_info_from_path(&temp_dir, non_existent.clone());
+        assert_eq!(info.path, non_existent);
+        assert_eq!(info.filename, "does_not_exist.png");
+        assert_eq!(info.extension, "png");
+        assert_eq!(info.file_size, 0);
+        assert!(info.modified_secs.is_none());
+
+        std::fs::remove_dir_all(temp_dir).unwrap();
+    }
 }
