@@ -179,16 +179,17 @@ impl LibraryIndex {
         let stale_count: usize;
         {
             let tx = conn.transaction()?;
+            let folder_path_str = path_to_string(folder);
 
             tx.execute(
                 "INSERT INTO folders (path, ignored, discovered_at, updated_at)
                  VALUES (?1, 0, ?2, ?2)
                  ON CONFLICT(path) DO UPDATE SET updated_at = excluded.updated_at",
-                params![path_to_string(folder), now],
+                params![&folder_path_str, now],
             )?;
 
-            for info in entries {
-                tx.execute(
+            {
+                let mut stmt = tx.prepare_cached(
                     "INSERT INTO images (
                          path, folder_path, filename, extension, file_size, modified_secs,
                          width, height, quality_class, phash, phash_status, metadata_status,
@@ -222,16 +223,19 @@ impl LibraryIndex {
                          metadata_status = CASE WHEN images.file_size = excluded.file_size
                                                      AND images.modified_secs IS excluded.modified_secs
                                                 THEN images.metadata_status ELSE 'missing' END",
-                    params![
+                )?;
+
+                for info in entries {
+                    stmt.execute(params![
                         path_to_string(&info.path),
-                        path_to_string(&info.folder_path),
+                        &folder_path_str,
                         info.filename,
                         info.extension,
                         info.file_size as i64,
                         info.modified_secs,
                         now,
-                    ],
-                )?;
+                    ])?;
+                }
             }
 
             let current_set: HashSet<String> =
@@ -239,9 +243,7 @@ impl LibraryIndex {
             let db_paths: Vec<String> = {
                 let mut stmt = tx.prepare("SELECT path FROM images WHERE folder_path = ?1")?;
                 let rows = stmt
-                    .query_map(params![path_to_string(folder)], |row| {
-                        row.get::<_, String>(0)
-                    })?
+                    .query_map(params![&folder_path_str], |row| row.get::<_, String>(0))?
                     .filter_map(Result::ok)
                     .collect();
                 rows
@@ -251,8 +253,11 @@ impl LibraryIndex {
                 .filter(|p| !current_set.contains(*p))
                 .collect();
             stale_count = stale.len();
-            for path in stale {
-                tx.execute("DELETE FROM images WHERE path = ?1", params![path])?;
+            {
+                let mut stmt = tx.prepare_cached("DELETE FROM images WHERE path = ?1")?;
+                for path in stale {
+                    stmt.execute(params![path])?;
+                }
             }
 
             tx.commit()?;
@@ -432,19 +437,29 @@ impl LibraryIndex {
             .iter()
             .map(|path| path_to_string(path))
             .collect();
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT path FROM images WHERE folder_path = ?1")?;
-        let rows = stmt.query_map(params![path_to_string(folder)], |row| {
-            row.get::<_, String>(0)
-        })?;
-        let stale: Vec<String> = rows
-            .filter_map(Result::ok)
-            .filter(|path| !current.contains(path))
-            .collect();
-        drop(stmt);
-        for path in &stale {
-            conn.execute("DELETE FROM images WHERE path = ?1", params![path])?;
+        let mut conn = self.conn()?;
+        let stale: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT path FROM images WHERE folder_path = ?1")?;
+            let rows = stmt.query_map(params![path_to_string(folder)], |row| {
+                row.get::<_, String>(0)
+            })?;
+            rows.filter_map(Result::ok)
+                .filter(|path| !current.contains(path))
+                .collect()
+        };
+
+        if stale.is_empty() {
+            return Ok(0);
         }
+
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached("DELETE FROM images WHERE path = ?1")?;
+            for path in &stale {
+                stmt.execute(params![path])?;
+            }
+        }
+        tx.commit()?;
         Ok(stale.len())
     }
 
@@ -741,8 +756,11 @@ impl LibraryIndex {
         }
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
-        for id in ids {
-            tx.execute("DELETE FROM collections WHERE id = ?1", params![id])?;
+        {
+            let mut stmt = tx.prepare_cached("DELETE FROM collections WHERE id = ?1")?;
+            for id in ids {
+                stmt.execute(params![id])?;
+            }
         }
         tx.commit()?;
         Ok(())
