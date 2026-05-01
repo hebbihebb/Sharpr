@@ -438,11 +438,13 @@ fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
         let (target_width, target_height) =
             choose_thumbnail_webp_dimensions(img.width(), img.height(), THUMB_HEIGHT);
         let img = if target_width != img.width() || target_height != img.height() {
-            img.resize(
+            let rgba = img.into_rgba8();
+            image::DynamicImage::ImageRgba8(image::imageops::resize(
+                &rgba,
                 target_width,
                 target_height,
-                image::imageops::FilterType::Lanczos3,
-            )
+                image::imageops::FilterType::Triangle,
+            ))
         } else {
             img
         };

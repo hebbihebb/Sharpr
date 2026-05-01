@@ -372,11 +372,13 @@ fn decode_jxl_rgba_scaled(path: &Path, min_long_edge: u32) -> Option<PreviewImag
     let (target_width, target_height) =
         choose_scaled_dimensions(img.width(), img.height(), min_long_edge);
     let img = if target_width != img.width() || target_height != img.height() {
-        img.resize(
+        let rgba = img.into_rgba8();
+        image::DynamicImage::ImageRgba8(image::imageops::resize(
+            &rgba,
             target_width,
             target_height,
-            image::imageops::FilterType::Lanczos3,
-        )
+            image::imageops::FilterType::Triangle,
+        ))
     } else {
         img
     };
