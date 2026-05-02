@@ -175,6 +175,12 @@ pub fn decode_preview(
 }
 
 fn decode_embedded_preview(path: &Path) -> Option<PreviewImage> {
+    // JXL has its own embedded preview mechanism handled by decode_jxl_for_preview.
+    // exiv2 has no fast path for JXL and scans the entire file, which is extremely slow.
+    if crate::jxl::is_jxl_path(path) {
+        return None;
+    }
+
     let metadata = {
         let _guard = crate::metadata::exif::rexiv2_lock()
             .lock()
