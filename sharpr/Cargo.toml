@@ -16,11 +16,12 @@ ndarray = "0.17"
 ureq = { version = "2", features = ["tls", "json"] }
 urlencoding = "2"
 # GTK4 + Libadwaita UI stack
-gtk4 = { version = "0.9", features = ["v4_12"] }
-libadwaita = { version = "0.7", features = ["v1_5"] }
-glib = "0.20"
-gio = "0.20"
-gdk4 = "0.9"
+glycin = { version = "3", features = ["gdk4"] }
+gtk4 = { version = "0.11", features = ["v4_12"] }
+libadwaita = { version = "0.9", features = ["v1_5"] }
+glib = "0.22"
+gio = "0.22"
+gdk4 = "0.11"
 
 # Image decoding and thumbnail generation (pure Rust, thread-safe)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp", "ico"] }
@@ -53,7 +54,7 @@ rayon = "1"
 itoa = "1"
 
 [build-dependencies]
-glib-build-tools = "0.20"
+glib-build-tools = "0.22"
 
 [profile.release]
 opt-level = 3

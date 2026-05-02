@@ -157,7 +157,8 @@ mod imp {
 
 glib::wrapper! {
     pub struct BeforeAfterViewer(ObjectSubclass<imp::BeforeAfterViewer>)
-        @extends gtk4::Widget;
+        @extends gtk4::Widget,
+                 @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget;
 }
 
 impl BeforeAfterViewer {

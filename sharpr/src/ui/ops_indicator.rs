@@ -209,7 +209,8 @@ mod imp {
 
 glib::wrapper! {
     pub struct OpsIndicator(ObjectSubclass<imp::OpsIndicator>)
-        @extends gtk4::Widget;
+        @extends gtk4::Widget,
+                 @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget;
 }
 
 impl OpsIndicator {

@@ -257,8 +257,6 @@ mod imp {
         /// Async callbacks capture the value at dispatch time and discard their
         /// result if it no longer matches (i.e. a newer load was requested).
         pub load_gen: Cell<u64>,
-        /// Handle for submitting decode requests to the shared preview worker pool.
-        pub preview_handle: RefCell<Option<crate::image_pipeline::worker::PreviewHandle>>,
         /// Handle for submitting metadata load requests to the shared metadata worker.
         pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
         /// Called after a successful edit save so the filmstrip can refresh thumbnails.
@@ -550,7 +548,6 @@ mod imp {
                 drag_origin: Cell::new(None),
                 drag_adjustments: Cell::new((0.0, 0.0)),
                 load_gen: Cell::new(0),
-                preview_handle: RefCell::new(None),
                 metadata_handle: RefCell::new(None),
                 post_save_cb: RefCell::new(None),
                 ops_indicator: RefCell::new(None),
@@ -585,7 +582,8 @@ mod imp {
 
 glib::wrapper! {
     pub struct ViewerPane(ObjectSubclass<imp::ViewerPane>)
-        @extends gtk4::Widget;
+        @extends gtk4::Widget,
+                 @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget;
 }
 
 impl ViewerPane {
@@ -785,95 +783,6 @@ impl ViewerPane {
     // Image loading (async via background thread + idle callback)
     // -----------------------------------------------------------------------
 
-    /// Wire the shared preview worker pool to this viewer.
-    /// Call once from the window setup, before any images are loaded.
-    /// `result_rx` is drained on the GTK main thread; stale results (whose
-    /// generation no longer matches `load_gen`) are silently discarded.
-    pub fn set_preview_worker(
-        &self,
-        handle: crate::image_pipeline::worker::PreviewHandle,
-        result_rx: async_channel::Receiver<crate::image_pipeline::worker::PreviewResult>,
-    ) {
-        *self.imp().preview_handle.borrow_mut() = Some(handle);
-
-        let widget_weak = self.downgrade();
-        glib::MainContext::default().spawn_local(async move {
-            while let Ok(result) = result_rx.recv().await {
-                let Some(viewer) = widget_weak.upgrade() else {
-                    break;
-                };
-                let imp = viewer.imp();
-                if result.gen != imp.load_gen.get() {
-                    continue;
-                }
-                imp.spinner.stop();
-                imp.spinner.set_visible(false);
-                match result.image {
-                    Ok(crate::image_pipeline::PreviewImage {
-                        rgba: bytes,
-                        width: w,
-                        height: h,
-                        ..
-                    }) => {
-                        crate::bench_event!(
-                            "viewer.load.finish",
-                            serde_json::json!({
-                                "path": result.path.display().to_string(),
-                                "source": "decode",
-                                "width": w,
-                                "height": h,
-                            }),
-                        );
-                        if let Some(ref rc) = *imp.state.borrow() {
-                            rc.borrow_mut().library.insert_preview(
-                                result.path.clone(),
-                                bytes.clone(),
-                                w,
-                                h,
-                            );
-                        }
-                        let gbytes = glib::Bytes::from_owned(bytes);
-                        let texture = gdk4::MemoryTexture::new(
-                            w as i32,
-                            h as i32,
-                            gdk4::MemoryFormat::R8g8b8a8,
-                            &gbytes,
-                            (w * 4) as usize,
-                        );
-                        imp.picture
-                            .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
-                        viewer.reset_zoom();
-                    }
-                    Err(ref err) => {
-                        crate::bench_event!(
-                            "viewer.load.fail",
-                            serde_json::json!({
-                                "path": result.path.display().to_string(),
-                                "reason": err.label(),
-                            }),
-                        );
-                        *imp.current_rgba.borrow_mut() = None;
-                        imp.picture.set_paintable(None::<&gdk4::Paintable>);
-                        let msg = match result.image {
-                            Err(crate::image_pipeline::PreviewDecodeError::OpenFailed) => {
-                                "Could not open file"
-                            }
-                            Err(crate::image_pipeline::PreviewDecodeError::FormatDetectFailed)
-                            | Err(crate::image_pipeline::PreviewDecodeError::Unsupported) => {
-                                "Unsupported image format"
-                            }
-                            Err(crate::image_pipeline::PreviewDecodeError::InvalidDimensions) => {
-                                "Image has invalid dimensions"
-                            }
-                            _ => "Could not load image",
-                        };
-                        imp.error_label.set_text(msg);
-                        imp.error_label.set_visible(true);
-                    }
-                }
-            }
-        });
-    }
 
     /// Call once from window setup. Metadata results are drained on the GTK
     /// main thread; stale results are discarded by generation comparison.
@@ -1047,8 +956,8 @@ impl ViewerPane {
         } else {
             self.restore_view_mode();
         }
-        imp.spinner.stop();
-        imp.spinner.set_visible(false);
+        imp.spinner.start();
+        imp.spinner.set_visible(true);
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
         imp.tag_osd.set_visible(false);
@@ -1057,104 +966,41 @@ impl ViewerPane {
         *imp.current_rgba.borrow_mut() = None;
         self.refresh_tag_summary();
 
-        // ── Fastest path: use decoded bytes from the preview LRU cache. ────────
-        let cached_preview = imp
-            .state
-            .borrow()
-            .as_ref()
-            .and_then(|rc| rc.borrow().library.cached_preview(&path))
-            .filter(|_| Self::can_use_cached_viewer_image(&path));
+        let picture = imp.picture.clone();
+        let spinner = imp.spinner.clone();
+        let error_label = imp.error_label.clone();
+        let path_clone = path.clone();
+        let load_gen_cell = imp.load_gen.clone();
+        let viewer = self.clone();
 
-        if let Some((bytes, w, h)) = cached_preview {
-            crate::bench_event!(
-                "viewer.load.finish",
-                serde_json::json!({
-                    "path": path.display().to_string(),
-                    "source": "preview_cache",
-                    "width": w,
-                    "height": h,
-                    "duration_ms": 0,
-                }),
-            );
-            let gbytes = glib::Bytes::from_owned(bytes);
-            let texture = gdk4::MemoryTexture::new(
-                w as i32,
-                h as i32,
-                gdk4::MemoryFormat::R8g8b8a8,
-                &gbytes,
-                (w * 4) as usize,
-            );
-            imp.picture
-                .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
-            self.reset_zoom();
-            // Metadata loads via the shared worker; result drains in set_metadata_worker loop.
-            if let Some(ref handle) = *imp.metadata_handle.borrow() {
-                handle.request(path.clone(), load_gen);
+        glib::MainContext::default().spawn_local(async move {
+            let file = gio::File::for_path(&path_clone);
+            let result = async {
+                let mut loader = glycin::Loader::new(file);
+                loader.sandbox_selector(glycin::SandboxSelector::NotSandboxed);
+                let image = loader.load().await.map_err(|e| e.to_string())?;
+                let frame = image.next_frame().await.map_err(|e| e.to_string())?;
+                Ok::<_, String>(frame.texture())
+            }.await;
+            
+            if load_gen_cell.get() != load_gen {
+                return; // User navigated away
             }
-            return;
-        }
 
-        // ── Fast path: use pre-decoded bytes from prefetch cache. ──────────────
-        let prefetched = imp
-            .state
-            .borrow()
-            .as_ref()
-            .and_then(|rc| rc.borrow_mut().library.take_prefetch(&path))
-            .filter(|_| Self::can_use_cached_viewer_image(&path));
-
-        if let Some((bytes, w, h)) = prefetched {
-            crate::bench_event!(
-                "viewer.load.finish",
-                serde_json::json!({
-                    "path": path.display().to_string(),
-                    "source": "prefetch_cache",
-                    "width": w,
-                    "height": h,
-                    "duration_ms": 0,
-                }),
-            );
-            if let Some(ref rc) = *imp.state.borrow() {
-                rc.borrow_mut()
-                    .library
-                    .insert_preview(path.clone(), bytes.clone(), w, h);
+            spinner.stop();
+            spinner.set_visible(false);
+            
+            match result {
+                Ok(texture) => {
+                    picture.set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
+                    viewer.reset_zoom();
+                }
+                Err(e) => {
+                    error_label.set_text(&format!("Could not load image: {}", e));
+                    error_label.set_visible(true);
+                }
             }
-            let gbytes = glib::Bytes::from_owned(bytes);
-            let texture = gdk4::MemoryTexture::new(
-                w as i32,
-                h as i32,
-                gdk4::MemoryFormat::R8g8b8a8,
-                &gbytes,
-                (w * 4) as usize,
-            );
-            imp.picture
-                .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
-            self.reset_zoom();
-            // Metadata loads via the shared worker; result drains in set_metadata_worker loop.
-            if let Some(ref handle) = *imp.metadata_handle.borrow() {
-                handle.request(path.clone(), load_gen);
-            }
-            return;
-        }
-
-        // ── Slow path: submit to the bounded preview worker pool. ──────────────
-
-        imp.spinner.start();
-        imp.spinner.set_visible(true);
-
-        // Send the decode request to the shared worker pool. Results are drained
-        // by the persistent loop installed in set_preview_worker().
-        if let Some(ref handle) = *imp.preview_handle.borrow() {
-            crate::bench_event!(
-                "preview.request_enqueued",
-                serde_json::json!({
-                    "path": path.display().to_string(),
-                    "role": "viewer",
-                    "source": "viewer_selection",
-                    "gen": load_gen,
-                }),
-            );
-            handle.request_viewer(path.clone(), load_gen);
-        }
+        });
 
         // Metadata loads via the shared worker; result drains in set_metadata_worker loop.
         if let Some(ref handle) = *imp.metadata_handle.borrow() {
@@ -1164,7 +1010,7 @@ impl ViewerPane {
 
     // -----------------------------------------------------------------------
     // Zoom
-    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------
 
     fn apply_zoom(&self, factor: f64) {
         let imp = self.imp();
@@ -1418,11 +1264,14 @@ impl ViewerPane {
         if let Some(v) = imp.current_rgba.borrow().clone() {
             return Some(v);
         }
-        let path = imp.current_path.borrow().clone()?;
-        imp.state
-            .borrow()
-            .as_ref()
-            .and_then(|rc| rc.borrow().library.cached_preview(&path))
+        
+        let texture = imp.picture.paintable()?.downcast::<gdk4::Texture>().ok()?;
+        let width = texture.width() as u32;
+        let height = texture.height() as u32;
+        let mut bytes = vec![0u8; (width * height * 4) as usize];
+        
+        texture.download(&mut bytes, (width * 4) as usize);
+        Some((bytes, width, height))
     }
 
     /// Apply an in-memory transform to the currently displayed image.

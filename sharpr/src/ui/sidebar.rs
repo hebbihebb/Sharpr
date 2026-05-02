@@ -134,7 +134,8 @@ mod imp {
 
 glib::wrapper! {
     pub struct SidebarPane(ObjectSubclass<imp::SidebarPane>)
-        @extends gtk4::Widget;
+        @extends gtk4::Widget,
+                 @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Actionable;
 }
 
 impl SidebarPane {
@@ -1463,7 +1464,8 @@ mod folder_row_imp {
 
 glib::wrapper! {
     pub struct FolderRow(ObjectSubclass<folder_row_imp::FolderRow>)
-        @extends gtk4::ListBoxRow, gtk4::Widget;
+        @extends gtk4::ListBoxRow, gtk4::Widget,
+                 @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Actionable;
 }
 
 impl FolderRow {
@@ -1595,7 +1597,8 @@ mod collection_row_imp {
 
 glib::wrapper! {
     pub struct CollectionRow(ObjectSubclass<collection_row_imp::CollectionRow>)
-        @extends gtk4::ListBoxRow, gtk4::Widget;
+        @extends gtk4::ListBoxRow, gtk4::Widget,
+                 @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Actionable;
 }
 
 impl CollectionRow {

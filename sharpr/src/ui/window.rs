@@ -53,8 +53,6 @@ pub struct AppState {
     pub scope: ViewScope,
     /// Folders disabled by the user. Images under these paths must not be indexed or shown.
     pub disabled_folders: Vec<PathBuf>,
-    /// Monotonic context for preview prefetch requests tied to filmstrip selection.
-    pub preview_prefetch_gen: u64,
 }
 
 /// The single content scope currently loaded into the filmstrip.
@@ -576,18 +574,6 @@ fn apply_exact_tag_filter(
     }
 }
 
-#[derive(Clone)]
-struct PrefetchRequest {
-    path: PathBuf,
-    index: u32,
-    direction: i32,
-    distance: u32,
-}
-
-struct PrefetchResult {
-    request: PrefetchRequest,
-    image: Result<crate::image_pipeline::PreviewImage, crate::image_pipeline::PreviewDecodeError>,
-}
 
 struct ThumbnailOpState {
     total: u32,
@@ -624,32 +610,6 @@ enum FolderOpenResult {
     },
 }
 
-fn trigger_prefetch(
-    state: &Rc<RefCell<AppState>>,
-    preview_handle: &crate::image_pipeline::worker::PreviewHandle,
-    index: u32,
-) {
-    let prefetch_gen = {
-        let mut state_ref = state.borrow_mut();
-        state_ref.preview_prefetch_gen = state_ref.preview_prefetch_gen.wrapping_add(1);
-        state_ref.library.clear_all_prefetch_in_flight();
-        state_ref.preview_prefetch_gen
-    };
-    let count = state.borrow().library.image_count();
-
-    for delta in [-1i32, 1i32] {
-        queue_prefetch(
-            state,
-            preview_handle,
-            prefetch_gen,
-            count,
-            index as i32 + delta,
-            delta,
-            1,
-        );
-    }
-}
-
 fn path_is_disabled(path: &std::path::Path, disabled_folders: &[PathBuf]) -> bool {
     disabled_folders
         .iter()
@@ -672,115 +632,6 @@ fn filter_paths_for_library(
         .filter(|path| path_in_active_library(path, active_root))
         .filter(|path| !path_is_disabled(path, disabled_folders))
         .collect()
-}
-
-fn queue_prefetch(
-    state: &Rc<RefCell<AppState>>,
-    preview_handle: &crate::image_pipeline::worker::PreviewHandle,
-    prefetch_gen: u64,
-    count: u32,
-    index: i32,
-    direction: i32,
-    distance: u32,
-) {
-    if index < 0 || index >= count as i32 {
-        return;
-    }
-
-    let path = {
-        let state_ref = state.borrow();
-        state_ref
-            .library
-            .entry_at(index as u32)
-            .map(|e: ImageEntry| e.path())
-    };
-    let Some(path) = path else { return };
-
-    let dimensions = {
-        let state_ref = state.borrow();
-        state_ref
-            .library
-            .entry_for_path(&path)
-            .and_then(|entry| entry.dimensions())
-    };
-
-    let decision = crate::image_pipeline::preview_prefetch_decision(&path, dimensions);
-    if let Some(reason) = crate::image_pipeline::preview_prefetch_reason_label(decision) {
-        crate::bench_event!(
-            "preview.request_skipped",
-            serde_json::json!({
-                "path": path.display().to_string(),
-                "role": "prefetch",
-                "reason": reason,
-            }),
-        );
-        return;
-    }
-
-    {
-        let mut state_ref = state.borrow_mut();
-        if state_ref.library.prefetch_pending(&path) {
-            return;
-        }
-        state_ref.library.mark_prefetch_in_flight(path.clone());
-    }
-
-    crate::bench_event!(
-        "preview.request_enqueued",
-        serde_json::json!({
-            "path": path.display().to_string(),
-            "role": "prefetch",
-            "source": "filmstrip_prefetch",
-            "gen": prefetch_gen,
-            "distance": distance,
-        }),
-    );
-
-    preview_handle.request_prefetch(
-        path,
-        prefetch_gen,
-        crate::image_pipeline::worker::PrefetchRequestContext {
-            index: index as u32,
-            direction,
-            distance,
-        },
-    );
-}
-
-fn handle_prefetch_result(
-    state: &Rc<RefCell<AppState>>,
-    preview_handle: &crate::image_pipeline::worker::PreviewHandle,
-    result: PrefetchResult,
-) {
-    let PrefetchResult { request, image } = result;
-    let count = state.borrow().library.image_count();
-    state
-        .borrow_mut()
-        .library
-        .clear_prefetch_in_flight(&request.path);
-
-    if let Ok(image) = image {
-        state.borrow_mut().library.insert_prefetch(
-            request.path.clone(),
-            image.rgba,
-            image.width,
-            image.height,
-        );
-
-        if request.distance < 3 {
-            let next_index = request.index as i32 + request.direction;
-            let prefetch_gen = state.borrow().preview_prefetch_gen;
-            queue_prefetch(
-                state,
-                preview_handle,
-                prefetch_gen,
-                count,
-                next_index,
-                request.direction,
-                request.distance + 1,
-            );
-        }
-    }
 }
 
 fn start_metadata_indexer(
@@ -1067,7 +918,6 @@ impl AppState {
             selected_paths: HashSet::new(),
             scope: ViewScope::default(),
             disabled_folders,
-            preview_prefetch_gen: 0,
         }
     }
 }
@@ -1085,7 +935,6 @@ mod imp {
         pub state: Rc<RefCell<AppState>>,
         pub viewer: RefCell<Option<ViewerPane>>,
         pub thumbnail_worker: RefCell<Option<ThumbnailWorker>>,
-        pub preview_worker: RefCell<Option<crate::image_pipeline::worker::PreviewWorker>>,
         pub metadata_worker: RefCell<Option<crate::image_pipeline::worker::MetadataWorker>>,
         // Cloned receiver so the async task can hold it.
         pub result_rx: RefCell<Option<Receiver<ThumbnailResult>>>,
@@ -1108,7 +957,6 @@ mod imp {
                 state: Rc::new(RefCell::new(AppState::new(ops_queue))),
                 viewer: RefCell::new(None),
                 thumbnail_worker: RefCell::new(None),
-                preview_worker: RefCell::new(None),
                 metadata_worker: RefCell::new(None),
                 result_rx: RefCell::new(None),
                 hash_result_rx: RefCell::new(None),
@@ -1151,7 +999,7 @@ glib::wrapper! {
                  gtk4::ApplicationWindow,
                  gtk4::Window,
                  gtk4::Widget,
-        @implements gio::ActionGroup, gio::ActionMap;
+        @implements gio::ActionGroup, gio::ActionMap, gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Native, gtk4::Root, gtk4::ShortcutManager;
 }
 
 impl SharprWindow {
@@ -1248,10 +1096,6 @@ impl SharprWindow {
         *self.imp().hash_result_rx.borrow_mut() = Some(hash_result_rx);
         *self.imp().sharpness_result_rx.borrow_mut() = Some(sharpness_result_rx);
 
-        let (preview_worker, preview_result_rx, prefetch_result_rx) =
-            crate::image_pipeline::worker::PreviewWorker::spawn();
-        *self.imp().preview_worker.borrow_mut() = Some(preview_worker);
-
         let (metadata_worker, metadata_result_rx) =
             crate::image_pipeline::worker::MetadataWorker::spawn();
         *self.imp().metadata_worker.borrow_mut() = Some(metadata_worker);
@@ -1313,31 +1157,6 @@ impl SharprWindow {
 
         if let Some(tags) = state.borrow().tags.clone() {
             filmstrip.set_cached_tags(tags);
-        }
-
-        if let Some(worker) = self.imp().preview_worker.borrow().as_ref() {
-            viewer.set_preview_worker(worker.handle(), preview_result_rx);
-            let preview_handle = worker.handle();
-            let state_prefetch = state.clone();
-            glib::MainContext::default().spawn_local(async move {
-                while let Ok(result) = prefetch_result_rx.recv().await {
-                    let request = result.prefetch.map(|prefetch| PrefetchRequest {
-                        path: result.path.clone(),
-                        index: prefetch.index,
-                        direction: prefetch.direction,
-                        distance: prefetch.distance,
-                    });
-                    let Some(request) = request else { continue };
-                    handle_prefetch_result(
-                        &state_prefetch,
-                        &preview_handle,
-                        PrefetchResult {
-                            request,
-                            image: result.image,
-                        },
-                    );
-                }
-            });
         }
 
         if let Some(worker) = self.imp().metadata_worker.borrow().as_ref() {
@@ -1689,14 +1508,6 @@ impl SharprWindow {
                         serde_json::json!({
                             "path": path_rx.display().to_string(),
                             "image_count": thumb_total,
-                        }),
-                    );
-                    let (preview_bytes, prefetch_bytes) = state_rx.borrow().library.cache_stats();
-                    crate::bench_event!(
-                        "viewer.cache.stats",
-                        serde_json::json!({
-                            "preview_bytes": preview_bytes,
-                            "prefetch_bytes": prefetch_bytes,
                         }),
                     );
                     let thumb_op = if thumb_total > 0 {
@@ -2946,12 +2757,6 @@ impl SharprWindow {
         {
             let viewer_c = viewer.clone();
             let state_c = state.clone();
-            let preview_handle = self
-                .imp()
-                .preview_worker
-                .borrow()
-                .as_ref()
-                .map(|worker| worker.handle());
             filmstrip.connect_image_selected(move |index| {
                 let path = {
                     let Ok(mut state) = state_c.try_borrow_mut() else {
@@ -2967,10 +2772,7 @@ impl SharprWindow {
                     viewer_c.load_image(path);
                 }
 
-                // Queue prefetch for the images immediately before and after this one.
-                if let Some(handle) = preview_handle.as_ref() {
-                    trigger_prefetch(&state_c, handle, index);
-                }
+
             });
         }
 
@@ -4915,7 +4717,7 @@ impl SharprWindow {
                     let action_weak_c = action_weak.clone();
                     let state_cc = state_c.clone();
                     dialog.choose(
-                        &viewer,
+                        Some(&viewer),
                         None::<&gio::Cancellable>,
                         move |response| {
                             if response != "upscale" {
