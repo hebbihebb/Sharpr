@@ -589,6 +589,10 @@ glib::wrapper! {
 }
 
 impl ViewerPane {
+    fn can_use_cached_viewer_image(path: &std::path::Path) -> bool {
+        !crate::jxl::is_jxl_path(path)
+    }
+
     fn comparison_visible(&self) -> bool {
         self.imp().stack.visible_child_name().as_deref() == Some("compare")
     }
@@ -1058,7 +1062,8 @@ impl ViewerPane {
             .state
             .borrow()
             .as_ref()
-            .and_then(|rc| rc.borrow().library.cached_preview(&path));
+            .and_then(|rc| rc.borrow().library.cached_preview(&path))
+            .filter(|_| Self::can_use_cached_viewer_image(&path));
 
         if let Some((bytes, w, h)) = cached_preview {
             crate::bench_event!(
@@ -1094,7 +1099,8 @@ impl ViewerPane {
             .state
             .borrow()
             .as_ref()
-            .and_then(|rc| rc.borrow_mut().library.take_prefetch(&path));
+            .and_then(|rc| rc.borrow_mut().library.take_prefetch(&path))
+            .filter(|_| Self::can_use_cached_viewer_image(&path));
 
         if let Some((bytes, w, h)) = prefetched {
             crate::bench_event!(
@@ -3167,6 +3173,15 @@ fn install_viewer_osd_css() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewer_cache_skips_jxl_buffers() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/test.jxl");
+        assert!(!ViewerPane::can_use_cached_viewer_image(&path));
+
+        let png_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/test.png");
+        assert!(ViewerPane::can_use_cached_viewer_image(&png_path));
+    }
 
     #[test]
     fn comfy_preserved_temp_png_uses_temp_stem() {

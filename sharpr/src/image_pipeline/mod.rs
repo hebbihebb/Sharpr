@@ -314,7 +314,12 @@ fn decode_jxl_for_preview(
         }),
     );
 
-    match crate::jxl::decode_preview_or_full(path, min_long_edge) {
+    let decoded = match mode {
+        PreviewDecodeMode::Viewer => crate::jxl::decode_path(path).map(crate::jxl::JxlPreviewResult::Full),
+        PreviewDecodeMode::Prefetch => crate::jxl::decode_preview_or_full(path, min_long_edge),
+    };
+
+    match decoded {
         Ok(crate::jxl::JxlPreviewResult::Embedded(preview)) => {
             let image = image::RgbaImage::from_raw(preview.width, preview.height, preview.rgba)?;
             let image =
@@ -338,17 +343,22 @@ fn decode_jxl_for_preview(
         }
         Ok(crate::jxl::JxlPreviewResult::Full(img)) => {
             let img = apply_exif_orientation(img, path).into_rgba8();
-            let (target_width, target_height) =
-                choose_scaled_dimensions(img.width(), img.height(), min_long_edge);
-            let rgba = if target_width != img.width() || target_height != img.height() {
-                image::imageops::resize(
-                    &img,
-                    target_width,
-                    target_height,
-                    image::imageops::FilterType::Triangle,
-                )
-            } else {
-                img
+            let rgba = match mode {
+                PreviewDecodeMode::Viewer => img,
+                PreviewDecodeMode::Prefetch => {
+                    let (target_width, target_height) =
+                        choose_scaled_dimensions(img.width(), img.height(), min_long_edge);
+                    if target_width != img.width() || target_height != img.height() {
+                        image::imageops::resize(
+                            &img,
+                            target_width,
+                            target_height,
+                            image::imageops::FilterType::Triangle,
+                        )
+                    } else {
+                        img
+                    }
+                }
             };
             crate::bench_event!(
                 "jxl.preview_frame.fallback",
@@ -627,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn jxl_preview_path_prefers_embedded_preview_when_available() {
+    fn jxl_prefetch_path_prefers_embedded_preview_when_available() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/test.jxl");
         let Some(preview_info) = crate::jxl::preview_info(&path).unwrap() else {
             return;
@@ -635,12 +645,26 @@ mod tests {
 
         let result = decode_jxl_for_preview(
             &path,
-            PreviewDecodeMode::Viewer,
+            PreviewDecodeMode::Prefetch,
             preview_info.width.max(preview_info.height),
         )
         .unwrap();
 
         assert_eq!(result.source, PreviewSource::EmbeddedJxlPreview);
+    }
+
+    #[test]
+    fn jxl_viewer_path_skips_embedded_preview_when_available() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/test.jxl");
+        let Some(_preview_info) = crate::jxl::preview_info(&path).unwrap() else {
+            return;
+        };
+
+        let result = decode_jxl_for_preview(&path, PreviewDecodeMode::Viewer, 1280).unwrap();
+        let (width, height) = crate::jxl::image_dimensions(&path).unwrap();
+
+        assert_eq!(result.source, PreviewSource::ScaledJxl);
+        assert_eq!((result.width, result.height), (width, height));
     }
 
     #[test]

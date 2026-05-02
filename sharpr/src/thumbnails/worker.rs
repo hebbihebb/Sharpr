@@ -84,8 +84,7 @@ impl ThumbnailWorker {
         Receiver<HashResult>,
         Receiver<SharpnessResult>,
     ) {
-        let preload_workers = 4usize;
-        let visible_workers = thread_count.saturating_sub(preload_workers).max(1);
+        let (visible_workers, preload_workers) = split_thumbnail_workers(thread_count);
 
         let (visible_tx, visible_rx) = async_channel::unbounded::<WorkerRequest>();
         let (preload_tx, preload_rx) = async_channel::unbounded::<WorkerRequest>();
@@ -400,6 +399,13 @@ impl ThumbnailWorker {
     pub fn sharpness_sender(&self) -> Sender<SharpnessResult> {
         self.sharpness_tx.clone()
     }
+}
+
+fn split_thumbnail_workers(thread_count: usize) -> (usize, usize) {
+    let total = thread_count.max(2);
+    let preload_workers = total.saturating_div(4).clamp(1, 2);
+    let visible_workers = total.saturating_sub(preload_workers).max(1);
+    (visible_workers, preload_workers)
 }
 
 impl Drop for ThumbnailWorker {
@@ -828,6 +834,14 @@ mod tests {
             pending.is_empty(),
             "bump_generation must clear the in-flight dedup set"
         );
+    }
+
+    #[test]
+    fn worker_split_prioritizes_visible_pool() {
+        assert_eq!(split_thumbnail_workers(2), (1, 1));
+        assert_eq!(split_thumbnail_workers(4), (3, 1));
+        assert_eq!(split_thumbnail_workers(8), (6, 2));
+        assert_eq!(split_thumbnail_workers(16), (14, 2));
     }
 
     #[test]

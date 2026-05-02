@@ -30,8 +30,8 @@ type SaveSearchAsCollectionCallback = Box<dyn Fn(&str) + 'static>;
 
 const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
 const BUFFER_ROWS: u32 = 24;
-const FALLBACK_VISIBLE_ROWS: u32 = 40;
-const MAX_PRELOAD_ENQUEUE_PER_PASS: usize = 24;
+const FALLBACK_VISIBLE_ROWS: u32 = 12;
+const MAX_PRELOAD_ENQUEUE_PER_PASS: usize = 8;
 const THUMBNAIL_RESCHEDULE_DEBOUNCE_MS: u64 = 30;
 const COLLECTION_COLOR_PALETTE: &[&str] = &[
     "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
@@ -1171,6 +1171,7 @@ impl FilmstripPane {
         } else {
             0
         };
+        let layout_ready = page_size > 0.0;
 
         let mut visible_range_start = visible_start;
         let mut visible_range_end = visible_start.saturating_add(visible_rows);
@@ -1187,7 +1188,7 @@ impl FilmstripPane {
             visible_range_start = 0;
             visible_range_end = FALLBACK_VISIBLE_ROWS;
             preload_range_start = 0;
-            preload_range_end = FALLBACK_VISIBLE_ROWS.saturating_add(BUFFER_ROWS);
+            preload_range_end = FALLBACK_VISIBLE_ROWS;
             visible_capped_end = visible_range_end.min(image_count);
             preload_capped_end = preload_range_end.min(image_count);
         }
@@ -1207,11 +1208,12 @@ impl FilmstripPane {
                 let path = entry.path();
                 // Workers check the disk cache first (fast path in generate_thumbnail),
                 // so we just enqueue and let them handle it off the main thread.
-                let is_visible =
-                    index >= visible_range_start && index < visible_capped_end && visible_rows > 0;
+                let is_visible = index >= visible_range_start
+                    && index < visible_capped_end
+                    && (layout_ready || visible_rows == 0);
                 if is_visible {
                     visible_worker_paths.push(path);
-                } else {
+                } else if layout_ready {
                     preload_worker_paths.push(path);
                 }
             }
