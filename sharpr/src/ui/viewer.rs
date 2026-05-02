@@ -1132,24 +1132,6 @@ impl ViewerPane {
 
         // ── Slow path: submit to the bounded preview worker pool. ──────────────
 
-        // Show a low-resolution thumbnail placeholder if available
-        let cached_thumbnail = imp
-            .state
-            .borrow()
-            .as_ref()
-            .and_then(|rc| rc.borrow().library.cached_thumbnail(&path));
-
-        if let Some(thumbnail) = cached_thumbnail {
-            let paintable = thumbnail.upcast_ref::<gdk4::Paintable>();
-            imp.picture.set_paintable(Some(paintable));
-
-            // Size the picture to the current viewport so the thumbnail fills it
-            // without changing halign/valign, which would break Fit mode on handoff.
-            let vw = imp.scrolled_window.width().max(1);
-            let vh = imp.scrolled_window.height().max(1);
-            imp.picture.set_size_request(vw, vh);
-        }
-
         imp.spinner.start();
         imp.spinner.set_visible(true);
 
@@ -1221,9 +1203,6 @@ impl ViewerPane {
         let imp = self.imp();
         imp.zoom.set(1.0);
         imp.zoom_mode.set(ZoomMode::Fit);
-        imp.picture.set_halign(gtk4::Align::Center);
-        imp.picture.set_valign(gtk4::Align::Center);
-
         self.update_picture_zoom();
         imp.scrolled_window.hadjustment().set_value(0.0);
         imp.scrolled_window.vadjustment().set_value(0.0);
