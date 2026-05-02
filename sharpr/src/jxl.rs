@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::mem::MaybeUninit;
 use std::path::Path;
 use std::ptr;
@@ -31,6 +32,17 @@ pub struct DecodedEmbeddedPreview {
     pub height: u32,
 }
 
+#[derive(Debug, PartialEq)]
+pub enum JxlPreviewResult {
+    Embedded(DecodedEmbeddedPreview),
+    Full(image::DynamicImage),
+}
+
+thread_local! {
+    static JXL_THREAD_RUNNER: OnceCell<Result<&'static ThreadsRunner<'static>, String>> =
+        const { OnceCell::new() };
+}
+
 pub fn is_jxl_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -44,16 +56,98 @@ pub fn decode_path(path: &Path) -> Result<DynamicImage, String> {
 
 fn decode_path_with_num_workers(path: &Path, num_workers: usize) -> Result<DynamicImage, String> {
     let data = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
-    let parallel_runner = ThreadsRunner::new(None, Some(num_workers.max(1)))
-        .ok_or_else(|| "create JPEG XL thread pool".to_string())?;
-    let decoder = decoder_builder()
-        .parallel_runner(&parallel_runner)
-        .build()
-        .map_err(|err| format!("create JPEG XL decoder: {err}"))?;
-    decoder
-        .decode_to_image(&data)
-        .map_err(|err| format!("decode JPEG XL {}: {err}", path.display()))?
-        .ok_or_else(|| format!("decode JPEG XL {}: no image data returned", path.display()))
+    decode_from_bytes_with_num_workers(&data, num_workers)
+        .map_err(|err| format!("decode JPEG XL {}: {err}", path.display()))
+}
+
+/// Read `path` exactly once and return either the embedded preview (if one exists
+/// and its long edge >= `min_long_edge`) or a full decode of the image.
+pub fn decode_preview_or_full(path: &Path, min_long_edge: u32) -> Result<JxlPreviewResult, String> {
+    let data = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let decoder = DecoderHandle::new()?;
+    decoder.subscribe_events(
+        JxlDecoderStatus::BasicInfo as i32 | JxlDecoderStatus::PreviewImage as i32,
+    )?;
+    decoder.set_input(&data)?;
+
+    let pixel_format = JxlPixelFormat {
+        num_channels: 4,
+        data_type: JxlDataType::Uint8,
+        endianness: JxlEndianness::Native,
+        align: 0,
+    };
+
+    let mut basic_info = MaybeUninit::<JxlBasicInfo>::uninit();
+    let mut preview_info = None;
+    let mut rgba = Vec::new();
+
+    loop {
+        match decoder.process_input() {
+            JxlDecoderStatus::BasicInfo => {
+                decoder.get_basic_info(&mut basic_info)?;
+                preview_info =
+                    preview_info_from_basic_info(unsafe { basic_info.assume_init_ref() });
+                let Some(info) = preview_info else {
+                    return decode_from_bytes(&data)
+                        .map(JxlPreviewResult::Full)
+                        .map_err(|err| format!("decode JPEG XL {}: {err}", path.display()));
+                };
+                if info.width.max(info.height) < min_long_edge {
+                    return decode_from_bytes(&data)
+                        .map(JxlPreviewResult::Full)
+                        .map_err(|err| format!("decode JPEG XL {}: {err}", path.display()));
+                }
+            }
+            JxlDecoderStatus::NeedPreviewOutBuffer => {
+                let Some(info) = preview_info else {
+                    return Err(format!(
+                        "decode JPEG XL preview {}: preview buffer requested without preview header",
+                        path.display()
+                    ));
+                };
+                let size = decoder.preview_out_buffer_size(&pixel_format)?;
+                let expected = expected_preview_buffer_len(info, path)?;
+                if size != expected {
+                    return Err(format!(
+                        "decode JPEG XL preview {}: preview buffer size mismatch ({size} != {expected})",
+                        path.display()
+                    ));
+                }
+                rgba.resize(size, 0);
+                decoder.set_preview_out_buffer(&pixel_format, &mut rgba)?;
+            }
+            JxlDecoderStatus::PreviewImage => {
+                let Some(info) = preview_info else {
+                    return Err(format!(
+                        "decode JPEG XL preview {}: preview decoded without preview header",
+                        path.display()
+                    ));
+                };
+                return Ok(JxlPreviewResult::Embedded(DecodedEmbeddedPreview {
+                    rgba,
+                    width: info.width,
+                    height: info.height,
+                }));
+            }
+            JxlDecoderStatus::NeedMoreInput | JxlDecoderStatus::Success => {
+                return decode_from_bytes(&data)
+                    .map(JxlPreviewResult::Full)
+                    .map_err(|err| format!("decode JPEG XL {}: {err}", path.display()))
+            }
+            JxlDecoderStatus::Error => {
+                return Err(format!(
+                    "decode JPEG XL preview {}: decoder error",
+                    path.display()
+                ))
+            }
+            status => {
+                return Err(format!(
+                    "decode JPEG XL preview {}: unexpected decoder status {status:?}",
+                    path.display()
+                ))
+            }
+        }
+    }
 }
 
 pub fn image_dimensions(path: &Path) -> Result<(u32, u32), String> {
@@ -182,6 +276,51 @@ fn speed_for_effort(effort: u8) -> EncoderSpeed {
     }
 }
 
+fn decode_from_bytes(data: &[u8]) -> Result<DynamicImage, String> {
+    decode_from_bytes_with_num_workers(data, DEFAULT_DECODE_WORKERS)
+}
+
+fn decode_from_bytes_with_num_workers(
+    data: &[u8],
+    num_workers: usize,
+) -> Result<DynamicImage, String> {
+    let num_workers = num_workers.max(1);
+    if num_workers == DEFAULT_DECODE_WORKERS {
+        let parallel_runner = get_jxl_thread_runner()?;
+        let decoder = decoder_builder()
+            .parallel_runner(parallel_runner)
+            .build()
+            .map_err(|err| format!("create JPEG XL decoder: {err}"))?;
+        return decoder
+            .decode_to_image(data)
+            .map_err(|err| format!("{err}"))?
+            .ok_or_else(|| "no image data returned".to_string());
+    }
+
+    let parallel_runner = ThreadsRunner::new(None, Some(num_workers))
+        .ok_or_else(|| "create JPEG XL thread pool".to_string())?;
+    let decoder = decoder_builder()
+        .parallel_runner(&parallel_runner)
+        .build()
+        .map_err(|err| format!("create JPEG XL decoder: {err}"))?;
+    decoder
+        .decode_to_image(data)
+        .map_err(|err| format!("{err}"))?
+        .ok_or_else(|| "no image data returned".to_string())
+}
+
+fn get_jxl_thread_runner() -> Result<&'static ThreadsRunner<'static>, String> {
+    JXL_THREAD_RUNNER.with(|runner| {
+        runner
+            .get_or_init(|| {
+                ThreadsRunner::new(None, Some(DEFAULT_DECODE_WORKERS))
+                    .map(|runner| Box::leak(Box::new(runner)) as &'static ThreadsRunner<'static>)
+                    .ok_or_else(|| "create JPEG XL thread pool".to_string())
+            })
+            .clone()
+    })
+}
+
 fn decode_basic_info(data: &[u8]) -> Result<Option<JxlBasicInfo>, String> {
     let decoder = DecoderHandle::new()?;
     decoder.subscribe_events(JxlDecoderStatus::BasicInfo as i32)?;
@@ -240,23 +379,7 @@ fn decode_embedded_preview_from_bytes(
                     ));
                 };
                 let size = decoder.preview_out_buffer_size(&pixel_format)?;
-                let expected = usize::try_from(info.width)
-                    .ok()
-                    .and_then(|width| {
-                        usize::try_from(info.height)
-                            .ok()
-                            .map(|height| (width, height))
-                    })
-                    .and_then(|(width, height)| width.checked_mul(height))
-                    .and_then(|pixels| pixels.checked_mul(4))
-                    .ok_or_else(|| {
-                        format!(
-                            "decode JPEG XL preview {}: invalid preview dimensions {}x{}",
-                            path.display(),
-                            info.width,
-                            info.height
-                        )
-                    })?;
+                let expected = expected_preview_buffer_len(info, path)?;
                 if size != expected {
                     return Err(format!(
                         "decode JPEG XL preview {}: preview buffer size mismatch ({size} != {expected})",
@@ -305,6 +428,26 @@ fn preview_info_from_basic_info(info: &JxlBasicInfo) -> Option<EmbeddedPreviewIn
         width: info.preview.xsize,
         height: info.preview.ysize,
     })
+}
+
+fn expected_preview_buffer_len(info: EmbeddedPreviewInfo, path: &Path) -> Result<usize, String> {
+    usize::try_from(info.width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(info.height)
+                .ok()
+                .map(|height| (width, height))
+        })
+        .and_then(|(width, height)| width.checked_mul(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| {
+            format!(
+                "decode JPEG XL preview {}: invalid preview dimensions {}x{}",
+                path.display(),
+                info.width,
+                info.height
+            )
+        })
 }
 
 fn check_decoder_status(status: JxlDecoderStatus, context: &str) -> Result<(), String> {
@@ -419,5 +562,46 @@ mod tests {
         assert_eq!(decode_embedded_preview(&path).unwrap(), None);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn decode_preview_or_full_uses_preview_and_falls_back() {
+        let preview_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assets/test.jxl");
+        if let Some(preview_info) = preview_info(&preview_path).unwrap() {
+            let embedded =
+                decode_preview_or_full(&preview_path, preview_info.width.max(preview_info.height))
+                    .unwrap();
+            match embedded {
+                JxlPreviewResult::Embedded(preview) => {
+                    assert_eq!(preview.width, preview_info.width);
+                    assert_eq!(preview.height, preview_info.height);
+                    assert_eq!(
+                        preview.rgba.len(),
+                        usize::try_from(preview.width).unwrap()
+                            * usize::try_from(preview.height).unwrap()
+                            * 4
+                    );
+                }
+                JxlPreviewResult::Full(_) => panic!("expected embedded preview decode"),
+            }
+        }
+
+        let fallback_path = temp_path("preview-fallback");
+        let mut rgba = RgbaImage::new(8, 6);
+        rgba.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+        rgba.put_pixel(7, 5, Rgba([0, 0, 255, 255]));
+        let image = DynamicImage::ImageRgba8(rgba.clone());
+        encode_path(&image, &fallback_path, 90, false, 7).unwrap();
+
+        let fallback = decode_preview_or_full(&fallback_path, 1024).unwrap();
+        match fallback {
+            JxlPreviewResult::Embedded(_) => panic!("expected full decode fallback"),
+            JxlPreviewResult::Full(decoded) => {
+                assert_eq!(decoded.width(), 8);
+                assert_eq!(decoded.height(), 6);
+            }
+        }
+
+        let _ = std::fs::remove_file(fallback_path);
     }
 }

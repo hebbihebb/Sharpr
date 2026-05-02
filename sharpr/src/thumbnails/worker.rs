@@ -570,7 +570,13 @@ fn decode_webp_scaled(path: &Path, min_short_edge: u32) -> Option<image::Dynamic
 
 fn decode_with_image_crate(path: &Path) -> Option<image::DynamicImage> {
     if crate::jxl::is_jxl_path(path) {
-        return crate::jxl::decode_path(path).ok();
+        return match crate::jxl::decode_preview_or_full(path, 0).ok()? {
+            crate::jxl::JxlPreviewResult::Embedded(preview) => {
+                image::RgbaImage::from_raw(preview.width, preview.height, preview.rgba)
+                    .map(image::DynamicImage::ImageRgba8)
+            }
+            crate::jxl::JxlPreviewResult::Full(img) => Some(img),
+        };
     }
 
     let file = std::fs::File::open(path).ok()?;
