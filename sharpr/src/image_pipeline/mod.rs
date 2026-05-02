@@ -39,6 +39,7 @@ pub enum PreviewSource {
     ScaledJpeg,
     ScaledWebp,
     ScaledJxl,
+    ScaledPng,
     FullDecode,
 }
 
@@ -119,6 +120,22 @@ pub fn decode_preview(
                     "path": path.display().to_string(),
                     "mode": preview_mode_label(mode),
                     "source": "scaled_webp",
+                    "width": img.width,
+                    "height": img.height,
+                }),
+            );
+            return Ok(img);
+        }
+    }
+
+    if is_png_path(path) {
+        if let Some(img) = decode_png_rgba_scaled(path, MIN_VIEWER_LONG_EDGE as u32) {
+            crate::bench_event!(
+                "preview.decode.finish",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "mode": preview_mode_label(mode),
+                    "source": "scaled_png",
                     "width": img.width,
                     "height": img.height,
                 }),
@@ -550,6 +567,9 @@ fn decode_webp_rgba_scaled(path: &Path, min_long_edge: u32) -> Option<PreviewIma
 }
 
 fn decode_jxl_rgba_scaled(path: &Path, min_long_edge: u32) -> Option<PreviewImage> {
+    // Note: libjxl progressive DC (`JxlProgressiveDetail::DC`) currently flushes to
+    // full-resolution upscaled output, so it does not meet the memory-saving goal.
+    // Therefore, we use full-decode + CPU downscale fallback for JXL without embedded preview.
     let img = crate::jxl::decode_path(path).ok()?;
     let img = apply_exif_orientation(img, path);
     let (target_width, target_height) =
@@ -641,6 +661,7 @@ fn preview_source_label(source: PreviewSource) -> &'static str {
         PreviewSource::ScaledJpeg => "scaled_jpeg",
         PreviewSource::ScaledWebp => "scaled_webp",
         PreviewSource::ScaledJxl => "scaled_jxl",
+        PreviewSource::ScaledPng => "scaled_png",
         PreviewSource::FullDecode => "full_decode",
     }
 }
@@ -888,7 +909,7 @@ mod tests {
     }
 
     #[test]
-    fn non_jxl_preview_decode_path_is_unchanged() {
+    fn png_preview_decode_path_is_now_scaled() {
         let path = temp_path("png-full", "png");
         let mut rgba = RgbaImage::new(2, 2);
         rgba.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
@@ -897,8 +918,70 @@ mod tests {
             .unwrap();
 
         let result = decode_preview(&path, PreviewDecodeMode::Viewer).unwrap();
-        assert_eq!(result.source, PreviewSource::FullDecode);
+        assert_eq!(result.source, PreviewSource::ScaledPng);
 
         let _ = std::fs::remove_file(path);
     }
+}
+
+fn is_png_path(path: &Path) -> bool {
+    let by_extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("png"))
+        .unwrap_or(false);
+    if by_extension {
+        return true;
+    }
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut magic = [0u8; 8];
+    std::io::Read::read_exact(&mut file, &mut magic).is_ok()
+        && magic == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+}
+
+fn decode_png_rgba_scaled(path: &Path, min_long_edge: u32) -> Option<PreviewImage> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = image::ImageReader::new(std::io::BufReader::new(file)).with_guessed_format().ok()?;
+    let (width, height) = reader.into_dimensions().ok()?;
+
+    let (target_width, target_height) = choose_scaled_dimensions(width, height, min_long_edge);
+
+    let pixbuf = gtk4::gdk_pixbuf::Pixbuf::from_file_at_scale(path, target_width as i32, target_height as i32, true).ok()?;
+    let actual_width = pixbuf.width() as u32;
+    let actual_height = pixbuf.height() as u32;
+    let rowstride = pixbuf.rowstride() as usize;
+    let n_channels = pixbuf.n_channels() as usize;
+    let bytes = pixbuf.read_pixel_bytes();
+    let pixels = bytes.as_ref();
+
+    let mut rgba = Vec::with_capacity((actual_width * actual_height * 4) as usize);
+
+    for y in 0..actual_height {
+        let row_start = (y as usize) * rowstride;
+        for x in 0..actual_width {
+            let pixel_start = row_start + (x as usize) * n_channels;
+            if n_channels == 3 {
+                rgba.push(pixels[pixel_start]);
+                rgba.push(pixels[pixel_start + 1]);
+                rgba.push(pixels[pixel_start + 2]);
+                rgba.push(255);
+            } else if n_channels == 4 {
+                rgba.push(pixels[pixel_start]);
+                rgba.push(pixels[pixel_start + 1]);
+                rgba.push(pixels[pixel_start + 2]);
+                rgba.push(pixels[pixel_start + 3]);
+            }
+        }
+    }
+
+    Some(PreviewImage {
+        width: actual_width,
+        height: actual_height,
+        rgba,
+        source: PreviewSource::ScaledPng,
+    })
 }
