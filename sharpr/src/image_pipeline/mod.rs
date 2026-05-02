@@ -331,21 +331,19 @@ fn decode_jxl_for_preview(
             })
         }
         Ok(crate::jxl::JxlPreviewResult::Full(img)) => {
-            let img = apply_exif_orientation(img, path);
+            let img = apply_exif_orientation(img, path).into_rgba8();
             let (target_width, target_height) =
                 choose_scaled_dimensions(img.width(), img.height(), min_long_edge);
-            let img = if target_width != img.width() || target_height != img.height() {
-                let rgba = img.into_rgba8();
-                image::DynamicImage::ImageRgba8(image::imageops::resize(
-                    &rgba,
+            let rgba = if target_width != img.width() || target_height != img.height() {
+                image::imageops::resize(
+                    &img,
                     target_width,
                     target_height,
                     image::imageops::FilterType::Triangle,
-                ))
+                )
             } else {
                 img
             };
-            let rgba = img.into_rgba8();
             crate::bench_event!(
                 "jxl.preview_frame.fallback",
                 serde_json::json!({
