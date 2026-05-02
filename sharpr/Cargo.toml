@@ -26,6 +26,7 @@ gdk4 = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp", "ico"] }
 jpegxl-rs = { version = "0.14.0", features = ["vendored"] }
 jpegxl-sys = { version = "0.12.1", features = ["vendored"] }
+jxl-oxide = { version = "0.12.5", features = ["rayon"] }
 webp = "0.3"
 libwebp-sys = "0.9"
 turbojpeg = "1.0"

@@ -1,4 +1,3 @@
-use std::cell::OnceCell;
 use std::mem::MaybeUninit;
 use std::path::Path;
 use std::ptr;
@@ -6,7 +5,6 @@ use std::time::Instant;
 
 use image::DynamicImage;
 use jpegxl_rs::encode::{EncoderFrame, EncoderResult, EncoderSpeed};
-use jpegxl_rs::image::ToDynamic;
 use jpegxl_rs::parallel::threads_runner::ThreadsRunner;
 use jpegxl_rs::{decoder_builder, encoder_builder};
 use jpegxl_sys::common::types::{JxlBool, JxlDataType, JxlEndianness, JxlPixelFormat};
@@ -38,11 +36,6 @@ pub enum JxlPreviewResult {
     Full(image::DynamicImage),
 }
 
-thread_local! {
-    static JXL_THREAD_RUNNER: OnceCell<Result<&'static ThreadsRunner<'static>, String>> =
-        const { OnceCell::new() };
-}
-
 pub fn is_jxl_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -55,9 +48,9 @@ pub fn decode_path(path: &Path) -> Result<DynamicImage, String> {
 }
 
 fn decode_path_with_num_workers(path: &Path, num_workers: usize) -> Result<DynamicImage, String> {
+    let _ = num_workers;
     let data = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
-    decode_from_bytes_with_num_workers(&data, num_workers)
-        .map_err(|err| format!("decode JPEG XL {}: {err}", path.display()))
+    decode_from_bytes(&data).map_err(|err| format!("decode JPEG XL {}: {err}", path.display()))
 }
 
 /// Read `path` exactly once and return either the embedded preview (if one exists
@@ -277,48 +270,73 @@ fn speed_for_effort(effort: u8) -> EncoderSpeed {
 }
 
 fn decode_from_bytes(data: &[u8]) -> Result<DynamicImage, String> {
-    decode_from_bytes_with_num_workers(data, DEFAULT_DECODE_WORKERS)
-}
+    use jxl_oxide::{EnumColourEncoding, JxlImage, RenderingIntent};
 
-fn decode_from_bytes_with_num_workers(
-    data: &[u8],
-    num_workers: usize,
-) -> Result<DynamicImage, String> {
-    let num_workers = num_workers.max(1);
-    if num_workers == DEFAULT_DECODE_WORKERS {
-        let parallel_runner = get_jxl_thread_runner()?;
-        let decoder = decoder_builder()
-            .parallel_runner(parallel_runner)
-            .build()
-            .map_err(|err| format!("create JPEG XL decoder: {err}"))?;
-        return decoder
-            .decode_to_image(data)
-            .map_err(|err| format!("{err}"))?
-            .ok_or_else(|| "no image data returned".to_string());
+    let mut image = JxlImage::builder()
+        .read(std::io::Cursor::new(data))
+        .map_err(|e| format!("create jxl-oxide decoder: {e}"))?;
+
+    if image.pixel_format().has_black() {
+        image.request_color_encoding(EnumColourEncoding::srgb(RenderingIntent::Relative));
     }
 
-    let parallel_runner = ThreadsRunner::new(None, Some(num_workers))
-        .ok_or_else(|| "create JPEG XL thread pool".to_string())?;
-    let decoder = decoder_builder()
-        .parallel_runner(&parallel_runner)
-        .build()
-        .map_err(|err| format!("create JPEG XL decoder: {err}"))?;
-    decoder
-        .decode_to_image(data)
-        .map_err(|err| format!("{err}"))?
-        .ok_or_else(|| "no image data returned".to_string())
-}
+    let frame = image
+        .render_frame(0)
+        .map_err(|e| format!("render JXL frame: {e}"))?;
 
-fn get_jxl_thread_runner() -> Result<&'static ThreadsRunner<'static>, String> {
-    JXL_THREAD_RUNNER.with(|runner| {
-        runner
-            .get_or_init(|| {
-                ThreadsRunner::new(None, Some(DEFAULT_DECODE_WORKERS))
-                    .map(|runner| Box::leak(Box::new(runner)) as &'static ThreadsRunner<'static>)
-                    .ok_or_else(|| "create JPEG XL thread pool".to_string())
-            })
-            .clone()
-    })
+    let width = image.width();
+    let height = image.height();
+    let pixel_format = image.pixel_format();
+    let pixels = usize::try_from(width)
+        .ok()
+        .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
+        .ok_or_else(|| "jxl-oxide: invalid image dimensions".to_string())?;
+
+    let mut stream = frame.stream();
+
+    match (pixel_format.is_grayscale(), pixel_format.has_alpha()) {
+        (false, false) => {
+            let mut buf = vec![0u8; pixels * 3];
+            stream.write_to_buffer::<u8>(&mut buf);
+            image::RgbImage::from_raw(width, height, buf)
+                .map(image::DynamicImage::ImageRgb8)
+                .ok_or_else(|| "jxl-oxide: buffer size mismatch".to_string())
+        }
+        (false, true) => {
+            let mut buf = vec![0u8; pixels * 4];
+            stream.write_to_buffer::<u8>(&mut buf);
+            image::RgbaImage::from_raw(width, height, buf)
+                .map(image::DynamicImage::ImageRgba8)
+                .ok_or_else(|| "jxl-oxide: buffer size mismatch".to_string())
+        }
+        (true, false) => {
+            let mut gray = vec![0u8; pixels];
+            stream.write_to_buffer::<u8>(&mut gray);
+            let mut rgb = vec![0u8; pixels * 3];
+            for (src, dst) in gray.into_iter().zip(rgb.chunks_exact_mut(3)) {
+                dst[0] = src;
+                dst[1] = src;
+                dst[2] = src;
+            }
+            image::RgbImage::from_raw(width, height, rgb)
+                .map(image::DynamicImage::ImageRgb8)
+                .ok_or_else(|| "jxl-oxide: buffer size mismatch".to_string())
+        }
+        (true, true) => {
+            let mut gray_alpha = vec![0u8; pixels * 2];
+            stream.write_to_buffer::<u8>(&mut gray_alpha);
+            let mut rgba = vec![0u8; pixels * 4];
+            for (src, dst) in gray_alpha.chunks_exact(2).zip(rgba.chunks_exact_mut(4)) {
+                dst[0] = src[0];
+                dst[1] = src[0];
+                dst[2] = src[0];
+                dst[3] = src[1];
+            }
+            image::RgbaImage::from_raw(width, height, rgba)
+                .map(image::DynamicImage::ImageRgba8)
+                .ok_or_else(|| "jxl-oxide: buffer size mismatch".to_string())
+        }
+    }
 }
 
 fn decode_basic_info(data: &[u8]) -> Result<Option<JxlBasicInfo>, String> {
