@@ -1148,7 +1148,6 @@ impl ViewerPane {
         } else {
             (viewport_width / base_width)
                 .min(viewport_height / base_height)
-                .min(1.0)
         }
     }
 
