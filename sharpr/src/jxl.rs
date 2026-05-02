@@ -32,7 +32,6 @@ pub struct DecodedEmbeddedPreview {
     pub height: u32,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub enum JxlPreviewResult {
     Embedded(DecodedEmbeddedPreview),
@@ -63,7 +62,6 @@ fn decode_path_with_num_workers(path: &Path, num_workers: usize) -> Result<Dynam
 
 /// Read `path` exactly once and return either the embedded preview (if one exists
 /// and its long edge >= `min_long_edge`) or a full decode of the image.
-#[allow(dead_code)]
 pub fn decode_preview_or_full(path: &Path, min_long_edge: u32) -> Result<JxlPreviewResult, String> {
     let data = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
     let decoder = DecoderHandle::new()?;
@@ -278,7 +276,6 @@ fn speed_for_effort(effort: u8) -> EncoderSpeed {
     }
 }
 
-#[allow(dead_code)]
 fn decode_from_bytes(data: &[u8]) -> Result<DynamicImage, String> {
     decode_from_bytes_with_num_workers(data, DEFAULT_DECODE_WORKERS)
 }
