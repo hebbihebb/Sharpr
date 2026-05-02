@@ -1142,10 +1142,12 @@ impl ViewerPane {
         if let Some(thumbnail) = cached_thumbnail {
             let paintable = thumbnail.upcast_ref::<gdk4::Paintable>();
             imp.picture.set_paintable(Some(paintable));
-            
-            // Stretch the thumbnail to fit the viewport seamlessly
-            imp.picture.set_halign(gtk4::Align::Fill);
-            imp.picture.set_valign(gtk4::Align::Fill);
+
+            // Size the picture to the current viewport so the thumbnail fills it
+            // without changing halign/valign, which would break Fit mode on handoff.
+            let vw = imp.scrolled_window.width().max(1);
+            let vh = imp.scrolled_window.height().max(1);
+            imp.picture.set_size_request(vw, vh);
         }
 
         imp.spinner.start();
@@ -1219,8 +1221,6 @@ impl ViewerPane {
         let imp = self.imp();
         imp.zoom.set(1.0);
         imp.zoom_mode.set(ZoomMode::Fit);
-        
-        // Restore standard alignment in case it was stretched for a thumbnail placeholder
         imp.picture.set_halign(gtk4::Align::Center);
         imp.picture.set_valign(gtk4::Align::Center);
 
@@ -1317,11 +1317,6 @@ impl ViewerPane {
         let Some(paintable) = imp.picture.paintable() else {
             return;
         };
-        if imp.zoom_mode.get() == ZoomMode::Fit && (imp.zoom.get() - 1.0).abs() < f64::EPSILON {
-            imp.picture.set_size_request(-1, -1);
-            return;
-        }
-
         let fit_scale = self.fit_scale_for_paintable(&paintable);
         let render_scale = (fit_scale * imp.zoom.get()).max(0.01);
         let width = (paintable.intrinsic_width().max(1) as f64 * render_scale)
