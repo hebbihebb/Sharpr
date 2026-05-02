@@ -749,20 +749,11 @@ impl ViewerPane {
         self.add_controller(scroll);
 
         let w = self.downgrade();
-        imp.scrolled_window
-            .connect_notify_local(Some("width"), move |_, _| {
-                if let Some(viewer) = w.upgrade() {
-                    viewer.update_picture_zoom();
-                }
-            });
-
-        let w = self.downgrade();
-        imp.scrolled_window
-            .connect_notify_local(Some("height"), move |_, _| {
-                if let Some(viewer) = w.upgrade() {
-                    viewer.update_picture_zoom();
-                }
-            });
+        self.connect_map(move |_| {
+            if let Some(viewer) = w.upgrade() {
+                viewer.ensure_fit_on_layout();
+            }
+        });
 
         let viewer_weak = self.downgrade();
         imp.tag_button.connect_clicked(move |_| {
@@ -937,6 +928,9 @@ impl ViewerPane {
     /// Raw RGBA bytes are sent back to the main thread via a one-shot channel,
     /// where a `gdk4::MemoryTexture` is constructed and set on the `GtkPicture`.
     pub fn load_image(&self, path: PathBuf) {
+        if self.imp().current_path.borrow().as_ref() == Some(&path) {
+            return;
+        }
         crate::bench_event!(
             "viewer.load.request",
             serde_json::json!({
@@ -970,20 +964,18 @@ impl ViewerPane {
         let spinner = imp.spinner.clone();
         let error_label = imp.error_label.clone();
         let path_clone = path.clone();
-        let load_gen_cell = imp.load_gen.clone();
         let viewer = self.clone();
 
         glib::MainContext::default().spawn_local(async move {
             let file = gio::File::for_path(&path_clone);
             let result = async {
-                let mut loader = glycin::Loader::new(file);
-                loader.sandbox_selector(glycin::SandboxSelector::NotSandboxed);
+                let loader = glycin::Loader::new(file);
                 let image = loader.load().await.map_err(|e| e.to_string())?;
                 let frame = image.next_frame().await.map_err(|e| e.to_string())?;
                 Ok::<_, String>(frame.texture())
             }.await;
             
-            if load_gen_cell.get() != load_gen {
+            if viewer.imp().load_gen.get() != load_gen {
                 return; // User navigated away
             }
 
@@ -994,6 +986,7 @@ impl ViewerPane {
                 Ok(texture) => {
                     picture.set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
                     viewer.reset_zoom();
+                    viewer.ensure_fit_on_layout();
                 }
                 Err(e) => {
                     error_label.set_text(&format!("Could not load image: {}", e));
@@ -1044,6 +1037,22 @@ impl ViewerPane {
         self.set_adjustment_value(&vadj, content_focus_y * scale_ratio - focus_y);
         let pct = (new_zoom * 100.0).round() as u32;
         self.show_zoom_osd(&format!("{pct}%"));
+    }
+
+    fn ensure_fit_on_layout(&self) {
+        let viewer = self.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            let imp = viewer.imp();
+            let hadj = imp.scrolled_window.hadjustment();
+            if hadj.page_size() > 0.0 {
+                if viewer.imp().zoom_mode.get() == ZoomMode::Fit {
+                    viewer.update_picture_zoom();
+                }
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
     }
 
     pub fn reset_zoom(&self) {

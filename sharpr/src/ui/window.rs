@@ -1549,6 +1549,13 @@ impl SharprWindow {
                     if let Some(index) = target_index {
                         state_rx.borrow_mut().library.selected_index = Some(index);
                         filmstrip_rx.navigate_to(index);
+
+                        // Ensure the viewer actually loads the first image on cold start,
+                        // as navigate_to might be a no-op if the first item was already
+                        // automatically selected by the model refresh.
+                        if let Some(path) = state_rx.borrow().library.entry_at(index).map(|e| e.path()) {
+                            viewer_rx.load_image(path);
+                        }
                     }
 
                     // If we showed cached rows, wait for the reconciled result and apply
@@ -1616,6 +1623,10 @@ impl SharprWindow {
                                     if let Some(idx) = target {
                                         state_rx.borrow_mut().library.selected_index = Some(idx);
                                         filmstrip_rx.navigate_to(idx);
+
+                                        if let Some(path) = state_rx.borrow().library.entry_at(idx).map(|e| e.path()) {
+                                            viewer_rx.load_image(path);
+                                        }
                                     }
                                 }
                             }
