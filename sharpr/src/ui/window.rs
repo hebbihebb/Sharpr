@@ -1276,6 +1276,17 @@ impl SharprWindow {
                     sidebar_c.set_folder_ignored(&path, true);
                     return;
                 }
+                // Dedup: if this exact folder is already the active scope and the
+                // library is currently loading it, a concurrent startup trigger or
+                // retry idle is redundant — skip to preserve the in-progress scan.
+                {
+                    let st = state_c.borrow();
+                    if matches!(&st.scope, ViewScope::Folder(f) if f == &path)
+                        && st.library.current_folder.as_deref() == Some(path.as_path())
+                    {
+                        return;
+                    }
+                }
                 crate::bench_event!(
                     "folder.open.request",
                     serde_json::json!({
@@ -3762,8 +3773,17 @@ impl SharprWindow {
 
         // Defer by one idle cycle so widgets are realized before we call
         // open_folder() and apply its initial sidebar selection.
+        //
+        // Guard: if the sidebar's folder-tree rebuild callback already fired and
+        // opened this same folder (via emit_folder_selected), skip the duplicate
+        // open to avoid bumping the thumbnail generation twice and discarding the
+        // in-progress folder scan.
         if let Some(folder) = start_folder {
+            let state_startup = state.clone();
             glib::idle_add_local_once(move || {
+                if matches!(&state_startup.borrow().scope, ViewScope::Folder(f) if f == &folder) {
+                    return;
+                }
                 open_folder(folder);
             });
         }
