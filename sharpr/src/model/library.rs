@@ -218,15 +218,21 @@ impl LibraryManager {
             .collect()
     }
 
-    pub fn load_indexed_folder(&mut self, folder: &Path, rows: Vec<IndexedImage>) {
+    /// Start loading a folder by clearing the store and setting up metadata.
+    /// Follow with calls to `append_indexed_rows` to populate the store.
+    pub fn start_load_folder(&mut self, folder: &Path) {
         self.reset_for_folder(folder);
-        let mut new_entries = Vec::with_capacity(rows.len());
-        
-        // Use a temporary set to avoid O(N^2) contains() check if needed, 
-        // but actually we can just collect and rebuild the indexed paths list efficiently.
-        let mut seen_paths: HashSet<PathBuf> = self.indexed_library_paths.iter().cloned().collect();
+    }
 
-        for (index, row) in rows.into_iter().enumerate() {
+    /// Append a chunk of indexed rows to the store.
+    /// This should be called on the main thread, ideally in chunks to keep the UI responsive.
+    pub fn append_indexed_rows(&mut self, rows: Vec<IndexedImage>) {
+        let mut new_entries = Vec::with_capacity(rows.len());
+        let mut seen_paths: HashSet<PathBuf> = self.indexed_library_paths.iter().cloned().collect();
+        let start_index = self.store.n_items();
+
+        for (i, row) in rows.into_iter().enumerate() {
+            let index = start_index + i as u32;
             let entry = ImageEntry::new(row.path.clone());
             entry.set_file_size(row.file_size);
             if let (Some(width), Some(height)) = (row.width, row.height) {
@@ -235,7 +241,7 @@ impl LibraryManager {
             if let Some(texture) = self.cached_thumbnail(&row.path) {
                 entry.set_thumbnail(Some(texture));
             }
-            self.path_to_index.insert(row.path.clone(), index as u32);
+            self.path_to_index.insert(row.path.clone(), index);
             self.all_known_paths.insert(row.path.clone());
             
             if seen_paths.insert(row.path.clone()) {
@@ -243,9 +249,19 @@ impl LibraryManager {
             }
             new_entries.push(entry);
         }
-        self.store.splice(0, 0, &new_entries);
+        self.store.splice(start_index, 0, &new_entries);
+    }
+
+    /// Finalize folder loading by sorting the indexed paths.
+    pub fn finish_load_folder(&mut self) {
         self.indexed_library_paths
             .sort_by(|a, b| path_sort_key(a, b));
+    }
+
+    pub fn load_indexed_folder(&mut self, folder: &Path, rows: Vec<IndexedImage>) {
+        self.start_load_folder(folder);
+        self.append_indexed_rows(rows);
+        self.finish_load_folder();
     }
 
     pub fn update_entry_metadata(&mut self, path: &Path, width: u32, height: u32) {

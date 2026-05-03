@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{AppSettings, FolderMode};
 use crate::duplicates::phash;
-use crate::library_index::{normalize_collection_tag, BasicImageInfo, Collection, LibraryIndex};
+use crate::library_index::{
+    normalize_collection_tag, BasicImageInfo, Collection, IndexedImage, LibraryIndex,
+};
 use crate::model::library::{CachedImageData, RawImageEntry, SortOrder};
 use crate::model::{ImageEntry, LibraryManager};
 use crate::tags::smart::SmartModel;
@@ -1396,43 +1398,21 @@ impl SharprWindow {
                     let mut raw_hydration_paths: Vec<PathBuf> = Vec::new();
                     let mut got_cached = false;
 
-                    // Load the first result into the store.
+                    // Load the first result into the store in chunks to keep the UI responsive.
                     {
                         let started = Instant::now();
-                        let mut st = state_rx.borrow_mut();
-                        let entry_count = match first_result {
+                        let mut rows = match first_result {
                             FolderOpenResult::Cached { rows } => {
                                 got_cached = true;
-                                let count = rows.len();
-                                st.library.load_indexed_folder(&path_rx, rows);
-                                crate::bench_event!(
-                                    "folder.open.cached_loaded",
-                                    serde_json::json!({
-                                        "path": path_rx.display().to_string(),
-                                        "row_count": count,
-                                    }),
-                                );
-                                count
+                                rows
                             }
                             FolderOpenResult::Indexed {
                                 rows,
                                 metadata_pending: pending,
-                                stale_removed,
-                                basic_count,
+                                ..
                             } => {
                                 metadata_pending = pending;
-                                let row_count = rows.len();
-                                st.library.load_indexed_folder(&path_rx, rows);
-                                crate::bench_event!(
-                                    "folder.open.index_loaded",
-                                    serde_json::json!({
-                                        "path": path_rx.display().to_string(),
-                                        "basic_count": basic_count,
-                                        "stale_removed": stale_removed,
-                                        "metadata_pending": metadata_pending.len(),
-                                    }),
-                                );
-                                row_count
+                                rows
                             }
                             FolderOpenResult::Raw {
                                 entries: mut raw_entries,
@@ -1443,40 +1423,73 @@ impl SharprWindow {
                                         "Library index unavailable; using direct folder scan ({error})"
                                     )));
                                 }
-                                let order = st.sort_order;
+                                let order = state_rx.borrow().sort_order;
                                 crate::model::library::sort_raw_entries(&mut raw_entries, order);
-                                let mut new_entries: Vec<ImageEntry> =
-                                    Vec::with_capacity(raw_entries.len());
-                                for (index, raw) in raw_entries.into_iter().enumerate() {
-                                    let entry = ImageEntry::new(raw.path.clone());
-                                    entry.set_file_size(raw.file_size);
-                                    if let Some(texture) = st.library.cached_thumbnail(&raw.path) {
-                                        entry.set_thumbnail(Some(texture));
-                                    }
-                                    st.library
-                                        .path_to_index
-                                        .insert(raw.path.clone(), index as u32);
-                                    raw_hydration_paths.push(raw.path.clone());
-                                    st.library.all_known_paths.insert(raw.path);
-                                    new_entries.push(entry);
-                                }
-                                let entry_count = new_entries.len();
-                                st.library.store.splice(0, 0, &new_entries);
-                                crate::bench_event!(
-                                    "folder.raw_scan.fast_populate",
-                                    serde_json::json!({
-                                        "path": path_rx.display().to_string(),
-                                        "entry_count": entry_count,
-                                    }),
-                                );
-                                entry_count
+                                raw_hydration_paths = raw_entries.iter().map(|e| e.path.clone()).collect();
+                                raw_entries
+                                    .into_iter()
+                                    .map(|raw| IndexedImage {
+                                        path: raw.path.clone(),
+                                        filename: raw.filename,
+                                        extension: raw.path.extension()
+                                            .and_then(|e| e.to_str())
+                                            .unwrap_or_default()
+                                            .to_lowercase(),
+                                        file_size: raw.file_size,
+                                        modified_secs: raw.modified.and_then(|m| {
+                                            m.duration_since(std::time::UNIX_EPOCH).ok()
+                                        }).map(|d| d.as_secs() as i64),
+                                        width: None,
+                                        height: None,
+                                        metadata_status: "raw".to_string(),
+                                    })
+                                    .collect()
                             }
                         };
+
+                        let total_rows = rows.len();
+                        {
+                            let mut st = state_rx.borrow_mut();
+                            st.library.start_load_folder(&path_rx);
+                        }
+
+                        const CHUNK_SIZE: usize = 100;
+                        let mut current_offset = 0;
+                        
+                        while current_offset < total_rows {
+                            let chunk_end = (current_offset + CHUNK_SIZE).min(total_rows);
+                            let chunk: Vec<_> = rows.drain(0..(chunk_end - current_offset)).collect();
+                            
+                            {
+                                let mut st = state_rx.borrow_mut();
+                                // Check if we are still on the same folder before applying chunk.
+                                if st.library.current_folder.as_deref() == Some(path_rx.as_path()) {
+                                    st.library.append_indexed_rows(chunk);
+                                } else {
+                                    return; // Stale folder open.
+                                }
+                            }
+                            
+                            current_offset = chunk_end;
+                            
+                            // Yield control back to GTK main loop asynchronously to avoid re-entrancy panic.
+                            let (tx, rx) = async_channel::bounded::<()>(1);
+                            glib::idle_add_local_once(move || {
+                                let _ = tx.try_send(());
+                            });
+                            let _ = rx.recv().await;
+                        }
+
+                        {
+                            let mut st = state_rx.borrow_mut();
+                            st.library.finish_load_folder();
+                        }
+
                         crate::bench_event!(
                             "folder.store_populate.finish",
                             serde_json::json!({
                                 "path": path_rx.display().to_string(),
-                                "entry_count": entry_count,
+                                "entry_count": total_rows,
                                 "duration_ms": crate::bench::duration_ms(started),
                             }),
                         );
