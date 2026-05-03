@@ -86,8 +86,8 @@ impl ThumbnailWorker {
     ) {
         let (visible_workers, preload_workers) = split_thumbnail_workers(thread_count);
 
-        let (visible_tx, visible_rx) = async_channel::unbounded::<WorkerRequest>();
-        let (preload_tx, preload_rx) = async_channel::unbounded::<WorkerRequest>();
+        let (visible_tx, visible_rx) = async_channel::bounded::<WorkerRequest>(256);
+        let (preload_tx, preload_rx) = async_channel::bounded::<WorkerRequest>(256);
         let (result_tx, result_rx) = async_channel::unbounded::<ThumbnailResult>();
         let (hash_result_tx, hash_result_rx) = async_channel::unbounded::<HashResult>();
         let (sharpness_tx, sharpness_rx) = async_channel::unbounded::<SharpnessResult>();
@@ -107,22 +107,30 @@ impl ThumbnailWorker {
             std::thread::spawn(move || {
                 loop {
                     match request_rx.recv_blocking() {
-                        Ok(WorkerRequest::Thumbnail { path, gen }) => {
+                        Ok(WorkerRequest::Thumbnail { mut path, mut gen }) => {
                             // Skip stale requests immediately — no decode needed.
                             if gen != gen_arc.load(Ordering::Relaxed) {
-                                crate::bench_event!(
-                                    "thumbnail.skip_stale",
-                                    serde_json::json!({
-                                        "path": path.display().to_string(),
-                                        "pool": "visible",
-                                        "request_gen": gen,
-                                        "current_gen": gen_arc.load(Ordering::Relaxed),
-                                    }),
-                                );
+                                // Aggressively drain other stale requests from the channel
+                                // to prevent "loading stops" behavior during rapid folder switching.
                                 if let Ok(mut pending) = pending_paths.lock() {
                                     pending.remove(&path);
+                                    while let Ok(WorkerRequest::Thumbnail { path: p, gen: g }) =
+                                        request_rx.try_recv()
+                                    {
+                                        if g != gen_arc.load(Ordering::Relaxed) {
+                                            pending.remove(&p);
+                                        } else {
+                                            // We found a fresh one! Process it immediately.
+                                            path = p;
+                                            gen = g;
+                                            break;
+                                        }
+                                    }
                                 }
-                                continue;
+                                
+                                if gen != gen_arc.load(Ordering::Relaxed) {
+                                    continue;
+                                }
                             }
                             crate::bench_event!(
                                 "thumbnail.start",
@@ -233,21 +241,28 @@ impl ThumbnailWorker {
             let pending_paths = pending_paths.clone();
             std::thread::spawn(move || loop {
                 match request_rx.recv_blocking() {
-                    Ok(WorkerRequest::Thumbnail { path, gen }) => {
+                    Ok(WorkerRequest::Thumbnail { mut path, mut gen }) => {
                         if gen != gen_arc.load(Ordering::Relaxed) {
-                            crate::bench_event!(
-                                "thumbnail.skip_stale",
-                                serde_json::json!({
-                                    "path": path.display().to_string(),
-                                    "pool": "preload",
-                                    "request_gen": gen,
-                                    "current_gen": gen_arc.load(Ordering::Relaxed),
-                                }),
-                            );
+                            // Aggressively drain other stale requests from the channel.
                             if let Ok(mut pending) = pending_paths.lock() {
                                 pending.remove(&path);
+                                while let Ok(WorkerRequest::Thumbnail { path: p, gen: g }) =
+                                    request_rx.try_recv()
+                                {
+                                    if g != gen_arc.load(Ordering::Relaxed) {
+                                        pending.remove(&p);
+                                    } else {
+                                        // We found a fresh one! Process it immediately.
+                                        path = p;
+                                        gen = g;
+                                        break;
+                                    }
+                                }
                             }
-                            continue;
+                            
+                            if gen != gen_arc.load(Ordering::Relaxed) {
+                                continue;
+                            }
                         }
                         crate::bench_event!(
                             "thumbnail.start",
