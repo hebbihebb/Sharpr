@@ -697,6 +697,19 @@ impl ViewerPane {
         });
         imp.scrolled_window.add_controller(drag);
 
+        // Double-click → toggle presentation mode
+        let dblclick = gtk4::GestureClick::new();
+        dblclick.set_button(1);
+        let w = self.downgrade();
+        dblclick.connect_released(move |_, n_press, _, _| {
+            if n_press == 2 {
+                if let Some(viewer) = w.upgrade() {
+                    let _ = viewer.activate_action("win.toggle-presentation", None);
+                }
+            }
+        });
+        imp.scrolled_window.add_controller(dblclick);
+
         // -----------------------------------------------------------------------
         // Keyboard shortcuts
         // -----------------------------------------------------------------------
@@ -1036,18 +1049,12 @@ impl ViewerPane {
         self.show_zoom_osd(&format!("{pct}%"));
     }
 
-    fn ensure_fit_on_layout(&self) {
+    pub fn ensure_fit_on_layout(&self) {
         let viewer = self.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        glib::idle_add_local_once(move || {
             let imp = viewer.imp();
-            let hadj = imp.scrolled_window.hadjustment();
-            if hadj.page_size() > 0.0 {
-                if viewer.imp().zoom_mode.get() == ZoomMode::Fit {
-                    viewer.update_picture_zoom();
-                }
-                glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
+            if imp.zoom_mode.get() == ZoomMode::Fit {
+                viewer.update_picture_zoom();
             }
         });
     }
@@ -1064,6 +1071,51 @@ impl ViewerPane {
         self.update_picture_zoom();
         imp.scrolled_window.hadjustment().set_value(0.0);
         imp.scrolled_window.vadjustment().set_value(0.0);
+        self.sync_zoom_button();
+    }
+
+    pub fn set_zoom_mode(&self, mode: ZoomMode) {
+        if self.comparison_visible() {
+            if self.imp().comparison.zoom_mode() == mode {
+                return;
+            }
+            self.imp().comparison.set_zoom_mode(mode);
+            self.sync_zoom_button();
+            return;
+        }
+        let imp = self.imp();
+        imp.zoom_mode.set(mode);
+        match mode {
+            ZoomMode::Fit => {
+                imp.zoom.set(1.0);
+                self.update_picture_zoom();
+                imp.scrolled_window.hadjustment().set_value(0.0);
+                imp.scrolled_window.vadjustment().set_value(0.0);
+            }
+            ZoomMode::OneToOne => {
+                let Some(paintable) = imp.picture.paintable() else {
+                    return;
+                };
+                let fit_scale = self.fit_scale_for_paintable(&paintable);
+                imp.zoom.set((1.0 / fit_scale.max(f64::EPSILON)).max(1.0));
+                self.update_picture_zoom();
+                // Centre the scroll on the image after layout.
+                let hadj = imp.scrolled_window.hadjustment();
+                let vadj = imp.scrolled_window.vadjustment();
+                glib::idle_add_local_once({
+                    let hadj = hadj.clone();
+                    let vadj = vadj.clone();
+                    move || {
+                        hadj.set_value((hadj.upper() - hadj.page_size()) / 2.0);
+                        vadj.set_value((vadj.upper() - vadj.page_size()) / 2.0);
+                    }
+                });
+            }
+        }
+        if mode == ZoomMode::OneToOne {
+            let pct = (imp.zoom.get() * 100.0).round() as u32;
+            self.show_zoom_osd(&format!("{pct}%"));
+        }
         self.sync_zoom_button();
     }
 
@@ -1245,18 +1297,6 @@ impl ViewerPane {
             self.imp().comparison.zoom_mode()
         } else {
             self.imp().zoom_mode.get()
-        }
-    }
-
-    pub fn set_zoom_mode(&self, mode: ZoomMode) {
-        if self.zoom_mode() == mode {
-            return;
-        }
-        if self.comparison_visible() {
-            self.imp().comparison.set_zoom_mode(mode);
-            self.sync_zoom_button();
-        } else {
-            self.toggle_zoom_mode();
         }
     }
 

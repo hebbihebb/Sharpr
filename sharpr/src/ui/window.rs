@@ -945,6 +945,12 @@ mod imp {
         pub inline_search_pending: RefCell<Option<glib::SourceId>>,
         pub inline_search_generation: Cell<u64>,
         pub inline_search_suppressed: Cell<bool>,
+        pub presentation_mode: Cell<bool>,
+        pub presentation_sidebar_was_visible: Cell<bool>,
+        pub presentation_filmstrip_was_visible: Cell<bool>,
+        pub presentation_header: RefCell<Option<libadwaita::HeaderBar>>,
+        pub presentation_outer_split: RefCell<Option<libadwaita::OverlaySplitView>>,
+        pub presentation_inner_split: RefCell<Option<libadwaita::OverlaySplitView>>,
     }
 
     impl Default for SharprWindow {
@@ -968,6 +974,12 @@ mod imp {
                 inline_search_pending: RefCell::new(None),
                 inline_search_generation: Cell::new(0),
                 inline_search_suppressed: Cell::new(false),
+                presentation_mode: Cell::new(false),
+                presentation_sidebar_was_visible: Cell::new(false),
+                presentation_filmstrip_was_visible: Cell::new(false),
+                presentation_header: RefCell::new(None),
+                presentation_outer_split: RefCell::new(None),
+                presentation_inner_split: RefCell::new(None),
             }
         }
     }
@@ -1415,6 +1427,7 @@ impl SharprWindow {
             }
         }
         let outer_split = libadwaita::OverlaySplitView::new();
+        *self.imp().presentation_outer_split.borrow_mut() = Some(outer_split.clone());
         outer_split.set_max_sidebar_width(280.0);
         outer_split.set_min_sidebar_width(200.0);
         outer_split.connect_collapsed_notify(|split| {
@@ -3114,6 +3127,8 @@ impl SharprWindow {
             edit_commit_btn,
             edit_discard_btn,
         ) = self.build_viewer_header(&viewer_menu_btn);
+        *self.imp().presentation_inner_split.borrow_mut() = Some(inner_split.clone());
+        *self.imp().presentation_header.borrow_mut() = Some(viewer_header.clone());
 
         let upscale_banner = libadwaita::Banner::new("");
         upscale_banner.set_button_label(Some("Dismiss"));
@@ -3951,6 +3966,58 @@ impl SharprWindow {
         }
     }
 
+    pub fn enter_presentation_mode(&self) {
+        let imp = self.imp();
+        if imp.presentation_mode.get() {
+            return;
+        }
+        let outer = imp.presentation_outer_split.borrow();
+        let inner = imp.presentation_inner_split.borrow();
+        let hdr = imp.presentation_header.borrow();
+        if let (Some(o), Some(i), Some(h)) = (outer.as_ref(), inner.as_ref(), hdr.as_ref()) {
+            imp.presentation_sidebar_was_visible.set(o.shows_sidebar());
+            imp.presentation_filmstrip_was_visible
+                .set(i.shows_sidebar());
+            o.set_show_sidebar(false);
+            i.set_show_sidebar(false);
+            h.set_visible(false);
+        }
+        imp.presentation_mode.set(true);
+        self.fullscreen();
+    }
+
+    pub fn exit_presentation_mode(&self) {
+        let imp = self.imp();
+        if !imp.presentation_mode.get() {
+            return;
+        }
+        let outer = imp.presentation_outer_split.borrow();
+        let inner = imp.presentation_inner_split.borrow();
+        let hdr = imp.presentation_header.borrow();
+        if let (Some(o), Some(i), Some(h)) = (outer.as_ref(), inner.as_ref(), hdr.as_ref()) {
+            o.set_show_sidebar(imp.presentation_sidebar_was_visible.get());
+            i.set_show_sidebar(imp.presentation_filmstrip_was_visible.get());
+            h.set_visible(true);
+        }
+        imp.presentation_mode.set(false);
+        self.unfullscreen();
+
+        if let Some(viewer) = imp.viewer.borrow().as_ref() {
+            let viewer = viewer.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+                viewer.reset_zoom();
+            });
+        }
+    }
+
+    pub fn toggle_presentation_mode(&self) {
+        if self.imp().presentation_mode.get() {
+            self.exit_presentation_mode();
+        } else {
+            self.enter_presentation_mode();
+        }
+    }
+
     /// Wire Alt+Left / Alt+Right to advance the image selection.
     fn setup_nav_shortcuts(
         &self,
@@ -4006,8 +4073,10 @@ impl SharprWindow {
         shortcuts.add_shortcut(gtk4::Shortcut::new(
             Some(gtk4::ShortcutTrigger::parse_string("F11").unwrap()),
             Some(gtk4::CallbackAction::new(move |widget, _| {
-                if let Some(win) = widget.downcast_ref::<gtk4::Window>() {
-                    if win.is_fullscreen() {
+                if let Some(win) = widget.downcast_ref::<SharprWindow>() {
+                    if win.imp().presentation_mode.get() {
+                        win.exit_presentation_mode();
+                    } else if win.is_fullscreen() {
                         win.unfullscreen();
                     } else {
                         win.fullscreen();
@@ -4016,6 +4085,85 @@ impl SharprWindow {
                 glib::Propagation::Stop
             })),
         ));
+
+        // Escape — Exit presentation mode.
+        shortcuts.add_shortcut(gtk4::Shortcut::new(
+            Some(gtk4::ShortcutTrigger::parse_string("Escape").unwrap()),
+            Some(gtk4::CallbackAction::new(move |widget, _| {
+                if let Some(win) = widget.downcast_ref::<SharprWindow>() {
+                    if win.imp().presentation_mode.get() {
+                        win.exit_presentation_mode();
+                        return glib::Propagation::Stop;
+                    }
+                }
+                glib::Propagation::Proceed
+            })),
+        ));
+
+        // Presentation mode navigation (Global scope to override ScrolledWindow arrow consumption).
+        let presentation_shortcuts = gtk4::ShortcutController::new();
+        presentation_shortcuts.set_scope(gtk4::ShortcutScope::Global);
+        presentation_shortcuts.set_propagation_phase(gtk4::PropagationPhase::Capture);
+
+        let make_presentation_nav =
+            |state: Rc<RefCell<AppState>>, filmstrip: FilmstripPane, delta: i32| {
+                gtk4::CallbackAction::new(move |widget, _| {
+                    if let Some(win) = widget.downcast_ref::<SharprWindow>() {
+                        if !win.imp().presentation_mode.get() {
+                            return glib::Propagation::Proceed;
+                        }
+                        // Avoid triggering if we are in a text entry (e.g. search)
+                        if let Some(focus) = gtk4::prelude::GtkWindowExt::focus(win) {
+                            if focus.is::<gtk4::Text>() || focus.is::<gtk4::SearchEntry>() {
+                                return glib::Propagation::Proceed;
+                            }
+                        }
+                    } else {
+                        return glib::Propagation::Proceed;
+                    }
+
+                    let new_index = {
+                        let Ok(mut st) = state.try_borrow_mut() else {
+                            return glib::Propagation::Proceed;
+                        };
+                        if delta == -999999 {
+                            st.library.selected_index = Some(0);
+                            Some(0)
+                        } else if delta == 999999 {
+                            let last = st.library.image_count().saturating_sub(1);
+                            st.library.selected_index = Some(last);
+                            Some(last)
+                        } else {
+                            st.library.navigate(delta)
+                        }
+                    };
+                    if let Some(index) = new_index {
+                        filmstrip.navigate_to(index);
+                    }
+                    glib::Propagation::Stop
+                })
+            };
+
+        for (trigger, delta) in [
+            ("Up", -1),
+            ("Down", 1),
+            ("Left", -1),
+            ("Right", 1),
+            ("Page_Up", -5),
+            ("Page_Down", 5),
+            ("Home", -999999),
+            ("End", 999999),
+        ] {
+            presentation_shortcuts.add_shortcut(gtk4::Shortcut::new(
+                Some(gtk4::ShortcutTrigger::parse_string(trigger).unwrap()),
+                Some(make_presentation_nav(
+                    state.clone(),
+                    filmstrip.clone(),
+                    delta,
+                )),
+            ));
+        }
+        self.add_controller(presentation_shortcuts);
 
         // F9 — Toggle Library sidebar.
         shortcuts.add_shortcut(gtk4::Shortcut::new(
@@ -4466,6 +4614,15 @@ impl SharprWindow {
         state: Rc<RefCell<AppState>>,
         upscale_banner: &libadwaita::Banner,
     ) {
+        let w = self.downgrade();
+        let toggle_presentation_action = gio::SimpleAction::new("toggle-presentation", None);
+        toggle_presentation_action.connect_activate(move |_, _| {
+            if let Some(win) = w.upgrade() {
+                win.toggle_presentation_mode();
+            }
+        });
+        self.add_action(&toggle_presentation_action);
+
         let zoom_initial = match viewer.zoom_mode() {
             ZoomMode::Fit => "fit",
             ZoomMode::OneToOne => "1:1",
