@@ -12,10 +12,10 @@ pub enum UpscaleEvent {
     Failed(String),
 }
 
-/// Phase B — AI upscaling subprocess runner.
+/// Core subprocess orchestration for the Vulkan upscaler.
 ///
-/// Wraps `gio::Subprocess` invocation of the Vulkan upscaler and streams
-/// `UpscaleEvent` values back to the GTK main thread via an async-channel.
+/// Wraps `gio::Subprocess` invocation and streams `UpscaleEvent` values
+/// back to the GTK main thread via an async-channel.
 pub struct UpscaleRunner;
 
 impl UpscaleRunner {

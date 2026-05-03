@@ -2169,10 +2169,10 @@ impl ViewerPane {
         trigger_btn: gtk4::Button,
         destination_mode: ConvertDestinationMode,
     ) {
-        use crate::upscale::runner::UpscaleEvent;
+        use crate::upscale::runner::{UpscaleEvent, UpscaleRunner};
         use crate::upscale::{
             OnnxUpscaleModel, UpscaleBackendKind, UpscaleCompressionMode, UpscaleJobConfig,
-            UpscaleOutputFormat, UpscaleRunner,
+            UpscaleOutputFormat,
         };
 
         if paths.is_empty() {

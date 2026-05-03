@@ -243,5 +243,3 @@ impl OnnxUpscaleModel {
 pub use backends::comfyui::ComfyUiBackend;
 pub use comparison::BeforeAfterViewer;
 pub use detector::UpscaleDetector;
-#[allow(unused_imports)]
-pub use runner::UpscaleRunner;
