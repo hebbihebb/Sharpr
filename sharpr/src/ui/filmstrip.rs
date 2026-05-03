@@ -29,7 +29,7 @@ type QualityFilterChangedCallback = Box<dyn Fn(Option<QualityClass>) + 'static>;
 type SaveSearchAsCollectionCallback = Box<dyn Fn(&str) + 'static>;
 
 const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
-const BUFFER_ROWS: u32 = 500;
+const BUFFER_ROWS: u32 = 100;
 const FALLBACK_VISIBLE_ROWS: u32 = 12;
 const MAX_PRELOAD_ENQUEUE_PER_PASS: usize = 128;
 const THUMBNAIL_RESCHEDULE_DEBOUNCE_MS: u64 = 30;
@@ -153,6 +153,8 @@ mod imp {
         pub refresh_schedule_pending: Cell<bool>,
         pub tag_root_color: RefCell<HashMap<String, String>>,
         pub cached_tags: RefCell<Option<std::sync::Arc<crate::tags::TagDatabase>>>,
+        pub last_scroll_value: Cell<f64>,
+        pub last_buffer_scan_time: Cell<Option<std::time::Instant>>,
     }
 
     impl Default for FilmstripPane {
@@ -210,6 +212,8 @@ mod imp {
                 refresh_schedule_pending: Cell::new(false),
                 tag_root_color: RefCell::new(HashMap::new()),
                 cached_tags: RefCell::new(None),
+                last_scroll_value: Cell::new(0.0),
+                last_buffer_scan_time: Cell::new(None),
             }
         }
     }
@@ -1165,8 +1169,9 @@ impl FilmstripPane {
         };
 
         let adjustment = imp.scroll.vadjustment();
-        let visible_start = (adjustment.value() / ESTIMATED_ROW_HEIGHT).floor().max(0.0) as u32;
+        let scroll_value = adjustment.value();
         let page_size = adjustment.page_size();
+        let visible_start = (scroll_value / ESTIMATED_ROW_HEIGHT).floor().max(0.0) as u32;
         let visible_rows = if page_size > 0.0 {
             (page_size / ESTIMATED_ROW_HEIGHT).ceil() as u32
         } else {
@@ -1174,24 +1179,37 @@ impl FilmstripPane {
         };
         let layout_ready = page_size > 0.0;
 
+        // Throttling: only scan the buffer if the scroll has moved significantly
+        // or enough time has passed. We ALWAYS scan the visible range.
+        let scroll_delta = (scroll_value - imp.last_scroll_value.get()).abs();
+        let time_since_buffer_scan = imp
+            .last_buffer_scan_time
+            .get()
+            .map_or(std::time::Duration::MAX, |t| t.elapsed());
+
+        let should_scan_buffer = layout_ready
+            && (scroll_delta > ESTIMATED_ROW_HEIGHT
+                || time_since_buffer_scan > std::time::Duration::from_millis(500));
+
+        if should_scan_buffer {
+            imp.last_scroll_value.set(scroll_value);
+            imp.last_buffer_scan_time.set(Some(std::time::Instant::now()));
+        }
+
         let mut visible_range_start = visible_start;
         let mut visible_range_end = visible_start.saturating_add(visible_rows);
-        let mut preload_range_start = visible_start.saturating_sub(BUFFER_ROWS);
-        let mut preload_range_end = visible_start
+        let preload_range_start = visible_start.saturating_sub(BUFFER_ROWS);
+        let preload_range_end = visible_start
             .saturating_add(visible_rows)
             .saturating_add(BUFFER_ROWS);
 
         let image_count = state_rc.borrow().library.image_count();
         let mut visible_capped_end = visible_range_end.min(image_count);
-        let mut preload_capped_end = preload_range_end.min(image_count);
 
         if visible_rows == 0 || visible_capped_end <= visible_range_start {
             visible_range_start = 0;
             visible_range_end = FALLBACK_VISIBLE_ROWS;
-            preload_range_start = 0;
-            preload_range_end = FALLBACK_VISIBLE_ROWS;
             visible_capped_end = visible_range_end.min(image_count);
-            preload_capped_end = preload_range_end.min(image_count);
         }
 
         let mut visible_worker_paths: Vec<PathBuf> = Vec::new();
@@ -1199,23 +1217,31 @@ impl FilmstripPane {
 
         {
             let state = state_rc.borrow();
-            for index in preload_range_start..preload_capped_end {
+
+            // 1. Always collect visible paths.
+            for index in visible_range_start..visible_capped_end {
                 let Some(entry) = state.library.entry_at(index) else {
                     continue;
                 };
-                if entry.thumbnail().is_some() {
-                    continue;
+                if entry.thumbnail().is_none() {
+                    visible_worker_paths.push(entry.path());
                 }
-                let path = entry.path();
-                // Workers check the disk cache first (fast path in generate_thumbnail),
-                // so we just enqueue and let them handle it off the main thread.
-                let is_visible = index >= visible_range_start
-                    && index < visible_capped_end
-                    && (layout_ready || visible_rows == 0);
-                if is_visible {
-                    visible_worker_paths.push(path);
-                } else if layout_ready {
-                    preload_worker_paths.push(path);
+            }
+
+            // 2. Only collect buffer paths if throttled scan is allowed.
+            if should_scan_buffer {
+                let preload_capped_end = preload_range_end.min(image_count);
+                for index in preload_range_start..preload_capped_end {
+                    // Skip the visible range we already checked.
+                    if index >= visible_range_start && index < visible_capped_end {
+                        continue;
+                    }
+                    let Some(entry) = state.library.entry_at(index) else {
+                        continue;
+                    };
+                    if entry.thumbnail().is_none() {
+                        preload_worker_paths.push(entry.path());
+                    }
                 }
             }
         }
@@ -1224,58 +1250,67 @@ impl FilmstripPane {
         let preload_candidates = preload_worker_paths.len();
         let mut visible_enqueued = 0usize;
         let mut preload_enqueued = 0usize;
+        let mut visible_full = false;
 
-        for path in visible_worker_paths {
-            let should_enqueue = {
-                let Ok(mut pending) = pending_set.lock() else {
-                    continue;
-                };
-                pending.insert(path.clone())
-            };
-            if !should_enqueue {
-                continue;
-            }
-            if visible_tx
-                .try_send(WorkerRequest::Thumbnail {
-                    path: path.clone(),
-                    gen,
-                })
-                .is_err()
-            {
-                if let Ok(mut pending) = pending_set.lock() {
-                    pending.remove(&path);
+        if visible_candidates > 0 {
+            if let Ok(mut pending) = pending_set.lock() {
+                for path in visible_worker_paths {
+                    if pending.insert(path.clone()) {
+                        if visible_tx
+                            .try_send(WorkerRequest::Thumbnail {
+                                path: path.clone(),
+                                gen,
+                            })
+                            .is_err()
+                        {
+                            pending.remove(&path);
+                            visible_full = true;
+                            // Don't break here, try others, but if it's full it's likely full for all.
+                        } else {
+                            visible_enqueued += 1;
+                        }
+                    }
                 }
-                break;
             }
-            visible_enqueued += 1;
         }
 
-        for path in preload_worker_paths
-            .into_iter()
-            .take(MAX_PRELOAD_ENQUEUE_PER_PASS)
-        {
-            let should_enqueue = {
-                let Ok(mut pending) = pending_set.lock() else {
-                    continue;
-                };
-                pending.insert(path.clone())
-            };
-            if !should_enqueue {
-                continue;
-            }
-            if preload_tx
-                .try_send(WorkerRequest::Thumbnail {
-                    path: path.clone(),
-                    gen,
-                })
-                .is_err()
-            {
-                if let Ok(mut pending) = pending_set.lock() {
-                    pending.remove(&path);
+        if preload_candidates > 0 {
+            if let Ok(mut pending) = pending_set.lock() {
+                for path in preload_worker_paths
+                    .into_iter()
+                    .take(MAX_PRELOAD_ENQUEUE_PER_PASS)
+                {
+                    if pending.insert(path.clone()) {
+                        if preload_tx
+                            .try_send(WorkerRequest::Thumbnail {
+                                path: path.clone(),
+                                gen,
+                            })
+                            .is_err()
+                        {
+                            pending.remove(&path);
+                            break; // Preload can break, it's low priority.
+                        } else {
+                            preload_enqueued += 1;
+                        }
+                    }
                 }
-                break;
             }
-            preload_enqueued += 1;
+        }
+
+        // If we failed to enqueue any visible thumbnails because the channel was full,
+        // we MUST schedule a retry, otherwise we might deadlock if no more events happen.
+        if visible_candidates > visible_enqueued && visible_full {
+            let widget_weak = self.downgrade();
+            glib::timeout_add_local(
+                std::time::Duration::from_millis(100),
+                move || {
+                    if let Some(filmstrip) = widget_weak.upgrade() {
+                        filmstrip.schedule_visible_thumbnails();
+                    }
+                    glib::ControlFlow::Break
+                },
+            );
         }
 
         if visible_candidates > 0 || preload_candidates > 0 {
@@ -1286,11 +1321,12 @@ impl FilmstripPane {
                     "visible_start": visible_range_start,
                     "visible_end": visible_capped_end,
                     "preload_start": preload_range_start,
-                    "preload_end": preload_capped_end,
+                    "preload_end": preload_range_end.min(image_count),
                     "visible_candidates": visible_candidates,
                     "preload_candidates": preload_candidates,
                     "visible_enqueued": visible_enqueued,
                     "preload_enqueued": preload_enqueued,
+                    "visible_full": visible_full,
                     "gen": gen,
                 }),
             );

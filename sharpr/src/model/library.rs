@@ -221,6 +221,11 @@ impl LibraryManager {
     pub fn load_indexed_folder(&mut self, folder: &Path, rows: Vec<IndexedImage>) {
         self.reset_for_folder(folder);
         let mut new_entries = Vec::with_capacity(rows.len());
+        
+        // Use a temporary set to avoid O(N^2) contains() check if needed, 
+        // but actually we can just collect and rebuild the indexed paths list efficiently.
+        let mut seen_paths: HashSet<PathBuf> = self.indexed_library_paths.iter().cloned().collect();
+
         for (index, row) in rows.into_iter().enumerate() {
             let entry = ImageEntry::new(row.path.clone());
             entry.set_file_size(row.file_size);
@@ -232,7 +237,8 @@ impl LibraryManager {
             }
             self.path_to_index.insert(row.path.clone(), index as u32);
             self.all_known_paths.insert(row.path.clone());
-            if !self.indexed_library_paths.contains(&row.path) {
+            
+            if seen_paths.insert(row.path.clone()) {
                 self.indexed_library_paths.push(row.path.clone());
             }
             new_entries.push(entry);
