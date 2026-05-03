@@ -235,7 +235,8 @@ mod imp {
         pub discard_btn: std::cell::RefCell<Option<gtk4::Button>>,
         /// Path of the image currently displayed — set by load_image(), cleared by clear().
         pub current_path: RefCell<Option<PathBuf>>,
-        /// Canonical decoded RGBA pixels for the currently displayed image.
+        /// Temporary buffer for unsaved in-memory edits (e.g. rotations).
+        /// Cleared on every new image load.
         pub current_rgba: RefCell<Option<(Vec<u8>, u32, u32)>>,
         /// True when apply_transform() has been called and the result is unsaved.
         pub pending_edit: Cell<bool>,
@@ -587,11 +588,6 @@ glib::wrapper! {
 }
 
 impl ViewerPane {
-    #[allow(dead_code)]
-    fn can_use_cached_viewer_image(path: &std::path::Path) -> bool {
-        !crate::jxl::is_jxl_path(path)
-    }
-
     fn comparison_visible(&self) -> bool {
         self.imp().stack.visible_child_name().as_deref() == Some("compare")
     }
@@ -924,9 +920,9 @@ impl ViewerPane {
 
     /// Load and display a full-resolution image from `path`.
     ///
-    /// The image is decoded on a background thread using the `image` crate.
-    /// Raw RGBA bytes are sent back to the main thread via a one-shot channel,
-    /// where a `gdk4::MemoryTexture` is constructed and set on the `GtkPicture`.
+    /// The image is loaded asynchronously using `glycin::Loader` on the GTK
+    /// main thread. This leverages sandboxed decoding and supports high
+    /// bit-depth formats like JPEG XL.
     pub fn load_image(&self, path: PathBuf) {
         if self.imp().current_path.borrow().as_ref() == Some(&path) {
             return;
@@ -1264,9 +1260,9 @@ impl ViewerPane {
         }
     }
 
-    /// Return the current image's RGBA pixels, checking the in-memory buffer
-    /// first and falling back to the preview LRU cache. Returns `None` when
-    /// the image is not in either location (e.g. oversized, evicted, or not yet loaded).
+    /// Returns the RGBA bytes of the currently displayed image, checking the
+    /// in-memory edit buffer first and falling back to downloading the active
+    /// texture. Returns `None` if no image is currently displayed.
     fn current_rgba_or_cached(&self) -> Option<(Vec<u8>, u32, u32)> {
         let imp = self.imp();
         if let Some(v) = imp.current_rgba.borrow().clone() {
@@ -1284,16 +1280,16 @@ impl ViewerPane {
 
     /// Apply an in-memory transform to the currently displayed image.
     /// `op` is one of: `"rotate-cw"`, `"rotate-ccw"`, `"flip-h"`, `"flip-v"`.
-    /// Falls back to the preview cache when the in-memory buffer is absent.
+    /// Falls back to downloading the active texture if the edit buffer is absent.
     pub fn apply_transform(&self, op: &str) {
         use gdk4::{MemoryFormat, MemoryTexture};
         use image::imageops;
 
         let imp = self.imp();
-        // Take the in-memory buffer if available; otherwise load from preview cache.
-        let rgba_from_cache = imp.current_rgba.borrow_mut().take();
-        let rgba_from_cache = rgba_from_cache.or_else(|| self.current_rgba_or_cached());
-        let Some((rgba_bytes, w, h)) = rgba_from_cache else {
+        // Take the in-memory buffer if available; otherwise download from texture.
+        let rgba_from_buffer = imp.current_rgba.borrow_mut().take();
+        let rgba_from_buffer = rgba_from_buffer.or_else(|| self.current_rgba_or_cached());
+        let Some((rgba_bytes, w, h)) = rgba_from_buffer else {
             return;
         };
         if w == 0 || h == 0 {
@@ -3030,15 +3026,6 @@ fn install_viewer_osd_css() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn viewer_cache_skips_jxl_buffers() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/test.jxl");
-        assert!(!ViewerPane::can_use_cached_viewer_image(&path));
-
-        let png_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/test.png");
-        assert!(ViewerPane::can_use_cached_viewer_image(&png_path));
-    }
 
     #[test]
     fn comfy_preserved_temp_png_uses_temp_stem() {

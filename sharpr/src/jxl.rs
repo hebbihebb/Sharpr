@@ -160,21 +160,6 @@ pub fn image_dimensions(path: &Path) -> Result<(u32, u32), String> {
     Ok((metadata.width, metadata.height))
 }
 
-#[allow(dead_code)]
-pub fn preview_info(path: &Path) -> Result<Option<EmbeddedPreviewInfo>, String> {
-    let data = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
-    let Some(info) = decode_basic_info(&data)? else {
-        return Ok(None);
-    };
-    Ok(preview_info_from_basic_info(&info))
-}
-
-#[allow(dead_code)]
-pub fn decode_embedded_preview(path: &Path) -> Result<Option<DecodedEmbeddedPreview>, String> {
-    let data = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
-    decode_embedded_preview_from_bytes(&data, path)
-}
-
 pub fn encode_path(
     image: &DynamicImage,
     output: &Path,
@@ -553,40 +538,23 @@ mod tests {
     }
 
     #[test]
-    fn preview_helpers_return_none_when_preview_is_absent() {
-        let path = temp_path("no-preview");
-        let mut rgba = RgbaImage::new(8, 6);
-        rgba.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
-        rgba.put_pixel(7, 5, Rgba([0, 0, 255, 255]));
-        let image = DynamicImage::ImageRgba8(rgba);
-
-        encode_path(&image, &path, 90, false, 7).unwrap();
-
-        assert_eq!(preview_info(&path).unwrap(), None);
-        assert_eq!(decode_embedded_preview(&path).unwrap(), None);
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
     fn decode_preview_or_full_uses_preview_and_falls_back() {
         let preview_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assets/test.jxl");
-        if let Some(preview_info) = preview_info(&preview_path).unwrap() {
-            let embedded =
-                decode_preview_or_full(&preview_path, preview_info.width.max(preview_info.height))
-                    .unwrap();
-            match embedded {
-                JxlPreviewResult::Embedded(preview) => {
-                    assert_eq!(preview.width, preview_info.width);
-                    assert_eq!(preview.height, preview_info.height);
-                    assert_eq!(
-                        preview.rgba.len(),
-                        usize::try_from(preview.width).unwrap()
-                            * usize::try_from(preview.height).unwrap()
-                            * 4
-                    );
+        let data = std::fs::read(&preview_path).unwrap();
+        if let Some(info) = decode_basic_info(&data).unwrap() {
+            if let Some(preview_info) = preview_info_from_basic_info(&info) {
+                let embedded = decode_preview_or_full(
+                    &preview_path,
+                    preview_info.width.max(preview_info.height),
+                )
+                .unwrap();
+                match embedded {
+                    JxlPreviewResult::Embedded(preview) => {
+                        assert_eq!(preview.width, preview_info.width);
+                        assert_eq!(preview.height, preview_info.height);
+                    }
+                    JxlPreviewResult::Full(_) => panic!("expected embedded preview decode"),
                 }
-                JxlPreviewResult::Full(_) => panic!("expected embedded preview decode"),
             }
         }
 

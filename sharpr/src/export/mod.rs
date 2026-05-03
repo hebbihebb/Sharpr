@@ -56,9 +56,9 @@ pub struct ExportConfig {
     pub filename_suffix: Option<String>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ExportResult {
+    #[allow(dead_code)]
     pub source: PathBuf,
     pub output: PathBuf,
 }
