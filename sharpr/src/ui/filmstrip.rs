@@ -1692,9 +1692,7 @@ fn reveal_in_file_manager(path: &Path) {
     glib::MainContext::default().spawn_local(async move {
         let shown = async {
             let conn = gio::bus_get_future(gio::BusType::Session).await.ok()?;
-            let uris = glib::Variant::array_from_iter::<String>(
-                std::iter::once(uri.to_variant()),
-            );
+            let uris = glib::Variant::array_from_iter::<String>(std::iter::once(uri.to_variant()));
             let params = glib::Variant::tuple_from_iter([uris, "".to_variant()]);
             conn.call_future(
                 Some("org.freedesktop.FileManager1"),
@@ -1712,11 +1710,9 @@ fn reveal_in_file_manager(path: &Path) {
         .await;
         if shown.is_none() {
             if let Some(u) = parent_uri {
-                let _ = gio::AppInfo::launch_default_for_uri_future(
-                    &u,
-                    gio::AppLaunchContext::NONE,
-                )
-                .await;
+                let _ =
+                    gio::AppInfo::launch_default_for_uri_future(&u, gio::AppLaunchContext::NONE)
+                        .await;
             }
         }
     });

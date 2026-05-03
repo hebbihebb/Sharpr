@@ -46,6 +46,40 @@ pub fn build_preferences_window(
     library_group.add(&add_library_row);
     library_page.add(&library_group);
 
+    let collections_group = libadwaita::PreferencesGroup::new();
+    collections_group.set_title("Collections");
+
+    let coll_export_row = libadwaita::ActionRow::new();
+    coll_export_row.set_title("Export Collections");
+    coll_export_row.set_subtitle("Save collection hierarchy and image assignments to a JSON file");
+    let coll_export_button = gtk4::Button::with_label("Export…");
+    coll_export_row.add_suffix(&coll_export_button);
+    coll_export_row.set_activatable_widget(Some(&coll_export_button));
+    {
+        let parent_c = parent.clone();
+        coll_export_button.connect_clicked(move |_| {
+            parent_c.handle_collection_export_requested();
+        });
+    }
+
+    let coll_import_row = libadwaita::ActionRow::new();
+    coll_import_row.set_title("Import Collections");
+    coll_import_row
+        .set_subtitle("Restore from a previously exported file; existing collections are kept");
+    let coll_import_button = gtk4::Button::with_label("Import…");
+    coll_import_row.add_suffix(&coll_import_button);
+    coll_import_row.set_activatable_widget(Some(&coll_import_button));
+    {
+        let parent_c = parent.clone();
+        coll_import_button.connect_clicked(move |_| {
+            parent_c.handle_collection_import_requested();
+        });
+    }
+
+    collections_group.add(&coll_export_row);
+    collections_group.add(&coll_import_row);
+    library_page.add(&collections_group);
+
     let output_group = libadwaita::PreferencesGroup::new();
     output_group.set_title("Output folders");
 

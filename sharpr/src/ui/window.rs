@@ -938,6 +938,8 @@ mod imp {
         pub sharpness_backfill: RefCell<Option<crate::quality::backfill::SharpnessBackfill>>,
         pub global_thumbnail_op: RefCell<Option<crate::ops::queue::OpHandle>>,
         pub toast_overlay: RefCell<Option<libadwaita::ToastOverlay>>,
+        pub sidebar: RefCell<Option<SidebarPane>>,
+        pub filmstrip: RefCell<Option<FilmstripPane>>,
         pub inline_search_entry: RefCell<Option<gtk4::SearchEntry>>,
         pub inline_search_revealer: RefCell<Option<gtk4::Revealer>>,
         pub inline_search_pending: RefCell<Option<glib::SourceId>>,
@@ -959,6 +961,8 @@ mod imp {
                 sharpness_backfill: RefCell::new(None),
                 global_thumbnail_op: RefCell::new(None),
                 toast_overlay: RefCell::new(None),
+                sidebar: RefCell::new(None),
+                filmstrip: RefCell::new(None),
                 inline_search_entry: RefCell::new(None),
                 inline_search_revealer: RefCell::new(None),
                 inline_search_pending: RefCell::new(None),
@@ -1058,6 +1062,161 @@ impl SharprWindow {
                 }
             }
         });
+    }
+
+    pub fn handle_collection_export_requested(&self) {
+        let state = self.app_state();
+        let index = state.borrow().library_index.clone();
+        let tags_db = state.borrow().tags.clone();
+        let library_id = state.borrow().settings.active_library_id.clone();
+
+        let (Some(index), Some(tags_db), Some(library_id)) = (index, tags_db, library_id) else {
+            self.add_toast(libadwaita::Toast::new("Cannot export: Library not ready"));
+            return;
+        };
+
+        let dialog = gtk4::FileDialog::new();
+        dialog.set_title("Export Collections");
+
+        let now = glib::DateTime::now_local().unwrap();
+        let filename = format!(
+            "sharpr-collections-{}.json",
+            now.format("%Y-%m-%d").unwrap()
+        );
+        dialog.set_initial_name(Some(&filename));
+
+        let window_weak = self.downgrade();
+        let window_ptr = self.clone().upcast::<gtk4::Window>();
+        dialog.save(
+            Some(&window_ptr),
+            None::<&gio::Cancellable>,
+            move |result| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                if let Ok(file) = result {
+                    if let Some(path) = file.path() {
+                        match crate::collection_export::export_collections(
+                            &index,
+                            &tags_db,
+                            &library_id,
+                        ) {
+                            Ok(export) => match serde_json::to_string_pretty(&export) {
+                                Ok(json) => {
+                                    if let Err(e) = std::fs::write(&path, json) {
+                                        window.add_toast(libadwaita::Toast::new(&format!(
+                                            "Export failed: {e}"
+                                        )));
+                                    } else {
+                                        window.add_toast(libadwaita::Toast::new(
+                                            "Collections exported",
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    window.add_toast(libadwaita::Toast::new(&format!(
+                                        "Serialization failed: {e}"
+                                    )));
+                                }
+                            },
+                            Err(e) => {
+                                window.add_toast(libadwaita::Toast::new(&format!(
+                                    "Export failed: {e}"
+                                )));
+                            }
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    pub fn handle_collection_import_requested(&self) {
+        let state = self.app_state();
+        let index = state.borrow().library_index.clone();
+        let tags_db = state.borrow().tags.clone();
+        let library_id = state.borrow().settings.active_library_id.clone();
+
+        let (Some(index), Some(tags_db), Some(library_id)) = (index, tags_db, library_id) else {
+            self.add_toast(libadwaita::Toast::new("Cannot import: Library not ready"));
+            return;
+        };
+
+        let dialog = gtk4::FileDialog::new();
+        dialog.set_title("Import Collections");
+
+        let filter = gtk4::FileFilter::new();
+        filter.set_name(Some("JSON files"));
+        filter.add_suffix("json");
+        let filters = gio::ListStore::new::<gtk4::FileFilter>();
+        filters.append(&filter);
+        dialog.set_filters(Some(&filters));
+
+        let window_weak = self.downgrade();
+        let window_ptr = self.clone().upcast::<gtk4::Window>();
+        dialog.open(
+            Some(&window_ptr),
+            None::<&gio::Cancellable>,
+            move |result| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                if let Ok(file) = result {
+                    if let Some(path) = file.path() {
+                        match std::fs::read_to_string(&path) {
+                            Ok(json) => {
+                                match serde_json::from_str::<
+                                    crate::collection_export::CollectionExport,
+                                >(&json)
+                                {
+                                    Ok(export) => {
+                                        match crate::collection_export::import_collections(
+                                            &index,
+                                            &tags_db,
+                                            &export,
+                                            &library_id,
+                                        ) {
+                                            Ok(summary) => {
+                                                if let Some(sidebar) =
+                                                    window.imp().sidebar.borrow().as_ref()
+                                                {
+                                                    if let Ok(collections) = index
+                                                        .list_collections_for_library(Some(
+                                                            &library_id,
+                                                        ))
+                                                    {
+                                                        sidebar.refresh_collections(&collections);
+                                                    }
+                                                }
+                                                window.add_toast(libadwaita::Toast::new(&format!(
+                                                    "Imported {} collections, {} images tagged",
+                                                    summary.collections_added, summary.paths_tagged
+                                                )));
+                                            }
+                                            Err(e) => {
+                                                window.add_toast(libadwaita::Toast::new(&format!(
+                                                    "Import failed: {e}"
+                                                )));
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        window.add_toast(libadwaita::Toast::new(&format!(
+                                            "Invalid file format: {e}"
+                                        )));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                window.add_toast(libadwaita::Toast::new(&format!(
+                                    "Could not read file: {e}"
+                                )));
+                            }
+                        }
+                    }
+                }
+            },
+        );
     }
 
     fn setup(&self) {
@@ -1166,6 +1325,9 @@ impl SharprWindow {
         let sidebar = SidebarPane::new(state.clone());
         let filmstrip = FilmstripPane::new(state.clone());
         let viewer = ViewerPane::new(state.clone());
+
+        *self.imp().sidebar.borrow_mut() = Some(sidebar.clone());
+        *self.imp().filmstrip.borrow_mut() = Some(filmstrip.clone());
         *self.imp().viewer.borrow_mut() = Some(viewer.clone());
         viewer.set_metadata_visible(state.borrow().settings.metadata_visible);
         if state.borrow().smart_tagger.is_some() {
