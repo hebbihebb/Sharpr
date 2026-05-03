@@ -1685,29 +1685,38 @@ fn copy_image_to_clipboard(path: &Path, widget: &gtk4::Widget) {
 }
 
 fn reveal_in_file_manager(path: &Path) {
-    // Use org.freedesktop.FileManager1.ShowItems to highlight the specific file.
-    // Nautilus, Thunar, Dolphin, and most GNOME/KDE file managers implement this.
     let uri = gio::File::for_path(path).uri().to_string();
-    let parent = path.parent().map(|p| p.to_path_buf());
-    std::thread::spawn(move || {
-        let ok = std::process::Command::new("dbus-send")
-            .args([
-                "--session",
-                "--dest=org.freedesktop.FileManager1",
-                "--type=method_call",
+    let parent_uri = path
+        .parent()
+        .map(|p| gio::File::for_path(p).uri().to_string());
+    glib::MainContext::default().spawn_local(async move {
+        let shown = async {
+            let conn = gio::bus_get_future(gio::BusType::Session).await.ok()?;
+            let uris = glib::Variant::array_from_iter::<String>(
+                std::iter::once(uri.to_variant()),
+            );
+            let params = glib::Variant::tuple_from_iter([uris, "".to_variant()]);
+            conn.call_future(
+                Some("org.freedesktop.FileManager1"),
                 "/org/freedesktop/FileManager1",
-                "org.freedesktop.FileManager1.ShowItems",
-                &format!("array:string:{}", uri),
-                "string:",
-            ])
-            .status()
-            .is_ok_and(|s| s.success());
-        if !ok {
-            // Fallback: open the parent directory.
-            if let Some(parent_path) = parent {
-                let _ = std::process::Command::new("xdg-open")
-                    .arg(&parent_path)
-                    .spawn();
+                "org.freedesktop.FileManager1",
+                "ShowItems",
+                Some(&params),
+                None,
+                gio::DBusCallFlags::NONE,
+                5000,
+            )
+            .await
+            .ok()
+        }
+        .await;
+        if shown.is_none() {
+            if let Some(u) = parent_uri {
+                let _ = gio::AppInfo::launch_default_for_uri_future(
+                    &u,
+                    gio::AppLaunchContext::NONE,
+                )
+                .await;
             }
         }
     });

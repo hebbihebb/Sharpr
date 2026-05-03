@@ -16,22 +16,59 @@ A high-performance, local-first image curation tool and viewer for Linux, built 
 
 ### Flatpak (Recommended)
 
+**First-time setup:**
+
+```bash
+# Install flatpak-builder
+sudo dnf install flatpak-builder        # Fedora
+# or: sudo apt install flatpak-builder  # Ubuntu/Debian
+
+# Install the required runtime and Rust SDK extension
+flatpak install --user flathub \
+  org.gnome.Platform//50 \
+  org.gnome.Sdk//50 \
+  org.freedesktop.Sdk.Extension.rust-stable//25.08
+```
+
+**Build and run:**
+
 ```bash
 cd sharpr/packaging
-# Generate sources if Cargo.lock changed: flatpak-cargo-generator ../Cargo.lock -o cargo-sources.json
+
+# Sync source tree
+bash sync-flatpak-source.sh
+
+# Regenerate cargo sources (only needed when Cargo.lock changes)
+flatpak-cargo-generator ../Cargo.lock -o cargo-sources.json
+
+# Build and install (~6 min first time)
 flatpak-builder --force-clean --user --install build-dir io.github.hebbihebb.Sharpr.yml
+
 flatpak run io.github.hebbihebb.Sharpr
 ```
 
+> **Note:** The build is capped at 4 parallel jobs to prevent RAM exhaustion from the C++ vendored dependencies. Do not remove `--jobs 4` from the manifest.
+
 ### Native Development
 
-Requires Rust 1.75+, GTK 4.14+, and Libadwaita 1.5+.
+**Dependencies (Fedora):**
+
+```bash
+sudo dnf install gtk4-devel libadwaita-devel gexiv2-devel pkg-config gcc
+```
+
+**Run:**
 
 ```bash
 cd sharpr
-# Fedora: sudo dnf install gtk4-devel libadwaita-devel gexiv2-devel
 glib-compile-schemas data/
 GSETTINGS_SCHEMA_DIR=data cargo run
+```
+
+**Release build:**
+
+```bash
+cargo build --release
 ```
 
 ## Shortcuts

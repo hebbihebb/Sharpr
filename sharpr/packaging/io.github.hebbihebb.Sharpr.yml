@@ -1,6 +1,6 @@
 app-id: io.github.hebbihebb.Sharpr
 runtime: org.gnome.Platform
-runtime-version: "48"
+runtime-version: "50"
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -14,11 +14,14 @@ finish-args:
   - --filesystem=home:ro
   # File chooser portal
   - --talk-name=org.freedesktop.portal.FileChooser
+  # Show in file manager (Nautilus, Thunar, Dolphin, etc.)
+  - --talk-name=org.freedesktop.FileManager1
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
     CARGO_HOME: /run/build/sharpr/cargo
+  num-processes: 4
 
 modules:
   - name: exiv2
@@ -59,8 +62,24 @@ modules:
         url: https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
         sha256: e5aa6eb131234b87c0c51f82b89390f5e3e642b7b70f2b9bbe95b6a285a40c96
 
+  - name: onnxruntime
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 lib/libonnxruntime.so.1.24.2 /app/lib/libonnxruntime.so.1.24.2
+      - ln -sf libonnxruntime.so.1.24.2 /app/lib/libonnxruntime.so.1
+      - ln -sf libonnxruntime.so.1.24.2 /app/lib/libonnxruntime.so
+      - install -Dm755 lib/libonnxruntime_providers_shared.so /app/lib/libonnxruntime_providers_shared.so
+    sources:
+      - type: archive
+        url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-linux-x64-1.24.2.tgz
+        sha256: 43725474ba5663642e17684717946693850e2005efbd724ac72da278fead25e6
+
   - name: sharpr
     buildsystem: simple
+    build-options:
+      env:
+        ORT_LIB_LOCATION: /app/lib
+        ORT_PREFER_DYNAMIC_LINK: "1"
     sources:
       - type: dir
         path: .flatpak-source
@@ -75,7 +94,7 @@ modules:
         [source.vendored-sources]
         directory = "cargo/vendor"
         EOF
-      - cargo --offline build --release --verbose
+      - cargo --offline build --release --jobs 4
       - install -Dm755 target/release/sharpr /app/bin/sharpr
       - install -Dm644 data/io.github.hebbihebb.Sharpr.desktop /app/share/applications/io.github.hebbihebb.Sharpr.desktop
       - install -Dm644 data/io.github.hebbihebb.Sharpr.metainfo.xml /app/share/metainfo/io.github.hebbihebb.Sharpr.metainfo.xml
