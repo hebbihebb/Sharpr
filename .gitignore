@@ -1,5 +1,4 @@
 /target/
-DesignDocs/
 docs/
 .claude/
 .codex
@@ -9,7 +8,7 @@ codex-*
 CLAUDE.md
 sharpr-support/
 sharpr/DEVELOPMENT.md
-DEVELOPMENT-DIARY.md
 sharpr/docs/
-.tmp/*
-!.tmp/.gitkeep
+.tmp/
+.gemini/
+dark.jpg
