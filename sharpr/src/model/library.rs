@@ -1022,8 +1022,4 @@ mod tests {
         )));
         assert!(LibraryManager::is_image(Path::new("/tmp/example.webp")));
     }
-
-
-
-
 }

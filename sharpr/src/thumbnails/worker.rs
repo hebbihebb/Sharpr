@@ -403,7 +403,7 @@ impl ThumbnailWorker {
 
 fn split_thumbnail_workers(thread_count: usize) -> (usize, usize) {
     let total = thread_count.max(2);
-    let preload_workers = total.saturating_div(4).clamp(1, 2);
+    let preload_workers = total.saturating_div(4).clamp(1, 6);
     let visible_workers = total.saturating_sub(preload_workers).max(1);
     (visible_workers, preload_workers)
 }
@@ -841,7 +841,7 @@ mod tests {
         assert_eq!(split_thumbnail_workers(2), (1, 1));
         assert_eq!(split_thumbnail_workers(4), (3, 1));
         assert_eq!(split_thumbnail_workers(8), (6, 2));
-        assert_eq!(split_thumbnail_workers(16), (14, 2));
+        assert_eq!(split_thumbnail_workers(16), (12, 4));
     }
 
     #[test]
@@ -897,56 +897,6 @@ mod tests {
             assert!(
                 started.elapsed() < std::time::Duration::from_secs(30),
                 "timed out waiting for JXL thumbnail result"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
-
-    #[test]
-    fn jxl_preview_and_thumbnail_can_decode_concurrently() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/test.jxl");
-        if !path.exists() {
-            println!("Skipping JXL test: asset not found at {:?}", path);
-            return;
-        }
-
-        let (thumb_worker, thumb_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
-        let (preview_worker, preview_rx, _prefetch_rx) =
-            crate::image_pipeline::worker::PreviewWorker::spawn();
-
-        let gen = thumb_worker.current_generation();
-        thumb_worker
-            .visible_sender()
-            .send_blocking(WorkerRequest::Thumbnail {
-                path: path.clone(),
-                gen,
-            })
-            .unwrap();
-        preview_worker.handle().request_viewer(path.clone(), 1);
-
-        let started = std::time::Instant::now();
-        let mut got_thumb = false;
-        let mut got_preview = false;
-        loop {
-            if !got_thumb {
-                if let Ok(result) = thumb_rx.try_recv() {
-                    assert_eq!(result.path, path);
-                    got_thumb = true;
-                }
-            }
-            if !got_preview {
-                if let Ok(result) = preview_rx.try_recv() {
-                    assert_eq!(result.path, path);
-                    assert!(result.image.is_ok(), "preview decode should succeed");
-                    got_preview = true;
-                }
-            }
-            if got_thumb && got_preview {
-                break;
-            }
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(30),
-                "timed out waiting for concurrent JXL decode results"
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }

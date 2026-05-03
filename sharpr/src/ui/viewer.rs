@@ -587,6 +587,7 @@ glib::wrapper! {
 }
 
 impl ViewerPane {
+    #[allow(dead_code)]
     fn can_use_cached_viewer_image(path: &std::path::Path) -> bool {
         !crate::jxl::is_jxl_path(path)
     }
@@ -773,7 +774,6 @@ impl ViewerPane {
     // -----------------------------------------------------------------------
     // Image loading (async via background thread + idle callback)
     // -----------------------------------------------------------------------
-
 
     /// Call once from window setup. Metadata results are drained on the GTK
     /// main thread; stale results are discarded by generation comparison.
@@ -973,15 +973,16 @@ impl ViewerPane {
                 let image = loader.load().await.map_err(|e| e.to_string())?;
                 let frame = image.next_frame().await.map_err(|e| e.to_string())?;
                 Ok::<_, String>(frame.texture())
-            }.await;
-            
+            }
+            .await;
+
             if viewer.imp().load_gen.get() != load_gen {
                 return; // User navigated away
             }
 
             spinner.stop();
             spinner.set_visible(false);
-            
+
             match result {
                 Ok(texture) => {
                     picture.set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
@@ -1146,8 +1147,7 @@ impl ViewerPane {
         if viewport_width <= 0.0 || viewport_height <= 0.0 {
             1.0
         } else {
-            (viewport_width / base_width)
-                .min(viewport_height / base_height)
+            (viewport_width / base_width).min(viewport_height / base_height)
         }
     }
 
@@ -1272,12 +1272,12 @@ impl ViewerPane {
         if let Some(v) = imp.current_rgba.borrow().clone() {
             return Some(v);
         }
-        
+
         let texture = imp.picture.paintable()?.downcast::<gdk4::Texture>().ok()?;
         let width = texture.width() as u32;
         let height = texture.height() as u32;
         let mut bytes = vec![0u8; (width * height * 4) as usize];
-        
+
         texture.download(&mut bytes, (width * 4) as usize);
         Some((bytes, width, height))
     }

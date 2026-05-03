@@ -160,6 +160,7 @@ pub fn image_dimensions(path: &Path) -> Result<(u32, u32), String> {
     Ok((metadata.width, metadata.height))
 }
 
+#[allow(dead_code)]
 pub fn preview_info(path: &Path) -> Result<Option<EmbeddedPreviewInfo>, String> {
     let data = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
     let Some(info) = decode_basic_info(&data)? else {
@@ -168,6 +169,7 @@ pub fn preview_info(path: &Path) -> Result<Option<EmbeddedPreviewInfo>, String> 
     Ok(preview_info_from_basic_info(&info))
 }
 
+#[allow(dead_code)]
 pub fn decode_embedded_preview(path: &Path) -> Result<Option<DecodedEmbeddedPreview>, String> {
     let data = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
     decode_embedded_preview_from_bytes(&data, path)
@@ -321,6 +323,7 @@ fn get_jxl_thread_runner() -> Result<&'static ThreadsRunner<'static>, String> {
     })
 }
 
+#[allow(dead_code)]
 fn decode_basic_info(data: &[u8]) -> Result<Option<JxlBasicInfo>, String> {
     let decoder = DecoderHandle::new()?;
     decoder.subscribe_events(JxlDecoderStatus::BasicInfo as i32)?;
@@ -340,6 +343,7 @@ fn decode_basic_info(data: &[u8]) -> Result<Option<JxlBasicInfo>, String> {
     }
 }
 
+#[allow(dead_code)]
 fn decode_embedded_preview_from_bytes(
     data: &[u8],
     path: &Path,

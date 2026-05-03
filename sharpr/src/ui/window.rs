@@ -574,7 +574,6 @@ fn apply_exact_tag_filter(
     }
 }
 
-
 struct ThumbnailOpState {
     total: u32,
     received: u32,
@@ -2782,8 +2781,6 @@ impl SharprWindow {
                 if let Some(path) = path {
                     viewer_c.load_image(path);
                 }
-
-
             });
         }
 

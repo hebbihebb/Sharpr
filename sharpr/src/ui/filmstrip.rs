@@ -29,9 +29,9 @@ type QualityFilterChangedCallback = Box<dyn Fn(Option<QualityClass>) + 'static>;
 type SaveSearchAsCollectionCallback = Box<dyn Fn(&str) + 'static>;
 
 const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
-const BUFFER_ROWS: u32 = 24;
+const BUFFER_ROWS: u32 = 500;
 const FALLBACK_VISIBLE_ROWS: u32 = 12;
-const MAX_PRELOAD_ENQUEUE_PER_PASS: usize = 8;
+const MAX_PRELOAD_ENQUEUE_PER_PASS: usize = 128;
 const THUMBNAIL_RESCHEDULE_DEBOUNCE_MS: u64 = 30;
 const COLLECTION_COLOR_PALETTE: &[&str] = &[
     "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
