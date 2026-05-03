@@ -416,21 +416,29 @@ mod tests {
     }
 
     #[test]
+    fn test_assets_present() {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assets");
+        for name in ["test.jxl", "test.png"] {
+            assert!(
+                base.join(name).exists(),
+                "missing test asset tests/assets/{name} — JXL tests will silently skip without it"
+            );
+        }
+    }
+
+    #[test]
     fn decode_preview_or_full_uses_preview_and_falls_back() {
         let preview_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assets/test.jxl");
-        if preview_path.exists() {
-            let info = image_dimensions(&preview_path).unwrap();
-            let embedded = decode_preview_or_full(&preview_path, 0).unwrap();
-            match embedded {
-                JxlPreviewResult::Embedded(preview) => {
-                    // Test asset usually has a preview.
-                    assert!(preview.width > 0);
-                    assert!(preview.height > 0);
-                }
-                JxlPreviewResult::Full(decoded) => {
-                    assert_eq!(decoded.width(), info.0);
-                    assert_eq!(decoded.height(), info.1);
-                }
+        let info = image_dimensions(&preview_path).unwrap();
+        let embedded = decode_preview_or_full(&preview_path, 0).unwrap();
+        match embedded {
+            JxlPreviewResult::Embedded(preview) => {
+                assert!(preview.width > 0);
+                assert!(preview.height > 0);
+            }
+            JxlPreviewResult::Full(decoded) => {
+                assert_eq!(decoded.width(), info.0);
+                assert_eq!(decoded.height(), info.1);
             }
         }
 
