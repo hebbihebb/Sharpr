@@ -453,15 +453,6 @@ mod imp {
             new_tag_cancel_btn.add_css_class("flat");
             new_tag_cancel_btn.set_visible(false);
 
-            action_bar.append(&new_tag_btn);
-            action_bar.append(&new_tag_entry);
-            action_bar.append(&new_tag_cancel_btn);
-            action_bar.append(&new_tag_create_btn);
-            action_bar.append(&manage_tags_btn);
-
-            popover_vbox.append(&action_bar);
-            tag_popover.set_child(Some(&popover_vbox));
-
             let smart_tag_btn = gtk4::Button::from_icon_name("starred-symbolic");
             smart_tag_btn.add_css_class("flat");
             smart_tag_btn.set_tooltip_text(Some("Suggest tags with AI"));
@@ -470,6 +461,17 @@ mod imp {
             let smart_tag_spinner = gtk4::Spinner::new();
             smart_tag_spinner.set_visible(false);
             smart_tag_spinner.set_size_request(16, 16);
+
+            action_bar.append(&new_tag_btn);
+            action_bar.append(&new_tag_entry);
+            action_bar.append(&new_tag_cancel_btn);
+            action_bar.append(&new_tag_create_btn);
+            action_bar.append(&smart_tag_spinner);
+            action_bar.append(&smart_tag_btn);
+            action_bar.append(&manage_tags_btn);
+
+            popover_vbox.append(&action_bar);
+            tag_popover.set_child(Some(&popover_vbox));
 
             let suggestions_add_all = gtk4::Button::with_label("Add All");
             suggestions_add_all.add_css_class("suggested-action");
@@ -1484,6 +1486,12 @@ impl ViewerPane {
         }
 
         imp.tag_entry.set_text("");
+        imp.new_tag_entry.set_text("");
+        imp.new_tag_entry.set_visible(false);
+        imp.new_tag_create_btn.set_visible(false);
+        imp.new_tag_cancel_btn.set_visible(false);
+        imp.new_tag_btn.set_visible(true);
+        imp.manage_tags_btn.set_visible(true);
         self.refresh_tag_chips();
         self.refresh_tag_summary();
         imp.tag_popover.popup();
@@ -1764,11 +1772,17 @@ impl ViewerPane {
             true
         });
 
+        let show_all = !query.is_empty();
+        if let Some(all_tags_box) = imp
+            .all_tags_list
+            .parent()
+            .and_then(|w| w.downcast::<gtk4::Box>().ok())
+        {
+            all_tags_box.set_visible(show_all);
+        }
+
         let q2 = query.clone();
         imp.all_tags_list.set_filter_func(move |row| {
-            if q2.is_empty() {
-                return true;
-            }
             if let Some(box_container) = row.child().and_then(|w| w.downcast::<gtk4::Box>().ok()) {
                 if let Some(label) = box_container
                     .last_child()
@@ -1813,11 +1827,9 @@ impl ViewerPane {
             parent.set_visible(!active_set.is_empty());
         }
 
-        let mut available_count = 0;
         for tag in all_tags {
             if !active_set.contains(&tag.0) {
                 self.create_tag_row(&imp.all_tags_list, &tag.0, false, &db, &path);
-                available_count += 1;
             }
         }
 
@@ -1826,7 +1838,7 @@ impl ViewerPane {
             .parent()
             .and_then(|w| w.downcast::<gtk4::Box>().ok())
         {
-            parent.set_visible(available_count > 0);
+            parent.set_visible(false);
         }
     }
 
