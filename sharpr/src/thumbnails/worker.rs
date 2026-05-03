@@ -31,6 +31,11 @@ pub enum WorkerRequest {
 }
 
 /// Message sent back from a worker thread to the GTK main thread.
+pub enum ThumbnailWorkerResponse {
+    Success(ThumbnailResult),
+    Failed { path: PathBuf },
+}
+
 pub struct ThumbnailResult {
     pub path: PathBuf,
     /// Raw RGBA bytes at thumbnail resolution.
@@ -80,15 +85,15 @@ impl ThumbnailWorker {
         db: Option<Arc<crate::tags::TagDatabase>>,
     ) -> (
         Self,
-        Receiver<ThumbnailResult>,
+        Receiver<ThumbnailWorkerResponse>,
         Receiver<HashResult>,
         Receiver<SharpnessResult>,
     ) {
         let (visible_workers, preload_workers) = split_thumbnail_workers(thread_count);
 
-        let (visible_tx, visible_rx) = async_channel::bounded::<WorkerRequest>(256);
-        let (preload_tx, preload_rx) = async_channel::bounded::<WorkerRequest>(256);
-        let (result_tx, result_rx) = async_channel::unbounded::<ThumbnailResult>();
+        let (visible_tx, visible_rx) = async_channel::bounded::<WorkerRequest>(4096);
+        let (preload_tx, preload_rx) = async_channel::bounded::<WorkerRequest>(4096);
+        let (result_tx, result_rx) = async_channel::unbounded::<ThumbnailWorkerResponse>();
         let (hash_result_tx, hash_result_rx) = async_channel::unbounded::<HashResult>();
         let (sharpness_tx, sharpness_rx) = async_channel::unbounded::<SharpnessResult>();
         let generation = Arc::new(AtomicU64::new(0));
@@ -127,7 +132,7 @@ impl ThumbnailWorker {
                                         }
                                     }
                                 }
-                                
+
                                 if gen != gen_arc.load(Ordering::Relaxed) {
                                     continue;
                                 }
@@ -169,19 +174,24 @@ impl ThumbnailWorker {
                                     }),
                                 );
                                 let sharpness = maybe_score_sharpness(&path, &result, &db);
-                                let _ = result_tx.send_blocking(result);
+                                let _ = result_tx
+                                    .send_blocking(ThumbnailWorkerResponse::Success(result));
                                 if let Some(sr) = sharpness {
                                     let _ = sharpness_tx.send_blocking(sr);
                                 }
                             } else {
-                                crate::bench_event!(
+                                crate::bench_warn!(
                                     "thumbnail.fail",
                                     serde_json::json!({
                                         "path": path.display().to_string(),
                                         "pool": "visible",
                                         "gen": gen,
+                                        "error": "decode_failed",
                                     }),
                                 );
+                                let _ = result_tx.send_blocking(ThumbnailWorkerResponse::Failed {
+                                    path: path.clone(),
+                                });
                             }
 
                             // Chain hashing request to the same worker pool.
@@ -259,7 +269,7 @@ impl ThumbnailWorker {
                                     }
                                 }
                             }
-                            
+
                             if gen != gen_arc.load(Ordering::Relaxed) {
                                 continue;
                             }
@@ -301,19 +311,24 @@ impl ThumbnailWorker {
                                 }),
                             );
                             let sharpness = maybe_score_sharpness(&path, &result, &db);
-                            let _ = result_tx.send_blocking(result);
+                            let _ =
+                                result_tx.send_blocking(ThumbnailWorkerResponse::Success(result));
                             if let Some(sr) = sharpness {
                                 let _ = sharpness_tx.send_blocking(sr);
                             }
                         } else {
-                            crate::bench_event!(
+                            crate::bench_warn!(
                                 "thumbnail.fail",
                                 serde_json::json!({
                                     "path": path.display().to_string(),
                                     "pool": "preload",
                                     "gen": gen,
+                                    "error": "decode_failed",
                                 }),
                             );
+                            let _ = result_tx.send_blocking(ThumbnailWorkerResponse::Failed {
+                                path: path.clone(),
+                            });
                         }
 
                         // Hashing is low priority, so we chain it here.
@@ -414,11 +429,20 @@ impl ThumbnailWorker {
     pub fn sharpness_sender(&self) -> Sender<SharpnessResult> {
         self.sharpness_tx.clone()
     }
+
+    /// Current number of paths enqueued or running.
+    pub fn pending_count(&self) -> usize {
+        self.pending_paths
+            .lock()
+            .map(|pending| pending.len())
+            .unwrap_or(0)
+    }
 }
 
 fn split_thumbnail_workers(thread_count: usize) -> (usize, usize) {
     let total = thread_count.max(2);
-    let preload_workers = total.saturating_div(4).clamp(1, 6);
+    // Give roughly 40% of threads to background preloading, at least 1.
+    let preload_workers = (total * 4 / 10).clamp(1, total - 1);
     let visible_workers = total.saturating_sub(preload_workers).max(1);
     (visible_workers, preload_workers)
 }
@@ -855,8 +879,8 @@ mod tests {
     fn worker_split_prioritizes_visible_pool() {
         assert_eq!(split_thumbnail_workers(2), (1, 1));
         assert_eq!(split_thumbnail_workers(4), (3, 1));
-        assert_eq!(split_thumbnail_workers(8), (6, 2));
-        assert_eq!(split_thumbnail_workers(16), (12, 4));
+        assert_eq!(split_thumbnail_workers(8), (5, 3));
+        assert_eq!(split_thumbnail_workers(16), (10, 6));
     }
 
     #[test]
@@ -904,9 +928,16 @@ mod tests {
 
         let started = std::time::Instant::now();
         loop {
-            if let Ok(result) = result_rx.try_recv() {
-                assert_eq!(result.path, path);
-                assert!(result.width > 0 && result.height > 0);
+            if let Ok(response) = result_rx.try_recv() {
+                match response {
+                    ThumbnailWorkerResponse::Success(result) => {
+                        assert_eq!(result.path, path);
+                        assert!(result.width > 0 && result.height > 0);
+                    }
+                    ThumbnailWorkerResponse::Failed { path: failed_path } => {
+                        panic!("thumbnail failed for {:?}", failed_path);
+                    }
+                }
                 break;
             }
             assert!(

@@ -31,8 +31,9 @@ type SaveSearchAsCollectionCallback = Box<dyn Fn(&str) + 'static>;
 const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
 const BUFFER_ROWS: u32 = 100;
 const FALLBACK_VISIBLE_ROWS: u32 = 12;
-const MAX_PRELOAD_ENQUEUE_PER_PASS: usize = 128;
+const MAX_PRELOAD_ENQUEUE_PER_PASS: usize = 1024;
 const THUMBNAIL_RESCHEDULE_DEBOUNCE_MS: u64 = 30;
+const PRELOAD_CHAIN_DELAY_MS: u64 = 10;
 const COLLECTION_COLOR_PALETTE: &[&str] = &[
     "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
 ];
@@ -1193,7 +1194,8 @@ impl FilmstripPane {
 
         if should_scan_buffer {
             imp.last_scroll_value.set(scroll_value);
-            imp.last_buffer_scan_time.set(Some(std::time::Instant::now()));
+            imp.last_buffer_scan_time
+                .set(Some(std::time::Instant::now()));
         }
 
         let mut visible_range_start = visible_start;
@@ -1223,12 +1225,12 @@ impl FilmstripPane {
                 let Some(entry) = state.library.entry_at(index) else {
                     continue;
                 };
-                if entry.thumbnail().is_none() {
+                if entry.thumbnail().is_none() && !entry.thumbnail_failed() {
                     visible_worker_paths.push(entry.path());
                 }
             }
 
-            // 2. Only collect buffer paths if throttled scan is allowed.
+            // 2. Collect buffer paths if throttled scan is allowed.
             if should_scan_buffer {
                 let preload_capped_end = preload_range_end.min(image_count);
                 for index in preload_range_start..preload_capped_end {
@@ -1239,8 +1241,36 @@ impl FilmstripPane {
                     let Some(entry) = state.library.entry_at(index) else {
                         continue;
                     };
-                    if entry.thumbnail().is_none() {
+                    if entry.thumbnail().is_none() && !entry.thumbnail_failed() {
                         preload_worker_paths.push(entry.path());
+                    }
+                }
+
+                // 3. Trickle-scan: If we have space in the enqueue pass, look further out.
+                // This ensures large folders eventually load fully.
+                if preload_worker_paths.len() < MAX_PRELOAD_ENQUEUE_PER_PASS {
+                    // Look forward first
+                    let mut idx = preload_capped_end;
+                    while idx < image_count
+                        && preload_worker_paths.len() < MAX_PRELOAD_ENQUEUE_PER_PASS
+                    {
+                        if let Some(entry) = state.library.entry_at(idx) {
+                            if entry.thumbnail().is_none() && !entry.thumbnail_failed() {
+                                preload_worker_paths.push(entry.path());
+                            }
+                        }
+                        idx += 1;
+                    }
+
+                    // Then look backward
+                    let mut idx = preload_range_start;
+                    while idx > 0 && preload_worker_paths.len() < MAX_PRELOAD_ENQUEUE_PER_PASS {
+                        idx -= 1;
+                        if let Some(entry) = state.library.entry_at(idx) {
+                            if entry.thumbnail().is_none() && !entry.thumbnail_failed() {
+                                preload_worker_paths.push(entry.path());
+                            }
+                        }
                     }
                 }
             }
@@ -1296,21 +1326,33 @@ impl FilmstripPane {
                     }
                 }
             }
+
+            // If we hit the batch limit, there's likely more work to do.
+            // Schedule another pass soon to keep the workers busy and the pill visible.
+            if preload_enqueued >= MAX_PRELOAD_ENQUEUE_PER_PASS {
+                let widget_weak = self.downgrade();
+                glib::timeout_add_local(
+                    std::time::Duration::from_millis(PRELOAD_CHAIN_DELAY_MS),
+                    move || {
+                        if let Some(filmstrip) = widget_weak.upgrade() {
+                            filmstrip.schedule_visible_thumbnails();
+                        }
+                        glib::ControlFlow::Break
+                    },
+                );
+            }
         }
 
         // If we failed to enqueue any visible thumbnails because the channel was full,
         // we MUST schedule a retry, otherwise we might deadlock if no more events happen.
         if visible_candidates > visible_enqueued && visible_full {
             let widget_weak = self.downgrade();
-            glib::timeout_add_local(
-                std::time::Duration::from_millis(100),
-                move || {
-                    if let Some(filmstrip) = widget_weak.upgrade() {
-                        filmstrip.schedule_visible_thumbnails();
-                    }
-                    glib::ControlFlow::Break
-                },
-            );
+            glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+                if let Some(filmstrip) = widget_weak.upgrade() {
+                    filmstrip.schedule_visible_thumbnails();
+                }
+                glib::ControlFlow::Break
+            });
         }
 
         if visible_candidates > 0 || preload_candidates > 0 {

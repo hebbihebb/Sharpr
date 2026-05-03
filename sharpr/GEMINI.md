@@ -14,17 +14,17 @@ Sharpr is a modern GTK4 + Libadwaita image library and viewer built with Rust.
 ## Architectural Patterns
 Strictly adhere to the following established patterns when adding or modifying code:
 
-1. **GTK Widget Subclassing**: 
+1. **GTK Widget Subclassing**:
    - Use `mod imp { ... }` + `glib::wrapper!` + `#[glib::object_subclass]`
    - Keep boilerplate clean and idiomatic to `gtk-rs` conventions.
-2. **Background Work & Concurrency**: 
+2. **Background Work & Concurrency**:
    - Do NOT use `Arc`/`Mutex` on GTK objects. GTK objects are strictly for the main thread.
    - Use `std::thread::spawn` for heavy background processing (like thumbnail decoding).
    - Use `async_channel` to communicate between workers and the main thread.
    - Dispatch UI updates using `glib::MainContext::spawn_local` on the main thread.
-3. **Shared State**: 
+3. **Shared State**:
    - Use `Rc<RefCell<AppState>>` for state that is only accessed on the main thread.
-4. **Adaptive UI Layouts**: 
+4. **Adaptive UI Layouts**:
    - Prefer `AdwNavigationSplitView` / `AdwOverlaySplitView`.
    - Use `AdwBreakpoint` for adaptive, responsive changes.
 

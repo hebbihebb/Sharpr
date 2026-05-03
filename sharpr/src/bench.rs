@@ -28,7 +28,38 @@ pub fn init() {
     event("app.start", json!({}));
 }
 
+#[allow(dead_code)]
+pub enum LogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Info => "INFO",
+            Self::Warn => "WARN",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
 pub fn event(name: &str, fields: Value) {
+    event_with_level(name, LogLevel::Info, fields);
+}
+
+#[allow(dead_code)]
+pub fn warn(name: &str, fields: Value) {
+    event_with_level(name, LogLevel::Warn, fields);
+}
+
+#[allow(dead_code)]
+pub fn error(name: &str, fields: Value) {
+    event_with_level(name, LogLevel::Error, fields);
+}
+
+fn event_with_level(name: &str, level: LogLevel, fields: Value) {
     let Some(Some(logger)) = LOGGER.get() else {
         return;
     };
@@ -36,6 +67,7 @@ pub fn event(name: &str, fields: Value) {
     let record = json!({
         "ts_ms": elapsed_ms(),
         "unix_ms": unix_ms(),
+        "level": level.as_str(),
         "thread": thread::current().name().unwrap_or("unnamed"),
         "event": name,
         "fields": fields,
@@ -57,6 +89,24 @@ macro_rules! bench_event {
     ($name:expr, $fields:expr $(,)?) => {{
         if $crate::bench::enabled() {
             $crate::bench::event($name, $fields);
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! bench_warn {
+    ($name:expr, $fields:expr $(,)?) => {{
+        if $crate::bench::enabled() {
+            $crate::bench::warn($name, $fields);
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! bench_error {
+    ($name:expr, $fields:expr $(,)?) => {{
+        if $crate::bench::enabled() {
+            $crate::bench::error($name, $fields);
         }
     }};
 }
@@ -85,6 +135,7 @@ impl BenchLogger {
         event_with_logger(
             &logger,
             "bench.enabled",
+            LogLevel::Info,
             json!({
                 "path": path.display().to_string(),
                 "sample_interval_ms": 500,
@@ -111,6 +162,7 @@ impl BenchLogger {
                         let record = json!({
                             "ts_ms": elapsed_ms(),
                             "unix_ms": unix_ms(),
+                            "level": "INFO",
                             "thread": "bench-sampler",
                             "event": "process.sample",
                             "fields": {
@@ -130,10 +182,11 @@ impl BenchLogger {
     }
 }
 
-fn event_with_logger(logger: &BenchLogger, name: &str, fields: Value) {
+fn event_with_logger(logger: &BenchLogger, name: &str, level: LogLevel, fields: Value) {
     let record = json!({
         "ts_ms": elapsed_ms(),
         "unix_ms": unix_ms(),
+        "level": level.as_str(),
         "thread": thread::current().name().unwrap_or("unnamed"),
         "event": name,
         "fields": fields,

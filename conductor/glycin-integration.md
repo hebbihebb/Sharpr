@@ -39,7 +39,7 @@ The current architecture uses a custom background thread pool (`PreviewWorker`) 
     let error_label = imp.error_label.clone();
     let path_clone = path.clone();
     // ... update generation checks ...
-    
+
     glib::MainContext::default().spawn_local(async move {
         let file = gio::File::for_path(&path_clone);
         let result = async {
@@ -47,10 +47,10 @@ The current architecture uses a custom background thread pool (`PreviewWorker`) 
             let frame = image.next_frame().await?;
             Ok::<_, glycin::Error>(frame.texture())
         }.await;
-        
+
         spinner.stop();
         spinner.set_visible(false);
-        
+
         match result {
             Ok(texture) => {
                 picture.set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));

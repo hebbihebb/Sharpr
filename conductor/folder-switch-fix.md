@@ -23,7 +23,7 @@ Optimize the worker loop to aggressively discard stale requests.
 ### 3. Throttled/Incremental Scheduling (Filmstrip)
 Optimize `schedule_visible_thumbnails` to reduce main-thread CPU usage.
 - **Why**: Iterating over 1000+ entries on every scroll update is expensive.
-- **Change**: 
+- **Change**:
     - Always scan and enqueue **visible** rows immediately.
     - Only scan the **buffer** (preloading) if the scroll position has changed significantly (e.g., > 200px) or if we are idle.
     - Reduce `BUFFER_ROWS` to `100` (down from `500`). This is still a generous ~200-300 images ahead but is much cheaper to scan.

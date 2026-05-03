@@ -21,7 +21,7 @@ use crate::library_index::{
 use crate::model::library::{CachedImageData, RawImageEntry, SortOrder};
 use crate::model::{ImageEntry, LibraryManager};
 use crate::tags::smart::SmartModel;
-use crate::thumbnails::worker::WorkerRequest;
+use crate::thumbnails::worker::{ThumbnailWorkerResponse, WorkerRequest};
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::ops_indicator::OpsIndicator;
@@ -576,12 +576,6 @@ fn apply_exact_tag_filter(
     }
 }
 
-struct ThumbnailOpState {
-    total: u32,
-    received: u32,
-    handle: crate::ops::queue::OpHandle,
-}
-
 struct MetadataIndexResult {
     path: PathBuf,
     width: u32,
@@ -929,7 +923,7 @@ impl AppState {
 
 mod imp {
     use super::*;
-    use crate::thumbnails::worker::{HashResult, SharpnessResult, ThumbnailResult};
+    use crate::thumbnails::worker::{HashResult, SharpnessResult, ThumbnailWorkerResponse};
     use async_channel::Receiver;
 
     pub struct SharprWindow {
@@ -938,11 +932,11 @@ mod imp {
         pub thumbnail_worker: RefCell<Option<ThumbnailWorker>>,
         pub metadata_worker: RefCell<Option<crate::image_pipeline::worker::MetadataWorker>>,
         // Cloned receiver so the async task can hold it.
-        pub result_rx: RefCell<Option<Receiver<ThumbnailResult>>>,
+        pub result_rx: RefCell<Option<Receiver<ThumbnailWorkerResponse>>>,
         pub hash_result_rx: RefCell<Option<Receiver<HashResult>>>,
         pub sharpness_result_rx: RefCell<Option<Receiver<SharpnessResult>>>,
         pub sharpness_backfill: RefCell<Option<crate::quality::backfill::SharpnessBackfill>>,
-        pub(super) thumbnail_ops: RefCell<HashMap<PathBuf, ThumbnailOpState>>,
+        pub global_thumbnail_op: RefCell<Option<crate::ops::queue::OpHandle>>,
         pub toast_overlay: RefCell<Option<libadwaita::ToastOverlay>>,
         pub inline_search_entry: RefCell<Option<gtk4::SearchEntry>>,
         pub inline_search_revealer: RefCell<Option<gtk4::Revealer>>,
@@ -963,7 +957,7 @@ mod imp {
                 hash_result_rx: RefCell::new(None),
                 sharpness_result_rx: RefCell::new(None),
                 sharpness_backfill: RefCell::new(None),
-                thumbnail_ops: RefCell::new(HashMap::new()),
+                global_thumbnail_op: RefCell::new(None),
                 toast_overlay: RefCell::new(None),
                 inline_search_entry: RefCell::new(None),
                 inline_search_revealer: RefCell::new(None),
@@ -1104,6 +1098,40 @@ impl SharprWindow {
         let state = self.imp().state.clone();
         let (ops_queue, ops_rx) = crate::ops::queue::new_queue();
         state.borrow_mut().ops = ops_queue;
+
+        // -----------------------------------------------------------------------
+        // Thumbnail workload monitor
+        // -----------------------------------------------------------------------
+        {
+            let window_weak = self.downgrade();
+            glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+                let Some(window) = window_weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+
+                let pending = window
+                    .imp()
+                    .thumbnail_worker
+                    .borrow()
+                    .as_ref()
+                    .map(|w| w.pending_count())
+                    .unwrap_or(0);
+
+                let mut op_handle = window.imp().global_thumbnail_op.borrow_mut();
+
+                if pending > 0 {
+                    if op_handle.is_none() {
+                        let op = window.app_state().borrow().ops.add("Loading thumbnails...");
+                        *op_handle = Some(op);
+                    }
+                } else if let Some(op) = op_handle.take() {
+                    op.complete();
+                }
+
+                glib::ControlFlow::Continue
+            });
+        }
+
         let state_close = state.clone();
         self.connect_close_request(move |win| {
             let (w, h) = (win.width(), win.height());
@@ -1455,11 +1483,11 @@ impl SharprWindow {
 
                         const CHUNK_SIZE: usize = 100;
                         let mut current_offset = 0;
-                        
+
                         while current_offset < total_rows {
                             let chunk_end = (current_offset + CHUNK_SIZE).min(total_rows);
                             let chunk: Vec<_> = rows.drain(0..(chunk_end - current_offset)).collect();
-                            
+
                             {
                                 let mut st = state_rx.borrow_mut();
                                 // Check if we are still on the same folder before applying chunk.
@@ -1469,9 +1497,9 @@ impl SharprWindow {
                                     return; // Stale folder open.
                                 }
                             }
-                            
+
                             current_offset = chunk_end;
-                            
+
                             // Yield control back to GTK main loop asynchronously to avoid re-entrancy panic.
                             let (tx, rx) = async_channel::bounded::<()>(1);
                             glib::idle_add_local_once(move || {
@@ -1522,33 +1550,6 @@ impl SharprWindow {
                             "image_count": thumb_total,
                         }),
                     );
-                    let thumb_op = if thumb_total > 0 {
-                        Some(
-                            state_rx
-                                .borrow()
-                                .ops
-                                .add(format!("Loading thumbnails ({thumb_total})")),
-                        )
-                    } else {
-                        None
-                    };
-
-                    if let Some(win) = window_weak_rx.upgrade() {
-                        if let Some(handle) = thumb_op {
-                            let mut thumbnail_ops = win.imp().thumbnail_ops.borrow_mut();
-                            if let Some(old) = thumbnail_ops.remove(&path_rx) {
-                                old.handle.complete();
-                            }
-                            thumbnail_ops.insert(
-                                path_rx.clone(),
-                                ThumbnailOpState {
-                                    total: thumb_total,
-                                    received: 0,
-                                    handle,
-                                },
-                            );
-                        }
-                    }
 
                     let target_index = {
                         let st = state_rx.borrow();
@@ -4042,8 +4043,8 @@ impl SharprWindow {
     }
 
     fn complete_thumbnail_ops(&self) {
-        for (_, op_state) in self.imp().thumbnail_ops.borrow_mut().drain() {
-            op_state.handle.complete();
+        if let Some(op) = self.imp().global_thumbnail_op.borrow_mut().take() {
+            op.complete();
         }
     }
 
@@ -4058,67 +4059,82 @@ impl SharprWindow {
         let window_weak = self.downgrade();
 
         glib::MainContext::default().spawn_local(async move {
-            while let Ok(result) = rx.recv().await {
+            while let Ok(response) = rx.recv().await {
                 use gdk4::{MemoryFormat, MemoryTexture};
                 use glib::Bytes;
 
-                let result_path = result.path.clone();
-                let source = result.source;
-                let worker_ms = result.worker_ms;
-                let bytes = Bytes::from_owned(result.rgba_bytes);
-                let texture = MemoryTexture::new(
-                    result.width as i32,
-                    result.height as i32,
-                    MemoryFormat::R8g8b8a8,
-                    &bytes,
-                    (result.width * 4) as usize,
-                );
+                let (result_path, result_data) = match response {
+                    ThumbnailWorkerResponse::Success(res) => (res.path.clone(), Some(res)),
+                    ThumbnailWorkerResponse::Failed { path } => (path, None),
+                };
 
-                // Use the path→index lookup built by LibraryManager to avoid a
-                // linear scan for every completed thumbnail.
-                let mut applied_index = None;
-                {
+                if let Some(result) = result_data {
+                    let source = result.source;
+                    let worker_ms = result.worker_ms;
+                    let bytes = Bytes::from_owned(result.rgba_bytes);
+                    let texture = MemoryTexture::new(
+                        result.width as i32,
+                        result.height as i32,
+                        MemoryFormat::R8g8b8a8,
+                        &bytes,
+                        (result.width * 4) as usize,
+                    );
+
+                    // Use the path→index lookup built by LibraryManager to avoid a
+                    // linear scan for every completed thumbnail.
+                    let mut applied_index = None;
+                    {
+                        let st = state.borrow();
+                        if let Some(idx) = st.library.index_of_path(&result_path) {
+                            if let Some(entry) = st.library.entry_at(idx) {
+                                entry
+                                    .set_thumbnail(Some(texture.clone().upcast::<gdk4::Texture>()));
+                                applied_index = Some(idx);
+                            }
+                        } else {
+                            crate::bench_event!(
+                                "thumbnail.apply_skipped",
+                                serde_json::json!({
+                                    "path": result_path.display().to_string(),
+                                    "source": source,
+                                    "reason": "not_in_active_view",
+                                }),
+                            );
+                        }
+                    }
+
+                    // Cache the texture in LibraryManager (needs mut borrow).
+                    {
+                        let mut st = state.borrow_mut();
+                        st.library.insert_thumbnail(
+                            result_path.clone(),
+                            texture.upcast(),
+                            applied_index.is_some(),
+                        );
+                        if let Some(idx) = applied_index {
+                            let (active_cache_len, global_cache_len, global_cache_max) =
+                                st.library.thumbnail_cache_stats();
+                            crate::bench_event!(
+                                "thumbnail.apply",
+                                serde_json::json!({
+                                    "path": result_path.display().to_string(),
+                                    "index": idx,
+                                    "source": source,
+                                    "worker_ms": worker_ms,
+                                    "active_cache_len": active_cache_len,
+                                    "global_cache_len": global_cache_len,
+                                    "global_cache_max": global_cache_max,
+                                }),
+                            );
+                        }
+                    }
+                } else {
+                    // Handle failure by marking the entry as failed in the library.
                     let st = state.borrow();
                     if let Some(idx) = st.library.index_of_path(&result_path) {
                         if let Some(entry) = st.library.entry_at(idx) {
-                            entry.set_thumbnail(Some(texture.clone().upcast::<gdk4::Texture>()));
-                            applied_index = Some(idx);
+                            entry.set_thumbnail_failed(true);
                         }
-                    } else {
-                        crate::bench_event!(
-                            "thumbnail.apply_skipped",
-                            serde_json::json!({
-                                "path": result_path.display().to_string(),
-                                "source": source,
-                                "reason": "not_in_active_view",
-                            }),
-                        );
-                    }
-                }
-
-                // Cache the texture in LibraryManager (needs mut borrow).
-                {
-                    let mut st = state.borrow_mut();
-                    st.library.insert_thumbnail(
-                        result_path.clone(),
-                        texture.upcast(),
-                        applied_index.is_some(),
-                    );
-                    if let Some(idx) = applied_index {
-                        let (active_cache_len, global_cache_len, global_cache_max) =
-                            st.library.thumbnail_cache_stats();
-                        crate::bench_event!(
-                            "thumbnail.apply",
-                            serde_json::json!({
-                                "path": result_path.display().to_string(),
-                                "index": idx,
-                                "source": source,
-                                "worker_ms": worker_ms,
-                                "active_cache_len": active_cache_len,
-                                "global_cache_len": global_cache_len,
-                                "global_cache_max": global_cache_max,
-                            }),
-                        );
                     }
                 }
 
@@ -4126,28 +4142,11 @@ impl SharprWindow {
                 if let Some(tag_browser) = tag_browser.as_ref() {
                     tag_browser.refresh_preview_for_path(&result_path);
                 }
-
-                if let Some(window) = window_weak.upgrade() {
-                    if let Some(folder) = result_path.parent().map(|p| p.to_path_buf()) {
-                        let mut thumbnail_ops = window.imp().thumbnail_ops.borrow_mut();
-                        if let Some(op_state) = thumbnail_ops.get_mut(&folder) {
-                            op_state.received += 1;
-                            op_state.handle.progress(Some(
-                                op_state.received as f32 / op_state.total.max(1) as f32,
-                            ));
-                            if op_state.total > 0 && op_state.received >= op_state.total {
-                                if let Some(completed) = thumbnail_ops.remove(&folder) {
-                                    completed.handle.complete();
-                                }
-                            }
-                        }
-                    }
-                }
             }
 
             if let Some(window) = window_weak.upgrade() {
-                for (_, op_state) in window.imp().thumbnail_ops.borrow_mut().drain() {
-                    op_state.handle.complete();
+                if let Some(op) = window.imp().global_thumbnail_op.borrow_mut().take() {
+                    op.complete();
                 }
             }
         });

@@ -20,6 +20,7 @@ mod imp {
         pub filename: RefCell<String>,
         #[property(get, set, nullable)]
         pub thumbnail: RefCell<Option<Texture>>,
+        pub thumbnail_failed: Cell<bool>,
         /// Width × height in pixels, populated lazily.
         pub width: Cell<u32>,
         pub height: Cell<u32>,
@@ -36,6 +37,7 @@ mod imp {
                 path: RefCell::default(),
                 filename: RefCell::default(),
                 thumbnail: RefCell::default(),
+                thumbnail_failed: Cell::new(false),
                 width: Cell::new(0),
                 height: Cell::new(0),
                 file_size: Cell::new(0),
@@ -122,5 +124,13 @@ impl ImageEntry {
 
     pub fn set_sharpness_score(&self, score: f64) {
         self.imp().sharpness_score.set(score);
+    }
+
+    pub fn thumbnail_failed(&self) -> bool {
+        self.imp().thumbnail_failed.get()
+    }
+
+    pub fn set_thumbnail_failed(&self, failed: bool) {
+        self.imp().thumbnail_failed.set(failed);
     }
 }

@@ -243,7 +243,7 @@ impl LibraryManager {
             }
             self.path_to_index.insert(row.path.clone(), index);
             self.all_known_paths.insert(row.path.clone());
-            
+
             if seen_paths.insert(row.path.clone()) {
                 self.indexed_library_paths.push(row.path.clone());
             }
