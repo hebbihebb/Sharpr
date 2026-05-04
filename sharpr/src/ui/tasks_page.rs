@@ -46,6 +46,7 @@ mod imp {
         pub op_dropdown: RefCell<Option<gtk4::DropDown>>,
 
         // Upscale settings widgets
+        pub backend_dropdown: RefCell<Option<gtk4::DropDown>>,
         pub scale_dropdown: RefCell<Option<gtk4::DropDown>>,
         pub compress_check: RefCell<Option<gtk4::CheckButton>>,
         pub format_dropdown: RefCell<Option<gtk4::DropDown>>,
@@ -165,7 +166,14 @@ mod imp {
 
             // Upscale Settings Page
             let upscale_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-            
+
+            let backend_label = gtk4::Label::new(Some("Backend"));
+            backend_label.set_halign(gtk4::Align::Start);
+            let backend_model = gtk4::StringList::new(&["ONNX", "CLI", "ComfyUI"]);
+            let backend_dropdown = gtk4::DropDown::new(Some(backend_model), None::<gtk4::Expression>);
+            upscale_box.append(&backend_label);
+            upscale_box.append(&backend_dropdown);
+
             let scale_label = gtk4::Label::new(Some("Scale"));
             scale_label.set_halign(gtk4::Align::Start);
             let scale_model = gtk4::StringList::new(&["Auto (Smart)", "2x", "3x", "4x"]);
@@ -281,6 +289,7 @@ mod imp {
             *self.stop_btn.borrow_mut() = Some(stop_btn);
             *self.op_dropdown.borrow_mut() = Some(op_dropdown);
 
+            *self.backend_dropdown.borrow_mut() = Some(backend_dropdown);
             *self.scale_dropdown.borrow_mut() = Some(scale_dropdown);
             *self.compress_check.borrow_mut() = Some(compress_check);
             *self.format_dropdown.borrow_mut() = Some(format_dropdown);
@@ -326,6 +335,14 @@ impl TasksPage {
         // Load initial defaults from settings
         {
             let st = state.borrow();
+            if let Some(backend_dd) = imp.backend_dropdown.borrow().as_ref() {
+                let idx = match st.settings.upscale_backend.as_str() {
+                    "cli" => 1,
+                    "comfyui" => 2,
+                    _ => 0, // onnx
+                };
+                backend_dd.set_selected(idx);
+            }
             if let Some(scale_dd) = imp.scale_dropdown.borrow().as_ref() {
                 scale_dd.set_selected(0);
             }
@@ -355,6 +372,21 @@ impl TasksPage {
             if let Some(spin) = imp.export_quality_spin.borrow().as_ref() {
                 spin.set_value(85.0);
             }
+        }
+
+        // Wire backend dropdown to persist the selection back to AppSettings
+        if let Some(backend_dd) = imp.backend_dropdown.borrow().as_ref() {
+            let state_c = state.clone();
+            backend_dd.connect_selected_notify(move |dd| {
+                let key = match dd.selected() {
+                    1 => "cli",
+                    2 => "comfyui",
+                    _ => "onnx",
+                };
+                if let Ok(mut st) = state_c.try_borrow_mut() {
+                    st.settings.set_upscale_backend(key);
+                }
+            });
         }
 
         *imp.state.borrow_mut() = Some(state);
