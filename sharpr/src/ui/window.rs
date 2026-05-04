@@ -1014,6 +1014,13 @@ glib::wrapper! {
 }
 
 impl SharprWindow {
+    const PAGE_ORDER: &[(&str, &str)] = &[
+        ("viewer", "View"),
+        ("tags", "Tags"),
+        ("tasks", "Tasks"),
+        ("compare", "Compare"),
+    ];
+
     pub fn new(app: &libadwaita::Application) -> Self {
         glib::Object::builder().property("application", app).build()
     }
@@ -1374,6 +1381,8 @@ impl SharprWindow {
         }
 
         let content_stack = gtk4::Stack::new();
+        content_stack.set_transition_type(gtk4::StackTransitionType::SlideLeft);
+        content_stack.set_transition_duration(200);
 
         {
             let content_stack_c = content_stack.clone();
@@ -3120,7 +3129,9 @@ impl SharprWindow {
         let (
             viewer_header,
             sidebar_toggle,
-            preview_title_btn,
+            page_prev_btn,
+            page_label_btn,
+            page_next_btn,
             commit_btn,
             commit_menu_btn,
             discard_btn,
@@ -3168,6 +3179,15 @@ impl SharprWindow {
         if let Some(tag_browser) = tag_browser.as_ref() {
             content_stack.add_named(tag_browser, Some("tags"));
         }
+
+        let tasks_placeholder = gtk4::Label::new(Some("Tasks — coming soon"));
+        tasks_placeholder.add_css_class("title-2");
+        content_stack.add_named(&tasks_placeholder, Some("tasks"));
+
+        let compare_placeholder = gtk4::Label::new(Some("Compare — coming soon"));
+        compare_placeholder.add_css_class("title-2");
+        content_stack.add_named(&compare_placeholder, Some("compare"));
+
         content_stack.set_visible_child_name("viewer");
 
         viewer_toolbar.set_content(Some(&content_stack));
@@ -3182,13 +3202,60 @@ impl SharprWindow {
         );
         viewer.set_edit_buttons(edit_commit_btn.clone(), edit_discard_btn.clone());
 
-        // Commit / Discard buttons for the comparison view.
+        for (page_name, _page_label) in Self::PAGE_ORDER {
+            let action_name = format!("go-to-{}", page_name);
+            let content_stack_c = content_stack.clone();
+            let name = *page_name;
+            let action = gio::SimpleAction::new(&action_name, None);
+            action.connect_activate(move |_, _| {
+                content_stack_c.set_visible_child_name(name);
+            });
+            self.add_action(&action);
+        }
+
+        let page_nav_menu = gio::Menu::new();
+        for (page_name, page_label) in Self::PAGE_ORDER {
+            page_nav_menu.append(Some(page_label), Some(&format!("win.go-to-{}", page_name)));
+        }
+        page_label_btn.set_menu_model(Some(&page_nav_menu));
+
         {
-            let viewer_c = viewer.clone();
-            preview_title_btn.connect_clicked(move |_| {
-                viewer_c.toggle_debug_comparison();
+            let content_stack_c = content_stack.clone();
+            page_prev_btn.connect_clicked(move |_| {
+                let current = content_stack_c
+                    .visible_child_name()
+                    .unwrap_or_default()
+                    .to_string();
+                let idx = Self::PAGE_ORDER
+                    .iter()
+                    .position(|(name, _)| *name == current)
+                    .unwrap_or(0);
+                let prev_idx = if idx == 0 {
+                    Self::PAGE_ORDER.len() - 1
+                } else {
+                    idx - 1
+                };
+                content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideRight);
+                content_stack_c.set_visible_child_name(Self::PAGE_ORDER[prev_idx].0);
             });
         }
+        {
+            let content_stack_c = content_stack.clone();
+            page_next_btn.connect_clicked(move |_| {
+                let current = content_stack_c
+                    .visible_child_name()
+                    .unwrap_or_default()
+                    .to_string();
+                let idx = Self::PAGE_ORDER
+                    .iter()
+                    .position(|(name, _)| *name == current)
+                    .unwrap_or(0);
+                let next_idx = (idx + 1) % Self::PAGE_ORDER.len();
+                content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideLeft);
+                content_stack_c.set_visible_child_name(Self::PAGE_ORDER[next_idx].0);
+            });
+        }
+
         {
             let viewer_c = viewer.clone();
             commit_btn.connect_clicked(move |_| {
@@ -3224,15 +3291,18 @@ impl SharprWindow {
         // Update the NavigationPage title to reflect which panel is active.
         {
             let viewer_page_c = viewer_page.clone();
-            let preview_title_btn_c = preview_title_btn.clone();
+            let page_label_btn_c = page_label_btn.clone();
             let preview_search_revealer_c = preview_search_revealer.clone();
             content_stack.connect_visible_child_notify(move |stack| {
                 let name = stack.visible_child_name().unwrap_or_default();
-                let is_tags = name == "tags";
-                viewer_page_c.set_title(if is_tags { "Tags" } else { "Preview" });
-                preview_title_btn_c.set_label(if is_tags { "Tags" } else { "Preview" });
-                preview_title_btn_c.set_sensitive(!is_tags);
-                if is_tags {
+                let display = SharprWindow::PAGE_ORDER
+                    .iter()
+                    .find(|(n, _)| *n == name.as_str())
+                    .map(|(_, label)| *label)
+                    .unwrap_or("View");
+                page_label_btn_c.set_label(display);
+                viewer_page_c.set_title(display);
+                if name != "viewer" {
                     preview_search_revealer_c.set_reveal_child(false);
                 }
             });
@@ -6187,7 +6257,7 @@ impl SharprWindow {
     }
 
     /// Build the viewer header bar.
-    /// Returns `(header, sidebar_toggle, preview_title_btn, commit_btn, commit_menu_btn, discard_btn, edit_commit_btn, edit_discard_btn, ops_indicator)`.
+    /// Returns `(header, sidebar_toggle, page_prev_btn, page_label_btn, page_next_btn, commit_btn, commit_menu_btn, discard_btn, edit_commit_btn, edit_discard_btn, ops_indicator)`.
     /// Commit and Discard are initially hidden; the comparison view shows them.
     fn build_viewer_header(
         &self,
@@ -6195,7 +6265,9 @@ impl SharprWindow {
     ) -> (
         libadwaita::HeaderBar,
         gtk4::ToggleButton,
-        gtk4::Button,
+        gtk4::Button,     // page_prev_btn
+        gtk4::MenuButton, // page_label_btn
+        gtk4::Button,     // page_next_btn
         gtk4::Button,
         gtk4::MenuButton,
         gtk4::Button,
@@ -6211,8 +6283,26 @@ impl SharprWindow {
         sidebar_toggle.add_css_class("flat");
         header.pack_start(&sidebar_toggle);
 
-        let preview_title_btn = gtk4::Button::with_label("Preview");
-        preview_title_btn.set_visible(false);
+        let page_prev_btn = gtk4::Button::new();
+        page_prev_btn.set_icon_name("pan-start-symbolic");
+        page_prev_btn.set_tooltip_text(Some("Previous page"));
+        page_prev_btn.add_css_class("flat");
+
+        let page_label_btn = gtk4::MenuButton::new();
+        page_label_btn.set_label("View");
+        page_label_btn.add_css_class("flat");
+
+        let page_next_btn = gtk4::Button::new();
+        page_next_btn.set_icon_name("pan-end-symbolic");
+        page_next_btn.set_tooltip_text(Some("Next page"));
+        page_next_btn.add_css_class("flat");
+
+        let nav_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        nav_box.append(&page_prev_btn);
+        nav_box.append(&page_label_btn);
+        nav_box.append(&page_next_btn);
+
+        header.set_title_widget(Some(&nav_box));
 
         let commit_btn = gtk4::Button::with_label("Save");
         commit_btn.set_tooltip_text(Some("Save to the configured output folder"));
@@ -6253,7 +6343,9 @@ impl SharprWindow {
         (
             header,
             sidebar_toggle,
-            preview_title_btn,
+            page_prev_btn,
+            page_label_btn,
+            page_next_btn,
             commit_btn,
             commit_menu_btn,
             discard_btn,
