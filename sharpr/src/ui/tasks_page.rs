@@ -1012,7 +1012,21 @@ impl TasksPage {
                 return;
             };
 
-            let rx_events = backend.run(source.clone(), output_dir.join(source.file_name().unwrap()), job);
+            // Derive the output extension from what save_image will actually produce,
+            // so the stored path and the file on disk always match.
+            let output_ext = if settings.compress {
+                match settings.format.as_str() {
+                    "webp" => "webp",
+                    "jpeg" => "jpg",
+                    "png"  => "png",
+                    _      => "jxl",
+                }
+            } else {
+                "png"
+            };
+            let output_stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let output_filename = format!("{}.{}", output_stem, output_ext);
+            let rx_events = backend.run(source.clone(), output_dir.join(&output_filename), job);
             
             // Wait for completion
             let mut last_result = Err("Job did not finish".to_string());
