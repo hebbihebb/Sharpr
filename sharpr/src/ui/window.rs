@@ -3126,6 +3126,7 @@ impl SharprWindow {
             discard_btn,
             edit_commit_btn,
             edit_discard_btn,
+            ops_indicator,
         ) = self.build_viewer_header(&viewer_menu_btn);
         *self.imp().presentation_inner_split.borrow_mut() = Some(inner_split.clone());
         *self.imp().presentation_header.borrow_mut() = Some(viewer_header.clone());
@@ -3241,13 +3242,6 @@ impl SharprWindow {
         let sidebar_overlay = gtk4::Overlay::new();
         sidebar_overlay.set_child(Some(&sidebar));
 
-        let ops_indicator = OpsIndicator::new();
-        ops_indicator.set_halign(gtk4::Align::Fill);
-        ops_indicator.set_valign(gtk4::Align::End);
-        ops_indicator.set_margin_start(12);
-        ops_indicator.set_margin_end(12);
-        ops_indicator.set_margin_bottom(16);
-        sidebar_overlay.add_overlay(&ops_indicator);
         viewer.set_ops_indicator(ops_indicator.clone());
 
         let sidebar_page = libadwaita::NavigationPage::builder()
@@ -6193,7 +6187,7 @@ impl SharprWindow {
     }
 
     /// Build the viewer header bar.
-    /// Returns `(header, sidebar_toggle, preview_title_btn, commit_btn, commit_menu_btn, discard_btn, edit_commit_btn, edit_discard_btn)`.
+    /// Returns `(header, sidebar_toggle, preview_title_btn, commit_btn, commit_menu_btn, discard_btn, edit_commit_btn, edit_discard_btn, ops_indicator)`.
     /// Commit and Discard are initially hidden; the comparison view shows them.
     fn build_viewer_header(
         &self,
@@ -6207,6 +6201,7 @@ impl SharprWindow {
         gtk4::Button,
         gtk4::Button,
         gtk4::Button,
+        OpsIndicator,
     ) {
         let header = libadwaita::HeaderBar::new();
 
@@ -6250,6 +6245,9 @@ impl SharprWindow {
         edit_discard_btn.set_visible(false);
         header.pack_end(&edit_discard_btn);
 
+        let ops_indicator = OpsIndicator::new();
+        header.pack_end(&ops_indicator);
+
         header.pack_end(menu_btn);
 
         (
@@ -6261,6 +6259,7 @@ impl SharprWindow {
             discard_btn,
             edit_commit_btn,
             edit_discard_btn,
+            ops_indicator,
         )
     }
 }

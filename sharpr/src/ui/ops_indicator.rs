@@ -44,6 +44,7 @@ mod imp {
     pub struct OpsIndicator {
         // The single child widget owned by this widget (BinLayout).
         pub(super) button: RefCell<Option<gtk4::Button>>,
+        pub(super) icon_stack: RefCell<Option<gtk4::Stack>>,
         pub(super) spinner: RefCell<Option<gtk4::Spinner>>,
         pub(super) summary_label: RefCell<Option<gtk4::Label>>,
         pub(super) popover: RefCell<Option<gtk4::Popover>>,
@@ -73,33 +74,24 @@ mod imp {
             // ---- Build the summary button (collapsed indicator) ----
             let spinner = gtk4::Spinner::new();
             spinner.set_size_request(16, 16);
+
+            let idle_icon = gtk4::Image::from_icon_name("emblem-system-symbolic");
+            idle_icon.set_pixel_size(16);
+
+            let icon_stack = gtk4::Stack::new();
+            icon_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+            icon_stack.set_transition_duration(200);
+            icon_stack.add_named(&idle_icon, Some("idle"));
+            icon_stack.add_named(&spinner, Some("busy"));
+            icon_stack.set_visible_child_name("idle");
+
             let summary_label = gtk4::Label::new(Some("Operations in progress…"));
             summary_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-            summary_label.set_xalign(0.5);
-            summary_label.set_hexpand(true);
-            summary_label.set_halign(gtk4::Align::Fill);
-            summary_label.add_css_class("ops-indicator-summary");
-            let end_spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-            end_spacer.set_size_request(16, 16);
-
-            let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-            hbox.set_spacing(8);
-            hbox.set_margin_start(12);
-            hbox.set_margin_end(12);
-            hbox.set_margin_top(6);
-            hbox.set_margin_bottom(6);
-            hbox.set_hexpand(true);
-            hbox.append(&spinner);
-            hbox.append(&summary_label);
-            hbox.append(&end_spacer);
 
             let button = gtk4::Button::new();
-            button.set_child(Some(&hbox));
+            button.set_child(Some(&icon_stack));
             button.add_css_class("flat");
-            button.add_css_class("ops-indicator-pill");
-            button.set_width_request(220);
-            button.set_halign(gtk4::Align::Fill);
-            button.set_hexpand(true);
+            button.set_tooltip_text(Some("Background Operations"));
             button.set_visible(false); // hidden until first op
 
             button.set_parent(&*widget);
@@ -139,7 +131,7 @@ mod imp {
             let popover = gtk4::Popover::new();
             popover.set_child(Some(&vbox));
             popover.set_has_arrow(false);
-            popover.set_position(gtk4::PositionType::Right);
+            popover.set_position(gtk4::PositionType::Bottom);
             popover.add_css_class("background");
             popover.set_parent(&button);
 
@@ -165,6 +157,7 @@ mod imp {
             }
 
             *self.button.borrow_mut() = Some(button);
+            *self.icon_stack.borrow_mut() = Some(icon_stack);
             *self.spinner.borrow_mut() = Some(spinner);
             *self.summary_label.borrow_mut() = Some(summary_label);
             *self.popover.borrow_mut() = Some(popover);
@@ -372,6 +365,9 @@ impl OpsIndicator {
             if let Some(sp) = imp.spinner.borrow().as_ref() {
                 sp.stop();
             }
+            if let Some(stack) = imp.icon_stack.borrow().as_ref() {
+                stack.set_visible_child_name("idle");
+            }
             let btn_clone = btn.clone();
             glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
                 btn_clone.set_visible(false);
@@ -380,6 +376,14 @@ impl OpsIndicator {
         }
 
         btn.set_visible(true);
+
+        if let Some(stack) = imp.icon_stack.borrow().as_ref() {
+            if active > 0 {
+                stack.set_visible_child_name("busy");
+            } else {
+                stack.set_visible_child_name("idle");
+            }
+        }
 
         if let Some(sp) = imp.spinner.borrow().as_ref() {
             if active > 0 {
@@ -438,21 +442,6 @@ fn install_css() {
         let provider = gtk4::CssProvider::new();
         provider.load_from_string(
             "
-            .ops-indicator-pill {
-                min-height: 0;
-                min-width: 0;
-                padding: 0;
-                border-radius: 999px;
-                background-color: rgba(28, 28, 30, 0.72);
-                color: white;
-                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
-            }
-            .ops-indicator-pill:hover {
-                background-color: rgba(40, 40, 43, 0.82);
-            }
-            .ops-indicator-pill:active {
-                background-color: rgba(52, 52, 56, 0.88);
-            }
             .ops-indicator-summary {
                 font-weight: 600;
                 font-size: 0.92em;
