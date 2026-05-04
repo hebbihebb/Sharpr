@@ -92,7 +92,7 @@ mod imp {
             button.set_child(Some(&icon_stack));
             button.add_css_class("flat");
             button.set_tooltip_text(Some("Background Operations"));
-            button.set_visible(false); // hidden until first op
+            button.set_visible(true); // always visible in header bar
 
             button.set_parent(&*widget);
 
@@ -358,9 +358,6 @@ impl OpsIndicator {
         let active = *imp.active_count.borrow();
         let total_rows = imp.rows.borrow().len();
 
-        let button = imp.button.borrow();
-        let Some(btn) = button.as_ref() else { return };
-
         if total_rows == 0 {
             if let Some(sp) = imp.spinner.borrow().as_ref() {
                 sp.stop();
@@ -368,14 +365,8 @@ impl OpsIndicator {
             if let Some(stack) = imp.icon_stack.borrow().as_ref() {
                 stack.set_visible_child_name("idle");
             }
-            let btn_clone = btn.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
-                btn_clone.set_visible(false);
-            });
             return;
         }
-
-        btn.set_visible(true);
 
         if let Some(stack) = imp.icon_stack.borrow().as_ref() {
             if active > 0 {

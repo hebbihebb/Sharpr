@@ -6245,10 +6245,10 @@ impl SharprWindow {
         edit_discard_btn.set_visible(false);
         header.pack_end(&edit_discard_btn);
 
+        header.pack_end(menu_btn);
+
         let ops_indicator = OpsIndicator::new();
         header.pack_end(&ops_indicator);
-
-        header.pack_end(menu_btn);
 
         (
             header,
