@@ -75,7 +75,7 @@ impl PipelineStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepType {
     Upscale,
     Export,

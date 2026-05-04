@@ -28,7 +28,7 @@ use crate::ui::ops_indicator::OpsIndicator;
 use crate::ui::preferences::build_preferences_window;
 use crate::ui::sidebar::SidebarPane;
 use crate::ui::tag_browser::TagBrowser;
-use crate::ui::tasks_page::{TasksPage, UpscaleStepSettings};
+use crate::ui::tasks_page::TasksPage;
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 use crate::upscale::{
     downloader::{self, DownloadEvent},
@@ -3198,26 +3198,14 @@ impl SharprWindow {
             let tasks_page_c = tasks_page.clone();
             let content_stack_c = content_stack.clone();
             filmstrip.connect_add_to_queue_requested(move |paths| {
+                let (step_type, json) = tasks_page_c.current_step_config();
                 let state = state_c.borrow();
                 let Some(idx) = state.library_index.as_ref() else {
                     return;
                 };
-                let default_settings = UpscaleStepSettings {
-                    backend: state.settings.upscale_backend.clone(),
-                    model: state.settings.upscaler_default_model.clone(),
-                    scale: 0,
-                    compress: state.settings.upscale_compress_output,
-                    format: state.settings.upscale_compressed_format.clone(),
-                    quality: 85,
-                };
-                let json = serde_json::to_string(&default_settings).unwrap_or_default();
                 for path in paths {
                     if let Ok(pid) = idx.create_pipeline(&path) {
-                        let _ = idx.append_pipeline_step(
-                            pid,
-                            crate::library_index::StepType::Upscale,
-                            &json,
-                        );
+                        let _ = idx.append_pipeline_step(pid, step_type, &json);
                     }
                 }
                 drop(state);

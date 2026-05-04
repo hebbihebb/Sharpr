@@ -416,11 +416,46 @@ impl TasksPage {
         *self.imp().compare_cb.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Returns the step type and settings JSON currently shown in the settings panel.
+    /// Used by window.rs when adding a job from the filmstrip.
+    pub fn current_step_config(&self) -> (StepType, String) {
+        let imp = self.imp();
+        let op_idx = imp.op_dropdown.borrow().as_ref().map(|d| d.selected()).unwrap_or(0);
+        if op_idx == 1 {
+            // Export
+            let format = imp.export_format_dropdown.borrow().as_ref().map(|d| match d.selected() {
+                1 => "webp", 2 => "png", 3 => "jpeg", _ => "jxl",
+            }).unwrap_or("jxl");
+            let max_edge = imp.export_edge_dropdown.borrow().as_ref().and_then(|d| match d.selected() {
+                1 => Some(1080u32), 2 => Some(2160), 3 => Some(4096), _ => None,
+            });
+            let quality = imp.export_quality_spin.borrow().as_ref().map(|s| s.value() as u8).unwrap_or(85);
+            let settings = ExportStepSettings { format: format.into(), max_edge, quality };
+            (StepType::Export, serde_json::to_string(&settings).unwrap_or_default())
+        } else {
+            // Upscale (default)
+            let backend = imp.backend_dropdown.borrow().as_ref().map(|d| match d.selected() {
+                1 => "cli", 2 => "comfyui", _ => "onnx",
+            }).unwrap_or("onnx");
+            let scale = imp.scale_dropdown.borrow().as_ref().map(|d| match d.selected() {
+                1 => 2u32, 2 => 3, 3 => 4, _ => 0,
+            }).unwrap_or(0);
+            let compress = imp.compress_check.borrow().as_ref().map(|c| c.is_active()).unwrap_or(false);
+            let format = imp.format_dropdown.borrow().as_ref().map(|d| match d.selected() {
+                1 => "webp", 2 => "jpeg", 3 => "png", _ => "jxl",
+            }).unwrap_or("jxl");
+            let quality = imp.quality_spin.borrow().as_ref().map(|s| s.value() as u8).unwrap_or(85);
+            let model = imp.state.borrow().as_ref()
+                .map(|s| s.borrow().settings.upscaler_default_model.clone())
+                .unwrap_or_default();
+            let settings = UpscaleStepSettings { backend: backend.into(), model, scale, compress, format: format.into(), quality };
+            (StepType::Upscale, serde_json::to_string(&settings).unwrap_or_default())
+        }
+    }
+
     pub fn on_pipelines_added(&self) {
         self.refresh();
-        self.imp().runner_active.set(true);
         self.try_start_runner();
-        self.run_next_pipeline();
     }
 
     pub fn refresh(&self) {
@@ -933,6 +968,7 @@ impl TasksPage {
                         let _ = idx.prune_pipeline_history(cap);
                     }
                 }
+                w.refresh();
                 w.run_next_pipeline();
             }
         });
@@ -1089,6 +1125,7 @@ impl TasksPage {
                         let _ = idx.prune_pipeline_history(cap);
                     }
                 }
+                w.refresh();
                 w.run_next_pipeline();
             }
         });
