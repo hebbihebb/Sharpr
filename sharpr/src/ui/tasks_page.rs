@@ -389,9 +389,27 @@ impl TasksPage {
             });
         }
 
-        *imp.state.borrow_mut() = Some(state);
+        *imp.state.borrow_mut() = Some(state.clone());
         self.refresh();
+
+        // Auto-start on load if queued jobs exist (crash recovery / app restart).
+        {
+            let st = state.borrow();
+            if let Some(idx) = st.library_index.as_ref() {
+                let has_queued = idx
+                    .pipelines_by_status(PipelineStatus::Queued)
+                    .map(|v| !v.is_empty())
+                    .unwrap_or(false);
+                if has_queued {
+                    imp.runner_active.set(true);
+                }
+            }
+        }
+
         self.try_start_runner();
+        if imp.runner_active.get() {
+            self.run_next_pipeline();
+        }
     }
 
     pub fn set_compare_requested_cb<F: Fn(PathBuf, PathBuf, String) + 'static>(&self, f: F) {
@@ -400,7 +418,9 @@ impl TasksPage {
 
     pub fn on_pipelines_added(&self) {
         self.refresh();
+        self.imp().runner_active.set(true);
         self.try_start_runner();
+        self.run_next_pipeline();
     }
 
     pub fn refresh(&self) {
@@ -753,24 +773,14 @@ impl TasksPage {
     fn try_start_runner(&self) {
         let imp = self.imp();
         if imp.polling_timer.borrow().is_some() { return; }
-        
-        let Some(state_rc) = imp.state.borrow().clone() else { return };
-        
-        // Start a timer to poll every 2 seconds
+
+        // Dead-man's switch: if the runner is active but somehow stalled,
+        // nudge it forward. Never auto-starts — that's the caller's job.
         let widget_weak = self.downgrade();
         let source_id = glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
             if let Some(w) = widget_weak.upgrade() {
-                if !w.imp().runner_active.get() {
-                    // Check if we should start
-                    let state = state_rc.borrow();
-                    if let Some(idx) = state.library_index.as_ref() {
-                        let queued = idx.pipelines_by_status(PipelineStatus::Queued).unwrap_or_default();
-                        if !queued.is_empty() {
-                            w.imp().runner_active.set(true);
-                            w.refresh();
-                            w.run_next_pipeline();
-                        }
-                    }
+                if w.imp().runner_active.get() {
+                    w.run_next_pipeline();
                 }
                 glib::ControlFlow::Continue
             } else {
