@@ -48,6 +48,7 @@ mod imp {
         pub(super) spinner: RefCell<Option<gtk4::Spinner>>,
         pub(super) summary_label: RefCell<Option<gtk4::Label>>,
         pub(super) popover: RefCell<Option<gtk4::Popover>>,
+        pub(super) go_to_tasks_btn: RefCell<Option<gtk4::Button>>,
         pub(super) list_box: RefCell<Option<gtk4::ListBox>>,
         pub(super) clear_btn: RefCell<Option<gtk4::Button>>,
         pub(super) rows: RefCell<HashMap<u64, OpRowWidgets>>,
@@ -117,6 +118,10 @@ mod imp {
             let clear_btn = gtk4::Button::with_label("Clear completed");
             clear_btn.set_halign(gtk4::Align::Center);
 
+            let go_to_tasks_btn = gtk4::Button::with_label("Go to Tasks");
+            go_to_tasks_btn.add_css_class("flat");
+            go_to_tasks_btn.set_halign(gtk4::Align::Center);
+
             let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
             vbox.set_margin_top(12);
             vbox.set_margin_bottom(12);
@@ -127,6 +132,7 @@ mod imp {
             vbox.append(&scrolled);
             vbox.append(&sep);
             vbox.append(&clear_btn);
+            vbox.append(&go_to_tasks_btn);
 
             let popover = gtk4::Popover::new();
             popover.set_child(Some(&vbox));
@@ -161,6 +167,7 @@ mod imp {
             *self.spinner.borrow_mut() = Some(spinner);
             *self.summary_label.borrow_mut() = Some(summary_label);
             *self.popover.borrow_mut() = Some(popover);
+            *self.go_to_tasks_btn.borrow_mut() = Some(go_to_tasks_btn);
             *self.list_box.borrow_mut() = Some(list_box);
             *self.clear_btn.borrow_mut() = Some(clear_btn);
         }
@@ -209,6 +216,12 @@ glib::wrapper! {
 impl OpsIndicator {
     pub fn new() -> Self {
         glib::Object::new()
+    }
+
+    pub fn set_go_to_tasks_cb<F: Fn() + 'static>(&self, f: F) {
+        if let Some(btn) = self.imp().go_to_tasks_btn.borrow().as_ref() {
+            btn.connect_clicked(move |_| f());
+        }
     }
 
     /// Register a new operation — called when `OpEvent::Added` is received.

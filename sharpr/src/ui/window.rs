@@ -28,6 +28,7 @@ use crate::ui::ops_indicator::OpsIndicator;
 use crate::ui::preferences::build_preferences_window;
 use crate::ui::sidebar::SidebarPane;
 use crate::ui::tag_browser::TagBrowser;
+use crate::ui::tasks_page::{TasksPage, UpscaleStepSettings};
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 use crate::upscale::{
     downloader::{self, DownloadEvent},
@@ -3139,6 +3140,14 @@ impl SharprWindow {
             edit_discard_btn,
             ops_indicator,
         ) = self.build_viewer_header(&viewer_menu_btn);
+
+        {
+            let content_stack_c = content_stack.clone();
+            ops_indicator.set_go_to_tasks_cb(move || {
+                content_stack_c.set_visible_child_name("tasks");
+            });
+        }
+
         *self.imp().presentation_inner_split.borrow_mut() = Some(inner_split.clone());
         *self.imp().presentation_header.borrow_mut() = Some(viewer_header.clone());
 
@@ -3180,9 +3189,42 @@ impl SharprWindow {
             content_stack.add_named(tag_browser, Some("tags"));
         }
 
-        let tasks_placeholder = gtk4::Label::new(Some("Tasks — coming soon"));
-        tasks_placeholder.add_css_class("title-2");
-        content_stack.add_named(&tasks_placeholder, Some("tasks"));
+        let tasks_page = TasksPage::new();
+        tasks_page.set_state(state.clone());
+        content_stack.add_named(&tasks_page, Some("tasks"));
+
+        {
+            let state_c = state.clone();
+            let tasks_page_c = tasks_page.clone();
+            let content_stack_c = content_stack.clone();
+            filmstrip.connect_add_to_queue_requested(move |paths| {
+                let state = state_c.borrow();
+                let Some(idx) = state.library_index.as_ref() else {
+                    return;
+                };
+                let default_settings = UpscaleStepSettings {
+                    backend: state.settings.upscale_backend.clone(),
+                    model: state.settings.upscaler_default_model.clone(),
+                    scale: 0,
+                    compress: state.settings.upscale_compress_output,
+                    format: state.settings.upscale_compressed_format.clone(),
+                    quality: 85,
+                };
+                let json = serde_json::to_string(&default_settings).unwrap_or_default();
+                for path in paths {
+                    if let Ok(pid) = idx.create_pipeline(&path) {
+                        let _ = idx.append_pipeline_step(
+                            pid,
+                            crate::library_index::StepType::Upscale,
+                            &json,
+                        );
+                    }
+                }
+                drop(state);
+                content_stack_c.set_visible_child_name("tasks");
+                tasks_page_c.on_pipelines_added();
+            });
+        }
 
         let compare_placeholder = gtk4::Label::new(Some("Compare — coming soon"));
         compare_placeholder.add_css_class("title-2");

@@ -15,6 +15,7 @@ use crate::ui::metadata_chip::MetadataChip;
 use crate::ui::ops_indicator::OpsIndicator;
 use crate::ui::window::{AppState, SharprWindow};
 use crate::upscale::BeforeAfterViewer;
+use crate::upscale::backend::make_upscale_backend;
 
 const TAG_CHIP_COLOR_PALETTE: &[&str] = &[
     "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
@@ -2027,12 +2028,9 @@ impl ViewerPane {
         destination_mode: ConvertDestinationMode,
     ) {
         use crate::model::ImageEntry;
-        use crate::upscale::backend::UpscaleBackend;
-        use crate::upscale::backends::cli::CliBackend;
-        use crate::upscale::backends::onnx::OnnxBackend;
         use crate::upscale::runner::{UpscaleEvent, UpscaleRunner};
         use crate::upscale::{
-            ComfyUiBackend, OnnxUpscaleModel, UpscaleBackendKind, UpscaleCompressionMode,
+            OnnxUpscaleModel, UpscaleBackendKind, UpscaleCompressionMode,
             UpscaleJobConfig, UpscaleOutputFormat,
         };
 
@@ -2061,17 +2059,17 @@ impl ViewerPane {
         let onnx_model = OnnxUpscaleModel::from_settings(&settings.onnx_upscale_model);
         let comfyui_workflow =
             crate::upscale::ComfyUiWorkflow::from_settings(&settings.comfyui_workflow);
-        let backend: Box<dyn UpscaleBackend> = match backend_kind {
-            UpscaleBackendKind::Cli => {
-                let Some(bin) = binary else {
-                    trigger_btn.set_sensitive(true);
-                    return;
-                };
-                Box::new(CliBackend::new(bin))
-            }
-            UpscaleBackendKind::Onnx => Box::new(OnnxBackend::new(onnx_model)),
-            UpscaleBackendKind::ComfyUi => {
-                Box::new(ComfyUiBackend::new(&settings.comfyui_url, comfyui_workflow))
+        let backend = match crate::upscale::backend::make_upscale_backend(
+            backend_kind,
+            binary,
+            onnx_model,
+            &settings.comfyui_url,
+            comfyui_workflow,
+        ) {
+            Some(b) => b,
+            None => {
+                trigger_btn.set_sensitive(true);
+                return;
             }
         };
         if selected_dims == (0, 0) {
@@ -2312,13 +2310,21 @@ impl ViewerPane {
                     output_format.extension(),
                 );
                 let temp_output = pending_output_path(&final_output);
-                let Some(backend) =
-                    make_upscale_backend(backend_kind, binary.clone(), onnx_model, &settings)
-                else {
-                    trigger_btn.set_sensitive(true);
-                    op.fail("No compatible upscale backend is available");
-                    return;
-                };
+                let backend: Box<dyn crate::upscale::backend::UpscaleBackend> =
+                    match make_upscale_backend(
+                        backend_kind,
+                        binary.clone(),
+                        onnx_model,
+                        &settings.comfyui_url,
+                        comfyui_workflow,
+                    ) {
+                        Some(b) => b,
+                        None => {
+                            trigger_btn.set_sensitive(true);
+                            op.fail("No compatible upscale backend is available");
+                            return;
+                        }
+                    };
                 let rx = if let Some(dir) = temp_output.parent() {
                     match std::fs::create_dir_all(dir) {
                         Ok(()) => backend.run(source_path.clone(), temp_output.clone(), job),
@@ -2831,31 +2837,6 @@ fn load_upscale_source_dimensions(path: &std::path::Path) -> (u32, u32) {
         (meta.width, meta.height)
     } else {
         (0, 0)
-    }
-}
-
-fn make_upscale_backend(
-    backend_kind: crate::upscale::UpscaleBackendKind,
-    binary: Option<PathBuf>,
-    onnx_model: crate::upscale::OnnxUpscaleModel,
-    settings: &crate::config::settings::AppSettings,
-) -> Option<Box<dyn crate::upscale::backend::UpscaleBackend>> {
-    use crate::upscale::backend::UpscaleBackend;
-    use crate::upscale::backends::cli::CliBackend;
-    use crate::upscale::backends::onnx::OnnxBackend;
-    use crate::upscale::ComfyUiBackend;
-
-    match backend_kind {
-        crate::upscale::UpscaleBackendKind::Cli => {
-            binary.map(|bin| Box::new(CliBackend::new(bin)) as Box<dyn UpscaleBackend>)
-        }
-        crate::upscale::UpscaleBackendKind::Onnx => {
-            Some(Box::new(OnnxBackend::new(onnx_model)) as Box<dyn UpscaleBackend>)
-        }
-        crate::upscale::UpscaleBackendKind::ComfyUi => Some(Box::new(ComfyUiBackend::new(
-            &settings.comfyui_url,
-            crate::upscale::ComfyUiWorkflow::from_settings(&settings.comfyui_workflow),
-        )) as Box<dyn UpscaleBackend>),
     }
 }
 

@@ -8,5 +8,6 @@ pub mod preferences;
 pub mod sidebar;
 pub mod tag_browser;
 pub mod tag_card;
+pub mod tasks_page;
 pub mod viewer;
 pub mod window;
