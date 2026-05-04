@@ -942,7 +942,8 @@ impl TasksPage {
         let (upscaler_binary_path, upscaled_output_dir, comfyui_url, comfyui_workflow, onnx_upscale_model) = {
             let st = state_rc.borrow();
             (
-                st.settings.upscaler_binary_path.clone(),
+                st.settings.upscaler_binary_path.clone()
+                    .or_else(crate::upscale::UpscaleDetector::find_realesrgan),
                 st.settings.upscaled_output_dir.clone(),
                 st.settings.comfyui_url.clone(),
                 st.settings.comfyui_workflow.clone(),
