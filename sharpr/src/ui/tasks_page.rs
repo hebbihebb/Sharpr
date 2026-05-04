@@ -32,6 +32,8 @@ pub struct ExportStepSettings {
     pub quality: u8,
 }
 
+pub type CompareCallback = Box<dyn Fn(PathBuf, PathBuf, String)>;
+
 mod imp {
     use super::*;
 
@@ -61,6 +63,7 @@ mod imp {
 
         // State
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
+        pub compare_cb: RefCell<Option<CompareCallback>>,
         pub runner_active: Rc<Cell<bool>>,
         pub polling_timer: RefCell<Option<glib::SourceId>>,
     }
@@ -319,12 +322,11 @@ impl TasksPage {
 
     pub fn set_state(&self, state: Rc<RefCell<AppState>>) {
         let imp = self.imp();
-        
+
         // Load initial defaults from settings
         {
             let st = state.borrow();
             if let Some(scale_dd) = imp.scale_dropdown.borrow().as_ref() {
-                // Default to Auto (0)
                 scale_dd.set_selected(0);
             }
             if let Some(compress) = imp.compress_check.borrow().as_ref() {
@@ -358,6 +360,10 @@ impl TasksPage {
         *imp.state.borrow_mut() = Some(state);
         self.refresh();
         self.try_start_runner();
+    }
+
+    pub fn set_compare_requested_cb<F: Fn(PathBuf, PathBuf, String) + 'static>(&self, f: F) {
+        *self.imp().compare_cb.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn on_pipelines_added(&self) {
@@ -580,7 +586,7 @@ impl TasksPage {
         // Operation + settings summary
         let op_summary = step
             .as_ref()
-            .map(|s| format_step_summary(s))
+            .map(format_step_summary)
             .unwrap_or_default();
         let op_label = gtk4::Label::new(Some(&op_summary));
         op_label.set_halign(gtk4::Align::Start);
@@ -610,18 +616,34 @@ impl TasksPage {
         let btn_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
         btn_box.set_valign(gtk4::Align::Center);
 
-        // Compare button (navigates to Compare page — placeholder until Phase 6)
+        // Compare button (navigates to Compare page)
         let compare_btn = gtk4::Button::with_label("Compare");
         compare_btn.add_css_class("flat");
-        // Only enable if both source and output exist on disk
+        let output_path_opt = step.as_ref().and_then(|s| s.output_path.clone());
         let can_compare = pipeline.source_path.exists()
-            && step
-                .as_ref()
-                .and_then(|s| s.output_path.as_ref())
-                .map(|p| p.exists())
-                .unwrap_or(false);
+            && output_path_opt.as_ref().map(|p| p.exists()).unwrap_or(false);
         compare_btn.set_sensitive(can_compare);
-        compare_btn.set_tooltip_text(Some("Compare source and output (Phase 6)"));
+        compare_btn.set_tooltip_text(Some("Open in Compare page"));
+        if can_compare {
+            let source = pipeline.source_path.clone();
+            let output = output_path_opt.clone().unwrap();
+            let filename = pipeline
+                .source_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Unknown".to_string());
+            let widget_weak = self.downgrade();
+            compare_btn.connect_clicked(move |_| {
+                let Some(w) = widget_weak.upgrade() else {
+                    return;
+                };
+                let imp = w.imp();
+                let cb_borrow = imp.compare_cb.borrow();
+                if let Some(cb) = cb_borrow.as_ref() {
+                    cb(source.clone(), output.clone(), filename.clone());
+                }
+            });
+        }
         btn_box.append(&compare_btn);
 
         // Re-queue button (failed pipelines only)

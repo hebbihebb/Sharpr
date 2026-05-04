@@ -3226,9 +3226,19 @@ impl SharprWindow {
             });
         }
 
-        let compare_placeholder = gtk4::Label::new(Some("Compare — coming soon"));
-        compare_placeholder.add_css_class("title-2");
-        content_stack.add_named(&compare_placeholder, Some("compare"));
+        use crate::ui::compare_page::ComparePage;
+        let compare_page = ComparePage::new();
+        content_stack.add_named(&compare_page, Some("compare"));
+
+        {
+            let compare_page_c = compare_page.clone();
+            let content_stack_c = content_stack.clone();
+            tasks_page.set_compare_requested_cb(move |source, output, label| {
+                compare_page_c.push_pair(source, output, label);
+                content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideLeft);
+                content_stack_c.set_visible_child_name("compare");
+            });
+        }
 
         content_stack.set_visible_child_name("viewer");
 
