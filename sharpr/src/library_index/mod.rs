@@ -1222,6 +1222,68 @@ impl LibraryIndex {
         Ok(rows.next().and_then(Result::ok))
     }
 
+    /// Total count of Completed + Failed pipelines (for cap enforcement).
+    pub fn pipeline_history_count(&self) -> rusqlite::Result<usize> {
+        let conn = self.conn()?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pipelines WHERE status IN ('completed', 'failed')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// Delete the oldest history entries, keeping at most `cap` rows.
+    /// Deletes by `created_at ASC` (oldest first).
+    pub fn prune_pipeline_history(&self, cap: usize) -> rusqlite::Result<()> {
+        if cap == 0 {
+            return Ok(());
+        }
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM pipelines
+           WHERE status IN ('completed', 'failed')
+             AND id NOT IN (
+               SELECT id FROM pipelines
+               WHERE status IN ('completed', 'failed')
+               ORDER BY created_at DESC
+               LIMIT ?1
+             )",
+            params![cap as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Delete all Completed and Failed pipelines (manual \"Clear history\").
+    pub fn clear_pipeline_history(&self) -> rusqlite::Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM pipelines WHERE status IN ('completed', 'failed')",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Reset a failed or completed pipeline and all its steps back to Queued
+    /// so it can be re-run. Returns Err if the pipeline is InProgress.
+    pub fn requeue_pipeline(&self, id: i64) -> rusqlite::Result<()> {
+        let conn = self.conn()?;
+        // Only requeue non-running pipelines
+        conn.execute(
+            "UPDATE pipeline_steps
+           SET status = 'queued', started_at = NULL, finished_at = NULL,
+               output_path = NULL, error_msg = NULL
+           WHERE pipeline_id = ?1 AND status != 'in_progress'",
+            params![id],
+        )?;
+        conn.execute(
+            "UPDATE pipelines SET status = 'queued'
+           WHERE id = ?1 AND status != 'in_progress'",
+            params![id],
+        )?;
+        Ok(())
+    }
+
     fn conn(&self) -> rusqlite::Result<PooledConnection<SqliteConnectionManager>> {
         self.pool.get().map_err(|_| rusqlite::Error::InvalidQuery)
     }

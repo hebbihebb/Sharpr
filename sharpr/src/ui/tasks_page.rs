@@ -54,6 +54,11 @@ mod imp {
         pub export_edge_dropdown: RefCell<Option<gtk4::DropDown>>,
         pub export_quality_spin: RefCell<Option<gtk4::SpinButton>>,
 
+        // History
+        pub history_list: RefCell<Option<gtk4::ListBox>>,
+        pub clear_history_btn: RefCell<Option<gtk4::Button>>,
+        pub history_section: RefCell<Option<gtk4::Box>>,
+
         // State
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub runner_active: Rc<Cell<bool>>,
@@ -106,6 +111,36 @@ mod imp {
 
             left_col.append(&toolbar);
             left_col.append(&scrolled);
+
+            // --- History section ---
+            let history_section = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+            history_section.set_margin_top(8);
+
+            let history_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            history_header.set_hexpand(true);
+
+            let history_title = gtk4::Label::new(Some("History"));
+            history_title.add_css_class("heading");
+            history_title.set_hexpand(true);
+            history_title.set_halign(gtk4::Align::Start);
+
+            let clear_history_btn = gtk4::Button::with_label("Clear");
+            clear_history_btn.add_css_class("flat");
+            clear_history_btn.set_tooltip_text(Some("Clear all history"));
+
+            history_header.append(&history_title);
+            history_header.append(&clear_history_btn);
+            history_section.append(&history_header);
+
+            let history_list = gtk4::ListBox::new();
+            history_list.add_css_class("boxed-list");
+            history_list.set_selection_mode(gtk4::SelectionMode::None);
+            history_section.append(&history_list);
+
+            // Hidden until there are history entries
+            history_section.set_visible(false);
+
+            left_col.append(&history_section);
 
             // --- Right Column ---
             let right_col = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
@@ -222,6 +257,21 @@ mod imp {
                 });
             }
 
+            {
+                let widget_weak = widget.downgrade();
+                clear_history_btn.connect_clicked(move |_| {
+                    let Some(w) = widget_weak.upgrade() else {
+                        return;
+                    };
+                    if let Some(state_rc) = w.imp().state.borrow().as_ref() {
+                        if let Some(idx) = state_rc.borrow().library_index.as_ref() {
+                            let _ = idx.clear_pipeline_history();
+                        }
+                    }
+                    w.refresh();
+                });
+            }
+
             *self.queue_list.borrow_mut() = Some(queue_list);
             *self.settings_stack.borrow_mut() = Some(settings_stack);
             *self.start_btn.borrow_mut() = Some(start_btn);
@@ -236,6 +286,10 @@ mod imp {
             *self.export_format_dropdown.borrow_mut() = Some(export_format_dropdown);
             *self.export_edge_dropdown.borrow_mut() = Some(export_edge_dropdown);
             *self.export_quality_spin.borrow_mut() = Some(export_quality_spin);
+
+            *self.history_list.borrow_mut() = Some(history_list);
+            *self.clear_history_btn.borrow_mut() = Some(clear_history_btn);
+            *self.history_section.borrow_mut() = Some(history_section);
         }
 
         fn dispose(&self) {
@@ -344,6 +398,35 @@ impl TasksPage {
             let row = self.build_queue_row(&pipeline, idx);
             list_box.append(&row);
         }
+
+        // --- History ---
+        let Some(history_list) = imp.history_list.borrow().clone() else {
+            return;
+        };
+        let Some(history_section) = imp.history_section.borrow().clone() else {
+            return;
+        };
+
+        while let Some(child) = history_list.first_child() {
+            history_list.remove(&child);
+        }
+
+        let mut history = idx
+            .pipelines_by_status(PipelineStatus::Completed)
+            .unwrap_or_default();
+        history.extend(
+            idx.pipelines_by_status(PipelineStatus::Failed)
+                .unwrap_or_default(),
+        );
+        // Sort by created_at DESC (most recent first)
+        history.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        history_section.set_visible(!history.is_empty());
+
+        for pipeline in &history {
+            let row = self.build_history_row(pipeline, idx);
+            history_list.append(&row);
+        }
     }
 
     fn build_queue_row(&self, pipeline: &Pipeline, idx: &LibraryIndex) -> gtk4::ListBoxRow {
@@ -429,6 +512,188 @@ impl TasksPage {
 
         row.set_child(Some(&row_box));
         row
+    }
+
+    fn build_history_row(&self, pipeline: &Pipeline, idx: &LibraryIndex) -> gtk4::ListBoxRow {
+        let row = gtk4::ListBoxRow::new();
+        let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        row_box.set_margin_top(8);
+        row_box.set_margin_bottom(8);
+        row_box.set_margin_start(8);
+        row_box.set_margin_end(8);
+
+        // --- Thumbnail pair ---
+        let thumb_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
+
+        let src_picture = gtk4::Picture::new();
+        src_picture.set_size_request(48, 48);
+        src_picture.set_content_fit(gtk4::ContentFit::Cover);
+        thumb_box.append(&src_picture);
+
+        let out_picture = gtk4::Picture::new();
+        out_picture.set_size_request(48, 48);
+        out_picture.set_content_fit(gtk4::ContentFit::Cover);
+        thumb_box.append(&out_picture);
+
+        row_box.append(&thumb_box);
+
+        // Async-load source thumbnail
+        {
+            let p = src_picture.clone();
+            let path = pipeline.source_path.clone();
+            glib::spawn_future_local(async move {
+                if let Ok(tex) = load_thumbnail_for_row(&path).await {
+                    p.set_paintable(Some(&tex));
+                }
+            });
+        }
+
+        // Get the step to find output path and settings
+        let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
+        let step = steps.first().cloned();
+
+        // Async-load output thumbnail (if output exists)
+        if let Some(output_path) = step.as_ref().and_then(|s| s.output_path.clone()) {
+            let p = out_picture.clone();
+            glib::spawn_future_local(async move {
+                if let Ok(tex) = load_thumbnail_for_row(&output_path).await {
+                    p.set_paintable(Some(&tex));
+                }
+            });
+        }
+
+        // --- Info column ---
+        let info_box = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        info_box.set_hexpand(true);
+
+        let filename = pipeline
+            .source_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Unknown".to_string());
+        let name_label = gtk4::Label::new(Some(&filename));
+        name_label.set_halign(gtk4::Align::Start);
+        name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        name_label.add_css_class("bold");
+        info_box.append(&name_label);
+
+        // Operation + settings summary
+        let op_summary = step
+            .as_ref()
+            .map(|s| format_step_summary(s))
+            .unwrap_or_default();
+        let op_label = gtk4::Label::new(Some(&op_summary));
+        op_label.set_halign(gtk4::Align::Start);
+        op_label.add_css_class("dim-label");
+        op_label.add_css_class("caption");
+        info_box.append(&op_label);
+
+        // Timestamp
+        let ts = format_timestamp(pipeline.created_at);
+        let ts_label = gtk4::Label::new(Some(&ts));
+        ts_label.set_halign(gtk4::Align::Start);
+        ts_label.add_css_class("dim-label");
+        ts_label.add_css_class("caption");
+        info_box.append(&ts_label);
+
+        // Status + file-move degradation
+        let (status_text, status_class) = self.resolve_status_display(pipeline, step.as_ref());
+        let status_label = gtk4::Label::new(Some(&status_text));
+        status_label.set_halign(gtk4::Align::Start);
+        status_label.add_css_class(status_class);
+        status_label.add_css_class("caption");
+        info_box.append(&status_label);
+
+        row_box.append(&info_box);
+
+        // --- Action buttons ---
+        let btn_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        btn_box.set_valign(gtk4::Align::Center);
+
+        // Compare button (navigates to Compare page — placeholder until Phase 6)
+        let compare_btn = gtk4::Button::with_label("Compare");
+        compare_btn.add_css_class("flat");
+        // Only enable if both source and output exist on disk
+        let can_compare = pipeline.source_path.exists()
+            && step
+                .as_ref()
+                .and_then(|s| s.output_path.as_ref())
+                .map(|p| p.exists())
+                .unwrap_or(false);
+        compare_btn.set_sensitive(can_compare);
+        compare_btn.set_tooltip_text(Some("Compare source and output (Phase 6)"));
+        btn_box.append(&compare_btn);
+
+        // Re-queue button (failed pipelines only)
+        if pipeline.status == PipelineStatus::Failed {
+            let requeue_btn = gtk4::Button::with_label("Re-queue");
+            requeue_btn.add_css_class("flat");
+            let widget_weak = self.downgrade();
+            let pid = pipeline.id;
+            requeue_btn.connect_clicked(move |_| {
+                let Some(w) = widget_weak.upgrade() else {
+                    return;
+                };
+                if let Some(state_rc) = w.imp().state.borrow().as_ref() {
+                    if let Some(idx) = state_rc.borrow().library_index.as_ref() {
+                        let _ = idx.requeue_pipeline(pid);
+                    }
+                }
+                w.refresh();
+                w.try_start_runner();
+            });
+            btn_box.append(&requeue_btn);
+        }
+
+        // Delete button
+        let del_btn = gtk4::Button::from_icon_name("window-close-symbolic");
+        del_btn.add_css_class("flat");
+        {
+            let widget_weak = self.downgrade();
+            let pid = pipeline.id;
+            del_btn.connect_clicked(move |_| {
+                let Some(w) = widget_weak.upgrade() else {
+                    return;
+                };
+                if let Some(state_rc) = w.imp().state.borrow().as_ref() {
+                    if let Some(idx) = state_rc.borrow().library_index.as_ref() {
+                        let _ = idx.delete_pipeline(pid);
+                    }
+                }
+                w.refresh();
+            });
+        }
+        btn_box.append(&del_btn);
+
+        row_box.append(&btn_box);
+        row.set_child(Some(&row_box));
+        row
+    }
+
+    fn resolve_status_display(
+        &self,
+        pipeline: &Pipeline,
+        step: Option<&PipelineStep>,
+    ) -> (String, &'static str) {
+        if pipeline.status == PipelineStatus::Failed {
+            let msg = step
+                .and_then(|s| s.error_msg.as_deref())
+                .unwrap_or("Unknown error");
+            return (format!("Failed: {}", msg), "error");
+        }
+        // Completed — check file existence
+        let source_ok = pipeline.source_path.exists();
+        let output_ok = step
+            .and_then(|s| s.output_path.as_ref())
+            .map(|p| p.exists())
+            .unwrap_or(false);
+
+        match (source_ok, output_ok) {
+            (true, true) => ("Done".to_string(), "success"),
+            (false, true) => ("Done — source moved".to_string(), "warning"),
+            (true, false) => ("Done — output missing".to_string(), "warning"),
+            (false, false) => ("Done — files moved".to_string(), "warning"),
+        }
     }
 
     fn try_start_runner(&self) {
@@ -568,18 +833,40 @@ impl TasksPage {
                     if let Some(idx) = state.library_index.as_ref() {
                         match result {
                             Ok(Ok(path)) => {
-                                let _ = idx.set_step_status(step.id, PipelineStatus::Completed, Some(&path), None);
-                                let _ = idx.set_pipeline_status(pipeline.id, PipelineStatus::Completed);
+                                let _ = idx.set_step_status(
+                                    step.id,
+                                    PipelineStatus::Completed,
+                                    Some(&path),
+                                    None,
+                                );
+                                let _ =
+                                    idx.set_pipeline_status(pipeline.id, PipelineStatus::Completed);
                             }
                             Ok(Err(e)) => {
-                                let _ = idx.set_step_status(step.id, PipelineStatus::Failed, None, Some(&e));
-                                let _ = idx.set_pipeline_status(pipeline.id, PipelineStatus::Failed);
+                                let _ = idx.set_step_status(
+                                    step.id,
+                                    PipelineStatus::Failed,
+                                    None,
+                                    Some(&e),
+                                );
+                                let _ =
+                                    idx.set_pipeline_status(pipeline.id, PipelineStatus::Failed);
                             }
                             Err(_) => {
-                                let _ = idx.set_step_status(step.id, PipelineStatus::Failed, None, Some("Channel closed"));
-                                let _ = idx.set_pipeline_status(pipeline.id, PipelineStatus::Failed);
+                                let _ = idx.set_step_status(
+                                    step.id,
+                                    PipelineStatus::Failed,
+                                    None,
+                                    Some("Channel closed"),
+                                );
+                                let _ =
+                                    idx.set_pipeline_status(pipeline.id, PipelineStatus::Failed);
                             }
                         }
+
+                        // Auto-prune history to cap
+                        let cap = state.settings.pipeline_history_cap as usize;
+                        let _ = idx.prune_pipeline_history(cap);
                     }
                 }
                 w.run_next_pipeline();
@@ -687,18 +974,40 @@ impl TasksPage {
                     if let Some(idx) = state.library_index.as_ref() {
                         match result {
                             Ok(Ok(path)) => {
-                                let _ = idx.set_step_status(step.id, PipelineStatus::Completed, Some(&path), None);
-                                let _ = idx.set_pipeline_status(pipeline.id, PipelineStatus::Completed);
+                                let _ = idx.set_step_status(
+                                    step.id,
+                                    PipelineStatus::Completed,
+                                    Some(&path),
+                                    None,
+                                );
+                                let _ =
+                                    idx.set_pipeline_status(pipeline.id, PipelineStatus::Completed);
                             }
                             Ok(Err(e)) => {
-                                let _ = idx.set_step_status(step.id, PipelineStatus::Failed, None, Some(&e));
-                                let _ = idx.set_pipeline_status(pipeline.id, PipelineStatus::Failed);
+                                let _ = idx.set_step_status(
+                                    step.id,
+                                    PipelineStatus::Failed,
+                                    None,
+                                    Some(&e),
+                                );
+                                let _ =
+                                    idx.set_pipeline_status(pipeline.id, PipelineStatus::Failed);
                             }
                             Err(_) => {
-                                let _ = idx.set_step_status(step.id, PipelineStatus::Failed, None, Some("Channel closed"));
-                                let _ = idx.set_pipeline_status(pipeline.id, PipelineStatus::Failed);
+                                let _ = idx.set_step_status(
+                                    step.id,
+                                    PipelineStatus::Failed,
+                                    None,
+                                    Some("Channel closed"),
+                                );
+                                let _ =
+                                    idx.set_pipeline_status(pipeline.id, PipelineStatus::Failed);
                             }
                         }
+
+                        // Auto-prune history to cap
+                        let cap = state.settings.pipeline_history_cap as usize;
+                        let _ = idx.prune_pipeline_history(cap);
                     }
                 }
                 w.run_next_pipeline();
@@ -729,4 +1038,50 @@ async fn load_thumbnail_for_row(path: &Path) -> Result<gdk4::Texture, String> {
     });
 
     rx.recv().await.unwrap_or_else(|_| Err("Thumbnail thread died".to_string()))
+}
+
+fn format_step_summary(step: &PipelineStep) -> String {
+    match step.step_type {
+        StepType::Upscale => {
+            if let Ok(s) = serde_json::from_str::<UpscaleStepSettings>(&step.settings_json) {
+                let scale = if s.scale == 0 {
+                    "auto".to_string()
+                } else {
+                    format!("{}×", s.scale)
+                };
+                format!("Upscale · {} · {}", s.model, scale)
+            } else {
+                "Upscale".to_string()
+            }
+        }
+        StepType::Export => {
+            if let Ok(s) = serde_json::from_str::<ExportStepSettings>(&step.settings_json) {
+                let edge = s
+                    .max_edge
+                    .map(|e| format!(" · {}px", e))
+                    .unwrap_or_default();
+                format!("Export · {}{}", s.format.to_uppercase(), edge)
+            } else {
+                "Export".to_string()
+            }
+        }
+    }
+}
+
+fn format_timestamp(unix_secs: i64) -> String {
+    // Simple relative formatting without external crates.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let delta = now - unix_secs;
+    if delta < 60 {
+        "Just now".to_string()
+    } else if delta < 3600 {
+        format!("{} min ago", delta / 60)
+    } else if delta < 86400 {
+        format!("{} hr ago", delta / 3600)
+    } else {
+        format!("{} days ago", delta / 86400)
+    }
 }

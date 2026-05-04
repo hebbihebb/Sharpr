@@ -205,6 +205,36 @@ pub fn build_preferences_window(
     output_group.add(&export_row);
     library_page.add(&output_group);
 
+    let queue_group = libadwaita::PreferencesGroup::new();
+    queue_group.set_title("Queue & History");
+    queue_group.set_description(Some(
+        "Controls how many completed and failed jobs are retained.",
+    ));
+
+    let history_cap_row = libadwaita::ActionRow::new();
+    history_cap_row.set_title("History cap");
+    history_cap_row.set_subtitle("Maximum completed/failed jobs to keep");
+
+    let history_cap_spin = gtk4::SpinButton::with_range(10.0, 10000.0, 10.0);
+    history_cap_spin.set_value(settings.pipeline_history_cap as f64);
+    history_cap_spin.set_valign(gtk4::Align::Center);
+    history_cap_row.add_suffix(&history_cap_spin);
+    history_cap_row.set_activatable_widget(Some(&history_cap_spin));
+
+    {
+        let parent_c = parent.clone();
+        history_cap_spin.connect_value_changed(move |spin| {
+            parent_c
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_pipeline_history_cap(spin.value() as i32);
+        });
+    }
+
+    queue_group.add(&history_cap_row);
+    library_page.add(&queue_group);
+
     let smart_group = libadwaita::PreferencesGroup::new();
     smart_group.set_title("Smart Tagging");
 
