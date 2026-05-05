@@ -20,6 +20,8 @@ pub enum UpscaleEvent {
 pub struct UpscaleRunner;
 
 impl UpscaleRunner {
+    pub const COMFYUI_MAX_OUTPUT_LONG_EDGE: u32 = 3840;
+
     /// Spawn an upscale job.
     pub fn run(
         binary: &Path,
@@ -51,6 +53,29 @@ impl UpscaleRunner {
             1200..=2199 => 3,
             _ => 2,
         }
+    }
+
+    pub fn comfyui_smart_target_dimensions(width: u32, height: u32) -> Option<(u32, u32)> {
+        Self::capped_target_dimensions(width, height, Self::COMFYUI_MAX_OUTPUT_LONG_EDGE)
+    }
+
+    pub fn capped_target_dimensions(
+        width: u32,
+        height: u32,
+        max_long_edge: u32,
+    ) -> Option<(u32, u32)> {
+        if width == 0 || height == 0 || max_long_edge == 0 {
+            return None;
+        }
+
+        let long_edge = width.max(height) as f32;
+        let exact_scale = max_long_edge as f32 / long_edge;
+        let rounded_scale = (exact_scale.clamp(1.0, 4.0) * 10.0).round() / 10.0;
+
+        let target_width = ((width as f32) * rounded_scale).round().max(1.0) as u32;
+        let target_height = ((height as f32) * rounded_scale).round().max(1.0) as u32;
+
+        Some((target_width, target_height))
     }
 
     pub fn select_output_format(config: &UpscaleJobConfig) -> UpscaleOutputFormat {
@@ -160,7 +185,9 @@ pub(crate) fn finalize_output_without_cleanup(
 
     // requested_scale == 0 means Auto — keep whatever the subprocess produced.
     let (input_w, input_h) = config.source_dimensions;
-    let target_dims: Option<(u32, u32)> = if config.requested_scale == 0 {
+    let target_dims: Option<(u32, u32)> = if let Some(target_dims) = config.target_dimensions {
+        Some(target_dims)
+    } else if config.requested_scale == 0 {
         None
     } else {
         if input_w == 0 || input_h == 0 {
@@ -357,6 +384,7 @@ mod tests {
             source_dimensions: (4, 3),
             requested_scale: 2,
             execution_scale: 2,
+            target_dimensions: None,
             model: crate::upscale::UpscaleModel::Standard,
             compress_output: format != UpscaleOutputFormat::Png,
             compressed_format: format,
@@ -507,5 +535,21 @@ mod tests {
         assert!(!preserved.exists());
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn comfyui_smart_target_caps_900p_to_4k() {
+        assert_eq!(
+            UpscaleRunner::comfyui_smart_target_dimensions(1600, 900),
+            Some((3840, 2160))
+        );
+    }
+
+    #[test]
+    fn comfyui_smart_target_leaves_oversized_sources_alone() {
+        assert_eq!(
+            UpscaleRunner::comfyui_smart_target_dimensions(5000, 3000),
+            Some((5000, 3000))
+        );
     }
 }

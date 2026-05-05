@@ -132,7 +132,15 @@ fn run_onnx_job(
 
     use image::imageops::FilterType;
     // requested_scale == 0 means "Auto" — keep whatever the model produced.
-    let final_rgb = if config.requested_scale == 0 {
+    let final_rgb = if let Some((target_w, target_h)) = config.target_dimensions {
+        if upscaled.width() == target_w && upscaled.height() == target_h {
+            upscaled
+        } else {
+            image::DynamicImage::ImageRgb8(upscaled)
+                .resize_exact(target_w, target_h, image::imageops::FilterType::Lanczos3)
+                .to_rgb8()
+        }
+    } else if config.requested_scale == 0 {
         upscaled
     } else {
         let target_w = input_w.saturating_mul(config.requested_scale);

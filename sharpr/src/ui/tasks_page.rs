@@ -14,8 +14,8 @@ use crate::export::{
 use crate::library_index::{LibraryIndex, Pipeline, PipelineStatus, PipelineStep, StepType};
 use crate::ui::window::{AppState, CompareItem};
 use crate::upscale::{
-    backend::make_upscale_backend, UpscaleBackendKind, UpscaleCompressionMode, UpscaleJobConfig,
-    UpscaleModel, UpscaleOutputFormat,
+    backend::make_upscale_backend, runner::UpscaleRunner, UpscaleBackendKind,
+    UpscaleCompressionMode, UpscaleJobConfig, UpscaleModel, UpscaleOutputFormat,
 };
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -2452,14 +2452,26 @@ impl TasksPage {
             let model = UpscaleModel::from_settings(&settings.model);
             let format = UpscaleOutputFormat::from_settings(&settings.format);
 
+            let source_dimensions = image::image_dimensions(&source).unwrap_or((0, 0));
+            let target_dimensions =
+                if settings.scale == 0 && backend_kind == UpscaleBackendKind::ComfyUi {
+                    UpscaleRunner::comfyui_smart_target_dimensions(
+                        source_dimensions.0,
+                        source_dimensions.1,
+                    )
+                } else {
+                    None
+                };
+
             let job = UpscaleJobConfig {
-                source_dimensions: image::image_dimensions(&source).unwrap_or((0, 0)),
+                source_dimensions,
                 requested_scale: settings.scale,
                 execution_scale: if settings.scale == 0 {
                     4
                 } else {
                     settings.scale
                 },
+                target_dimensions,
                 model,
                 compress_output: settings.compress,
                 compressed_format: format,

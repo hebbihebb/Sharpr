@@ -92,6 +92,7 @@ pub struct UpscaleJobConfig {
     pub source_dimensions: (u32, u32),
     pub requested_scale: u32,
     pub execution_scale: u32,
+    pub target_dimensions: Option<(u32, u32)>,
     pub model: UpscaleModel,
     pub compress_output: bool,
     pub compressed_format: UpscaleOutputFormat,
