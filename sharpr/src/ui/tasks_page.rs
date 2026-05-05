@@ -1,35 +1,36 @@
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
-use std::rc::{Rc};
+use std::rc::Rc;
 
 use glib::WeakRef;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 
+use crate::export::{
+    export_to_path, resolve_output_dir, unique_output_path, ExportFormat, OutputFolderKind,
+};
 use crate::library_index::{LibraryIndex, Pipeline, PipelineStatus, PipelineStep, StepType};
 use crate::ui::window::AppState;
 use crate::upscale::{
-    backend::make_upscale_backend,
-    UpscaleBackendKind, UpscaleJobConfig, UpscaleModel, UpscaleOutputFormat,
-    UpscaleCompressionMode,
+    backend::make_upscale_backend, UpscaleBackendKind, UpscaleCompressionMode, UpscaleJobConfig,
+    UpscaleModel, UpscaleOutputFormat,
 };
-use crate::export::{ExportFormat, OutputFolderKind, resolve_output_dir, unique_output_path, export_to_path};
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct UpscaleStepSettings {
-    pub backend: String,       // "cli" | "onnx" | "comfyui"
-    pub model: String,         // "standard" | "anime"
+    pub backend: String, // "cli" | "onnx" | "comfyui"
+    pub model: String,   // "standard" | "anime"
     #[serde(default)]
     pub onnx_model: Option<String>,
-    pub scale: u32,            // 0 = smart/auto, 2, 3, 4
+    pub scale: u32, // 0 = smart/auto, 2, 3, 4
     pub compress: bool,
-    pub format: String,        // "jxl" | "webp" | "jpeg" | "png"
+    pub format: String, // "jxl" | "webp" | "jpeg" | "png"
     pub quality: u8,
     #[serde(default)]
     pub keep_png: bool,
     #[serde(default = "default_destination")]
-    pub destination: String,   // "default" | "source" | "custom"
+    pub destination: String, // "default" | "source" | "custom"
     #[serde(default)]
     pub custom_path: Option<PathBuf>,
 }
@@ -44,7 +45,7 @@ pub struct ExportStepSettings {
     pub max_edge: Option<u32>, // None = original size
     pub quality: u8,
     #[serde(default = "default_destination")]
-    pub destination: String,   // "default" | "source" | "custom"
+    pub destination: String, // "default" | "source" | "custom"
     #[serde(default)]
     pub custom_path: Option<PathBuf>,
 }
@@ -133,7 +134,8 @@ mod imp {
             left_col.set_margin_start(12);
             left_col.set_margin_end(12);
 
-            let crash_banner = libadwaita::Banner::new("Unfinished jobs from previous session detected.");
+            let crash_banner =
+                libadwaita::Banner::new("Unfinished jobs from previous session detected.");
             crash_banner.set_button_label(Some("Resume All"));
             crash_banner.set_revealed(false);
             left_col.append(&crash_banner);
@@ -200,7 +202,7 @@ mod imp {
             queue_empty_label.set_margin_top(20);
             queue_empty_label.set_margin_bottom(20);
             queue_empty_label.set_visible(false);
-            
+
             let queue_overlay = gtk4::Overlay::new();
             queue_overlay.set_child(Some(&scrolled));
             queue_overlay.add_overlay(&queue_empty_label);
@@ -315,7 +317,8 @@ mod imp {
 
             let upscale_dest_row = libadwaita::ComboRow::new();
             upscale_dest_row.set_title("Destination");
-            let upscale_dest_model = gtk4::StringList::new(&["Default (Pictures/Upscaled)", "Same as source"]);
+            let upscale_dest_model =
+                gtk4::StringList::new(&["Default (Pictures/Upscaled)", "Same as source"]);
             upscale_dest_row.set_model(Some(&upscale_dest_model));
             let upscale_dest_dropdown = upscale_dest_row.clone();
 
@@ -356,7 +359,8 @@ mod imp {
 
             let export_edge_row = libadwaita::ComboRow::new();
             export_edge_row.set_title("Max Edge");
-            let export_edge_model = gtk4::StringList::new(&["Original", "1080px", "2160px", "4096px"]);
+            let export_edge_model =
+                gtk4::StringList::new(&["Original", "1080px", "2160px", "4096px"]);
             export_edge_row.set_model(Some(&export_edge_model));
             let export_edge_dropdown = export_edge_row.clone();
 
@@ -370,7 +374,8 @@ mod imp {
 
             let export_dest_row = libadwaita::ComboRow::new();
             export_dest_row.set_title("Destination");
-            let export_dest_model = gtk4::StringList::new(&["Default (Pictures/Export)", "Same as source"]);
+            let export_dest_model =
+                gtk4::StringList::new(&["Default (Pictures/Export)", "Same as source"]);
             export_dest_row.set_model(Some(&export_dest_model));
             let export_dest_dropdown = export_dest_row.clone();
 
@@ -557,11 +562,7 @@ mod imp {
                     let Some(w) = widget_weak.upgrade() else {
                         return;
                     };
-                    let parent_window = w
-                        .imp()
-                        .parent_window
-                        .borrow()
-                        .upgrade();
+                    let parent_window = w.imp().parent_window.borrow().upgrade();
                     let dialog = gtk4::FileDialog::builder()
                         .title("Add Images to Queue")
                         .modal(true)
@@ -618,7 +619,11 @@ mod imp {
                 let widget_weak = widget.downgrade();
                 crash_banner.connect_button_clicked(move |_| {
                     if let Some(w) = widget_weak.upgrade() {
-                        w.imp().crash_banner.borrow().as_ref().map(|b| b.set_revealed(false));
+                        w.imp()
+                            .crash_banner
+                            .borrow()
+                            .as_ref()
+                            .map(|b| b.set_revealed(false));
                         w.imp().runner_active.set(true);
                         w.imp().paused.set(false);
                         w.try_start_runner();
@@ -779,7 +784,9 @@ impl TasksPage {
     }
 
     pub fn set_interrupted_count(&self, n: usize) {
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
         let imp = self.imp();
         if let Some(banner) = imp.crash_banner.borrow().as_ref() {
             let msg = if n == 1 {
@@ -869,7 +876,8 @@ impl TasksPage {
 
         match step.step_type {
             StepType::Upscale => {
-                let Ok(settings) = serde_json::from_str::<UpscaleStepSettings>(&step.settings_json) else {
+                let Ok(settings) = serde_json::from_str::<UpscaleStepSettings>(&step.settings_json)
+                else {
                     return;
                 };
                 self.set_operation("upscale");
@@ -917,7 +925,8 @@ impl TasksPage {
                 }
             }
             StepType::Export => {
-                let Ok(settings) = serde_json::from_str::<ExportStepSettings>(&step.settings_json) else {
+                let Ok(settings) = serde_json::from_str::<ExportStepSettings>(&step.settings_json)
+                else {
                     return;
                 };
                 self.set_operation("export");
@@ -953,10 +962,7 @@ impl TasksPage {
 
         *self.imp().selected_pipeline_id.borrow_mut() = Some(pipeline_id);
         self.imp().selected_is_history.set(false);
-        self.update_summary(
-            &pipeline.source_path,
-            step.output_path.as_deref(),
-        );
+        self.update_summary(&pipeline.source_path, step.output_path.as_deref());
     }
 
     pub fn set_state(&self, state: Rc<RefCell<AppState>>) {
@@ -1112,60 +1118,139 @@ impl TasksPage {
         let imp = self.imp();
         if self.operation_is_export() {
             // Export
-            let format = imp.export_format_dropdown.borrow().as_ref().map(|d| match d.selected() {
-                1 => "webp", 2 => "png", 3 => "jpeg", _ => "jxl",
-            }).unwrap_or("jxl");
-            let max_edge = imp.export_edge_dropdown.borrow().as_ref().and_then(|d| match d.selected() {
-                1 => Some(1080u32), 2 => Some(2160), 3 => Some(4096), _ => None,
-            });
-            let quality = imp.export_quality_spin.borrow().as_ref().map(|s| s.value() as u8).unwrap_or(85);
-            let destination = imp.export_dest_dropdown.borrow().as_ref().map(|d| match d.selected() {
-                1 => "source",
-                _ => "default",
-            }).unwrap_or("default");
-            let settings = ExportStepSettings { format: format.into(), max_edge, quality, destination: destination.into(), custom_path: None };
-            (StepType::Export, serde_json::to_string(&settings).unwrap_or_default())
+            let format = imp
+                .export_format_dropdown
+                .borrow()
+                .as_ref()
+                .map(|d| match d.selected() {
+                    1 => "webp",
+                    2 => "png",
+                    3 => "jpeg",
+                    _ => "jxl",
+                })
+                .unwrap_or("jxl");
+            let max_edge =
+                imp.export_edge_dropdown
+                    .borrow()
+                    .as_ref()
+                    .and_then(|d| match d.selected() {
+                        1 => Some(1080u32),
+                        2 => Some(2160),
+                        3 => Some(4096),
+                        _ => None,
+                    });
+            let quality = imp
+                .export_quality_spin
+                .borrow()
+                .as_ref()
+                .map(|s| s.value() as u8)
+                .unwrap_or(85);
+            let destination = imp
+                .export_dest_dropdown
+                .borrow()
+                .as_ref()
+                .map(|d| match d.selected() {
+                    1 => "source",
+                    _ => "default",
+                })
+                .unwrap_or("default");
+            let settings = ExportStepSettings {
+                format: format.into(),
+                max_edge,
+                quality,
+                destination: destination.into(),
+                custom_path: None,
+            };
+            (
+                StepType::Export,
+                serde_json::to_string(&settings).unwrap_or_default(),
+            )
         } else {
             // Upscale (default)
             let backend = self.selected_backend();
             let onnx_model = if backend == "onnx" {
-                imp.onnx_model_dropdown.borrow().as_ref().map(|d| match d.selected() {
-                    1 => "swin2sr-compressed-x4",
-                    2 => "swin2sr-real-x4",
-                    _ => "swin2sr-lightweight-x2",
-                })
+                imp.onnx_model_dropdown
+                    .borrow()
+                    .as_ref()
+                    .map(|d| match d.selected() {
+                        1 => "swin2sr-compressed-x4",
+                        2 => "swin2sr-real-x4",
+                        _ => "swin2sr-lightweight-x2",
+                    })
             } else {
                 None
             };
-            let scale = imp.scale_dropdown.borrow().as_ref().map(|d| match d.selected() {
-                1 => 2u32, 2 => 3, 3 => 4, _ => 0,
-            }).unwrap_or(0);
-            let compress = imp.compress_check.borrow().as_ref().map(|c| c.is_active()).unwrap_or(false);
-            let keep_png = imp.keep_png_check.borrow().as_ref().map(|c| c.is_active()).unwrap_or(false);
-            let format = imp.format_dropdown.borrow().as_ref().map(|d| match d.selected() {
-                1 => "webp", 2 => "jpeg", 3 => "png", _ => "jxl",
-            }).unwrap_or("jxl");
-            let quality = imp.quality_spin.borrow().as_ref().map(|s| s.value() as u8).unwrap_or(85);
-            let model = imp.state.borrow().as_ref()
+            let scale = imp
+                .scale_dropdown
+                .borrow()
+                .as_ref()
+                .map(|d| match d.selected() {
+                    1 => 2u32,
+                    2 => 3,
+                    3 => 4,
+                    _ => 0,
+                })
+                .unwrap_or(0);
+            let compress = imp
+                .compress_check
+                .borrow()
+                .as_ref()
+                .map(|c| c.is_active())
+                .unwrap_or(false);
+            let keep_png = imp
+                .keep_png_check
+                .borrow()
+                .as_ref()
+                .map(|c| c.is_active())
+                .unwrap_or(false);
+            let format = imp
+                .format_dropdown
+                .borrow()
+                .as_ref()
+                .map(|d| match d.selected() {
+                    1 => "webp",
+                    2 => "jpeg",
+                    3 => "png",
+                    _ => "jxl",
+                })
+                .unwrap_or("jxl");
+            let quality = imp
+                .quality_spin
+                .borrow()
+                .as_ref()
+                .map(|s| s.value() as u8)
+                .unwrap_or(85);
+            let model = imp
+                .state
+                .borrow()
+                .as_ref()
                 .map(|s| s.borrow().settings.upscaler_default_model.clone())
                 .unwrap_or_default();
-            let destination = imp.upscale_dest_dropdown.borrow().as_ref().map(|d| match d.selected() {
-                1 => "source",
-                _ => "default",
-            }).unwrap_or("default");
-            let settings = UpscaleStepSettings { 
-                backend: backend.into(), 
-                model, 
+            let destination = imp
+                .upscale_dest_dropdown
+                .borrow()
+                .as_ref()
+                .map(|d| match d.selected() {
+                    1 => "source",
+                    _ => "default",
+                })
+                .unwrap_or("default");
+            let settings = UpscaleStepSettings {
+                backend: backend.into(),
+                model,
                 onnx_model: onnx_model.map(|s| s.to_string()),
-                scale, 
-                compress, 
-                format: format.into(), 
+                scale,
+                compress,
+                format: format.into(),
                 quality,
                 keep_png,
                 destination: destination.into(),
-                custom_path: None
+                custom_path: None,
             };
-            (StepType::Upscale, serde_json::to_string(&settings).unwrap_or_default())
+            (
+                StepType::Upscale,
+                serde_json::to_string(&settings).unwrap_or_default(),
+            )
         }
     }
 
@@ -1188,20 +1273,30 @@ impl TasksPage {
 
     pub fn refresh(&self) {
         let imp = self.imp();
-        let Some(list_box) = imp.queue_list.borrow().clone() else { return };
-        
+        let Some(list_box) = imp.queue_list.borrow().clone() else {
+            return;
+        };
+
         // Clear existing rows
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
         }
 
-        let Some(state_rc) = imp.state.borrow().clone() else { return };
+        let Some(state_rc) = imp.state.borrow().clone() else {
+            return;
+        };
         let state = state_rc.borrow();
-        let Some(idx) = state.library_index.as_ref() else { return };
+        let Some(idx) = state.library_index.as_ref() else {
+            return;
+        };
 
-        let in_progress = idx.pipelines_by_status(PipelineStatus::InProgress).unwrap_or_default();
-        let queued = idx.pipelines_by_status(PipelineStatus::Queued).unwrap_or_default();
-        
+        let in_progress = idx
+            .pipelines_by_status(PipelineStatus::InProgress)
+            .unwrap_or_default();
+        let queued = idx
+            .pipelines_by_status(PipelineStatus::Queued)
+            .unwrap_or_default();
+
         let mut pipelines = in_progress;
         pipelines.extend(queued);
 
@@ -1218,7 +1313,10 @@ impl TasksPage {
             }
         }
 
-        let queued_count = pipelines.iter().filter(|p| p.status == PipelineStatus::Queued).count();
+        let queued_count = pipelines
+            .iter()
+            .filter(|p| p.status == PipelineStatus::Queued)
+            .count();
         let runner_active = imp.runner_active.get();
         let paused = imp.paused.get();
 
@@ -1349,8 +1447,10 @@ impl TasksPage {
 
         let info_box = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
         info_box.set_hexpand(true);
-        
-        let filename = pipeline.source_path.file_name()
+
+        let filename = pipeline
+            .source_path
+            .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Unknown".to_string());
         let name_label = gtk4::Label::new(Some(&filename));
@@ -1360,17 +1460,17 @@ impl TasksPage {
 
         let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
         let step = steps.first().cloned();
-        let op_type = step.as_ref().map(|s| match s.step_type {
-            StepType::Upscale => "Upscale",
-            StepType::Export => "Export",
-        }).unwrap_or("Unknown");
+        let op_type = step
+            .as_ref()
+            .map(|s| match s.step_type {
+                StepType::Upscale => "Upscale",
+                StepType::Export => "Export",
+            })
+            .unwrap_or("Unknown");
 
         info_box.append(&name_label);
 
-        let summary = step
-            .as_ref()
-            .map(format_step_summary)
-            .unwrap_or_default();
+        let summary = step.as_ref().map(format_step_summary).unwrap_or_default();
         let summary_label = gtk4::Label::new(Some(&summary));
         summary_label.set_halign(gtk4::Align::Start);
         summary_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
@@ -1397,7 +1497,7 @@ impl TasksPage {
             let del_btn = gtk4::Button::from_icon_name("window-close-symbolic");
             del_btn.add_css_class("flat");
             del_btn.add_css_class("destructive-action");
-            
+
             {
                 let widget_weak = self.downgrade();
                 let pid = pipeline.id;
@@ -1486,10 +1586,7 @@ impl TasksPage {
         info_box.append(&name_label);
 
         // Operation + settings summary
-        let op_summary = step
-            .as_ref()
-            .map(format_step_summary)
-            .unwrap_or_default();
+        let op_summary = step.as_ref().map(format_step_summary).unwrap_or_default();
         let op_label = gtk4::Label::new(Some(&op_summary));
         op_label.set_halign(gtk4::Align::Start);
         op_label.add_css_class("dim-label");
@@ -1523,7 +1620,10 @@ impl TasksPage {
         compare_btn.add_css_class("flat");
         let output_path_opt = step.as_ref().and_then(|s| s.output_path.clone());
         let can_compare = pipeline.source_path.exists()
-            && output_path_opt.as_ref().map(|p| p.exists()).unwrap_or(false);
+            && output_path_opt
+                .as_ref()
+                .map(|p| p.exists())
+                .unwrap_or(false);
         compare_btn.set_sensitive(can_compare);
         compare_btn.set_tooltip_text(Some("Open in Compare page"));
         if can_compare {
@@ -1622,7 +1722,9 @@ impl TasksPage {
 
     fn try_start_runner(&self) {
         let imp = self.imp();
-        if imp.polling_timer.borrow().is_some() { return; }
+        if imp.polling_timer.borrow().is_some() {
+            return;
+        }
 
         // Dead-man's switch: if the runner is active but somehow stalled,
         // nudge it forward. Never auto-starts — that's the caller's job.
@@ -1642,7 +1744,9 @@ impl TasksPage {
 
     fn run_next_pipeline(&self) {
         let imp = self.imp();
-        if !imp.runner_active.get() || imp.paused.get() { return; }
+        if !imp.runner_active.get() || imp.paused.get() {
+            return;
+        }
 
         let Some(state_rc) = imp.state.borrow().clone() else {
             imp.runner_active.set(false);
@@ -1653,9 +1757,12 @@ impl TasksPage {
             let state = state_rc.borrow();
             let idx = match state.library_index.as_ref() {
                 Some(i) => i,
-                None => { imp.runner_active.set(false); return; }
+                None => {
+                    imp.runner_active.set(false);
+                    return;
+                }
             };
-            
+
             let pipeline = match idx.next_queued_pipeline().ok().flatten() {
                 Some(p) => p,
                 None => {
@@ -1667,11 +1774,22 @@ impl TasksPage {
             };
 
             let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
-            let step = match steps.into_iter().find(|s| s.status == PipelineStatus::Queued) {
+            let step = match steps
+                .iter()
+                .find(|s| s.status == PipelineStatus::Queued)
+                .cloned()
+            {
                 Some(s) => s,
                 None => {
                     // Pipeline has no queued steps — mark complete
                     let _ = idx.set_pipeline_status(pipeline.id, PipelineStatus::Completed);
+                    std::fs::remove_dir_all(
+                        glib::user_data_dir()
+                            .join("sharpr")
+                            .join("pipeline_work")
+                            .join(pipeline.id.to_string()),
+                    )
+                    .ok();
                     drop(state);
                     self.refresh();
                     self.run_next_pipeline();
@@ -1679,23 +1797,48 @@ impl TasksPage {
                 }
             };
 
+            let effective_source = if step.step_order == 1 {
+                pipeline.source_path.clone()
+            } else {
+                let prev = steps
+                    .iter()
+                    .find(|s| s.step_order == step.step_order - 1)
+                    .and_then(|s| s.output_path.clone());
+                match prev {
+                    Some(p) => p,
+                    None => {
+                        let _ = idx.set_step_status(
+                            step.id,
+                            PipelineStatus::Failed,
+                            None,
+                            Some("Previous step has no output"),
+                        );
+                        let _ = idx.set_pipeline_status(pipeline.id, PipelineStatus::Failed);
+                        drop(state);
+                        self.refresh();
+                        return;
+                    }
+                }
+            };
+            let _ = idx.set_step_input_path(step.id, &effective_source);
+
             let _ = idx.set_pipeline_status(pipeline.id, PipelineStatus::InProgress);
             let _ = idx.set_step_status(step.id, PipelineStatus::InProgress, None, None);
-            (pipeline, step)
+            (pipeline, step, effective_source)
         };
 
         self.refresh();
 
-        let (pipeline, step) = result;
+        let (pipeline, step, effective_source) = result;
         let widget_weak = self.downgrade();
         let state_rc_c = state_rc.clone();
 
         match step.step_type {
             StepType::Export => {
-                self.run_export_step(pipeline, step, widget_weak, state_rc_c);
+                self.run_export_step(pipeline, step, effective_source, widget_weak, state_rc_c);
             }
             StepType::Upscale => {
-                self.run_upscale_step(pipeline, step, widget_weak, state_rc_c);
+                self.run_upscale_step(pipeline, step, effective_source, widget_weak, state_rc_c);
             }
         }
     }
@@ -1704,11 +1847,12 @@ impl TasksPage {
         &self,
         pipeline: Pipeline,
         step: PipelineStep,
+        effective_source: PathBuf,
         widget_weak: WeakRef<TasksPage>,
         state_rc: Rc<RefCell<AppState>>,
     ) {
         let (tx, rx) = async_channel::bounded::<Result<PathBuf, String>>(1);
-        let source = pipeline.source_path.clone();
+        let source = effective_source;
         let settings_json = step.settings_json.clone();
 
         let export_output_dir = state_rc.borrow().settings.export_output_dir.clone();
@@ -1716,7 +1860,10 @@ impl TasksPage {
         std::thread::spawn(move || {
             let settings: ExportStepSettings = match serde_json::from_str(&settings_json) {
                 Ok(s) => s,
-                Err(e) => { let _ = tx.send_blocking(Err(e.to_string())); return; }
+                Err(e) => {
+                    let _ = tx.send_blocking(Err(e.to_string()));
+                    return;
+                }
             };
             let format = match settings.format.as_str() {
                 "webp" => ExportFormat::Webp,
@@ -1724,9 +1871,19 @@ impl TasksPage {
                 "jpeg" => ExportFormat::Jpeg,
                 _ => ExportFormat::Jxl,
             };
-            
-            let dest_dir = if settings.destination == "source" {
-                source.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+
+            let dest_dir = if step.step_order > 1 {
+                let work_dir = glib::user_data_dir()
+                    .join("sharpr")
+                    .join("pipeline_work")
+                    .join(pipeline.id.to_string());
+                std::fs::create_dir_all(&work_dir).ok();
+                work_dir
+            } else if settings.destination == "source" {
+                source
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."))
             } else if settings.destination == "custom" {
                 settings.custom_path.clone().unwrap_or_else(|| {
                     resolve_output_dir(export_output_dir.as_ref(), OutputFolderKind::Export)
@@ -1734,10 +1891,16 @@ impl TasksPage {
             } else {
                 resolve_output_dir(export_output_dir.as_ref(), OutputFolderKind::Export)
             };
-            
+
             let output = unique_output_path(&dest_dir, &source, format);
-            let result = export_to_path(&source, &output, settings.max_edge, format, settings.quality);
-            
+            let result = export_to_path(
+                &source,
+                &output,
+                settings.max_edge,
+                format,
+                settings.quality,
+            );
+
             let _ = tx.send_blocking(match result {
                 Ok(_) => Ok(output),
                 Err(e) => Err(e.to_string()),
@@ -1758,8 +1921,20 @@ impl TasksPage {
                                     Some(&path),
                                     None,
                                 );
-                                let _ =
-                                    idx.set_pipeline_status(pipeline.id, PipelineStatus::Completed);
+                                let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
+                                if steps.iter().all(|s| s.status == PipelineStatus::Completed) {
+                                    let _ = idx.set_pipeline_status(
+                                        pipeline.id,
+                                        PipelineStatus::Completed,
+                                    );
+                                    std::fs::remove_dir_all(
+                                        glib::user_data_dir()
+                                            .join("sharpr")
+                                            .join("pipeline_work")
+                                            .join(pipeline.id.to_string()),
+                                    )
+                                    .ok();
+                                }
                             }
                             Ok(Err(e)) => {
                                 let _ = idx.set_step_status(
@@ -1798,17 +1973,26 @@ impl TasksPage {
         &self,
         pipeline: Pipeline,
         step: PipelineStep,
+        effective_source: PathBuf,
         widget_weak: WeakRef<TasksPage>,
         state_rc: Rc<RefCell<AppState>>,
     ) {
         let (tx, rx) = async_channel::bounded::<Result<PathBuf, String>>(1);
-        let source = pipeline.source_path.clone();
+        let source = effective_source;
         let settings_json = step.settings_json.clone();
 
-        let (upscaler_binary_path, upscaled_output_dir, comfyui_url, comfyui_workflow, onnx_upscale_model) = {
+        let (
+            upscaler_binary_path,
+            upscaled_output_dir,
+            comfyui_url,
+            comfyui_workflow,
+            onnx_upscale_model,
+        ) = {
             let st = state_rc.borrow();
             (
-                st.settings.upscaler_binary_path.clone()
+                st.settings
+                    .upscaler_binary_path
+                    .clone()
                     .or_else(crate::upscale::UpscaleDetector::find_realesrgan),
                 st.settings.upscaled_output_dir.clone(),
                 st.settings.comfyui_url.clone(),
@@ -1820,23 +2004,31 @@ impl TasksPage {
         std::thread::spawn(move || {
             let settings: UpscaleStepSettings = match serde_json::from_str(&settings_json) {
                 Ok(s) => s,
-                Err(e) => { let _ = tx.send_blocking(Err(e.to_string())); return; }
+                Err(e) => {
+                    let _ = tx.send_blocking(Err(e.to_string()));
+                    return;
+                }
             };
 
             let backend_kind = UpscaleBackendKind::from_settings(&settings.backend);
-            
+
             if backend_kind == UpscaleBackendKind::ComfyUi {
-                let _ = tx.send_blocking(Err("ComfyUI backend not yet supported in queue".to_string()));
+                let _ =
+                    tx.send_blocking(Err("ComfyUI backend not yet supported in queue".to_string()));
                 return;
             }
 
             let model = UpscaleModel::from_settings(&settings.model);
             let format = UpscaleOutputFormat::from_settings(&settings.format);
-            
+
             let job = UpscaleJobConfig {
                 source_dimensions: image::image_dimensions(&source).unwrap_or((0, 0)),
                 requested_scale: settings.scale,
-                execution_scale: if settings.scale == 0 { 4 } else { settings.scale },
+                execution_scale: if settings.scale == 0 {
+                    4
+                } else {
+                    settings.scale
+                },
                 model,
                 compress_output: settings.compress,
                 compressed_format: format,
@@ -1847,8 +2039,18 @@ impl TasksPage {
                 gpu_id: None,
             };
 
-            let dest_dir = if settings.destination == "source" {
-                source.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+            let dest_dir = if step.step_order > 1 {
+                let work_dir = glib::user_data_dir()
+                    .join("sharpr")
+                    .join("pipeline_work")
+                    .join(pipeline.id.to_string());
+                std::fs::create_dir_all(&work_dir).ok();
+                work_dir
+            } else if settings.destination == "source" {
+                source
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."))
             } else if settings.destination == "custom" {
                 settings.custom_path.clone().unwrap_or_else(|| {
                     resolve_output_dir(upscaled_output_dir.as_ref(), OutputFolderKind::Upscaled)
@@ -1857,10 +2059,14 @@ impl TasksPage {
                 resolve_output_dir(upscaled_output_dir.as_ref(), OutputFolderKind::Upscaled)
             };
 
-            let onnx_model = settings.onnx_model
+            let onnx_model = settings
+                .onnx_model
                 .map(|s| crate::upscale::OnnxUpscaleModel::from_settings(&s))
-                .unwrap_or_else(|| crate::upscale::OnnxUpscaleModel::from_settings(&onnx_upscale_model));
-            let comfyui_workflow = crate::upscale::ComfyUiWorkflow::from_settings(&comfyui_workflow);
+                .unwrap_or_else(|| {
+                    crate::upscale::OnnxUpscaleModel::from_settings(&onnx_upscale_model)
+                });
+            let comfyui_workflow =
+                crate::upscale::ComfyUiWorkflow::from_settings(&comfyui_workflow);
 
             let backend = make_upscale_backend(
                 backend_kind,
@@ -1881,15 +2087,16 @@ impl TasksPage {
                 match settings.format.as_str() {
                     "webp" => "webp",
                     "jpeg" => "jpg",
-                    "png"  => "png",
-                    _      => "jxl",
+                    "png" => "png",
+                    _ => "jxl",
                 }
             } else {
                 "png"
             };
-            let output_filename = crate::export::unique_output_path_for_extension(&dest_dir, &source, output_ext);
+            let output_filename =
+                crate::export::unique_output_path_for_extension(&dest_dir, &source, output_ext);
             let rx_events = backend.run(source.clone(), output_filename, job);
-            
+
             // Wait for completion
             let mut last_result = Err("Job did not finish".to_string());
             while let Ok(event) = rx_events.recv_blocking() {
@@ -1903,7 +2110,7 @@ impl TasksPage {
                     _ => {}
                 }
             }
-            
+
             let _ = tx.send_blocking(last_result);
         });
 
@@ -1921,8 +2128,20 @@ impl TasksPage {
                                     Some(&path),
                                     None,
                                 );
-                                let _ =
-                                    idx.set_pipeline_status(pipeline.id, PipelineStatus::Completed);
+                                let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
+                                if steps.iter().all(|s| s.status == PipelineStatus::Completed) {
+                                    let _ = idx.set_pipeline_status(
+                                        pipeline.id,
+                                        PipelineStatus::Completed,
+                                    );
+                                    std::fs::remove_dir_all(
+                                        glib::user_data_dir()
+                                            .join("sharpr")
+                                            .join("pipeline_work")
+                                            .join(pipeline.id.to_string()),
+                                    )
+                                    .ok();
+                                }
                             }
                             Ok(Err(e)) => {
                                 let _ = idx.set_step_status(
@@ -1961,7 +2180,7 @@ impl TasksPage {
 async fn load_thumbnail_for_row(path: &Path) -> Result<gdk4::Texture, String> {
     let path = path.to_path_buf();
     let (tx, rx) = async_channel::bounded::<Result<gdk4::Texture, String>>(1);
-    
+
     std::thread::spawn(move || {
         let result = (|| -> Result<gdk4::Texture, String> {
             let img = image::open(&path).map_err(|e| e.to_string())?;
@@ -1974,12 +2193,15 @@ async fn load_thumbnail_for_row(path: &Path) -> Result<gdk4::Texture, String> {
                 gdk4::MemoryFormat::R8g8b8a8,
                 &bytes,
                 (rgb.width() * 4) as usize,
-            ).upcast())
+            )
+            .upcast())
         })();
         let _ = tx.send_blocking(result);
     });
 
-    rx.recv().await.unwrap_or_else(|_| Err("Thumbnail thread died".to_string()))
+    rx.recv()
+        .await
+        .unwrap_or_else(|_| Err("Thumbnail thread died".to_string()))
 }
 
 fn format_step_summary(step: &PipelineStep) -> String {

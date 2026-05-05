@@ -1,0 +1,41 @@
+[graph]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[advisories]
+ignore = [
+    # paste is pulled in transitively by glycin + tract_onnx; no safe upgrade exists
+    { id = "RUSTSEC-2024-0436", reason = "transitive dep via glycin/tract_onnx; upstream has no fix" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CC0-1.0",
+    "BlueOak-1.0.0",
+    "LGPL-2.1-or-later",
+    "GPL-3.0-or-later",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

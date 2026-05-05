@@ -1112,6 +1112,15 @@ impl LibraryIndex {
         Ok(())
     }
 
+    pub fn set_step_input_path(&self, step_id: i64, path: &Path) -> rusqlite::Result<()> {
+        let conn = self.pool.get().map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE pipeline_steps SET input_path = ?1 WHERE id = ?2",
+            params![path.to_str().unwrap_or(""), step_id],
+        )?;
+        Ok(())
+    }
+
     /// Reorder a queued pipeline to a new position. Other queued pipelines
     /// are renumbered to close the gap.
     pub fn reorder_pipeline(&self, id: i64, new_order: i64) -> rusqlite::Result<()> {
@@ -2157,5 +2166,91 @@ mod tests {
         assert_eq!(queued[0].id, pid);
         let steps = idx.steps_for_pipeline(pid).unwrap();
         assert_eq!(steps[0].status, PipelineStatus::Queued);
+    }
+
+    #[test]
+    fn step_input_path_roundtrip() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let pid = idx
+            .create_pipeline(Path::new("/photos/source.png"))
+            .unwrap();
+        let sid = idx
+            .append_pipeline_step(pid, StepType::Export, r#"{}"#)
+            .unwrap();
+
+        idx.set_step_input_path(sid, Path::new("/tmp/intermediate.png"))
+            .unwrap();
+        idx.set_step_status(
+            sid,
+            PipelineStatus::Completed,
+            Some(Path::new("/tmp/output.jxl")),
+            None,
+        )
+        .unwrap();
+
+        let steps = idx.steps_for_pipeline(pid).unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            steps[0].input_path.as_deref(),
+            Some(Path::new("/tmp/intermediate.png"))
+        );
+        assert_eq!(
+            steps[0].output_path.as_deref(),
+            Some(Path::new("/tmp/output.jxl"))
+        );
+    }
+
+    #[test]
+    fn multi_step_chaining_db() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let pid = idx
+            .create_pipeline(Path::new("/photos/source.png"))
+            .unwrap();
+        let first = idx
+            .append_pipeline_step(pid, StepType::Upscale, r#"{}"#)
+            .unwrap();
+        let second = idx
+            .append_pipeline_step(pid, StepType::Export, r#"{}"#)
+            .unwrap();
+
+        idx.set_step_input_path(first, Path::new("/photos/source.png"))
+            .unwrap();
+        idx.set_step_status(
+            first,
+            PipelineStatus::Completed,
+            Some(Path::new("/work/upscaled.png")),
+            None,
+        )
+        .unwrap();
+        idx.set_step_input_path(second, Path::new("/work/upscaled.png"))
+            .unwrap();
+        idx.set_step_status(
+            second,
+            PipelineStatus::Completed,
+            Some(Path::new("/exports/final.jxl")),
+            None,
+        )
+        .unwrap();
+
+        let steps = idx.steps_for_pipeline(pid).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].id, first);
+        assert_eq!(
+            steps[0].input_path.as_deref(),
+            Some(Path::new("/photos/source.png"))
+        );
+        assert_eq!(
+            steps[0].output_path.as_deref(),
+            Some(Path::new("/work/upscaled.png"))
+        );
+        assert_eq!(steps[1].id, second);
+        assert_eq!(
+            steps[1].input_path.as_deref(),
+            Some(Path::new("/work/upscaled.png"))
+        );
+        assert_eq!(
+            steps[1].output_path.as_deref(),
+            Some(Path::new("/exports/final.jxl"))
+        );
     }
 }
