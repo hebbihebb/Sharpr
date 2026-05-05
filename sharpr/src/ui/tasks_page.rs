@@ -5,6 +5,7 @@ use std::rc::{Rc};
 use glib::WeakRef;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
+use libadwaita::prelude::*;
 
 use crate::library_index::{LibraryIndex, Pipeline, PipelineStatus, PipelineStep, StepType};
 use crate::ui::window::AppState;
@@ -19,10 +20,22 @@ use crate::export::{ExportFormat, OutputFolderKind, resolve_output_dir, unique_o
 pub struct UpscaleStepSettings {
     pub backend: String,       // "cli" | "onnx" | "comfyui"
     pub model: String,         // "standard" | "anime"
+    #[serde(default)]
+    pub onnx_model: Option<String>,
     pub scale: u32,            // 0 = smart/auto, 2, 3, 4
     pub compress: bool,
     pub format: String,        // "jxl" | "webp" | "jpeg" | "png"
     pub quality: u8,
+    #[serde(default)]
+    pub keep_png: bool,
+    #[serde(default = "default_destination")]
+    pub destination: String,   // "default" | "source" | "custom"
+    #[serde(default)]
+    pub custom_path: Option<PathBuf>,
+}
+
+fn default_destination() -> String {
+    "default".to_string()
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -30,6 +43,10 @@ pub struct ExportStepSettings {
     pub format: String,        // "jxl" | "webp" | "png" | "jpeg"
     pub max_edge: Option<u32>, // None = original size
     pub quality: u8,
+    #[serde(default = "default_destination")]
+    pub destination: String,   // "default" | "source" | "custom"
+    #[serde(default)]
+    pub custom_path: Option<PathBuf>,
 }
 
 pub type CompareCallback = Box<dyn Fn(PathBuf, PathBuf, String)>;
@@ -43,19 +60,29 @@ mod imp {
         pub settings_stack: RefCell<Option<gtk4::Stack>>,
         pub start_btn: RefCell<Option<gtk4::Button>>,
         pub stop_btn: RefCell<Option<gtk4::Button>>,
-        pub op_dropdown: RefCell<Option<gtk4::DropDown>>,
+        pub op_upscale_btn: RefCell<Option<gtk4::ToggleButton>>,
+        pub op_export_btn: RefCell<Option<gtk4::ToggleButton>>,
+        pub crash_banner: RefCell<Option<libadwaita::Banner>>,
+        pub queue_empty_label: RefCell<Option<gtk4::Label>>,
 
         // Upscale settings widgets
-        pub backend_dropdown: RefCell<Option<gtk4::DropDown>>,
-        pub scale_dropdown: RefCell<Option<gtk4::DropDown>>,
-        pub compress_check: RefCell<Option<gtk4::CheckButton>>,
-        pub format_dropdown: RefCell<Option<gtk4::DropDown>>,
+        pub backend_onnx_btn: RefCell<Option<gtk4::ToggleButton>>,
+        pub backend_comfyui_btn: RefCell<Option<gtk4::ToggleButton>>,
+        pub backend_cli_btn: RefCell<Option<gtk4::ToggleButton>>,
+        pub onnx_model_dropdown: RefCell<Option<libadwaita::ComboRow>>,
+        pub onnx_model_row: RefCell<Option<libadwaita::ComboRow>>,
+        pub scale_dropdown: RefCell<Option<libadwaita::ComboRow>>,
+        pub compress_check: RefCell<Option<libadwaita::SwitchRow>>,
+        pub keep_png_check: RefCell<Option<libadwaita::SwitchRow>>,
+        pub format_dropdown: RefCell<Option<libadwaita::ComboRow>>,
         pub quality_spin: RefCell<Option<gtk4::SpinButton>>,
+        pub upscale_dest_dropdown: RefCell<Option<libadwaita::ComboRow>>,
 
         // Export settings widgets
-        pub export_format_dropdown: RefCell<Option<gtk4::DropDown>>,
-        pub export_edge_dropdown: RefCell<Option<gtk4::DropDown>>,
+        pub export_format_dropdown: RefCell<Option<libadwaita::ComboRow>>,
+        pub export_edge_dropdown: RefCell<Option<libadwaita::ComboRow>>,
         pub export_quality_spin: RefCell<Option<gtk4::SpinButton>>,
+        pub export_dest_dropdown: RefCell<Option<libadwaita::ComboRow>>,
 
         // History
         pub history_list: RefCell<Option<gtk4::ListBox>>,
@@ -96,6 +123,11 @@ mod imp {
             left_col.set_margin_start(12);
             left_col.set_margin_end(12);
 
+            let crash_banner = libadwaita::Banner::new("Unfinished jobs from previous session detected.");
+            crash_banner.set_button_label(Some("Resume All"));
+            crash_banner.set_revealed(false);
+            left_col.append(&crash_banner);
+
             let toolbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
             toolbar.set_halign(gtk4::Align::End);
             let start_btn = gtk4::Button::with_label("Start Queue");
@@ -113,8 +145,18 @@ mod imp {
             scrolled.set_vexpand(true);
             scrolled.set_child(Some(&queue_list));
 
+            let queue_empty_label = gtk4::Label::new(Some("Queue is empty"));
+            queue_empty_label.add_css_class("dim-label");
+            queue_empty_label.set_margin_top(20);
+            queue_empty_label.set_margin_bottom(20);
+            queue_empty_label.set_visible(false);
+            
+            let queue_overlay = gtk4::Overlay::new();
+            queue_overlay.set_child(Some(&scrolled));
+            queue_overlay.add_overlay(&queue_empty_label);
+
             left_col.append(&toolbar);
-            left_col.append(&scrolled);
+            left_col.append(&queue_overlay);
 
             // --- History section ---
             let history_section = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -154,82 +196,122 @@ mod imp {
             right_col.set_margin_start(12);
             right_col.set_margin_end(12);
 
-            let op_label = gtk4::Label::new(Some("Operation"));
-            op_label.set_halign(gtk4::Align::Start);
-            op_label.add_css_class("heading");
-
-            let op_model = gtk4::StringList::new(&["Upscale", "Export"]);
-            let op_dropdown = gtk4::DropDown::new(Some(op_model), None::<gtk4::Expression>);
+            let op_switcher = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            op_switcher.add_css_class("linked");
+            let op_upscale_btn = gtk4::ToggleButton::with_label("Upscale");
+            let op_export_btn = gtk4::ToggleButton::with_label("Export");
+            op_switcher.append(&op_upscale_btn);
+            op_switcher.append(&op_export_btn);
 
             let settings_stack = gtk4::Stack::new();
             settings_stack.set_transition_type(gtk4::StackTransitionType::SlideLeftRight);
 
             // Upscale Settings Page
-            let upscale_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+            let upscale_group = libadwaita::PreferencesGroup::new();
 
-            let backend_label = gtk4::Label::new(Some("Backend"));
-            backend_label.set_halign(gtk4::Align::Start);
-            let backend_model = gtk4::StringList::new(&["ONNX", "CLI", "ComfyUI"]);
-            let backend_dropdown = gtk4::DropDown::new(Some(backend_model), None::<gtk4::Expression>);
-            upscale_box.append(&backend_label);
-            upscale_box.append(&backend_dropdown);
+            let backend_row = libadwaita::ActionRow::new();
+            backend_row.set_title("Backend");
+            let backend_switcher = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            backend_switcher.add_css_class("linked");
+            backend_switcher.set_valign(gtk4::Align::Center);
+            let backend_onnx_btn = gtk4::ToggleButton::with_label("ONNX");
+            let backend_comfyui_btn = gtk4::ToggleButton::with_label("ComfyUI");
+            let backend_cli_btn = gtk4::ToggleButton::with_label("External CLI");
+            backend_switcher.append(&backend_onnx_btn);
+            backend_switcher.append(&backend_comfyui_btn);
+            backend_switcher.append(&backend_cli_btn);
+            backend_row.add_suffix(&backend_switcher);
 
-            let scale_label = gtk4::Label::new(Some("Scale"));
-            scale_label.set_halign(gtk4::Align::Start);
+            let onnx_model_row = libadwaita::ComboRow::new();
+            onnx_model_row.set_title("Model");
+            let onnx_model_list = gtk4::StringList::new(&[
+                "Lightweight ×2 — 8 MB",
+                "Compressed ×4 — 55 MB",
+                "Realworld ×4 — 53 MB",
+            ]);
+            onnx_model_row.set_model(Some(&onnx_model_list));
+            let onnx_model_dropdown = onnx_model_row.clone();
+
+            let scale_row = libadwaita::ComboRow::new();
+            scale_row.set_title("Scale");
             let scale_model = gtk4::StringList::new(&["Auto (Smart)", "2x", "3x", "4x"]);
-            let scale_dropdown = gtk4::DropDown::new(Some(scale_model), None::<gtk4::Expression>);
+            scale_row.set_model(Some(&scale_model));
+            let scale_dropdown = scale_row.clone();
 
-            let compress_check = gtk4::CheckButton::with_label("Compress output");
-            
-            let format_label = gtk4::Label::new(Some("Format"));
-            format_label.set_halign(gtk4::Align::Start);
+            let compress_check = libadwaita::SwitchRow::new();
+            compress_check.set_title("Compress output");
+
+            let format_row = libadwaita::ComboRow::new();
+            format_row.set_title("Format");
             let format_model = gtk4::StringList::new(&["JXL", "WebP", "JPEG", "PNG"]);
-            let format_dropdown = gtk4::DropDown::new(Some(format_model), None::<gtk4::Expression>);
+            format_row.set_model(Some(&format_model));
+            let format_dropdown = format_row.clone();
 
-            let quality_label = gtk4::Label::new(Some("Quality"));
-            quality_label.set_halign(gtk4::Align::Start);
+            let quality_row = libadwaita::ActionRow::new();
+            quality_row.set_title("Quality");
             let quality_adj = gtk4::Adjustment::new(85.0, 1.0, 100.0, 1.0, 10.0, 0.0);
             let quality_spin = gtk4::SpinButton::new(Some(&quality_adj), 1.0, 0);
+            quality_spin.set_valign(gtk4::Align::Center);
+            quality_row.add_suffix(&quality_spin);
+            quality_row.set_activatable_widget(Some(&quality_spin));
 
-            upscale_box.append(&scale_label);
-            upscale_box.append(&scale_dropdown);
-            upscale_box.append(&compress_check);
-            upscale_box.append(&format_label);
-            upscale_box.append(&format_dropdown);
-            upscale_box.append(&quality_label);
-            upscale_box.append(&quality_spin);
+            let keep_png_check = libadwaita::SwitchRow::new();
+            keep_png_check.set_title("Keep raw PNG sidecar");
 
-            settings_stack.add_named(&upscale_box, Some("upscale"));
+            let upscale_dest_row = libadwaita::ComboRow::new();
+            upscale_dest_row.set_title("Destination");
+            let upscale_dest_model = gtk4::StringList::new(&["Default (Pictures/Upscaled)", "Same as source"]);
+            upscale_dest_row.set_model(Some(&upscale_dest_model));
+            let upscale_dest_dropdown = upscale_dest_row.clone();
+
+            upscale_group.add(&backend_row);
+            upscale_group.add(&onnx_model_row);
+            upscale_group.add(&scale_row);
+            upscale_group.add(&compress_check);
+            upscale_group.add(&format_row);
+            upscale_group.add(&quality_row);
+            upscale_group.add(&keep_png_check);
+            upscale_group.add(&upscale_dest_row);
+
+            settings_stack.add_named(&upscale_group, Some("upscale"));
 
             // Export Settings Page
-            let export_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+            let export_group = libadwaita::PreferencesGroup::new();
 
-            let export_format_label = gtk4::Label::new(Some("Format"));
-            export_format_label.set_halign(gtk4::Align::Start);
+            let export_format_row = libadwaita::ComboRow::new();
+            export_format_row.set_title("Format");
             let export_format_model = gtk4::StringList::new(&["JXL", "WebP", "PNG", "JPEG"]);
-            let export_format_dropdown = gtk4::DropDown::new(Some(export_format_model), None::<gtk4::Expression>);
+            export_format_row.set_model(Some(&export_format_model));
+            let export_format_dropdown = export_format_row.clone();
 
-            let export_edge_label = gtk4::Label::new(Some("Max Edge"));
-            export_edge_label.set_halign(gtk4::Align::Start);
+            let export_edge_row = libadwaita::ComboRow::new();
+            export_edge_row.set_title("Max Edge");
             let export_edge_model = gtk4::StringList::new(&["Original", "1080px", "2160px", "4096px"]);
-            let export_edge_dropdown = gtk4::DropDown::new(Some(export_edge_model), None::<gtk4::Expression>);
+            export_edge_row.set_model(Some(&export_edge_model));
+            let export_edge_dropdown = export_edge_row.clone();
 
-            let export_quality_label = gtk4::Label::new(Some("Quality"));
-            export_quality_label.set_halign(gtk4::Align::Start);
+            let export_quality_row = libadwaita::ActionRow::new();
+            export_quality_row.set_title("Quality");
             let export_quality_adj = gtk4::Adjustment::new(85.0, 1.0, 100.0, 1.0, 10.0, 0.0);
             let export_quality_spin = gtk4::SpinButton::new(Some(&export_quality_adj), 1.0, 0);
+            export_quality_spin.set_valign(gtk4::Align::Center);
+            export_quality_row.add_suffix(&export_quality_spin);
+            export_quality_row.set_activatable_widget(Some(&export_quality_spin));
 
-            export_box.append(&export_format_label);
-            export_box.append(&export_format_dropdown);
-            export_box.append(&export_edge_label);
-            export_box.append(&export_edge_dropdown);
-            export_box.append(&export_quality_label);
-            export_box.append(&export_quality_spin);
+            let export_dest_row = libadwaita::ComboRow::new();
+            export_dest_row.set_title("Destination");
+            let export_dest_model = gtk4::StringList::new(&["Default (Pictures/Export)", "Same as source"]);
+            export_dest_row.set_model(Some(&export_dest_model));
+            let export_dest_dropdown = export_dest_row.clone();
 
-            settings_stack.add_named(&export_box, Some("export"));
+            export_group.add(&export_format_row);
+            export_group.add(&export_edge_row);
+            export_group.add(&export_quality_row);
+            export_group.add(&export_dest_row);
 
-            right_col.append(&op_label);
-            right_col.append(&op_dropdown);
+            settings_stack.add_named(&export_group, Some("export"));
+
+            right_col.append(&op_switcher);
             right_col.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
             right_col.append(&settings_stack);
 
@@ -237,15 +319,102 @@ mod imp {
             main_box.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
             main_box.append(&right_col);
 
-            // Wire op_dropdown to stack
+            // Wire operation switcher to stack
             {
                 let settings_stack_c = settings_stack.clone();
-                op_dropdown.connect_selected_notify(move |dd| {
-                    match dd.selected() {
-                        0 => settings_stack_c.set_visible_child_name("upscale"),
-                        1 => settings_stack_c.set_visible_child_name("export"),
-                        _ => {}
+                let export_btn = op_export_btn.clone();
+                op_upscale_btn.connect_toggled(move |btn| {
+                    if btn.is_active() {
+                        if export_btn.is_active() {
+                            export_btn.set_active(false);
+                        }
+                        settings_stack_c.set_visible_child_name("upscale");
+                    } else if !export_btn.is_active() {
+                        btn.set_active(true);
                     }
+                });
+            }
+            {
+                let settings_stack_c = settings_stack.clone();
+                let upscale_btn = op_upscale_btn.clone();
+                op_export_btn.connect_toggled(move |btn| {
+                    if btn.is_active() {
+                        if upscale_btn.is_active() {
+                            upscale_btn.set_active(false);
+                        }
+                        settings_stack_c.set_visible_child_name("export");
+                    } else if !upscale_btn.is_active() {
+                        btn.set_active(true);
+                    }
+                });
+            }
+
+            // Wire backend switcher and dependent row visibility
+            {
+                let comfy_btn = backend_comfyui_btn.clone();
+                let cli_btn = backend_cli_btn.clone();
+                let onnx_row = onnx_model_row.clone();
+                backend_onnx_btn.connect_toggled(move |btn| {
+                    if btn.is_active() {
+                        if comfy_btn.is_active() {
+                            comfy_btn.set_active(false);
+                        }
+                        if cli_btn.is_active() {
+                            cli_btn.set_active(false);
+                        }
+                        onnx_row.set_visible(true);
+                    } else if !comfy_btn.is_active() && !cli_btn.is_active() {
+                        btn.set_active(true);
+                    } else {
+                        onnx_row.set_visible(false);
+                    }
+                });
+            }
+            {
+                let onnx_btn = backend_onnx_btn.clone();
+                let cli_btn = backend_cli_btn.clone();
+                let onnx_row = onnx_model_row.clone();
+                backend_comfyui_btn.connect_toggled(move |btn| {
+                    if btn.is_active() {
+                        if onnx_btn.is_active() {
+                            onnx_btn.set_active(false);
+                        }
+                        if cli_btn.is_active() {
+                            cli_btn.set_active(false);
+                        }
+                        onnx_row.set_visible(false);
+                    } else if !onnx_btn.is_active() && !cli_btn.is_active() {
+                        btn.set_active(true);
+                    }
+                });
+            }
+            {
+                let onnx_btn = backend_onnx_btn.clone();
+                let comfy_btn = backend_comfyui_btn.clone();
+                let onnx_row = onnx_model_row.clone();
+                backend_cli_btn.connect_toggled(move |btn| {
+                    if btn.is_active() {
+                        if onnx_btn.is_active() {
+                            onnx_btn.set_active(false);
+                        }
+                        if comfy_btn.is_active() {
+                            comfy_btn.set_active(false);
+                        }
+                        onnx_row.set_visible(false);
+                    } else if !onnx_btn.is_active() && !comfy_btn.is_active() {
+                        btn.set_active(true);
+                    }
+                });
+            }
+
+            // Wire compression row to dependent options visibility
+            {
+                let format_row_c = format_row.clone();
+                let quality_row_c = quality_row.clone();
+                compress_check.connect_active_notify(move |row| {
+                    let visible = row.is_active();
+                    format_row_c.set_visible(visible);
+                    quality_row_c.set_visible(visible);
                 });
             }
 
@@ -283,21 +452,41 @@ mod imp {
                 });
             }
 
+            {
+                let widget_weak = widget.downgrade();
+                crash_banner.connect_button_clicked(move |_| {
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.imp().crash_banner.borrow().as_ref().map(|b| b.set_revealed(false));
+                        w.try_start_runner();
+                    }
+                });
+            }
+
             *self.queue_list.borrow_mut() = Some(queue_list);
+            *self.queue_empty_label.borrow_mut() = Some(queue_empty_label);
             *self.settings_stack.borrow_mut() = Some(settings_stack);
             *self.start_btn.borrow_mut() = Some(start_btn);
             *self.stop_btn.borrow_mut() = Some(stop_btn);
-            *self.op_dropdown.borrow_mut() = Some(op_dropdown);
+            *self.op_upscale_btn.borrow_mut() = Some(op_upscale_btn);
+            *self.op_export_btn.borrow_mut() = Some(op_export_btn);
+            *self.crash_banner.borrow_mut() = Some(crash_banner);
 
-            *self.backend_dropdown.borrow_mut() = Some(backend_dropdown);
+            *self.backend_onnx_btn.borrow_mut() = Some(backend_onnx_btn);
+            *self.backend_comfyui_btn.borrow_mut() = Some(backend_comfyui_btn);
+            *self.backend_cli_btn.borrow_mut() = Some(backend_cli_btn);
+            *self.onnx_model_dropdown.borrow_mut() = Some(onnx_model_dropdown);
+            *self.onnx_model_row.borrow_mut() = Some(onnx_model_row);
             *self.scale_dropdown.borrow_mut() = Some(scale_dropdown);
             *self.compress_check.borrow_mut() = Some(compress_check);
+            *self.keep_png_check.borrow_mut() = Some(keep_png_check);
             *self.format_dropdown.borrow_mut() = Some(format_dropdown);
             *self.quality_spin.borrow_mut() = Some(quality_spin);
+            *self.upscale_dest_dropdown.borrow_mut() = Some(upscale_dest_dropdown);
 
             *self.export_format_dropdown.borrow_mut() = Some(export_format_dropdown);
             *self.export_edge_dropdown.borrow_mut() = Some(export_edge_dropdown);
             *self.export_quality_spin.borrow_mut() = Some(export_quality_spin);
+            *self.export_dest_dropdown.borrow_mut() = Some(export_dest_dropdown);
 
             *self.history_list.borrow_mut() = Some(history_list);
             *self.clear_history_btn.borrow_mut() = Some(clear_history_btn);
@@ -329,25 +518,103 @@ impl TasksPage {
         glib::Object::new()
     }
 
+    pub fn set_interrupted_count(&self, n: usize) {
+        if n == 0 { return; }
+        let imp = self.imp();
+        if let Some(banner) = imp.crash_banner.borrow().as_ref() {
+            let msg = if n == 1 {
+                "1 job was interrupted and re-queued".to_string()
+            } else {
+                format!("{} jobs were interrupted and re-queued", n)
+            };
+            banner.set_title(&msg);
+            banner.set_revealed(true);
+        }
+    }
+
+    fn operation_is_export(&self) -> bool {
+        self.imp()
+            .op_export_btn
+            .borrow()
+            .as_ref()
+            .map(|btn| btn.is_active())
+            .unwrap_or(false)
+    }
+
+    fn set_operation(&self, operation: &str) {
+        let imp = self.imp();
+        let is_export = operation == "export";
+        if let Some(btn) = imp.op_export_btn.borrow().as_ref() {
+            btn.set_active(is_export);
+        }
+        if let Some(btn) = imp.op_upscale_btn.borrow().as_ref() {
+            btn.set_active(!is_export);
+        }
+    }
+
+    fn selected_backend(&self) -> &'static str {
+        let imp = self.imp();
+        if imp
+            .backend_cli_btn
+            .borrow()
+            .as_ref()
+            .map(|btn| btn.is_active())
+            .unwrap_or(false)
+        {
+            "cli"
+        } else if imp
+            .backend_comfyui_btn
+            .borrow()
+            .as_ref()
+            .map(|btn| btn.is_active())
+            .unwrap_or(false)
+        {
+            "comfyui"
+        } else {
+            "onnx"
+        }
+    }
+
+    fn set_backend(&self, backend: &str) {
+        let imp = self.imp();
+        if let Some(btn) = imp.backend_onnx_btn.borrow().as_ref() {
+            btn.set_active(backend == "onnx");
+        }
+        if let Some(btn) = imp.backend_comfyui_btn.borrow().as_ref() {
+            btn.set_active(backend == "comfyui");
+        }
+        if let Some(btn) = imp.backend_cli_btn.borrow().as_ref() {
+            btn.set_active(backend == "cli");
+        }
+        if let Some(row) = imp.onnx_model_row.borrow().as_ref() {
+            row.set_visible(backend == "onnx");
+        }
+    }
+
     pub fn set_state(&self, state: Rc<RefCell<AppState>>) {
         let imp = self.imp();
 
         // Load initial defaults from settings
         {
             let st = state.borrow();
-            if let Some(backend_dd) = imp.backend_dropdown.borrow().as_ref() {
-                let idx = match st.settings.upscale_backend.as_str() {
-                    "cli" => 1,
-                    "comfyui" => 2,
-                    _ => 0, // onnx
+            self.set_operation("upscale");
+            self.set_backend(st.settings.upscale_backend.as_str());
+            if let Some(onnx_dd) = imp.onnx_model_dropdown.borrow().as_ref() {
+                let idx = match st.settings.onnx_upscale_model.as_str() {
+                    "swin2sr-compressed-x4" => 1,
+                    "swin2sr-real-x4" => 2,
+                    _ => 0, // lightweight-x2
                 };
-                backend_dd.set_selected(idx);
+                onnx_dd.set_selected(idx);
             }
             if let Some(scale_dd) = imp.scale_dropdown.borrow().as_ref() {
                 scale_dd.set_selected(0);
             }
             if let Some(compress) = imp.compress_check.borrow().as_ref() {
                 compress.set_active(st.settings.upscale_compress_output);
+            }
+            if let Some(keep_png) = imp.keep_png_check.borrow().as_ref() {
+                keep_png.set_active(st.settings.upscale_keep_raw_png_sidecar);
             }
             if let Some(format_dd) = imp.format_dropdown.borrow().as_ref() {
                 let idx = match st.settings.upscale_compressed_format.as_str() {
@@ -359,7 +626,10 @@ impl TasksPage {
                 format_dd.set_selected(idx);
             }
             if let Some(spin) = imp.quality_spin.borrow().as_ref() {
-                spin.set_value(85.0);
+                spin.set_value(st.settings.upscaler_quality as f64);
+            }
+            if let Some(dest_dd) = imp.upscale_dest_dropdown.borrow().as_ref() {
+                dest_dd.set_selected(0);
             }
 
             // Export defaults
@@ -372,19 +642,41 @@ impl TasksPage {
             if let Some(spin) = imp.export_quality_spin.borrow().as_ref() {
                 spin.set_value(85.0);
             }
+            if let Some(dest_dd) = imp.export_dest_dropdown.borrow().as_ref() {
+                dest_dd.set_selected(0);
+            }
         }
 
-        // Wire backend dropdown to persist the selection back to AppSettings
-        if let Some(backend_dd) = imp.backend_dropdown.borrow().as_ref() {
+        // Wire backend toggles to persist the selection back to AppSettings
+        for backend in ["onnx", "comfyui", "cli"] {
+            let button = match backend {
+                "comfyui" => imp.backend_comfyui_btn.borrow().clone(),
+                "cli" => imp.backend_cli_btn.borrow().clone(),
+                _ => imp.backend_onnx_btn.borrow().clone(),
+            };
+            if let Some(btn) = button {
+                let state_c = state.clone();
+                btn.connect_toggled(move |btn| {
+                    if !btn.is_active() {
+                        return;
+                    }
+                    if let Ok(mut st) = state_c.try_borrow_mut() {
+                        st.settings.set_upscale_backend(backend);
+                    }
+                });
+            }
+        }
+
+        if let Some(onnx_dd) = imp.onnx_model_dropdown.borrow().as_ref() {
             let state_c = state.clone();
-            backend_dd.connect_selected_notify(move |dd| {
+            onnx_dd.connect_selected_item_notify(move |dd| {
                 let key = match dd.selected() {
-                    1 => "cli",
-                    2 => "comfyui",
-                    _ => "onnx",
+                    1 => "swin2sr-compressed-x4",
+                    2 => "swin2sr-real-x4",
+                    _ => "swin2sr-lightweight-x2",
                 };
                 if let Ok(mut st) = state_c.try_borrow_mut() {
-                    st.settings.set_upscale_backend(key);
+                    st.settings.set_onnx_upscale_model(key);
                 }
             });
         }
@@ -392,24 +684,13 @@ impl TasksPage {
         *imp.state.borrow_mut() = Some(state.clone());
         self.refresh();
 
-        // Auto-start on load if queued jobs exist (crash recovery / app restart).
+        // Reveal crash recovery banner if there are unfinished pipelines
         {
-            let st = state.borrow();
-            if let Some(idx) = st.library_index.as_ref() {
-                let has_queued = idx
-                    .pipelines_by_status(PipelineStatus::Queued)
-                    .map(|v| !v.is_empty())
-                    .unwrap_or(false);
-                if has_queued {
-                    imp.runner_active.set(true);
-                }
-            }
+            let n = state.borrow().library_index_interrupted_count;
+            self.set_interrupted_count(n);
         }
 
         self.try_start_runner();
-        if imp.runner_active.get() {
-            self.run_next_pipeline();
-        }
     }
 
     pub fn set_compare_requested_cb<F: Fn(PathBuf, PathBuf, String) + 'static>(&self, f: F) {
@@ -420,8 +701,7 @@ impl TasksPage {
     /// Used by window.rs when adding a job from the filmstrip.
     pub fn current_step_config(&self) -> (StepType, String) {
         let imp = self.imp();
-        let op_idx = imp.op_dropdown.borrow().as_ref().map(|d| d.selected()).unwrap_or(0);
-        if op_idx == 1 {
+        if self.operation_is_export() {
             // Export
             let format = imp.export_format_dropdown.borrow().as_ref().map(|d| match d.selected() {
                 1 => "webp", 2 => "png", 3 => "jpeg", _ => "jxl",
@@ -430,17 +710,29 @@ impl TasksPage {
                 1 => Some(1080u32), 2 => Some(2160), 3 => Some(4096), _ => None,
             });
             let quality = imp.export_quality_spin.borrow().as_ref().map(|s| s.value() as u8).unwrap_or(85);
-            let settings = ExportStepSettings { format: format.into(), max_edge, quality };
+            let destination = imp.export_dest_dropdown.borrow().as_ref().map(|d| match d.selected() {
+                1 => "source",
+                _ => "default",
+            }).unwrap_or("default");
+            let settings = ExportStepSettings { format: format.into(), max_edge, quality, destination: destination.into(), custom_path: None };
             (StepType::Export, serde_json::to_string(&settings).unwrap_or_default())
         } else {
             // Upscale (default)
-            let backend = imp.backend_dropdown.borrow().as_ref().map(|d| match d.selected() {
-                1 => "cli", 2 => "comfyui", _ => "onnx",
-            }).unwrap_or("onnx");
+            let backend = self.selected_backend();
+            let onnx_model = if backend == "onnx" {
+                imp.onnx_model_dropdown.borrow().as_ref().map(|d| match d.selected() {
+                    1 => "swin2sr-compressed-x4",
+                    2 => "swin2sr-real-x4",
+                    _ => "swin2sr-lightweight-x2",
+                })
+            } else {
+                None
+            };
             let scale = imp.scale_dropdown.borrow().as_ref().map(|d| match d.selected() {
                 1 => 2u32, 2 => 3, 3 => 4, _ => 0,
             }).unwrap_or(0);
             let compress = imp.compress_check.borrow().as_ref().map(|c| c.is_active()).unwrap_or(false);
+            let keep_png = imp.keep_png_check.borrow().as_ref().map(|c| c.is_active()).unwrap_or(false);
             let format = imp.format_dropdown.borrow().as_ref().map(|d| match d.selected() {
                 1 => "webp", 2 => "jpeg", 3 => "png", _ => "jxl",
             }).unwrap_or("jxl");
@@ -448,9 +740,36 @@ impl TasksPage {
             let model = imp.state.borrow().as_ref()
                 .map(|s| s.borrow().settings.upscaler_default_model.clone())
                 .unwrap_or_default();
-            let settings = UpscaleStepSettings { backend: backend.into(), model, scale, compress, format: format.into(), quality };
+            let destination = imp.upscale_dest_dropdown.borrow().as_ref().map(|d| match d.selected() {
+                1 => "source",
+                _ => "default",
+            }).unwrap_or("default");
+            let settings = UpscaleStepSettings { 
+                backend: backend.into(), 
+                model, 
+                onnx_model: onnx_model.map(|s| s.to_string()),
+                scale, 
+                compress, 
+                format: format.into(), 
+                quality,
+                keep_png,
+                destination: destination.into(),
+                custom_path: None
+            };
             (StepType::Upscale, serde_json::to_string(&settings).unwrap_or_default())
         }
+    }
+
+    pub fn pre_fill_from_path(&self, path: PathBuf) {
+        if let Some(state_rc) = self.imp().state.borrow().as_ref() {
+            if let Some(idx) = state_rc.borrow().library_index.as_ref() {
+                let (step_type, settings_json) = self.current_step_config();
+                if let Ok(pid) = idx.create_pipeline(&path) {
+                    let _ = idx.append_pipeline_step(pid, step_type, &settings_json);
+                }
+            }
+        }
+        self.refresh();
     }
 
     pub fn on_pipelines_added(&self) {
@@ -476,6 +795,10 @@ impl TasksPage {
         
         let mut pipelines = in_progress;
         pipelines.extend(queued);
+
+        if let Some(lbl) = imp.queue_empty_label.borrow().as_ref() {
+            lbl.set_visible(pipelines.is_empty());
+        }
 
         let queued_count = pipelines.iter().filter(|p| p.status == PipelineStatus::Queued).count();
         let runner_active = imp.runner_active.get();
@@ -580,28 +903,27 @@ impl TasksPage {
 
         row_box.append(&info_box);
 
-        let del_btn = gtk4::Button::from_icon_name("window-close-symbolic");
-        del_btn.add_css_class("flat");
-        del_btn.add_css_class("destructive-action");
-        if pipeline.status == PipelineStatus::InProgress {
-            del_btn.set_sensitive(false);
-        }
-        
-        {
-            let widget_weak = self.downgrade();
-            let pid = pipeline.id;
-            del_btn.connect_clicked(move |_| {
-                if let Some(w) = widget_weak.upgrade() {
-                    if let Some(state_rc) = w.imp().state.borrow().as_ref() {
-                        if let Some(idx) = state_rc.borrow().library_index.as_ref() {
-                            let _ = idx.delete_pipeline(pid);
+        if pipeline.status != PipelineStatus::InProgress {
+            let del_btn = gtk4::Button::from_icon_name("window-close-symbolic");
+            del_btn.add_css_class("flat");
+            del_btn.add_css_class("destructive-action");
+            
+            {
+                let widget_weak = self.downgrade();
+                let pid = pipeline.id;
+                del_btn.connect_clicked(move |_| {
+                    if let Some(w) = widget_weak.upgrade() {
+                        if let Some(state_rc) = w.imp().state.borrow().as_ref() {
+                            if let Some(idx) = state_rc.borrow().library_index.as_ref() {
+                                let _ = idx.delete_pipeline(pid);
+                            }
                         }
+                        w.refresh();
                     }
-                    w.refresh();
-                }
-            });
+                });
+            }
+            row_box.append(&del_btn);
         }
-        row_box.append(&del_btn);
 
         row.set_child(Some(&row_box));
         row
@@ -910,10 +1232,15 @@ impl TasksPage {
                 _ => ExportFormat::Jxl,
             };
             
-            let dest_dir = resolve_output_dir(
-                export_output_dir.as_ref(),
-                OutputFolderKind::Export
-            );
+            let dest_dir = if settings.destination == "source" {
+                source.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+            } else if settings.destination == "custom" {
+                settings.custom_path.clone().unwrap_or_else(|| {
+                    resolve_output_dir(export_output_dir.as_ref(), OutputFolderKind::Export)
+                })
+            } else {
+                resolve_output_dir(export_output_dir.as_ref(), OutputFolderKind::Export)
+            };
             
             let output = unique_output_path(&dest_dir, &source, format);
             let result = export_to_path(&source, &output, settings.max_edge, format, settings.quality);
@@ -1020,19 +1347,26 @@ impl TasksPage {
                 model,
                 compress_output: settings.compress,
                 compressed_format: format,
-                keep_raw_png_sidecar: false,
+                keep_raw_png_sidecar: settings.keep_png,
                 compression_mode: UpscaleCompressionMode::Auto,
                 quality: settings.quality,
                 tile_size: None,
                 gpu_id: None,
             };
 
-            let output_dir = resolve_output_dir(
-                upscaled_output_dir.as_ref(),
-                OutputFolderKind::Upscaled
-            );
+            let dest_dir = if settings.destination == "source" {
+                source.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+            } else if settings.destination == "custom" {
+                settings.custom_path.clone().unwrap_or_else(|| {
+                    resolve_output_dir(upscaled_output_dir.as_ref(), OutputFolderKind::Upscaled)
+                })
+            } else {
+                resolve_output_dir(upscaled_output_dir.as_ref(), OutputFolderKind::Upscaled)
+            };
 
-            let onnx_model = crate::upscale::OnnxUpscaleModel::from_settings(&onnx_upscale_model);
+            let onnx_model = settings.onnx_model
+                .map(|s| crate::upscale::OnnxUpscaleModel::from_settings(&s))
+                .unwrap_or_else(|| crate::upscale::OnnxUpscaleModel::from_settings(&onnx_upscale_model));
             let comfyui_workflow = crate::upscale::ComfyUiWorkflow::from_settings(&comfyui_workflow);
 
             let backend = make_upscale_backend(
@@ -1060,9 +1394,8 @@ impl TasksPage {
             } else {
                 "png"
             };
-            let output_stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            let output_filename = format!("{}.{}", output_stem, output_ext);
-            let rx_events = backend.run(source.clone(), output_dir.join(&output_filename), job);
+            let output_filename = crate::export::unique_output_path_for_extension(&dest_dir, &source, output_ext);
+            let rx_events = backend.run(source.clone(), output_filename, job);
             
             // Wait for completion
             let mut last_result = Err("Job did not finish".to_string());
