@@ -1331,8 +1331,8 @@ impl TasksPage {
         }
 
         for pipeline in pipelines {
-            let row = self.build_queue_row(&pipeline, idx);
-            list_box.append(&row);
+            let expander = self.build_queue_expander_row(&pipeline, idx);
+            list_box.append(&expander);
         }
 
         if !imp.selected_is_history.get() {
@@ -1418,21 +1418,30 @@ impl TasksPage {
         }
     }
 
-    fn build_queue_row(&self, pipeline: &Pipeline, idx: &LibraryIndex) -> gtk4::ListBoxRow {
-        let row = gtk4::ListBoxRow::new();
-        row.set_activatable(true);
-        row.set_selectable(true);
-        row.set_widget_name(&pipeline.id.to_string());
-        let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-        row_box.set_margin_top(8);
-        row_box.set_margin_bottom(8);
-        row_box.set_margin_start(8);
-        row_box.set_margin_end(8);
+    fn build_queue_expander_row(
+        &self,
+        pipeline: &Pipeline,
+        idx: &LibraryIndex,
+    ) -> libadwaita::ExpanderRow {
+        let expander = libadwaita::ExpanderRow::new();
+        expander.set_selectable(true);
+        expander.set_activatable(true);
+        expander.set_widget_name(&pipeline.id.to_string());
+
+        let filename = pipeline
+            .source_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Unknown".to_string());
+        expander.set_title(&filename);
+
+        let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
+        expander.set_subtitle(&format_pipeline_composite(pipeline, &steps));
 
         let picture = gtk4::Picture::new();
         picture.set_size_request(48, 48);
         picture.set_content_fit(gtk4::ContentFit::Cover);
-        row_box.append(&picture);
+        expander.add_prefix(&picture);
 
         // Load thumbnail
         {
@@ -1445,53 +1454,13 @@ impl TasksPage {
             });
         }
 
-        let info_box = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-        info_box.set_hexpand(true);
-
-        let filename = pipeline
-            .source_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Unknown".to_string());
-        let name_label = gtk4::Label::new(Some(&filename));
-        name_label.set_halign(gtk4::Align::Start);
-        name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-        name_label.add_css_class("bold");
-
-        let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
-        let step = steps.first().cloned();
-        let op_type = step
-            .as_ref()
-            .map(|s| match s.step_type {
-                StepType::Upscale => "Upscale",
-                StepType::Export => "Export",
-            })
-            .unwrap_or("Unknown");
-
-        info_box.append(&name_label);
-
-        let summary = step.as_ref().map(format_step_summary).unwrap_or_default();
-        let summary_label = gtk4::Label::new(Some(&summary));
-        summary_label.set_halign(gtk4::Align::Start);
-        summary_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-        summary_label.add_css_class("dim-label");
-        summary_label.add_css_class("caption");
-        info_box.append(&summary_label);
-
         if pipeline.status == PipelineStatus::InProgress {
             let progress = gtk4::ProgressBar::new();
             progress.set_pulse_step(0.1);
             progress.pulse();
-            info_box.append(&progress);
+            progress.set_valign(gtk4::Align::Center);
+            expander.add_suffix(&progress);
         }
-
-        row_box.append(&info_box);
-
-        let badge = gtk4::Label::new(Some(op_type));
-        badge.set_valign(gtk4::Align::Start);
-        badge.add_css_class("accent");
-        badge.add_css_class("caption");
-        row_box.append(&badge);
 
         if pipeline.status != PipelineStatus::InProgress {
             let del_btn = gtk4::Button::from_icon_name("window-close-symbolic");
@@ -1512,11 +1481,36 @@ impl TasksPage {
                     }
                 });
             }
-            row_box.append(&del_btn);
+            expander.add_suffix(&del_btn);
         }
 
-        row.set_child(Some(&row_box));
-        row
+        for step in &steps {
+            let child = libadwaita::ActionRow::new();
+            child.set_title(&format_step_summary(step));
+            child.set_subtitle(match step.status {
+                PipelineStatus::Queued => "Queued",
+                PipelineStatus::InProgress => "In Progress",
+                PipelineStatus::Completed => "Completed",
+                PipelineStatus::Failed => step.error_msg.as_deref().unwrap_or("Failed"),
+            });
+
+            let badge = gtk4::Label::new(Some(match step.status {
+                PipelineStatus::Completed => "●",
+                PipelineStatus::Failed => "●",
+                PipelineStatus::InProgress => "●",
+                PipelineStatus::Queued => "○",
+            }));
+            badge.add_css_class(match step.status {
+                PipelineStatus::Completed => "success",
+                PipelineStatus::Failed => "error",
+                PipelineStatus::InProgress => "accent",
+                PipelineStatus::Queued => "dim-label",
+            });
+            child.add_prefix(&badge);
+            expander.add_row(&child);
+        }
+
+        expander
     }
 
     fn build_history_row(&self, pipeline: &Pipeline, idx: &LibraryIndex) -> gtk4::ListBoxRow {
@@ -2202,6 +2196,32 @@ async fn load_thumbnail_for_row(path: &Path) -> Result<gdk4::Texture, String> {
     rx.recv()
         .await
         .unwrap_or_else(|_| Err("Thumbnail thread died".to_string()))
+}
+
+fn format_pipeline_composite(pipeline: &Pipeline, steps: &[PipelineStep]) -> String {
+    if steps.iter().all(|step| step.status == PipelineStatus::Queued) {
+        let noun = if steps.len() == 1 { "step" } else { "steps" };
+        return format!("Queued · {} {}", steps.len(), noun);
+    }
+
+    if let Some(active_step) = steps
+        .iter()
+        .find(|step| step.status == PipelineStatus::InProgress)
+    {
+        return format!(
+            "Step {} of {}: {}",
+            active_step.step_order,
+            steps.len(),
+            format_step_summary(active_step)
+        );
+    }
+
+    if pipeline.status == PipelineStatus::Queued {
+        let noun = if steps.len() == 1 { "step" } else { "steps" };
+        return format!("Queued · {} {}", steps.len(), noun);
+    }
+
+    "In Progress".to_string()
 }
 
 fn format_step_summary(step: &PipelineStep) -> String {
