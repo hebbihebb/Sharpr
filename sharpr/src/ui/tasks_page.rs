@@ -1335,65 +1335,93 @@ impl TasksPage {
         let Some(list_box) = imp.queue_list.borrow().clone() else {
             return;
         };
+        let Some(history_list) = imp.history_list.borrow().clone() else {
+            return;
+        };
+        let Some(history_section) = imp.history_section.borrow().clone() else {
+            return;
+        };
 
-        // Clear existing rows
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
+        }
+        while let Some(child) = history_list.first_child() {
+            history_list.remove(&child);
         }
 
         let Some(state_rc) = imp.state.borrow().clone() else {
             return;
         };
-        let state = state_rc.borrow();
-        let Some(idx) = state.library_index.as_ref() else {
-            return;
-        };
 
-        let in_progress = idx
-            .pipelines_by_status(PipelineStatus::InProgress)
-            .unwrap_or_default();
-        let queued = idx
-            .pipelines_by_status(PipelineStatus::Queued)
-            .unwrap_or_default();
+        // Scope the state borrow so it is released before selection-restore,
+        // which fires row_selected signals that re-borrow state.
+        {
+            let state = state_rc.borrow();
+            let Some(idx) = state.library_index.as_ref() else {
+                return;
+            };
 
-        let mut pipelines = in_progress;
-        pipelines.extend(queued);
+            let in_progress = idx
+                .pipelines_by_status(PipelineStatus::InProgress)
+                .unwrap_or_default();
+            let queued = idx
+                .pipelines_by_status(PipelineStatus::Queued)
+                .unwrap_or_default();
 
-        if let Some(lbl) = imp.queue_empty_label.borrow().as_ref() {
-            lbl.set_visible(pipelines.is_empty());
-        }
+            let mut pipelines = in_progress;
+            pipelines.extend(queued);
 
-        if let Some(lbl) = imp.queue_count_label.borrow().as_ref() {
-            let total = pipelines.len();
-            lbl.set_visible(total > 0);
-            if total > 0 {
-                let noun = if total == 1 { "task" } else { "tasks" };
-                lbl.set_label(&format!("{total} {noun}"));
+            if let Some(lbl) = imp.queue_empty_label.borrow().as_ref() {
+                lbl.set_visible(pipelines.is_empty());
             }
-        }
 
-        let queued_count = pipelines
-            .iter()
-            .filter(|p| p.status == PipelineStatus::Queued)
-            .count();
-        let runner_active = imp.runner_active.get();
-        let paused = imp.paused.get();
+            if let Some(lbl) = imp.queue_count_label.borrow().as_ref() {
+                let total = pipelines.len();
+                lbl.set_visible(total > 0);
+                if total > 0 {
+                    let noun = if total == 1 { "task" } else { "tasks" };
+                    lbl.set_label(&format!("{total} {noun}"));
+                }
+            }
 
-        if let Some(btn) = imp.start_btn.borrow().as_ref() {
-            btn.set_sensitive((!runner_active || paused) && queued_count > 0);
-        }
-        if let Some(btn) = imp.pause_btn.borrow().as_ref() {
-            btn.set_sensitive(runner_active && !paused);
-        }
-        if let Some(btn) = imp.clear_btn.borrow().as_ref() {
-            btn.set_sensitive(queued_count > 0);
-        }
+            let queued_count = pipelines
+                .iter()
+                .filter(|p| p.status == PipelineStatus::Queued)
+                .count();
+            let runner_active = imp.runner_active.get();
+            let paused = imp.paused.get();
 
-        for pipeline in pipelines {
-            let expander = self.build_queue_expander_row(&pipeline, idx);
-            list_box.append(&expander);
-        }
+            if let Some(btn) = imp.start_btn.borrow().as_ref() {
+                btn.set_sensitive((!runner_active || paused) && queued_count > 0);
+            }
+            if let Some(btn) = imp.pause_btn.borrow().as_ref() {
+                btn.set_sensitive(runner_active && !paused);
+            }
+            if let Some(btn) = imp.clear_btn.borrow().as_ref() {
+                btn.set_sensitive(queued_count > 0);
+            }
 
+            for pipeline in pipelines {
+                let expander = self.build_queue_expander_row(&pipeline, idx);
+                list_box.append(&expander);
+            }
+
+            let mut history = idx
+                .pipelines_by_status(PipelineStatus::Completed)
+                .unwrap_or_default();
+            history.extend(
+                idx.pipelines_by_status(PipelineStatus::Failed)
+                    .unwrap_or_default(),
+            );
+            history.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            history_section.set_visible(!history.is_empty());
+            for pipeline in &history {
+                let row = self.build_history_row(pipeline, idx);
+                history_list.append(&row);
+            }
+        } // state and idx dropped — row_selected signals are now safe to fire
+
+        // --- Queue selection restore ---
         if !imp.selected_is_history.get() {
             if let Some(selected_id) = *imp.selected_pipeline_id.borrow() {
                 let mut found = false;
@@ -1421,35 +1449,7 @@ impl TasksPage {
             list_box.unselect_all();
         }
 
-        // --- History ---
-        let Some(history_list) = imp.history_list.borrow().clone() else {
-            return;
-        };
-        let Some(history_section) = imp.history_section.borrow().clone() else {
-            return;
-        };
-
-        while let Some(child) = history_list.first_child() {
-            history_list.remove(&child);
-        }
-
-        let mut history = idx
-            .pipelines_by_status(PipelineStatus::Completed)
-            .unwrap_or_default();
-        history.extend(
-            idx.pipelines_by_status(PipelineStatus::Failed)
-                .unwrap_or_default(),
-        );
-        // Sort by created_at DESC (most recent first)
-        history.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
-        history_section.set_visible(!history.is_empty());
-
-        for pipeline in &history {
-            let row = self.build_history_row(pipeline, idx);
-            history_list.append(&row);
-        }
-
+        // --- History selection restore ---
         if imp.selected_is_history.get() {
             if let Some(selected_id) = *imp.selected_pipeline_id.borrow() {
                 let mut found = false;
