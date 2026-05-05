@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Export pipeline for writing user-visible copies without overwriting sources.
 //! `export_image` decodes the source with EXIF orientation applied, optionally
 //! downscales with Lanczos3, then writes into the destination directory.

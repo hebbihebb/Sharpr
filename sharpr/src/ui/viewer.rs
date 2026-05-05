@@ -6,7 +6,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Once};
 
 use crate::quality::{scorer, QualityScore};
@@ -707,6 +706,7 @@ impl ViewerPane {
         *self.imp().post_save_cb.borrow_mut() = Some(Box::new(cb));
     }
 
+    #[allow(dead_code)]
     fn root_window(&self) -> Option<SharprWindow> {
         self.ancestor(SharprWindow::static_type())?
             .downcast::<SharprWindow>()

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 pub mod backend;
 pub mod backends;
 pub mod comparison;

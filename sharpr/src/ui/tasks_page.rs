@@ -11,7 +11,7 @@ use crate::export::{
     export_to_path, resolve_output_dir, unique_output_path, ExportFormat, OutputFolderKind,
 };
 use crate::library_index::{LibraryIndex, Pipeline, PipelineStatus, PipelineStep, StepType};
-use crate::ui::window::AppState;
+use crate::ui::window::{AppState, CompareItem};
 use crate::upscale::{
     backend::make_upscale_backend, UpscaleBackendKind, UpscaleCompressionMode, UpscaleJobConfig,
     UpscaleModel, UpscaleOutputFormat,
@@ -52,7 +52,7 @@ pub struct ExportStepSettings {
     pub custom_path: Option<PathBuf>,
 }
 
-pub type CompareCallback = Box<dyn Fn(PathBuf, PathBuf, String)>;
+pub type CompareCallback = Box<dyn Fn(CompareItem)>;
 
 mod imp {
     use super::*;
@@ -109,6 +109,8 @@ mod imp {
         pub runner_active: Rc<Cell<bool>>,
         pub paused: Rc<Cell<bool>>,
         pub selected_is_history: Cell<bool>,
+        pub queue_row_selected_handler: RefCell<Option<glib::SignalHandlerId>>,
+        pub history_row_selected_handler: RefCell<Option<glib::SignalHandlerId>>,
         pub polling_timer: RefCell<Option<glib::SourceId>>,
     }
 
@@ -657,11 +659,9 @@ mod imp {
                 let widget_weak = widget.downgrade();
                 crash_banner.connect_button_clicked(move |_| {
                     if let Some(w) = widget_weak.upgrade() {
-                        w.imp()
-                            .crash_banner
-                            .borrow()
-                            .as_ref()
-                            .map(|b| b.set_revealed(false));
+                        if let Some(b) = w.imp().crash_banner.borrow().as_ref() {
+                            b.set_revealed(false);
+                        }
                         w.imp().runner_active.set(true);
                         w.imp().paused.set(false);
                         w.try_start_runner();
@@ -1115,7 +1115,7 @@ impl TasksPage {
         if let Some(queue_list) = imp.queue_list.borrow().as_ref() {
             let widget_weak = self.downgrade();
             let history_list = imp.history_list.borrow().clone();
-            queue_list.connect_row_selected(move |_, row| {
+            let handler = queue_list.connect_row_selected(move |_, row| {
                 let Some(widget) = widget_weak.upgrade() else {
                     return;
                 };
@@ -1129,12 +1129,13 @@ impl TasksPage {
                     widget.load_settings_for_pipeline(id);
                 }
             });
+            *imp.queue_row_selected_handler.borrow_mut() = Some(handler);
         }
 
         if let Some(history_list) = imp.history_list.borrow().as_ref() {
             let widget_weak = self.downgrade();
             let queue_list = imp.queue_list.borrow().clone();
-            history_list.connect_row_selected(move |_, row| {
+            let handler = history_list.connect_row_selected(move |_, row| {
                 let Some(widget) = widget_weak.upgrade() else {
                     return;
                 };
@@ -1153,6 +1154,7 @@ impl TasksPage {
                     widget.show_summary_for_pipeline(id);
                 }
             });
+            *imp.history_row_selected_handler.borrow_mut() = Some(handler);
         }
 
         self.refresh();
@@ -1166,7 +1168,7 @@ impl TasksPage {
         self.try_start_runner();
     }
 
-    pub fn set_compare_requested_cb<F: Fn(PathBuf, PathBuf, String) + 'static>(&self, f: F) {
+    pub fn set_compare_requested_cb<F: Fn(CompareItem) + 'static>(&self, f: F) {
         *self.imp().compare_cb.borrow_mut() = Some(Box::new(f));
     }
 
@@ -1382,7 +1384,6 @@ impl TasksPage {
         let Some(history_section) = imp.history_section.borrow().clone() else {
             return;
         };
-
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
         }
@@ -1503,7 +1504,17 @@ impl TasksPage {
                     let next = widget.next_sibling();
                     if let Ok(row) = widget.clone().downcast::<gtk4::ListBoxRow>() {
                         if row.widget_name().parse::<i64>().ok() == Some(selected_id) {
+                            if let Some(handler) =
+                                imp.history_row_selected_handler.borrow().as_ref()
+                            {
+                                history_list.block_signal(handler);
+                            }
                             history_list.select_row(Some(&row));
+                            if let Some(handler) =
+                                imp.history_row_selected_handler.borrow().as_ref()
+                            {
+                                history_list.unblock_signal(handler);
+                            }
                             found = true;
                             break;
                         }
@@ -1557,7 +1568,6 @@ impl TasksPage {
                 }
             });
         }
-
         if pipeline.status == PipelineStatus::InProgress {
             let progress = gtk4::ProgressBar::new();
             progress.set_pulse_step(0.1);
@@ -1727,20 +1737,69 @@ impl TasksPage {
         if can_compare {
             let source = pipeline.source_path.clone();
             let output = output_path_opt.clone().unwrap();
-            let filename = pipeline
-                .source_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Unknown".to_string());
+            let pipeline_created_at = pipeline.created_at;
+            let step_settings_json = step
+                .as_ref()
+                .map(|s| s.settings_json.clone())
+                .unwrap_or_default();
+            let step_type = step.as_ref().map(|s| s.step_type);
+
             let widget_weak = self.downgrade();
             compare_btn.connect_clicked(move |_| {
                 let Some(w) = widget_weak.upgrade() else {
                     return;
                 };
+
+                let mut model = "Unknown".to_string();
+                let mut scale = "-".to_string();
+                let mut format = "-".to_string();
+
+                if let Some(st) = step_type {
+                    match st {
+                        StepType::Upscale => {
+                            if let Ok(settings) =
+                                serde_json::from_str::<UpscaleStepSettings>(&step_settings_json)
+                            {
+                                model = settings.model.clone();
+                                scale = format!("{}x", settings.scale);
+                                format = settings.format.clone().to_uppercase();
+                            }
+                        }
+                        StepType::Export => {
+                            if let Ok(settings) =
+                                serde_json::from_str::<ExportStepSettings>(&step_settings_json)
+                            {
+                                model = "None (Export)".to_string();
+                                scale = settings
+                                    .max_edge
+                                    .map(|e| format!("Max {}px", e))
+                                    .unwrap_or_else(|| "Original".to_string());
+                                format = settings.format.clone().to_uppercase();
+                            }
+                        }
+                    }
+                }
+
+                let (width, height) = image::image_dimensions(&output).unwrap_or((0, 0));
+                let file_size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
+                let date_added = glib::DateTime::from_unix_local(pipeline_created_at)
+                    .unwrap_or_else(|_| glib::DateTime::now_local().unwrap());
+
+                let item = CompareItem {
+                    source_path: source.clone(),
+                    output_path: output.clone(),
+                    model,
+                    scale,
+                    format,
+                    dimensions: (width, height),
+                    file_size,
+                    date_added,
+                };
+
                 let imp = w.imp();
                 let cb_borrow = imp.compare_cb.borrow();
                 if let Some(cb) = cb_borrow.as_ref() {
-                    cb(source.clone(), output.clone(), filename.clone());
+                    cb(item);
                 }
             });
         }

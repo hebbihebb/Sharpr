@@ -35,6 +35,21 @@ use crate::ui::viewer::{ViewerPane, ZoomMode};
 // Shared application state (main thread only, Rc<RefCell<>>)
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Debug)]
+pub struct CompareItem {
+    pub source_path: PathBuf,
+    pub output_path: PathBuf,
+    pub model: String,
+    pub scale: String,
+    pub format: String,
+    pub dimensions: (u32, u32),
+    pub file_size: u64,
+    pub date_added: glib::DateTime,
+}
+
+pub type OpenFolderCallback = Rc<dyn Fn(PathBuf)>;
+pub type RefreshCollectionsCallback = Rc<dyn Fn()>;
+
 pub struct AppState {
     pub library: LibraryManager,
     pub settings: AppSettings,
@@ -51,6 +66,10 @@ pub struct AppState {
     pub selected_paths: HashSet<PathBuf>,
     /// The single content scope currently loaded into the filmstrip.
     pub scope: ViewScope,
+    /// The scope to restore when leaving a temporary view like Compare.
+    pub previous_scope: Option<ViewScope>,
+    /// Items currently in the comparison queue.
+    pub compare_queue: Vec<CompareItem>,
     /// Folders disabled by the user. Images under these paths must not be indexed or shown.
     pub disabled_folders: Vec<PathBuf>,
 }
@@ -66,6 +85,7 @@ pub enum ViewScope {
     #[default]
     Search,
     Quality(crate::quality::QualityClass),
+    Compare,
 }
 
 fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
@@ -76,7 +96,7 @@ fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
         ViewScope::Collection(id) => {
             sidebar.set_collection_selected(*id);
         }
-        ViewScope::Duplicates | ViewScope::Search | ViewScope::Quality(_) => {
+        ViewScope::Duplicates | ViewScope::Search | ViewScope::Quality(_) | ViewScope::Compare => {
             sidebar.clear_collection_selection();
         }
     }
@@ -93,6 +113,7 @@ fn parse_collection_tags_input(input: &str) -> Vec<String> {
     tags
 }
 
+#[allow(dead_code)]
 fn effective_selected_paths(state: &AppState) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = state
         .selected_paths
@@ -912,6 +933,8 @@ impl AppState {
             ops,
             selected_paths: HashSet::new(),
             scope: ViewScope::default(),
+            previous_scope: None,
+            compare_queue: Vec::new(),
             disabled_folders,
         }
     }
@@ -951,6 +974,10 @@ mod imp {
         pub presentation_header: RefCell<Option<libadwaita::HeaderBar>>,
         pub presentation_outer_split: RefCell<Option<libadwaita::OverlaySplitView>>,
         pub presentation_inner_split: RefCell<Option<libadwaita::OverlaySplitView>>,
+        pub compare_page: RefCell<Option<crate::ui::compare_page::ComparePage>>,
+        pub content_stack: RefCell<Option<gtk4::Stack>>,
+        pub open_folder_cb: RefCell<Option<OpenFolderCallback>>,
+        pub refresh_sidebar_collections_cb: RefCell<Option<RefreshCollectionsCallback>>,
     }
 
     impl Default for SharprWindow {
@@ -980,6 +1007,10 @@ mod imp {
                 presentation_header: RefCell::new(None),
                 presentation_outer_split: RefCell::new(None),
                 presentation_inner_split: RefCell::new(None),
+                compare_page: RefCell::new(None),
+                content_stack: RefCell::new(None),
+                open_folder_cb: RefCell::new(None),
+                refresh_sidebar_collections_cb: RefCell::new(None),
             }
         }
     }
@@ -1381,6 +1412,7 @@ impl SharprWindow {
         }
 
         let content_stack = gtk4::Stack::new();
+        *self.imp().content_stack.borrow_mut() = Some(content_stack.clone());
         content_stack.set_transition_type(gtk4::StackTransitionType::SlideLeft);
         content_stack.set_transition_duration(200);
 
@@ -1482,7 +1514,10 @@ impl SharprWindow {
                     win.complete_thumbnail_ops();
                     win.clear_inline_search(true);
                 }
-                content_stack.set_visible_child_name("viewer");
+                let current_page = content_stack.visible_child_name().unwrap_or_default();
+                if current_page == "viewer" || current_page == "compare" {
+                    content_stack.set_visible_child_name("viewer");
+                }
                 let cache_max = AppSettings::load().thumbnail_cache_max as usize;
                 {
                     let mut st = state_c.borrow_mut();
@@ -1867,6 +1902,7 @@ impl SharprWindow {
                 open_folder_now(path);
             })
         };
+        *self.imp().open_folder_cb.borrow_mut() = Some(open_folder.clone());
 
         // Helper: refresh the sidebar collection list from the DB.
         let refresh_sidebar_collections = {
@@ -1887,6 +1923,8 @@ impl SharprWindow {
                 apply_scope_to_sidebar(&scope, &sidebar_c);
             }
         };
+        *self.imp().refresh_sidebar_collections_cb.borrow_mut() =
+            Some(Rc::new(refresh_sidebar_collections.clone()));
 
         // Sidebar folder selection → scan library → refresh filmstrip.
         {
@@ -2976,19 +3014,29 @@ impl SharprWindow {
         {
             let viewer_c = viewer.clone();
             let state_c = state.clone();
+            let window_weak = self.downgrade();
             filmstrip.connect_image_selected(move |index| {
-                let path = {
+                let (path, scope) = {
                     let Ok(mut state) = state_c.try_borrow_mut() else {
                         return;
                     };
                     state.library.selected_index = Some(index);
-                    state
-                        .library
-                        .entry_at(index)
-                        .map(|entry: ImageEntry| entry.path())
+                    (
+                        state
+                            .library
+                            .entry_at(index)
+                            .map(|entry: ImageEntry| entry.path()),
+                        state.scope.clone(),
+                    )
                 };
                 if let Some(path) = path {
-                    viewer_c.load_image(path);
+                    if scope == ViewScope::Compare {
+                        if let Some(window) = window_weak.upgrade() {
+                            window.handle_compare_selection_change(path);
+                        }
+                    } else {
+                        viewer_c.load_image(path);
+                    }
                 }
             });
         }
@@ -3203,16 +3251,30 @@ impl SharprWindow {
         content_stack.add_named(&compare_page, Some("compare"));
 
         {
-            let compare_page_c = compare_page.clone();
+            let window_weak = self.downgrade();
             let content_stack_c = content_stack.clone();
-            tasks_page.set_compare_requested_cb(move |source, output, label| {
-                compare_page_c.push_pair(source, output, label);
-                content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideLeft);
-                content_stack_c.set_visible_child_name("compare");
+            tasks_page.set_compare_requested_cb(move |item| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.enter_compare_mode(item);
+                    content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideLeft);
+                    content_stack_c.set_visible_child_name("compare");
+                }
             });
         }
 
         content_stack.set_visible_child_name("viewer");
+
+        {
+            let window_weak = self.downgrade();
+            content_stack.connect_visible_child_name_notify(move |stack| {
+                if let Some(window) = window_weak.upgrade() {
+                    let name = stack.visible_child_name().unwrap_or_default();
+                    if name != "compare" {
+                        window.exit_compare_mode();
+                    }
+                }
+            });
+        }
 
         viewer_toolbar.set_content(Some(&content_stack));
         viewer_toolbar.set_top_bar_style(libadwaita::ToolbarStyle::Raised);
@@ -4029,6 +4091,129 @@ impl SharprWindow {
                 }
                 open_folder(folder);
             });
+        }
+    }
+
+    pub fn enter_compare_mode(&self, item: CompareItem) {
+        let state_rc = self.app_state();
+        {
+            let mut state = state_rc.borrow_mut();
+            if state.scope != ViewScope::Compare {
+                state.previous_scope = Some(state.scope.clone());
+                state.scope = ViewScope::Compare;
+            }
+
+            if !state
+                .compare_queue
+                .iter()
+                .any(|i| i.output_path == item.output_path)
+            {
+                state.compare_queue.push(item.clone());
+            }
+        }
+
+        self.refresh_compare_view();
+
+        if let Some(compare_page) = self.imp().compare_page.borrow().as_ref() {
+            compare_page.set_comparison(item);
+        }
+    }
+
+    pub fn exit_compare_mode(&self) {
+        let state_rc = self.app_state();
+        let (should_restore, prev_scope) = {
+            let mut state = state_rc.borrow_mut();
+            if state.scope == ViewScope::Compare {
+                if let Some(prev) = state.previous_scope.take() {
+                    state.scope = prev.clone();
+                    (true, Some(prev))
+                } else {
+                    (false, None)
+                }
+            } else {
+                (false, None)
+            }
+        };
+
+        if should_restore {
+            if let Some(prev) = prev_scope {
+                self.restore_view_for_scope(prev);
+            }
+        }
+    }
+
+    fn refresh_compare_view(&self) {
+        let state_rc = self.app_state();
+        let paths: Vec<PathBuf> = {
+            let state = state_rc.borrow();
+            state
+                .compare_queue
+                .iter()
+                .map(|i| i.output_path.clone())
+                .collect()
+        };
+
+        load_virtual_async(&state_rc, &paths);
+
+        if let Some(sidebar) = self.imp().sidebar.borrow().as_ref() {
+            apply_scope_to_sidebar(&ViewScope::Compare, sidebar);
+        }
+        if let Some(filmstrip) = self.imp().filmstrip.borrow().as_ref() {
+            filmstrip.refresh_virtual();
+        }
+    }
+
+    fn restore_view_for_scope(&self, scope: ViewScope) {
+        match scope {
+            ViewScope::Folder(path) => {
+                if let Some(cb) = self.imp().open_folder_cb.borrow().as_ref() {
+                    cb(path);
+                }
+            }
+            _ => {
+                if let Some(cb) = self.imp().refresh_sidebar_collections_cb.borrow().as_ref() {
+                    cb();
+                }
+            }
+        }
+    }
+
+    pub fn handle_compare_selection_change(&self, output_path: PathBuf) {
+        let state_rc = self.app_state();
+        let item = state_rc
+            .borrow()
+            .compare_queue
+            .iter()
+            .find(|i| i.output_path == output_path)
+            .cloned();
+        if let Some(item) = item {
+            if let Some(compare_page) = self.imp().compare_page.borrow().as_ref() {
+                compare_page.set_comparison(item);
+            }
+        }
+    }
+
+    pub fn remove_from_compare_queue(&self, output_path: &Path) {
+        let state_rc = self.app_state();
+        let empty = {
+            let mut state = state_rc.borrow_mut();
+            if let Some(pos) = state
+                .compare_queue
+                .iter()
+                .position(|i| i.output_path == output_path)
+            {
+                state.compare_queue.remove(pos);
+            }
+            state.compare_queue.is_empty()
+        };
+
+        if empty {
+            if let Some(compare_page) = self.imp().compare_page.borrow().as_ref() {
+                compare_page.clear();
+            }
+            self.exit_compare_mode();
+        } else {
+            self.refresh_compare_view();
         }
     }
 
