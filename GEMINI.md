@@ -15,10 +15,12 @@ Sharpr is a high-performance, local-first image curation tool and viewer for Lin
 - **Commit Strategy**: Use a new git commit for each separate user task. Do not push to GitHub unless explicitly asked.
 - **Bug Fixes**: If the user reports a bug in an unpushed commit, fix it and amend that task's commit instead of creating noisy follow-up commits.
 - **Quality Checks**: Before handing work back for manual testing, always run from the `sharpr/` directory:
+  - Full Sweep: `./check.sh` (Preferred pre-commit sweep)
   - Lints: `cargo clippy -- -D warnings`
   - Formatting: `cargo fmt`
   - Build: `cargo build`
-  - Tests: `cargo test` (for behavior changes)
+  - Tests: `cargo nextest run` (Preferred; fallback: `cargo test`)
+  - Supply Chain: `cargo deny check` and `cargo machete`
 - **Handoff**: After implementation, inform the user exactly what to test manually and how the app should behave.
 
 ## Building and Running

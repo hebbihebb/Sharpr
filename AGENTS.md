@@ -17,7 +17,9 @@ These instructions apply to AI coding agents working in this repository.
   cd sharpr
   cargo build
   ```
-- For code changes, also run focused checks appropriate to the change. Prefer `cargo test` for behavior changes.
+- For code changes, also run focused checks appropriate to the change. Prefer `cargo nextest run` for behavior changes; use `cargo test` only if `nextest` is unavailable.
+- For dependency or supply-chain related changes, run `cargo deny check` and `cargo machete`.
+- Before committing or handing work off, consider `./check.sh` from `sharpr/` to run the standard fmt + clippy + nextest + deny + machete sequence.
 - After implementation, tell the user exactly what to test manually and how the app should behave.
 - If the user reports a bug in an unpushed commit, fix it and amend that task's commit instead of creating noisy follow-up commits.
 

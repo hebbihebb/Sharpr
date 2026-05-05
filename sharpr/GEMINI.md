@@ -30,11 +30,13 @@ Strictly adhere to the following established patterns when adding or modifying c
 
 ## Code Quality & Validation
 Before finalizing any execution, ensure you run the project's quality checks. Note that cargo commands must be run with the GNOME/GSettings runtime environment (specifically `GSETTINGS_SCHEMA_DIR=data`):
-- Lints: `GSETTINGS_SCHEMA_DIR=data cargo clippy -- -D warnings`
-- Formatting: `cargo fmt`
-- Build (Debug): `GSETTINGS_SCHEMA_DIR=data cargo build`
-- Build (Release): `GSETTINGS_SCHEMA_DIR=data cargo build --release`
-- Tests: `GSETTINGS_SCHEMA_DIR=data cargo test`
+- **Full Sweep:** `./check.sh` (Standard pre-handoff/pre-commit sweep)
+- **Lints:** `GSETTINGS_SCHEMA_DIR=data cargo clippy -- -D warnings`
+- **Formatting:** `cargo fmt`
+- **Build (Debug):** `GSETTINGS_SCHEMA_DIR=data cargo build`
+- **Build (Release):** `GSETTINGS_SCHEMA_DIR=data cargo build --release`
+- **Tests:** `GSETTINGS_SCHEMA_DIR=data cargo nextest run` (Preferred behavior-test path; fallback to `cargo test`)
+- **Supply Chain:** `cargo deny check` and `cargo machete` (For dependency/supply-chain work)
 
 ## Directory Structure & Responsibilities
 - `src/main.rs`: Entry point and rexiv2 initialization.
