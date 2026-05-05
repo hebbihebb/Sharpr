@@ -97,6 +97,29 @@ pub struct AppSettings {
     settings: gio::Settings,
 }
 
+fn settings_for_app() -> gio::Settings {
+    if gio::SettingsSchemaSource::default()
+        .as_ref()
+        .and_then(|source| source.lookup("io.github.hebbihebb.Sharpr", true))
+        .is_some()
+    {
+        return gio::Settings::new("io.github.hebbihebb.Sharpr");
+    }
+
+    let data_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
+    if let Ok(source) = gio::SettingsSchemaSource::from_directory(
+        &data_dir,
+        gio::SettingsSchemaSource::default().as_ref(),
+        false,
+    ) {
+        if let Some(schema) = source.lookup("io.github.hebbihebb.Sharpr", true) {
+            return gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None::<&str>);
+        }
+    }
+
+    gio::Settings::new("io.github.hebbihebb.Sharpr")
+}
+
 impl std::fmt::Debug for AppSettings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppSettings")
@@ -165,14 +188,14 @@ impl Default for AppSettings {
             comfyui_workflow: "esrgan".into(),
             comfyui_enabled: true,
             pipeline_history_cap: 500,
-            settings: gio::Settings::new("io.github.hebbihebb.Sharpr"),
+            settings: settings_for_app(),
         }
     }
 }
 
 impl AppSettings {
     pub fn load() -> Self {
-        Self::load_from_settings(gio::Settings::new("io.github.hebbihebb.Sharpr"))
+        Self::load_from_settings(settings_for_app())
     }
 
     fn load_from_settings(settings: gio::Settings) -> Self {

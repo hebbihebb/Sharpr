@@ -2271,11 +2271,7 @@ mod tests {
     fn enqueue_followup_creates_queued_pipeline() {
         let idx = LibraryIndex::open_in_memory().unwrap();
         let pid = idx
-            .enqueue_followup(
-                Path::new("/photos/output.png"),
-                StepType::Export,
-                r#"{}"#,
-            )
+            .enqueue_followup(Path::new("/photos/output.png"), StepType::Export, r#"{}"#)
             .unwrap();
 
         let pipelines = idx.pipelines_by_status(PipelineStatus::Queued).unwrap();

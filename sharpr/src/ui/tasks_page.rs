@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use glib::WeakRef;
+use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
@@ -86,6 +87,8 @@ mod imp {
         pub format_dropdown: RefCell<Option<libadwaita::ComboRow>>,
         pub quality_spin: RefCell<Option<gtk4::SpinButton>>,
         pub upscale_dest_dropdown: RefCell<Option<libadwaita::ComboRow>>,
+        pub upscale_custom_row: RefCell<Option<libadwaita::ActionRow>>,
+        pub upscale_custom_label: RefCell<Option<gtk4::Label>>,
         pub comfyui_workflow_row: RefCell<Option<libadwaita::ComboRow>>,
 
         // Export settings widgets
@@ -93,6 +96,9 @@ mod imp {
         pub export_edge_dropdown: RefCell<Option<libadwaita::ComboRow>>,
         pub export_quality_spin: RefCell<Option<gtk4::SpinButton>>,
         pub export_dest_dropdown: RefCell<Option<libadwaita::ComboRow>>,
+        pub export_custom_row: RefCell<Option<libadwaita::ActionRow>>,
+        pub export_custom_label: RefCell<Option<gtk4::Label>>,
+        pub history_cap_spin: RefCell<Option<gtk4::SpinButton>>,
 
         pub add_step_btn: RefCell<Option<gtk4::Button>>,
 
@@ -109,6 +115,8 @@ mod imp {
         pub runner_active: Rc<Cell<bool>>,
         pub paused: Rc<Cell<bool>>,
         pub selected_is_history: Cell<bool>,
+        pub upscale_custom_path: RefCell<Option<PathBuf>>,
+        pub export_custom_path: RefCell<Option<PathBuf>>,
         pub queue_row_selected_handler: RefCell<Option<glib::SignalHandlerId>>,
         pub history_row_selected_handler: RefCell<Option<glib::SignalHandlerId>>,
         pub polling_timer: RefCell<Option<glib::SourceId>>,
@@ -325,11 +333,21 @@ mod imp {
             let upscale_dest_row = libadwaita::ComboRow::new();
             upscale_dest_row.set_title("Destination");
             let upscale_dest_model =
-                gtk4::StringList::new(&["Default (Pictures/Upscaled)", "Same as source"]);
+                gtk4::StringList::new(&["Default", "Same as source", "Custom folder"]);
             upscale_dest_row.set_model(Some(&upscale_dest_model));
             let upscale_dest_dropdown = upscale_dest_row.clone();
 
+            let upscale_custom_row = libadwaita::ActionRow::new();
+            upscale_custom_row.set_title("Custom folder");
+            let upscale_custom_label = gtk4::Label::new(Some("Use saved folder"));
+            upscale_custom_label.add_css_class("dim-label");
+            let upscale_choose_btn = gtk4::Button::with_label("Choose…");
+            upscale_custom_row.add_prefix(&upscale_custom_label);
+            upscale_custom_row.add_suffix(&upscale_choose_btn);
+            upscale_custom_row.set_visible(false);
+
             input_output_group.add(&upscale_dest_row);
+            input_output_group.add(&upscale_custom_row);
             input_output_group.add(&format_row);
             input_output_group.add(&quality_row);
 
@@ -388,14 +406,24 @@ mod imp {
             let export_dest_row = libadwaita::ComboRow::new();
             export_dest_row.set_title("Destination");
             let export_dest_model =
-                gtk4::StringList::new(&["Default (Pictures/Export)", "Same as source"]);
+                gtk4::StringList::new(&["Default", "Same as source", "Custom folder"]);
             export_dest_row.set_model(Some(&export_dest_model));
             let export_dest_dropdown = export_dest_row.clone();
+
+            let export_custom_row = libadwaita::ActionRow::new();
+            export_custom_row.set_title("Custom folder");
+            let export_custom_label = gtk4::Label::new(Some("Use saved folder"));
+            export_custom_label.add_css_class("dim-label");
+            let export_choose_btn = gtk4::Button::with_label("Choose…");
+            export_custom_row.add_prefix(&export_custom_label);
+            export_custom_row.add_suffix(&export_choose_btn);
+            export_custom_row.set_visible(false);
 
             export_group.add(&export_format_row);
             export_group.add(&export_edge_row);
             export_group.add(&export_quality_row);
             export_group.add(&export_dest_row);
+            export_group.add(&export_custom_row);
 
             let export_scrolled = gtk4::ScrolledWindow::new();
             export_scrolled.set_vexpand(true);
@@ -419,6 +447,18 @@ mod imp {
             right_col.append(&op_switcher);
             right_col.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
             right_col.append(&settings_stack);
+
+            let queue_defaults_group = libadwaita::PreferencesGroup::new();
+            queue_defaults_group.set_title("Queue & History");
+            let history_cap_row = libadwaita::ActionRow::new();
+            history_cap_row.set_title("History cap");
+            history_cap_row.set_subtitle("Maximum completed and failed tasks to keep");
+            let history_cap_spin = gtk4::SpinButton::with_range(10.0, 10000.0, 10.0);
+            history_cap_spin.set_valign(gtk4::Align::Center);
+            history_cap_row.add_suffix(&history_cap_spin);
+            history_cap_row.set_activatable_widget(Some(&history_cap_spin));
+            queue_defaults_group.add(&history_cap_row);
+            right_col.append(&queue_defaults_group);
 
             let add_step_btn = gtk4::Button::with_label("Add Step");
             add_step_btn.set_margin_top(6);
@@ -555,6 +595,19 @@ mod imp {
                 });
             }
 
+            {
+                let custom_row = upscale_custom_row.clone();
+                upscale_dest_dropdown.connect_selected_item_notify(move |row| {
+                    custom_row.set_visible(row.selected() == 2);
+                });
+            }
+            {
+                let custom_row = export_custom_row.clone();
+                export_dest_dropdown.connect_selected_item_notify(move |row| {
+                    custom_row.set_visible(row.selected() == 2);
+                });
+            }
+
             // Wire Start/Stop
             {
                 let widget_weak = widget.downgrade();
@@ -642,6 +695,26 @@ mod imp {
 
             {
                 let widget_weak = widget.downgrade();
+                upscale_choose_btn.connect_clicked(move |_| {
+                    let Some(w) = widget_weak.upgrade() else {
+                        return;
+                    };
+                    w.choose_custom_destination(true);
+                });
+            }
+
+            {
+                let widget_weak = widget.downgrade();
+                export_choose_btn.connect_clicked(move |_| {
+                    let Some(w) = widget_weak.upgrade() else {
+                        return;
+                    };
+                    w.choose_custom_destination(false);
+                });
+            }
+
+            {
+                let widget_weak = widget.downgrade();
                 clear_history_btn.connect_clicked(move |_| {
                     let Some(w) = widget_weak.upgrade() else {
                         return;
@@ -697,11 +770,16 @@ mod imp {
             *self.format_dropdown.borrow_mut() = Some(format_dropdown);
             *self.quality_spin.borrow_mut() = Some(quality_spin);
             *self.upscale_dest_dropdown.borrow_mut() = Some(upscale_dest_dropdown);
+            *self.upscale_custom_row.borrow_mut() = Some(upscale_custom_row);
+            *self.upscale_custom_label.borrow_mut() = Some(upscale_custom_label);
 
             *self.export_format_dropdown.borrow_mut() = Some(export_format_dropdown);
             *self.export_edge_dropdown.borrow_mut() = Some(export_edge_dropdown);
             *self.export_quality_spin.borrow_mut() = Some(export_quality_spin);
             *self.export_dest_dropdown.borrow_mut() = Some(export_dest_dropdown);
+            *self.export_custom_row.borrow_mut() = Some(export_custom_row);
+            *self.export_custom_label.borrow_mut() = Some(export_custom_label);
+            *self.history_cap_spin.borrow_mut() = Some(history_cap_spin);
 
             *self.history_list.borrow_mut() = Some(history_list);
             *self.clear_history_btn.borrow_mut() = Some(clear_history_btn);
@@ -735,6 +813,69 @@ impl TasksPage {
 
     pub fn set_parent_window(&self, window: &gtk4::Window) {
         self.imp().parent_window.borrow_mut().set(Some(window));
+    }
+
+    fn update_custom_destination_labels(&self) {
+        let imp = self.imp();
+        if let Some(label) = imp.upscale_custom_label.borrow().as_ref() {
+            label.set_text(
+                &imp.upscale_custom_path
+                    .borrow()
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "Choose a folder".to_string()),
+            );
+        }
+        if let Some(label) = imp.export_custom_label.borrow().as_ref() {
+            label.set_text(
+                &imp.export_custom_path
+                    .borrow()
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "Choose a folder".to_string()),
+            );
+        }
+    }
+
+    fn choose_custom_destination(&self, is_upscale: bool) {
+        let parent_window = self.imp().parent_window.borrow().upgrade();
+        let dialog = gtk4::FileDialog::new();
+        dialog.set_title(if is_upscale {
+            "Choose Upscale Output Folder"
+        } else {
+            "Choose Export Output Folder"
+        });
+
+        let widget_weak = self.downgrade();
+        dialog.select_folder(
+            parent_window.as_ref(),
+            None::<&gio::Cancellable>,
+            move |result| {
+                let Some(widget) = widget_weak.upgrade() else {
+                    return;
+                };
+                let Ok(file) = result else {
+                    return;
+                };
+                let Some(path) = file.path() else {
+                    return;
+                };
+                if is_upscale {
+                    *widget.imp().upscale_custom_path.borrow_mut() = Some(path.clone());
+                } else {
+                    *widget.imp().export_custom_path.borrow_mut() = Some(path.clone());
+                }
+                if let Some(state_rc) = widget.imp().state.borrow().as_ref() {
+                    let mut state = state_rc.borrow_mut();
+                    if is_upscale {
+                        state.settings.set_upscaled_output_dir(Some(path));
+                    } else {
+                        state.settings.set_export_output_dir(Some(path));
+                    }
+                }
+                widget.update_custom_destination_labels();
+            },
+        );
     }
 
     fn clear_summary(&self) {
@@ -801,6 +942,37 @@ impl TasksPage {
         None
     }
 
+    fn first_step(steps: &[PipelineStep]) -> Option<&PipelineStep> {
+        steps.iter().min_by_key(|step| step.step_order)
+    }
+
+    fn active_step(steps: &[PipelineStep]) -> Option<&PipelineStep> {
+        steps
+            .iter()
+            .find(|step| step.status == PipelineStatus::InProgress)
+    }
+
+    fn latest_completed_step(steps: &[PipelineStep]) -> Option<&PipelineStep> {
+        steps
+            .iter()
+            .filter(|step| step.status == PipelineStatus::Completed)
+            .max_by_key(|step| step.step_order)
+    }
+
+    fn latest_output_step(steps: &[PipelineStep]) -> Option<&PipelineStep> {
+        steps
+            .iter()
+            .filter(|step| step.output_path.is_some())
+            .max_by_key(|step| step.step_order)
+    }
+
+    fn failed_step(steps: &[PipelineStep]) -> Option<&PipelineStep> {
+        steps
+            .iter()
+            .filter(|step| step.status == PipelineStatus::Failed)
+            .max_by_key(|step| step.step_order)
+    }
+
     fn show_summary_for_pipeline(&self, pipeline_id: i64) {
         let Some(state_rc) = self.imp().state.borrow().clone() else {
             self.clear_summary();
@@ -815,13 +987,11 @@ impl TasksPage {
             self.clear_summary();
             return;
         };
-        let step = idx
-            .steps_for_pipeline(pipeline_id)
-            .ok()
-            .and_then(|steps| steps.into_iter().next());
+        let steps = idx.steps_for_pipeline(pipeline_id).unwrap_or_default();
+        let step = Self::latest_output_step(&steps).or_else(|| Self::latest_completed_step(&steps));
         self.update_summary(
             &pipeline.source_path,
-            step.as_ref().and_then(|step| step.output_path.as_deref()),
+            step.and_then(|step| step.output_path.as_deref()),
         );
     }
 
@@ -915,7 +1085,7 @@ impl TasksPage {
             return;
         };
         let steps = idx.steps_for_pipeline(pipeline_id).unwrap_or_default();
-        let Some(step) = steps.first() else {
+        let Some(step) = Self::first_step(&steps) else {
             return;
         };
 
@@ -957,9 +1127,11 @@ impl TasksPage {
                 if let Some(dropdown) = self.imp().upscale_dest_dropdown.borrow().as_ref() {
                     dropdown.set_selected(match settings.destination.as_str() {
                         "source" => 1,
+                        "custom" => 2,
                         _ => 0,
                     });
                 }
+                *self.imp().upscale_custom_path.borrow_mut() = settings.custom_path.clone();
                 if let Some(dropdown) = self.imp().onnx_model_dropdown.borrow().as_ref() {
                     let idx = match settings.onnx_model.as_deref() {
                         Some("swin2sr-compressed-x4") => 1,
@@ -1006,9 +1178,11 @@ impl TasksPage {
                 if let Some(dropdown) = self.imp().export_dest_dropdown.borrow().as_ref() {
                     dropdown.set_selected(match settings.destination.as_str() {
                         "source" => 1,
+                        "custom" => 2,
                         _ => 0,
                     });
                 }
+                *self.imp().export_custom_path.borrow_mut() = settings.custom_path.clone();
             }
         }
 
@@ -1017,7 +1191,11 @@ impl TasksPage {
         if let Some(btn) = self.imp().add_step_btn.borrow().as_ref() {
             btn.set_visible(true);
         }
-        self.update_summary(&pipeline.source_path, step.output_path.as_deref());
+        self.update_custom_destination_labels();
+        let latest_output = Self::latest_output_step(&steps)
+            .or_else(|| Self::latest_completed_step(&steps))
+            .and_then(|step| step.output_path.as_deref());
+        self.update_summary(&pipeline.source_path, latest_output);
     }
 
     pub fn set_state(&self, state: Rc<RefCell<AppState>>) {
@@ -1060,6 +1238,7 @@ impl TasksPage {
             if let Some(dest_dd) = imp.upscale_dest_dropdown.borrow().as_ref() {
                 dest_dd.set_selected(0);
             }
+            *imp.upscale_custom_path.borrow_mut() = st.settings.upscaled_output_dir.clone();
 
             // Export defaults
             if let Some(format_dd) = imp.export_format_dropdown.borrow().as_ref() {
@@ -1074,7 +1253,12 @@ impl TasksPage {
             if let Some(dest_dd) = imp.export_dest_dropdown.borrow().as_ref() {
                 dest_dd.set_selected(0);
             }
+            *imp.export_custom_path.borrow_mut() = st.settings.export_output_dir.clone();
+            if let Some(spin) = imp.history_cap_spin.borrow().as_ref() {
+                spin.set_value(st.settings.pipeline_history_cap as f64);
+            }
         }
+        self.update_custom_destination_labels();
 
         // Wire backend toggles to persist the selection back to AppSettings
         for backend in ["onnx", "comfyui", "cli"] {
@@ -1106,6 +1290,58 @@ impl TasksPage {
                 };
                 if let Ok(mut st) = state_c.try_borrow_mut() {
                     st.settings.set_onnx_upscale_model(key);
+                }
+            });
+        }
+
+        if let Some(compress_row) = imp.compress_check.borrow().as_ref() {
+            let state_c = state.clone();
+            compress_row.connect_active_notify(move |row| {
+                if let Ok(mut st) = state_c.try_borrow_mut() {
+                    st.settings.set_upscale_compress_output(row.is_active());
+                }
+            });
+        }
+
+        if let Some(keep_png_row) = imp.keep_png_check.borrow().as_ref() {
+            let state_c = state.clone();
+            keep_png_row.connect_active_notify(move |row| {
+                if let Ok(mut st) = state_c.try_borrow_mut() {
+                    st.settings
+                        .set_upscale_keep_raw_png_sidecar(row.is_active());
+                }
+            });
+        }
+
+        if let Some(format_dd) = imp.format_dropdown.borrow().as_ref() {
+            let state_c = state.clone();
+            format_dd.connect_selected_item_notify(move |dd| {
+                let key = match dd.selected() {
+                    1 => "webp",
+                    2 => "jpeg",
+                    3 => "png",
+                    _ => "jxl",
+                };
+                if let Ok(mut st) = state_c.try_borrow_mut() {
+                    st.settings.set_upscale_compressed_format(key);
+                }
+            });
+        }
+
+        if let Some(quality_spin) = imp.quality_spin.borrow().as_ref() {
+            let state_c = state.clone();
+            quality_spin.connect_value_changed(move |spin| {
+                if let Ok(mut st) = state_c.try_borrow_mut() {
+                    st.settings.set_upscaler_quality(spin.value() as i32);
+                }
+            });
+        }
+
+        if let Some(history_cap_spin) = imp.history_cap_spin.borrow().as_ref() {
+            let state_c = state.clone();
+            history_cap_spin.connect_value_changed(move |spin| {
+                if let Ok(mut st) = state_c.try_borrow_mut() {
+                    st.settings.set_pipeline_history_cap(spin.value() as i32);
                 }
             });
         }
@@ -1211,6 +1447,7 @@ impl TasksPage {
                 .as_ref()
                 .map(|d| match d.selected() {
                     1 => "source",
+                    2 => "custom",
                     _ => "default",
                 })
                 .unwrap_or("default");
@@ -1219,7 +1456,7 @@ impl TasksPage {
                 max_edge,
                 quality,
                 destination: destination.into(),
-                custom_path: None,
+                custom_path: imp.export_custom_path.borrow().clone(),
             };
             (
                 StepType::Export,
@@ -1304,6 +1541,7 @@ impl TasksPage {
                 .as_ref()
                 .map(|d| match d.selected() {
                     1 => "source",
+                    2 => "custom",
                     _ => "default",
                 })
                 .unwrap_or("default");
@@ -1317,7 +1555,7 @@ impl TasksPage {
                 quality,
                 keep_png,
                 destination: destination.into(),
-                custom_path: None,
+                custom_path: imp.upscale_custom_path.borrow().clone(),
                 comfyui_workflow,
             };
             (
@@ -1347,7 +1585,10 @@ impl TasksPage {
         let Some(pipeline) = Self::find_pipeline_by_id(idx, pipeline_id) else {
             return;
         };
-        if !matches!(pipeline.status, PipelineStatus::Queued | PipelineStatus::InProgress) {
+        if !matches!(
+            pipeline.status,
+            PipelineStatus::Queued | PipelineStatus::InProgress
+        ) {
             return;
         }
         let (step_type, settings_json) = self.current_step_config();
@@ -1664,12 +1905,19 @@ impl TasksPage {
             });
         }
 
-        // Get the step to find output path and settings
         let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
-        let step = steps.first().cloned();
+        let display_step = Self::latest_output_step(&steps)
+            .or_else(|| Self::latest_completed_step(&steps))
+            .or_else(|| Self::active_step(&steps))
+            .or_else(|| Self::first_step(&steps))
+            .cloned();
+        let status_step = Self::failed_step(&steps)
+            .or_else(|| Self::active_step(&steps))
+            .or(display_step.as_ref())
+            .cloned();
 
         // Async-load output thumbnail (if output exists)
-        if let Some(output_path) = step.as_ref().and_then(|s| s.output_path.clone()) {
+        if let Some(output_path) = display_step.as_ref().and_then(|s| s.output_path.clone()) {
             let p = out_picture.clone();
             glib::spawn_future_local(async move {
                 if let Ok(tex) = load_thumbnail_for_row(&output_path).await {
@@ -1694,7 +1942,10 @@ impl TasksPage {
         info_box.append(&name_label);
 
         // Operation + settings summary
-        let op_summary = step.as_ref().map(format_step_summary).unwrap_or_default();
+        let op_summary = display_step
+            .as_ref()
+            .map(format_step_summary)
+            .unwrap_or_default();
         let op_label = gtk4::Label::new(Some(&op_summary));
         op_label.set_halign(gtk4::Align::Start);
         op_label.add_css_class("dim-label");
@@ -1710,7 +1961,8 @@ impl TasksPage {
         info_box.append(&ts_label);
 
         // Status + file-move degradation
-        let (status_text, status_class) = self.resolve_status_display(pipeline, step.as_ref());
+        let (status_text, status_class) =
+            self.resolve_status_display(pipeline, status_step.as_ref());
         let status_label = gtk4::Label::new(Some(&status_text));
         status_label.set_halign(gtk4::Align::Start);
         status_label.add_css_class(status_class);
@@ -1726,7 +1978,7 @@ impl TasksPage {
         // Compare button (navigates to Compare page)
         let compare_btn = gtk4::Button::with_label("Compare");
         compare_btn.add_css_class("flat");
-        let output_path_opt = step.as_ref().and_then(|s| s.output_path.clone());
+        let output_path_opt = display_step.as_ref().and_then(|s| s.output_path.clone());
         let can_compare = pipeline.source_path.exists()
             && output_path_opt
                 .as_ref()
@@ -1738,11 +1990,11 @@ impl TasksPage {
             let source = pipeline.source_path.clone();
             let output = output_path_opt.clone().unwrap();
             let pipeline_created_at = pipeline.created_at;
-            let step_settings_json = step
+            let step_settings_json = display_step
                 .as_ref()
                 .map(|s| s.settings_json.clone())
                 .unwrap_or_default();
-            let step_type = step.as_ref().map(|s| s.step_type);
+            let step_type = display_step.as_ref().map(|s| s.step_type);
 
             let widget_weak = self.downgrade();
             compare_btn.connect_clicked(move |_| {
@@ -1809,12 +2061,7 @@ impl TasksPage {
         let followup_source: Option<PathBuf> = steps
             .iter()
             .rev()
-            .find_map(|s| {
-                s.output_path
-                    .as_ref()
-                    .filter(|p| p.exists())
-                    .cloned()
-            });
+            .find_map(|s| s.output_path.as_ref().filter(|p| p.exists()).cloned());
         let followup_btn = gtk4::Button::with_label("Follow-up step");
         followup_btn.add_css_class("flat");
         followup_btn.set_sensitive(followup_source.is_some());
@@ -1823,7 +2070,9 @@ impl TasksPage {
         if let Some(followup_path) = followup_source {
             let widget_weak = self.downgrade();
             followup_btn.connect_clicked(move |_| {
-                let Some(w) = widget_weak.upgrade() else { return; };
+                let Some(w) = widget_weak.upgrade() else {
+                    return;
+                };
                 let (step_type, settings_json) = w.current_step_config();
                 if let Some(state_rc) = w.imp().state.borrow().as_ref() {
                     if let Some(idx) = state_rc.borrow().library_index.as_ref() {
@@ -2391,7 +2640,10 @@ async fn load_thumbnail_for_row(path: &Path) -> Result<gdk4::Texture, String> {
 }
 
 fn format_pipeline_composite(pipeline: &Pipeline, steps: &[PipelineStep]) -> String {
-    if steps.iter().all(|step| step.status == PipelineStatus::Queued) {
+    if steps
+        .iter()
+        .all(|step| step.status == PipelineStatus::Queued)
+    {
         let noun = if steps.len() == 1 { "step" } else { "steps" };
         return format!("Queued · {} {}", steps.len(), noun);
     }

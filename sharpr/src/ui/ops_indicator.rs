@@ -1,8 +1,7 @@
-//! Bottom-left background-operations indicator.
+//! Header-bar tasks and background-operations entry point.
 //!
-//! Collapsed: a floating pill button (GtkButton, "osd" CSS class) with a
-//! spinner and summary label.  Expanded: a GtkPopover listing each op with
-//! its own GtkProgressBar or status text.
+//! The button stays visible in the main header and routes users toward the
+//! Tasks page while still exposing a compact popover for current operations.
 
 use std::rc::Rc;
 use std::sync::Once;
@@ -86,19 +85,23 @@ mod imp {
             icon_stack.add_named(&spinner, Some("busy"));
             icon_stack.set_visible_child_name("idle");
 
-            let summary_label = gtk4::Label::new(Some("Operations in progress…"));
+            let summary_label = gtk4::Label::new(Some("Tasks"));
             summary_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            summary_label.add_css_class("ops-indicator-summary");
 
             let button = gtk4::Button::new();
-            button.set_child(Some(&icon_stack));
+            let button_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            button_box.append(&icon_stack);
+            button_box.append(&summary_label);
+            button.set_child(Some(&button_box));
             button.add_css_class("flat");
-            button.set_tooltip_text(Some("Background Operations"));
+            button.set_tooltip_text(Some("Tasks and background activity"));
             button.set_visible(true); // always visible in header bar
 
             button.set_parent(&*widget);
 
             // ---- Build the popover ----
-            let heading = gtk4::Label::new(Some("Background Operations"));
+            let heading = gtk4::Label::new(Some("Tasks and Background Activity"));
             heading.add_css_class("heading");
             heading.set_halign(gtk4::Align::Start);
             heading.set_margin_bottom(6);
@@ -399,11 +402,11 @@ impl OpsIndicator {
 
         if let Some(lbl) = imp.summary_label.borrow().as_ref() {
             if active == 0 {
-                lbl.set_text("All operations complete");
+                lbl.set_text("Tasks");
             } else if active == 1 {
-                lbl.set_text("1 operation running");
+                lbl.set_text("1 running");
             } else {
-                lbl.set_text(&format!("{} operations running", active));
+                lbl.set_text(&format!("{} running", active));
             }
         }
     }

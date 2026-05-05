@@ -11,7 +11,6 @@ use std::sync::{Arc, Once};
 use crate::quality::{scorer, QualityScore};
 use crate::tags::TagDatabase;
 use crate::ui::metadata_chip::MetadataChip;
-use crate::ui::ops_indicator::OpsIndicator;
 use crate::ui::window::{AppState, SharprWindow};
 
 const TAG_CHIP_COLOR_PALETTE: &[&str] = &[
@@ -209,7 +208,6 @@ mod imp {
         pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
         /// Called after a successful edit save so the filmstrip can refresh thumbnails.
         pub post_save_cb: RefCell<Option<Box<dyn Fn()>>>,
-        pub(super) ops_indicator: RefCell<Option<OpsIndicator>>,
         /// Called when the "Manage tags" button in the popover is clicked.
         pub manage_tags_cb: RefCell<Option<Box<dyn Fn()>>>,
         /// Last metadata-only quality score set for the displayed image, kept so
@@ -482,7 +480,6 @@ mod imp {
                 load_gen: Cell::new(0),
                 metadata_handle: RefCell::new(None),
                 post_save_cb: RefCell::new(None),
-                ops_indicator: RefCell::new(None),
                 manage_tags_cb: RefCell::new(None),
                 base_quality: RefCell::new(None),
             }
@@ -521,10 +518,6 @@ impl ViewerPane {
         *widget.imp().state.borrow_mut() = Some(state);
         widget.build_ui();
         widget
-    }
-
-    pub fn set_ops_indicator(&self, indicator: OpsIndicator) {
-        *self.imp().ops_indicator.borrow_mut() = Some(indicator);
     }
 
     /// Called once by the window after layout to store the edit Save/Discard buttons.
