@@ -1422,8 +1422,11 @@ impl TasksPage {
         } // state and idx dropped — row_selected signals are now safe to fire
 
         // --- Queue selection restore ---
+        // Copy value out before the block — select_row fires load_settings_for_pipeline
+        // which calls borrow_mut() on selected_pipeline_id; holding a borrow() here panics.
+        let queue_selected_id = *imp.selected_pipeline_id.borrow();
         if !imp.selected_is_history.get() {
-            if let Some(selected_id) = *imp.selected_pipeline_id.borrow() {
+            if let Some(selected_id) = queue_selected_id {
                 let mut found = false;
                 let mut child = list_box.first_child();
                 while let Some(widget) = child {
@@ -1450,8 +1453,9 @@ impl TasksPage {
         }
 
         // --- History selection restore ---
+        let history_selected_id = *imp.selected_pipeline_id.borrow();
         if imp.selected_is_history.get() {
-            if let Some(selected_id) = *imp.selected_pipeline_id.borrow() {
+            if let Some(selected_id) = history_selected_id {
                 let mut found = false;
                 let mut child = history_list.first_child();
                 while let Some(widget) = child {
