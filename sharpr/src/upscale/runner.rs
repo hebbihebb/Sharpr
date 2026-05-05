@@ -156,16 +156,21 @@ pub(crate) fn finalize_output_without_cleanup(
     use std::io::BufReader;
 
     let target_format = UpscaleRunner::select_output_format(&config);
+
+    // requested_scale == 0 means Auto — keep whatever the subprocess produced.
     let (input_w, input_h) = config.source_dimensions;
-    if input_w == 0 || input_h == 0 {
-        return Err("source dimensions are unavailable".to_string());
-    }
-    let target_w = input_w
-        .checked_mul(config.requested_scale)
-        .ok_or_else(|| "target width overflowed".to_string())?;
-    let target_h = input_h
-        .checked_mul(config.requested_scale)
-        .ok_or_else(|| "target height overflowed".to_string())?;
+    let target_dims: Option<(u32, u32)> = if config.requested_scale == 0 {
+        None
+    } else {
+        if input_w == 0 || input_h == 0 {
+            return Err("source dimensions are unavailable".to_string());
+        }
+        let tw = input_w.checked_mul(config.requested_scale)
+            .ok_or_else(|| "target width overflowed".to_string())?;
+        let th = input_h.checked_mul(config.requested_scale)
+            .ok_or_else(|| "target height overflowed".to_string())?;
+        Some((tw, th))
+    };
 
     let reader = ImageReader::new(BufReader::new(
         File::open(intermediate)
@@ -177,12 +182,16 @@ pub(crate) fn finalize_output_without_cleanup(
         .decode()
         .map_err(|err| format!("failed to decode intermediate output: {err}"))?;
 
-    let final_image =
-        if intermediate_image.width() == target_w && intermediate_image.height() == target_h {
-            intermediate_image
-        } else {
-            intermediate_image.resize_exact(target_w, target_h, FilterType::Lanczos3)
-        };
+    let final_image = match target_dims {
+        None => intermediate_image,
+        Some((tw, th)) => {
+            if intermediate_image.width() == tw && intermediate_image.height() == th {
+                intermediate_image
+            } else {
+                intermediate_image.resize_exact(tw, th, FilterType::Lanczos3)
+            }
+        }
+    };
 
     if config.compress_output && config.keep_raw_png_sidecar {
         save_image(

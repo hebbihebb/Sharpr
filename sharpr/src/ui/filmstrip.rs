@@ -23,6 +23,7 @@ type SearchActivateCallback = Box<dyn Fn(&str) + 'static>;
 type SearchDismissedCallback = Box<dyn Fn() + 'static>;
 type TrashRequestedCallback = Box<dyn Fn(std::path::PathBuf) + 'static>;
 type AddToCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
+type AddToQueueRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type RemoveFromCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type SortOrderChangedCallback = Box<dyn Fn(SortOrder) + 'static>;
 type QualityFilterChangedCallback = Box<dyn Fn(Option<QualityClass>) + 'static>;
@@ -135,6 +136,7 @@ mod imp {
         pub search_dismissed_cb: RefCell<Option<SearchDismissedCallback>>,
         pub trash_requested_cb: RefCell<Option<TrashRequestedCallback>>,
         pub add_to_collection_requested_cb: RefCell<Option<AddToCollectionRequestedCallback>>,
+        pub add_to_queue_requested_cb: RefCell<Option<AddToQueueRequestedCallback>>,
         pub remove_from_collection_requested_cb:
             RefCell<Option<RemoveFromCollectionRequestedCallback>>,
         pub sort_order_changed_cb: RefCell<Option<SortOrderChangedCallback>>,
@@ -195,6 +197,7 @@ mod imp {
                 search_dismissed_cb: RefCell::new(None),
                 trash_requested_cb: RefCell::new(None),
                 add_to_collection_requested_cb: RefCell::new(None),
+                add_to_queue_requested_cb: RefCell::new(None),
                 remove_from_collection_requested_cb: RefCell::new(None),
                 sort_order_changed_cb: RefCell::new(None),
                 quality_filter_changed_cb: RefCell::new(None),
@@ -540,6 +543,10 @@ impl FilmstripPane {
             add_to_collection_button.set_halign(gtk4::Align::Fill);
             popover_box.append(&add_to_collection_button);
 
+            let add_to_queue_button = gtk4::Button::with_label("Add to Queue");
+            add_to_queue_button.set_halign(gtk4::Align::Fill);
+            popover_box.append(&add_to_queue_button);
+
             let remove_from_collection_button = gtk4::Button::with_label("Remove from Collection");
             remove_from_collection_button.set_halign(gtk4::Align::Fill);
             popover_box.append(&remove_from_collection_button);
@@ -702,6 +709,26 @@ impl FilmstripPane {
                 }
                 let paths = collection_action_paths(&widget, &clicked_path);
                 widget.emit_add_to_collection_requested(paths);
+            });
+
+            let list_item_weak = list_item.downgrade();
+            let widget_weak_queue = widget_weak_setup.clone();
+            let popover_weak_queue = popover.downgrade();
+            add_to_queue_button.connect_clicked(move |_| {
+                let Some(list_item) = list_item_weak.upgrade() else {
+                    return;
+                };
+                let Some(widget) = widget_weak_queue.upgrade() else {
+                    return;
+                };
+                let Some(clicked_path) = list_item_path(&list_item) else {
+                    return;
+                };
+                if let Some(p) = popover_weak_queue.upgrade() {
+                    p.popdown();
+                }
+                let paths = collection_action_paths(&widget, &clicked_path);
+                widget.emit_add_to_queue_requested(paths);
             });
 
             let list_item_weak = list_item.downgrade();
@@ -1545,6 +1572,10 @@ impl FilmstripPane {
         *self.imp().add_to_collection_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_add_to_queue_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {
+        *self.imp().add_to_queue_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn connect_remove_from_collection_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {
         *self.imp().remove_from_collection_requested_cb.borrow_mut() = Some(Box::new(f));
     }
@@ -1554,6 +1585,13 @@ impl FilmstripPane {
             cb(paths);
         }
     }
+
+    fn emit_add_to_queue_requested(&self, paths: Vec<PathBuf>) {
+        if let Some(cb) = self.imp().add_to_queue_requested_cb.borrow().as_ref() {
+            cb(paths);
+        }
+    }
+
 
     fn emit_remove_from_collection_requested(&self, paths: Vec<PathBuf>) {
         if let Some(cb) = self

@@ -134,5 +134,10 @@
       <default>900</default>
       <summary>Window height</summary>
     </key>
+    <key name="pipeline-history-cap" type="i">
+      <default>500</default>
+      <summary>Pipeline history cap</summary>
+      <description>Maximum number of completed and failed jobs to retain. Oldest entries are pruned automatically.</description>
+    </key>
   </schema>
 </schemalist>

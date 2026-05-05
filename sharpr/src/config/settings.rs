@@ -92,6 +92,8 @@ pub struct AppSettings {
     pub comfyui_workflow: String,
     /// Whether the ComfyUI backend option is shown in the upscale dialog.
     pub comfyui_enabled: bool,
+    /// Maximum pipeline history entries to retain (default 500).
+    pub pipeline_history_cap: i32,
     settings: gio::Settings,
 }
 
@@ -162,6 +164,7 @@ impl Default for AppSettings {
             comfyui_url: "http://127.0.0.1:8188".into(),
             comfyui_workflow: "esrgan".into(),
             comfyui_enabled: true,
+            pipeline_history_cap: 500,
             settings: gio::Settings::new("io.github.hebbihebb.Sharpr"),
         }
     }
@@ -257,6 +260,7 @@ impl AppSettings {
             _ => "esrgan".to_string(),
         };
         let comfyui_enabled = settings.boolean("comfyui-enabled");
+        let pipeline_history_cap = settings.int("pipeline-history-cap").clamp(10, 10000);
 
         let mut libraries = parse_libraries_json(settings.string("libraries-json").as_str());
         if libraries.is_empty() {
@@ -298,6 +302,7 @@ impl AppSettings {
             comfyui_url,
             comfyui_workflow,
             comfyui_enabled,
+            pipeline_history_cap,
             settings,
         }
     }
@@ -438,6 +443,10 @@ impl AppSettings {
         let _ = self
             .settings
             .set_boolean("comfyui-enabled", self.comfyui_enabled);
+        let _ = self.settings.set_int(
+            "pipeline-history-cap",
+            self.pipeline_history_cap.clamp(10, 10000),
+        );
     }
 
     pub fn active_library(&self) -> Option<&LibraryConfig> {
@@ -709,6 +718,13 @@ impl AppSettings {
     pub fn set_show_upscale_ui(&mut self, value: bool) {
         self.show_upscale_ui = value;
         let _ = self.settings.set_boolean("show-upscale-ui", value);
+    }
+
+    pub fn set_pipeline_history_cap(&mut self, cap: i32) {
+        self.pipeline_history_cap = cap.clamp(10, 10000);
+        let _ = self
+            .settings
+            .set_int("pipeline-history-cap", self.pipeline_history_cap);
     }
 }
 
@@ -996,6 +1012,7 @@ mod tests {
             comfyui_url: "http://localhost:9000".into(),
             comfyui_workflow: "unknown".into(),
             comfyui_enabled: true,
+            pipeline_history_cap: 500,
             settings: settings.clone(),
         };
 

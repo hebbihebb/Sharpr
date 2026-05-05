@@ -48,12 +48,86 @@ pub struct IndexedImage {
     pub metadata_status: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PipelineStatus {
+    Queued,
+    InProgress,
+    Completed,
+    Failed,
+}
+
+impl PipelineStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+    fn from_str(s: &str) -> Self {
+        match s {
+            "in_progress" => Self::InProgress,
+            "completed" => Self::Completed,
+            "failed" => Self::Failed,
+            _ => Self::Queued,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepType {
+    Upscale,
+    Export,
+}
+
+impl StepType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Upscale => "upscale",
+            Self::Export => "export",
+        }
+    }
+    fn from_str(s: &str) -> Self {
+        match s {
+            "export" => Self::Export,
+            _ => Self::Upscale,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Pipeline {
+    pub id: i64,
+    pub source_path: PathBuf,
+    pub source_hash: Option<u64>,
+    pub status: PipelineStatus,
+    pub queue_order: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PipelineStep {
+    pub id: i64,
+    pub pipeline_id: i64,
+    pub step_order: i32,
+    pub step_type: StepType,
+    pub status: PipelineStatus,
+    pub input_path: Option<PathBuf>,
+    pub output_path: Option<PathBuf>,
+    pub settings_json: String,
+    pub created_at: i64,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub error_msg: Option<String>,
+}
+
 pub struct LibraryIndex {
     pool: Pool<SqliteConnectionManager>,
 }
 
 impl LibraryIndex {
-    pub fn open() -> rusqlite::Result<Self> {
+    pub fn open() -> rusqlite::Result<(Self, usize)> {
         let started = std::time::Instant::now();
         let dir = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -65,18 +139,20 @@ impl LibraryIndex {
                 Ok(())
             });
         let pool = Pool::new(manager).map_err(|_| rusqlite::Error::InvalidQuery)?;
-        {
+        let interrupted_count = {
             let conn = pool.get().map_err(|_| rusqlite::Error::InvalidQuery)?;
             initialize_schema(&conn)?;
             ensure_collection_schema(&conn)?;
-        }
+            ensure_pipeline_schema(&conn)?;
+            recover_interrupted_pipelines(&conn)?
+        };
         crate::bench_event!(
             "index.open",
             serde_json::json!({
                 "duration_ms": crate::bench::duration_ms(started),
             }),
         );
-        Ok(Self { pool })
+        Ok((Self { pool }, interrupted_count))
     }
 
     pub fn upsert_folder(&self, path: &Path) -> rusqlite::Result<()> {
@@ -926,6 +1002,288 @@ impl LibraryIndex {
         Ok(ids)
     }
 
+    // ---- Pipeline CRUD ----
+
+    /// Insert a new pipeline and return its id.
+    /// `queue_order` is set to max(queue_order)+1 among queued pipelines.
+    pub fn create_pipeline(&self, source_path: &Path) -> rusqlite::Result<i64> {
+        let conn = self.conn()?;
+        let now = now_secs();
+        let next_order: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(queue_order), 0) + 1 FROM pipelines WHERE status = 'queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(1);
+        conn.execute(
+            "INSERT INTO pipelines (source_path, status, queue_order, created_at)
+           VALUES (?1, 'queued', ?2, ?3)",
+            params![source_path.to_string_lossy().as_ref(), next_order, now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Append a step to an existing pipeline. Returns the new step id.
+    pub fn append_pipeline_step(
+        &self,
+        pipeline_id: i64,
+        step_type: StepType,
+        settings_json: &str,
+    ) -> rusqlite::Result<i64> {
+        let conn = self.conn()?;
+        let now = now_secs();
+        let next_order: i32 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(step_order), 0) + 1 FROM pipeline_steps WHERE pipeline_id = ?1",
+                params![pipeline_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(1);
+        conn.execute(
+            "INSERT INTO pipeline_steps
+               (pipeline_id, step_order, step_type, status, settings_json, created_at)
+           VALUES (?1, ?2, ?3, 'queued', ?4, ?5)",
+            params![
+                pipeline_id,
+                next_order,
+                step_type.as_str(),
+                settings_json,
+                now
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Update a pipeline's status.
+    pub fn set_pipeline_status(&self, id: i64, status: PipelineStatus) -> rusqlite::Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE pipelines SET status = ?1 WHERE id = ?2",
+            params![status.as_str(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Update a step's status and optional timestamps.
+    pub fn set_step_status(
+        &self,
+        step_id: i64,
+        status: PipelineStatus,
+        output_path: Option<&Path>,
+        error_msg: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn()?;
+        let now = now_secs();
+        match status {
+            PipelineStatus::InProgress => {
+                conn.execute(
+                    "UPDATE pipeline_steps SET status = 'in_progress', started_at = ?1 WHERE id = ?2",
+                    params![now, step_id],
+                )?;
+            }
+            PipelineStatus::Completed => {
+                conn.execute(
+                    "UPDATE pipeline_steps
+                   SET status = 'completed', finished_at = ?1, output_path = ?2
+                   WHERE id = ?3",
+                    params![
+                        now,
+                        output_path.map(|p| p.to_string_lossy().into_owned()),
+                        step_id
+                    ],
+                )?;
+            }
+            PipelineStatus::Failed => {
+                conn.execute(
+                    "UPDATE pipeline_steps
+                   SET status = 'failed', finished_at = ?1, error_msg = ?2
+                   WHERE id = ?3",
+                    params![now, error_msg, step_id],
+                )?;
+            }
+            PipelineStatus::Queued => {
+                conn.execute(
+                    "UPDATE pipeline_steps SET status = 'queued', started_at = NULL WHERE id = ?1",
+                    params![step_id],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reorder a queued pipeline to a new position. Other queued pipelines
+    /// are renumbered to close the gap.
+    pub fn reorder_pipeline(&self, id: i64, new_order: i64) -> rusqlite::Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE pipelines SET queue_order = ?1 WHERE id = ?2",
+            params![new_order, id],
+        )?;
+        // Compact: re-number all queued pipelines by their current order
+        // to eliminate gaps. This is O(n) on the queue but queues are small.
+        let mut stmt =
+            conn.prepare("SELECT id FROM pipelines WHERE status = 'queued' ORDER BY queue_order")?;
+        let ids: Vec<i64> = stmt
+            .query_map([], |row| row.get(0))?
+            .filter_map(Result::ok)
+            .collect();
+        for (i, pid) in ids.iter().enumerate() {
+            conn.execute(
+                "UPDATE pipelines SET queue_order = ?1 WHERE id = ?2",
+                params![i as i64 + 1, pid],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Delete a pipeline and all its steps (CASCADE handles steps).
+    /// Only queued or failed pipelines may be deleted.
+    pub fn delete_pipeline(&self, id: i64) -> rusqlite::Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM pipelines WHERE id = ?1 AND status IN ('queued', 'failed', 'completed')",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    /// Fetch all pipelines with a given status, ordered by queue_order / created_at.
+    pub fn pipelines_by_status(&self, status: PipelineStatus) -> rusqlite::Result<Vec<Pipeline>> {
+        let conn = self.conn()?;
+        let order = match status {
+            PipelineStatus::Queued | PipelineStatus::InProgress => "queue_order ASC",
+            _ => "created_at DESC",
+        };
+        let sql = format!(
+            "SELECT id, source_path, source_hash, status, queue_order, created_at
+           FROM pipelines WHERE status = ?1 ORDER BY {}",
+            order
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![status.as_str()], |row| {
+            Ok(Pipeline {
+                id: row.get(0)?,
+                source_path: PathBuf::from(row.get::<_, String>(1)?),
+                source_hash: row.get::<_, Option<i64>>(2)?.map(|h| h as u64),
+                status: PipelineStatus::from_str(&row.get::<_, String>(3)?),
+                queue_order: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    /// Fetch all steps for a pipeline, ordered by step_order.
+    pub fn steps_for_pipeline(&self, pipeline_id: i64) -> rusqlite::Result<Vec<PipelineStep>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, pipeline_id, step_order, step_type, status,
+                  input_path, output_path, settings_json,
+                  created_at, started_at, finished_at, error_msg
+           FROM pipeline_steps WHERE pipeline_id = ?1 ORDER BY step_order",
+        )?;
+        let rows = stmt.query_map(params![pipeline_id], |row| {
+            Ok(PipelineStep {
+                id: row.get(0)?,
+                pipeline_id: row.get(1)?,
+                step_order: row.get(2)?,
+                step_type: StepType::from_str(&row.get::<_, String>(3)?),
+                status: PipelineStatus::from_str(&row.get::<_, String>(4)?),
+                input_path: row.get::<_, Option<String>>(5)?.map(PathBuf::from),
+                output_path: row.get::<_, Option<String>>(6)?.map(PathBuf::from),
+                settings_json: row.get(7)?,
+                created_at: row.get(8)?,
+                started_at: row.get(9)?,
+                finished_at: row.get(10)?,
+                error_msg: row.get(11)?,
+            })
+        })?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    /// Returns the next queued pipeline (lowest queue_order), if any.
+    pub fn next_queued_pipeline(&self) -> rusqlite::Result<Option<Pipeline>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, source_path, source_hash, status, queue_order, created_at
+           FROM pipelines WHERE status = 'queued' ORDER BY queue_order LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([], |row| {
+            Ok(Pipeline {
+                id: row.get(0)?,
+                source_path: PathBuf::from(row.get::<_, String>(1)?),
+                source_hash: row.get::<_, Option<i64>>(2)?.map(|h| h as u64),
+                status: PipelineStatus::from_str(&row.get::<_, String>(3)?),
+                queue_order: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        Ok(rows.next().and_then(Result::ok))
+    }
+
+    /// Total count of Completed + Failed pipelines (for cap enforcement).
+    pub fn pipeline_history_count(&self) -> rusqlite::Result<usize> {
+        let conn = self.conn()?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pipelines WHERE status IN ('completed', 'failed')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// Delete the oldest history entries, keeping at most `cap` rows.
+    /// Deletes by `created_at ASC` (oldest first).
+    pub fn prune_pipeline_history(&self, cap: usize) -> rusqlite::Result<()> {
+        if cap == 0 {
+            return Ok(());
+        }
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM pipelines
+           WHERE status IN ('completed', 'failed')
+             AND id NOT IN (
+               SELECT id FROM pipelines
+               WHERE status IN ('completed', 'failed')
+               ORDER BY created_at DESC
+               LIMIT ?1
+             )",
+            params![cap as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Delete all Completed and Failed pipelines (manual \"Clear history\").
+    pub fn clear_pipeline_history(&self) -> rusqlite::Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM pipelines WHERE status IN ('completed', 'failed')",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Reset a failed or completed pipeline and all its steps back to Queued
+    /// so it can be re-run. Returns Err if the pipeline is InProgress.
+    pub fn requeue_pipeline(&self, id: i64) -> rusqlite::Result<()> {
+        let conn = self.conn()?;
+        // Only requeue non-running pipelines
+        conn.execute(
+            "UPDATE pipeline_steps
+           SET status = 'queued', started_at = NULL, finished_at = NULL,
+               output_path = NULL, error_msg = NULL
+           WHERE pipeline_id = ?1 AND status != 'in_progress'",
+            params![id],
+        )?;
+        conn.execute(
+            "UPDATE pipelines SET status = 'queued'
+           WHERE id = ?1 AND status != 'in_progress'",
+            params![id],
+        )?;
+        Ok(())
+    }
+
     fn conn(&self) -> rusqlite::Result<PooledConnection<SqliteConnectionManager>> {
         self.pool.get().map_err(|_| rusqlite::Error::InvalidQuery)
     }
@@ -1073,6 +1431,36 @@ fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
             ON collection_items(image_path);
         CREATE INDEX IF NOT EXISTS idx_collection_items_collection_added
             ON collection_items(collection_id, added_at);
+
+        CREATE TABLE IF NOT EXISTS pipelines (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_path TEXT NOT NULL,
+            source_hash INTEGER,
+            status      TEXT NOT NULL DEFAULT 'queued',
+            queue_order INTEGER NOT NULL DEFAULT 0,
+            created_at  INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS pipeline_steps (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            pipeline_id  INTEGER NOT NULL,
+            step_order   INTEGER NOT NULL,
+            step_type    TEXT NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'queued',
+            input_path   TEXT,
+            output_path  TEXT,
+            settings_json TEXT NOT NULL DEFAULT '{}',
+            created_at   INTEGER NOT NULL,
+            started_at   INTEGER,
+            finished_at  INTEGER,
+            error_msg    TEXT,
+            FOREIGN KEY(pipeline_id) REFERENCES pipelines(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pipelines_status
+            ON pipelines(status);
+        CREATE INDEX IF NOT EXISTS idx_pipeline_steps_pipeline
+            ON pipeline_steps(pipeline_id, step_order);
         ",
     )?;
     conn.execute(
@@ -1132,6 +1520,28 @@ fn ensure_collection_schema(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+fn ensure_pipeline_schema(_conn: &Connection) -> rusqlite::Result<()> {
+    // Tables were created via initialize_schema; nothing to migrate yet.
+    // This function exists as the extension point for future column additions.
+    Ok(())
+}
+
+fn recover_interrupted_pipelines(conn: &Connection) -> rusqlite::Result<usize> {
+    // Any step that was in_progress when the app last quit had its output
+    // potentially truncated — reset it and its parent pipeline to queued.
+    conn.execute(
+        "UPDATE pipeline_steps SET status = 'queued', started_at = NULL
+           WHERE status = 'in_progress'",
+        [],
+    )?;
+    let n = conn.execute(
+        "UPDATE pipelines SET status = 'queued'
+           WHERE status = 'in_progress'",
+        [],
+    )?;
+    Ok(n)
+}
+
 fn table_columns(conn: &Connection, table: &str) -> rusqlite::Result<Vec<String>> {
     let sql = format!("PRAGMA table_info({table})");
     let mut stmt = conn.prepare(&sql)?;
@@ -1178,6 +1588,7 @@ impl LibraryIndex {
             configure_connection(conn)?;
             initialize_schema(conn)?;
             ensure_collection_schema(conn)?;
+            ensure_pipeline_schema(conn)?;
             Ok(())
         });
         let pool = Pool::builder()
@@ -1677,5 +2088,74 @@ mod tests {
         assert!(info.modified_secs.is_none());
 
         std::fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[test]
+    fn pipeline_create_and_fetch() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let pid = idx.create_pipeline(Path::new("/photos/a.png")).unwrap();
+        let sid = idx
+            .append_pipeline_step(pid, StepType::Upscale, r#"{"model":"seedvr2"}"#)
+            .unwrap();
+
+        let queued = idx.pipelines_by_status(PipelineStatus::Queued).unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].id, pid);
+
+        let steps = idx.steps_for_pipeline(pid).unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].id, sid);
+        assert_eq!(steps[0].step_type, StepType::Upscale);
+    }
+
+    #[test]
+    fn pipeline_status_transitions() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let pid = idx.create_pipeline(Path::new("/photos/b.png")).unwrap();
+        let sid = idx
+            .append_pipeline_step(pid, StepType::Export, r#"{}"#)
+            .unwrap();
+
+        idx.set_pipeline_status(pid, PipelineStatus::InProgress)
+            .unwrap();
+        idx.set_step_status(sid, PipelineStatus::InProgress, None, None)
+            .unwrap();
+        idx.set_step_status(
+            sid,
+            PipelineStatus::Completed,
+            Some(Path::new("/photos/b.jxl")),
+            None,
+        )
+        .unwrap();
+        idx.set_pipeline_status(pid, PipelineStatus::Completed)
+            .unwrap();
+
+        let steps = idx.steps_for_pipeline(pid).unwrap();
+        assert_eq!(steps[0].status, PipelineStatus::Completed);
+        assert!(steps[0].output_path.is_some());
+    }
+
+    #[test]
+    fn crash_recovery_resets_in_progress() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let pid = idx.create_pipeline(Path::new("/photos/c.png")).unwrap();
+        let sid = idx
+            .append_pipeline_step(pid, StepType::Upscale, r#"{}"#)
+            .unwrap();
+        idx.set_pipeline_status(pid, PipelineStatus::InProgress)
+            .unwrap();
+        idx.set_step_status(sid, PipelineStatus::InProgress, None, None)
+            .unwrap();
+
+        // Simulate restart: call recover directly
+        {
+            let conn = idx.conn().unwrap();
+            recover_interrupted_pipelines(&conn).unwrap();
+        }
+
+        let queued = idx.pipelines_by_status(PipelineStatus::Queued).unwrap();
+        assert_eq!(queued[0].id, pid);
+        let steps = idx.steps_for_pipeline(pid).unwrap();
+        assert_eq!(steps[0].status, PipelineStatus::Queued);
     }
 }

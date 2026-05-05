@@ -1,3 +1,4 @@
+pub mod compare_page;
 pub mod filmstrip;
 pub mod filter_bar;
 pub mod help_window;
@@ -8,5 +9,6 @@ pub mod preferences;
 pub mod sidebar;
 pub mod tag_browser;
 pub mod tag_card;
+pub mod tasks_page;
 pub mod viewer;
 pub mod window;

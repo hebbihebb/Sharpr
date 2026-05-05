@@ -129,21 +129,29 @@ fn run_onnx_job(
     send(UpscaleEvent::Progress(Some(0.95)));
 
     let (input_w, input_h) = config.source_dimensions;
-    let target_w = input_w.saturating_mul(config.requested_scale);
-    let target_h = input_h.saturating_mul(config.requested_scale);
 
     use image::imageops::FilterType;
-    let final_rgb = if upscaled.width() == target_w && upscaled.height() == target_h {
+    // requested_scale == 0 means "Auto" — keep whatever the model produced.
+    let final_rgb = if config.requested_scale == 0 {
         upscaled
     } else {
-        image::DynamicImage::ImageRgb8(upscaled)
-            .resize_exact(target_w, target_h, FilterType::Lanczos3)
-            .to_rgb8()
+        let target_w = input_w.saturating_mul(config.requested_scale);
+        let target_h = input_h.saturating_mul(config.requested_scale);
+        if upscaled.width() == target_w && upscaled.height() == target_h {
+            upscaled
+        } else {
+            image::DynamicImage::ImageRgb8(upscaled)
+                .resize_exact(target_w, target_h, FilterType::Lanczos3)
+                .to_rgb8()
+        }
     };
 
+    let out_w = final_rgb.width();
+    let out_h = final_rgb.height();
+
     let final_image = if let Some(alpha) = alpha_plane {
-        let alpha = image::imageops::resize(&alpha, target_w, target_h, FilterType::Lanczos3);
-        let mut rgba = image::RgbaImage::new(target_w, target_h);
+        let alpha = image::imageops::resize(&alpha, out_w, out_h, FilterType::Lanczos3);
+        let mut rgba = image::RgbaImage::new(out_w, out_h);
         for (x, y, pixel) in final_rgb.enumerate_pixels() {
             rgba.put_pixel(
                 x,
