@@ -1055,6 +1055,19 @@ impl LibraryIndex {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Create a new pipeline with a single step, using `source` as the input.
+    /// Returns the new pipeline id.
+    pub fn enqueue_followup(
+        &self,
+        source: &Path,
+        step_type: StepType,
+        settings_json: &str,
+    ) -> rusqlite::Result<i64> {
+        let pid = self.create_pipeline(source)?;
+        self.append_pipeline_step(pid, step_type, settings_json)?;
+        Ok(pid)
+    }
+
     /// Update a pipeline's status.
     pub fn set_pipeline_status(&self, id: i64, status: PipelineStatus) -> rusqlite::Result<()> {
         let conn = self.conn()?;
@@ -2252,5 +2265,25 @@ mod tests {
             steps[1].output_path.as_deref(),
             Some(Path::new("/exports/final.jxl"))
         );
+    }
+
+    #[test]
+    fn enqueue_followup_creates_queued_pipeline() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let pid = idx
+            .enqueue_followup(
+                Path::new("/photos/output.png"),
+                StepType::Export,
+                r#"{}"#,
+            )
+            .unwrap();
+
+        let pipelines = idx.pipelines_by_status(PipelineStatus::Queued).unwrap();
+        assert_eq!(pipelines.len(), 1);
+        assert_eq!(pipelines[0].id, pid);
+
+        let steps = idx.steps_for_pipeline(pid).unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].step_type, StepType::Export);
     }
 }

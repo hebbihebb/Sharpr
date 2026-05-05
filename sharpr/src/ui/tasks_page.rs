@@ -1746,6 +1746,37 @@ impl TasksPage {
         }
         btn_box.append(&compare_btn);
 
+        // Follow-up step button (available for Completed and Failed)
+        let followup_source: Option<PathBuf> = steps
+            .iter()
+            .rev()
+            .find_map(|s| {
+                s.output_path
+                    .as_ref()
+                    .filter(|p| p.exists())
+                    .cloned()
+            });
+        let followup_btn = gtk4::Button::with_label("Follow-up step");
+        followup_btn.add_css_class("flat");
+        followup_btn.set_sensitive(followup_source.is_some());
+        followup_btn.set_tooltip_text(Some("Queue a new step using this output as input"));
+
+        if let Some(followup_path) = followup_source {
+            let widget_weak = self.downgrade();
+            followup_btn.connect_clicked(move |_| {
+                let Some(w) = widget_weak.upgrade() else { return; };
+                let (step_type, settings_json) = w.current_step_config();
+                if let Some(state_rc) = w.imp().state.borrow().as_ref() {
+                    if let Some(idx) = state_rc.borrow().library_index.as_ref() {
+                        let _ = idx.enqueue_followup(&followup_path, step_type, &settings_json);
+                    }
+                }
+                w.refresh();
+                w.try_start_runner();
+            });
+        }
+        btn_box.append(&followup_btn);
+
         // Re-queue button (failed pipelines only)
         if pipeline.status == PipelineStatus::Failed {
             let requeue_btn = gtk4::Button::with_label("Re-queue");
