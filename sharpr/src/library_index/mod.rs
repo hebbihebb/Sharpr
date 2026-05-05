@@ -127,7 +127,7 @@ pub struct LibraryIndex {
 }
 
 impl LibraryIndex {
-    pub fn open() -> rusqlite::Result<Self> {
+    pub fn open() -> rusqlite::Result<(Self, usize)> {
         let started = std::time::Instant::now();
         let dir = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -139,20 +139,20 @@ impl LibraryIndex {
                 Ok(())
             });
         let pool = Pool::new(manager).map_err(|_| rusqlite::Error::InvalidQuery)?;
-        {
+        let interrupted_count = {
             let conn = pool.get().map_err(|_| rusqlite::Error::InvalidQuery)?;
             initialize_schema(&conn)?;
             ensure_collection_schema(&conn)?;
             ensure_pipeline_schema(&conn)?;
-            recover_interrupted_pipelines(&conn)?;
-        }
+            recover_interrupted_pipelines(&conn)?
+        };
         crate::bench_event!(
             "index.open",
             serde_json::json!({
                 "duration_ms": crate::bench::duration_ms(started),
             }),
         );
-        Ok(Self { pool })
+        Ok((Self { pool }, interrupted_count))
     }
 
     pub fn upsert_folder(&self, path: &Path) -> rusqlite::Result<()> {
@@ -1526,7 +1526,7 @@ fn ensure_pipeline_schema(_conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn recover_interrupted_pipelines(conn: &Connection) -> rusqlite::Result<()> {
+fn recover_interrupted_pipelines(conn: &Connection) -> rusqlite::Result<usize> {
     // Any step that was in_progress when the app last quit had its output
     // potentially truncated — reset it and its parent pipeline to queued.
     conn.execute(
@@ -1534,12 +1534,12 @@ fn recover_interrupted_pipelines(conn: &Connection) -> rusqlite::Result<()> {
            WHERE status = 'in_progress'",
         [],
     )?;
-    conn.execute(
+    let n = conn.execute(
         "UPDATE pipelines SET status = 'queued'
            WHERE status = 'in_progress'",
         [],
     )?;
-    Ok(())
+    Ok(n)
 }
 
 fn table_columns(conn: &Connection, table: &str) -> rusqlite::Result<Vec<String>> {

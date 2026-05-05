@@ -43,6 +43,7 @@ Before finalizing any execution, ensure you run the project's quality checks. No
 - `src/ui/sidebar.rs`: Folder tree explorer (`SidebarPane`).
 - `src/ui/filmstrip.rs`: `GtkListView` thumbnail strip (`FilmstripPane`).
 - `src/ui/viewer.rs`: Full-resolution image preview, zoom, and panning (`ViewerPane`).
+- `src/ui/compare_page.rs`: (NEW) Multi-slot image comparison page.
 - `src/ui/metadata_chip.rs`: Floating EXIF overlay (`MetadataChip`).
 - `src/model/`: Core `GObject` models including `ImageEntry`, `FolderNode`, and `LibraryManager`.
 - `src/thumbnails/`: The background thumbnail decoding worker.

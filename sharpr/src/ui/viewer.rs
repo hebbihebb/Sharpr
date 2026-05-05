@@ -14,8 +14,6 @@ use crate::tags::TagDatabase;
 use crate::ui::metadata_chip::MetadataChip;
 use crate::ui::ops_indicator::OpsIndicator;
 use crate::ui::window::{AppState, SharprWindow};
-use crate::upscale::BeforeAfterViewer;
-use crate::upscale::backend::make_upscale_backend;
 
 const TAG_CHIP_COLOR_PALETTE: &[&str] = &[
     "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
@@ -147,56 +145,11 @@ struct TagPopoverState {
     path: Option<PathBuf>,
 }
 
-type PendingCommitFn = RefCell<Option<Box<dyn FnOnce(PathBuf)>>>;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ConvertKind {
-    Upscale,
-    Downscale,
-}
-
-impl ConvertKind {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Upscale => "Upscale",
-            Self::Downscale => "Downscale",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConvertDestinationMode {
-    Export,
-    Replace,
-}
-
-impl ConvertDestinationMode {
-    pub fn from_export_mode(mode: crate::export::ConvertDestinationMode) -> Self {
-        match mode {
-            crate::export::ConvertDestinationMode::Export => Self::Export,
-            crate::export::ConvertDestinationMode::Replace => Self::Replace,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ConvertSession {
-    op_id: u64,
-    source_path: PathBuf,
-    temp_output: PathBuf,
-    default_copy_dir: PathBuf,
-    filename_suffix: String,
-    kind: ConvertKind,
-    destination_mode: ConvertDestinationMode,
-}
-
 mod imp {
     use super::*;
 
     pub struct ViewerPane {
         pub content_box: gtk4::Box,
-        /// Root stack: "view" = normal viewer, "compare" = before/after widget.
-        pub stack: gtk4::Stack,
         pub overlay: gtk4::Overlay,
         pub scrolled_window: gtk4::ScrolledWindow,
         pub picture: gtk4::Picture,
@@ -228,12 +181,6 @@ mod imp {
         pub suggestions_flow: gtk4::FlowBox,
         pub suggestions_add_all: gtk4::Button,
         pub(super) tag_state: Rc<RefCell<TagPopoverState>>,
-        pub comparison: BeforeAfterViewer,
-        /// Commit/Discard buttons owned by the window header; stored here so
-        /// async upscale callbacks can show/hide them without capturing clones.
-        pub commit_btn: std::cell::RefCell<Option<gtk4::Button>>,
-        pub commit_menu_btn: std::cell::RefCell<Option<gtk4::MenuButton>>,
-        pub discard_btn: std::cell::RefCell<Option<gtk4::Button>>,
         /// Path of the image currently displayed — set by load_image(), cleared by clear().
         pub current_path: RefCell<Option<PathBuf>>,
         /// Temporary buffer for unsaved in-memory edits (e.g. rotations).
@@ -264,13 +211,8 @@ mod imp {
         /// Called after a successful edit save so the filmstrip can refresh thumbnails.
         pub post_save_cb: RefCell<Option<Box<dyn Fn()>>>,
         pub(super) ops_indicator: RefCell<Option<OpsIndicator>>,
-        pub(super) convert_sessions: RefCell<HashMap<u64, Rc<ConvertSession>>>,
-        pub(super) active_convert_op_id: Cell<Option<u64>>,
         /// Called when the "Manage tags" button in the popover is clicked.
         pub manage_tags_cb: RefCell<Option<Box<dyn Fn()>>>,
-        /// Commit action for the active convert operation (downscale or upscale).
-        /// Called with the temp output path when the user clicks Commit.
-        pub pending_commit_fn: PendingCommitFn,
         /// Last metadata-only quality score set for the displayed image, kept so
         /// `apply_sharpness` can blend without re-reading metadata.
         pub base_quality: RefCell<Option<crate::quality::QualityScore>>,
@@ -491,19 +433,10 @@ mod imp {
             overlay.add_overlay(&progress_bar);
             overlay.add_overlay(&zoom_label);
 
-            let comparison = BeforeAfterViewer::new();
-
-            let stack = gtk4::Stack::new();
-            stack.set_hexpand(true);
-            stack.set_vexpand(true);
-            stack.add_named(&overlay, Some("view"));
-            stack.add_named(&comparison, Some("compare"));
-
-            content_box.append(&stack);
+            content_box.append(&overlay);
 
             Self {
                 content_box,
-                stack,
                 overlay,
                 scrolled_window,
                 picture,
@@ -533,10 +466,6 @@ mod imp {
                 suggestions_flow,
                 suggestions_add_all,
                 tag_state,
-                comparison,
-                commit_btn: std::cell::RefCell::new(None),
-                commit_menu_btn: std::cell::RefCell::new(None),
-                discard_btn: std::cell::RefCell::new(None),
                 current_path: RefCell::new(None),
                 current_rgba: RefCell::new(None),
                 pending_edit: Cell::new(false),
@@ -555,10 +484,7 @@ mod imp {
                 metadata_handle: RefCell::new(None),
                 post_save_cb: RefCell::new(None),
                 ops_indicator: RefCell::new(None),
-                convert_sessions: RefCell::new(HashMap::new()),
-                active_convert_op_id: Cell::new(None),
                 manage_tags_cb: RefCell::new(None),
-                pending_commit_fn: RefCell::new(None),
                 base_quality: RefCell::new(None),
             }
         }
@@ -591,28 +517,11 @@ glib::wrapper! {
 }
 
 impl ViewerPane {
-    fn comparison_visible(&self) -> bool {
-        self.imp().stack.visible_child_name().as_deref() == Some("compare")
-    }
-
     pub fn new(state: Rc<RefCell<AppState>>) -> Self {
         let widget: Self = glib::Object::new();
         *widget.imp().state.borrow_mut() = Some(state);
         widget.build_ui();
         widget
-    }
-
-    /// Store the compare Save/Discard controls so they can be shown/hidden during
-    /// the upscale comparison flow. Called once by the window after layout.
-    pub fn set_comparison_buttons(
-        &self,
-        commit: gtk4::Button,
-        commit_menu: gtk4::MenuButton,
-        discard: gtk4::Button,
-    ) {
-        *self.imp().commit_btn.borrow_mut() = Some(commit);
-        *self.imp().commit_menu_btn.borrow_mut() = Some(commit_menu);
-        *self.imp().discard_btn.borrow_mut() = Some(discard);
     }
 
     pub fn set_ops_indicator(&self, indicator: OpsIndicator) {
@@ -625,24 +534,8 @@ impl ViewerPane {
         *self.imp().edit_discard_btn.borrow_mut() = Some(discard);
     }
 
-    fn set_comparison_buttons_visible(&self, visible: bool) {
-        let imp = self.imp();
-        if let Some(ref btn) = *imp.commit_btn.borrow() {
-            btn.set_visible(visible);
-        }
-        if let Some(ref btn) = *imp.discard_btn.borrow() {
-            btn.set_visible(visible);
-        }
-    }
-
-    fn set_comparison_buttons_sensitive(&self, sensitive: bool) {
-        let imp = self.imp();
-        if let Some(ref btn) = *imp.commit_btn.borrow() {
-            btn.set_sensitive(sensitive);
-        }
-        if let Some(ref btn) = *imp.discard_btn.borrow() {
-            btn.set_sensitive(sensitive);
-        }
+    pub fn current_path(&self) -> Option<PathBuf> {
+        self.imp().current_path.borrow().clone()
     }
 
     fn set_edit_buttons_visible_on(imp: &imp::ViewerPane, visible: bool) {
@@ -750,12 +643,7 @@ impl ViewerPane {
                     viewer.imp().pointer_pos.set((x, y));
                 }
                 let factor = if dy < 0.0 { 1.1 } else { 1.0 / 1.1 };
-                if viewer.comparison_visible() {
-                    viewer.imp().comparison.apply_scroll_zoom(factor);
-                    viewer.sync_zoom_button();
-                } else {
-                    viewer.apply_zoom(factor);
-                }
+                viewer.apply_zoom(factor);
             }
             glib::Propagation::Stop
         });
@@ -825,86 +713,6 @@ impl ViewerPane {
             .ok()
     }
 
-    fn current_convert_session(&self) -> Option<Rc<ConvertSession>> {
-        let op_id = self.imp().active_convert_op_id.get()?;
-        self.imp().convert_sessions.borrow().get(&op_id).cloned()
-    }
-
-    fn set_convert_action(&self, session: &Rc<ConvertSession>, show_toast: bool) {
-        let op_id = session.op_id;
-        let kind = session.kind;
-        let weak = self.downgrade();
-        if let Some(indicator) = self.imp().ops_indicator.borrow().as_ref() {
-            indicator.set_op_action(op_id, "Open", move || {
-                let Some(viewer) = weak.upgrade() else {
-                    return;
-                };
-                viewer.resume_convert_session(op_id);
-            });
-        }
-
-        if show_toast {
-            if let Some(window) = self.root_window() {
-                let toast = libadwaita::Toast::new(&format!("{} finished", kind.label()));
-                toast.set_button_label(Some("Open"));
-                let weak = self.downgrade();
-                toast.connect_button_clicked(move |_| {
-                    let Some(viewer) = weak.upgrade() else {
-                        return;
-                    };
-                    viewer.resume_convert_session(op_id);
-                });
-                window.add_toast(toast);
-            }
-        }
-    }
-
-    fn clear_convert_action(&self, op_id: u64) {
-        if let Some(indicator) = self.imp().ops_indicator.borrow().as_ref() {
-            let indicator: &OpsIndicator = indicator;
-            indicator.clear_op_action(op_id);
-            indicator.remove_op(op_id);
-        }
-    }
-
-    fn suspend_active_convert_session(&self, show_toast: bool) {
-        let imp = self.imp();
-        let Some(op_id) = imp.active_convert_op_id.take() else {
-            return;
-        };
-        let Some(session) = imp.convert_sessions.borrow().get(&op_id).cloned() else {
-            return;
-        };
-        self.restore_view_mode();
-        self.set_convert_action(&session, show_toast);
-    }
-
-    fn finish_convert_session(&self, op_id: u64) {
-        let imp = self.imp();
-        if imp.active_convert_op_id.get() == Some(op_id) {
-            imp.active_convert_op_id.set(None);
-        }
-        imp.convert_sessions.borrow_mut().remove(&op_id);
-        self.clear_convert_action(op_id);
-    }
-
-    fn show_convert_session(&self, session: Rc<ConvertSession>) {
-        let current = self.imp().current_path.borrow().clone();
-        if current.as_ref() != Some(&session.source_path) {
-            self.load_image(session.source_path.clone());
-        }
-        self.imp().active_convert_op_id.set(Some(session.op_id));
-        self.clear_convert_action(session.op_id);
-        self.show_comparison(session.source_path.clone(), session.temp_output.clone());
-    }
-
-    pub fn resume_convert_session(&self, op_id: u64) {
-        let session = self.imp().convert_sessions.borrow().get(&op_id).cloned();
-        if let Some(session) = session {
-            self.show_convert_session(session);
-        }
-    }
-
     /// Register a callback invoked when "Manage tags" is clicked in the popover.
     pub fn connect_manage_tags(&self, cb: impl Fn() + 'static) {
         *self.imp().manage_tags_cb.borrow_mut() = Some(Box::new(cb));
@@ -915,11 +723,6 @@ impl ViewerPane {
         let imp = self.imp();
         imp.load_gen.set(imp.load_gen.get().wrapping_add(1));
         imp.tag_popover.popdown();
-        if imp.active_convert_op_id.get().is_some() {
-            self.suspend_active_convert_session(false);
-        } else {
-            self.restore_view_mode();
-        }
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
         imp.tag_osd.set_visible(false);
@@ -957,11 +760,6 @@ impl ViewerPane {
         *imp.current_path.borrow_mut() = Some(path.clone());
         imp.pending_edit.set(false);
         Self::set_edit_buttons_visible_on(imp, false);
-        if imp.active_convert_op_id.get().is_some() {
-            self.suspend_active_convert_session(false);
-        } else {
-            self.restore_view_mode();
-        }
         imp.spinner.start();
         imp.spinner.set_visible(true);
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
@@ -1063,11 +861,6 @@ impl ViewerPane {
     }
 
     pub fn reset_zoom(&self) {
-        if self.comparison_visible() {
-            self.imp().comparison.reset_zoom();
-            self.sync_zoom_button();
-            return;
-        }
         let imp = self.imp();
         imp.zoom.set(1.0);
         imp.zoom_mode.set(ZoomMode::Fit);
@@ -1078,14 +871,6 @@ impl ViewerPane {
     }
 
     pub fn set_zoom_mode(&self, mode: ZoomMode) {
-        if self.comparison_visible() {
-            if self.imp().comparison.zoom_mode() == mode {
-                return;
-            }
-            self.imp().comparison.set_zoom_mode(mode);
-            self.sync_zoom_button();
-            return;
-        }
         let imp = self.imp();
         imp.zoom_mode.set(mode);
         match mode {
@@ -1129,15 +914,6 @@ impl ViewerPane {
 
     /// Toggle between Fit and 1:1 pixel mode. Updates the stored button icon.
     pub fn toggle_zoom_mode(&self) {
-        if self.comparison_visible() {
-            let new_mode = match self.imp().comparison.zoom_mode() {
-                ZoomMode::Fit => ZoomMode::OneToOne,
-                ZoomMode::OneToOne => ZoomMode::Fit,
-            };
-            self.imp().comparison.set_zoom_mode(new_mode);
-            self.sync_zoom_button();
-            return;
-        }
         let imp = self.imp();
         let new_mode = match imp.zoom_mode.get() {
             ZoomMode::Fit => ZoomMode::OneToOne,
@@ -1296,11 +1072,7 @@ impl ViewerPane {
     }
 
     pub fn zoom_mode(&self) -> ZoomMode {
-        if self.comparison_visible() {
-            self.imp().comparison.zoom_mode()
-        } else {
-            self.imp().zoom_mode.get()
-        }
+        self.imp().zoom_mode.get()
     }
 
     /// Returns the RGBA bytes of the currently displayed image, checking the
@@ -2010,1035 +1782,6 @@ impl ViewerPane {
         let max_value = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
         adjustment.set_value(value.clamp(adjustment.lower(), max_value));
     }
-
-    // -----------------------------------------------------------------------
-    // Upscaling (Phase B)
-    // -----------------------------------------------------------------------
-
-    /// Spawn an upscale job for `path`, using the binary cached in `AppState`.
-    ///
-    /// Disables `trigger_btn` for the duration; re-enables on completion or
-    /// failure. On success, shows a comparison view backed by a temp output.
-    pub fn start_upscale(
-        &self,
-        path: PathBuf,
-        scale: u32,
-        model: crate::upscale::UpscaleModel,
-        trigger_btn: gtk4::Button,
-        destination_mode: ConvertDestinationMode,
-    ) {
-        use crate::model::ImageEntry;
-        use crate::upscale::runner::{UpscaleEvent, UpscaleRunner};
-        use crate::upscale::{
-            OnnxUpscaleModel, UpscaleBackendKind, UpscaleCompressionMode,
-            UpscaleJobConfig, UpscaleOutputFormat,
-        };
-
-        let imp = self.imp();
-
-        let (binary, settings, mut selected_dims, ops_queue) = {
-            let st = imp.state.borrow();
-            let Some(ref rc) = *st else {
-                trigger_btn.set_sensitive(true);
-                return;
-            };
-            let state = rc.borrow();
-            (
-                state.upscale_binary.clone(),
-                state.settings.clone(),
-                state
-                    .library
-                    .selected_entry()
-                    .and_then(|e: ImageEntry| e.dimensions())
-                    .unwrap_or((0, 0)),
-                state.ops.clone(),
-            )
-        };
-
-        let backend_kind = UpscaleBackendKind::from_settings(&settings.upscale_backend);
-        let onnx_model = OnnxUpscaleModel::from_settings(&settings.onnx_upscale_model);
-        let comfyui_workflow =
-            crate::upscale::ComfyUiWorkflow::from_settings(&settings.comfyui_workflow);
-        let backend = match crate::upscale::backend::make_upscale_backend(
-            backend_kind,
-            binary,
-            onnx_model,
-            &settings.comfyui_url,
-            comfyui_workflow,
-        ) {
-            Some(b) => b,
-            None => {
-                trigger_btn.set_sensitive(true);
-                return;
-            }
-        };
-        if selected_dims == (0, 0) {
-            let meta = crate::metadata::ImageMetadata::load(&path);
-            if meta.width > 0 && meta.height > 0 {
-                selected_dims = (meta.width, meta.height);
-            }
-        }
-
-        let requested_scale = {
-            if scale == 0 {
-                let (w, h) = selected_dims;
-                UpscaleRunner::smart_scale(w, h)
-            } else {
-                scale
-            }
-        };
-        let job = UpscaleJobConfig {
-            source_dimensions: selected_dims,
-            requested_scale,
-            execution_scale: model.native_scale(),
-            model,
-            compress_output: settings.upscale_compress_output,
-            compressed_format: UpscaleOutputFormat::from_settings(
-                &settings.upscale_compressed_format,
-            ),
-            keep_raw_png_sidecar: settings.upscale_keep_raw_png_sidecar,
-            compression_mode: UpscaleCompressionMode::from_settings(
-                &settings.upscaler_compression_mode,
-            ),
-            quality: settings.upscaler_quality.clamp(50, 100) as u8,
-            tile_size: (settings.upscaler_tile_size > 0)
-                .then_some(settings.upscaler_tile_size as u32),
-            gpu_id: (settings.upscaler_gpu_id >= 0).then_some(settings.upscaler_gpu_id as u32),
-        };
-        let output_format = UpscaleRunner::select_output_format(&job);
-        let output_dir = crate::export::resolve_output_dir(
-            settings.upscaled_output_dir.as_ref(),
-            crate::export::OutputFolderKind::Upscaled,
-        );
-        let filename_suffix =
-            upscale_filename_suffix(backend_kind, model, onnx_model, comfyui_workflow);
-        let final_output = output_path_for_convert(
-            destination_mode,
-            &path,
-            &output_dir,
-            &filename_suffix,
-            output_format.extension(),
-        );
-        let temp_output = pending_output_path(&final_output);
-        let op = ops_queue.add("Upscaling image");
-        let session = Rc::new(ConvertSession {
-            op_id: op.id,
-            source_path: path.clone(),
-            temp_output: temp_output.clone(),
-            default_copy_dir: output_dir,
-            filename_suffix,
-            kind: ConvertKind::Upscale,
-            destination_mode,
-        });
-
-        let rx = if let Some(dir) = temp_output.parent() {
-            match std::fs::create_dir_all(dir) {
-                Ok(()) => backend.run(path.clone(), temp_output.clone(), job),
-                Err(err) => {
-                    let (tx, rx) = async_channel::bounded(1);
-                    let _ = tx.try_send(UpscaleEvent::Failed(format!(
-                        "Failed to create output directory {}: {err}",
-                        dir.display()
-                    )));
-                    rx
-                }
-            }
-        } else {
-            backend.run(path.clone(), temp_output, job)
-        };
-
-        let widget_weak = self.downgrade();
-        // Keep a strong ref to trigger_btn inside the closure so we can
-        // re-enable it on completion. The weak-ref pattern caused the strong
-        // ref to drop when start_upscale() returned, leaving upgrade() returning None.
-
-        glib::MainContext::default().spawn_local(async move {
-            let mut op = Some(op);
-            while let Ok(event) = rx.recv().await {
-                let Some(viewer) = widget_weak.upgrade() else {
-                    break;
-                };
-                match event {
-                    UpscaleEvent::Progress(Some(f)) => {
-                        if let Some(op) = op.as_ref() {
-                            op.progress(Some(f));
-                        }
-                    }
-                    UpscaleEvent::Progress(None) => {
-                        if let Some(op) = op.as_ref() {
-                            op.progress(None);
-                        }
-                    }
-                    UpscaleEvent::Done(out_path) => {
-                        trigger_btn.set_sensitive(true);
-                        if out_path != session.temp_output {
-                            eprintln!(
-                                "Upscale output path mismatch: expected {}, got {}",
-                                session.temp_output.display(),
-                                out_path.display()
-                            );
-                        }
-                        viewer.finalize_completed_convert(session.as_ref().clone());
-                        if let Some(op) = op.take() {
-                            op.complete();
-                        }
-                        break;
-                    }
-                    UpscaleEvent::Failed(msg) => {
-                        let vimp = viewer.imp();
-                        vimp.progress_bar.set_visible(false);
-                        trigger_btn.set_sensitive(true);
-                        cleanup_upscale_temp_artifacts(&session.temp_output);
-                        let dialog =
-                            libadwaita::AlertDialog::new(Some("Upscale Failed"), Some(&msg));
-                        dialog.add_response("ok", "OK");
-                        if let Some(root) = viewer.root() {
-                            if let Ok(window) = root.downcast::<gtk4::Window>() {
-                                dialog.present(Some(&window));
-                            }
-                        }
-                        eprintln!("Upscale failed: {msg}");
-                        if let Some(op) = op.take() {
-                            op.fail(msg);
-                        }
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    /// Spawn background upscale jobs for multiple images without entering the
-    /// comparison flow. Outputs are written directly into the configured
-    /// upscaled folder.
-    pub fn start_upscale_batch(
-        &self,
-        paths: Vec<PathBuf>,
-        scale: u32,
-        model: crate::upscale::UpscaleModel,
-        trigger_btn: gtk4::Button,
-        destination_mode: ConvertDestinationMode,
-    ) {
-        use crate::upscale::runner::{UpscaleEvent, UpscaleRunner};
-        use crate::upscale::{
-            OnnxUpscaleModel, UpscaleBackendKind, UpscaleCompressionMode, UpscaleJobConfig,
-            UpscaleOutputFormat,
-        };
-
-        if paths.is_empty() {
-            trigger_btn.set_sensitive(true);
-            return;
-        }
-
-        let (binary, settings, ops_queue) = {
-            let st = self.imp().state.borrow();
-            let Some(ref rc) = *st else {
-                trigger_btn.set_sensitive(true);
-                return;
-            };
-            let state = rc.borrow();
-            (
-                state.upscale_binary.clone(),
-                state.settings.clone(),
-                state.ops.clone(),
-            )
-        };
-
-        let backend_kind = UpscaleBackendKind::from_settings(&settings.upscale_backend);
-        let onnx_model = OnnxUpscaleModel::from_settings(&settings.onnx_upscale_model);
-        let comfyui_workflow =
-            crate::upscale::ComfyUiWorkflow::from_settings(&settings.comfyui_workflow);
-        let output_dir = crate::export::resolve_output_dir(
-            settings.upscaled_output_dir.as_ref(),
-            crate::export::OutputFolderKind::Upscaled,
-        );
-        let filename_suffix =
-            upscale_filename_suffix(backend_kind, model, onnx_model, comfyui_workflow);
-        let total = paths.len();
-        let op = ops_queue.add(format!("Upscaling {total} image(s)"));
-        let viewer_weak = self.downgrade();
-
-        glib::MainContext::default().spawn_local(async move {
-            let mut completed = 0usize;
-            let mut failed = 0usize;
-            let mut first_error: Option<String> = None;
-
-            for source_path in paths {
-                let source_dims = load_upscale_source_dimensions(&source_path);
-                if source_dims == (0, 0) {
-                    failed += 1;
-                    if first_error.is_none() {
-                        first_error = Some(format!(
-                            "{}: source dimensions are unavailable",
-                            source_path.display()
-                        ));
-                    }
-                    op.progress(Some((completed + failed) as f32 / total as f32));
-                    continue;
-                }
-
-                let requested_scale = if scale == 0 {
-                    UpscaleRunner::smart_scale(source_dims.0, source_dims.1)
-                } else {
-                    scale
-                };
-                let job = UpscaleJobConfig {
-                    source_dimensions: source_dims,
-                    requested_scale,
-                    execution_scale: model.native_scale(),
-                    model,
-                    compress_output: settings.upscale_compress_output,
-                    compressed_format: UpscaleOutputFormat::from_settings(
-                        &settings.upscale_compressed_format,
-                    ),
-                    keep_raw_png_sidecar: settings.upscale_keep_raw_png_sidecar,
-                    compression_mode: UpscaleCompressionMode::from_settings(
-                        &settings.upscaler_compression_mode,
-                    ),
-                    quality: settings.upscaler_quality.clamp(50, 100) as u8,
-                    tile_size: (settings.upscaler_tile_size > 0)
-                        .then_some(settings.upscaler_tile_size as u32),
-                    gpu_id: (settings.upscaler_gpu_id >= 0)
-                        .then_some(settings.upscaler_gpu_id as u32),
-                };
-                let output_format = UpscaleRunner::select_output_format(&job);
-                let final_output = output_path_for_convert(
-                    destination_mode,
-                    &source_path,
-                    &output_dir,
-                    &filename_suffix,
-                    output_format.extension(),
-                );
-                let temp_output = pending_output_path(&final_output);
-                let backend: Box<dyn crate::upscale::backend::UpscaleBackend> =
-                    match make_upscale_backend(
-                        backend_kind,
-                        binary.clone(),
-                        onnx_model,
-                        &settings.comfyui_url,
-                        comfyui_workflow,
-                    ) {
-                        Some(b) => b,
-                        None => {
-                            trigger_btn.set_sensitive(true);
-                            op.fail("No compatible upscale backend is available");
-                            return;
-                        }
-                    };
-                let rx = if let Some(dir) = temp_output.parent() {
-                    match std::fs::create_dir_all(dir) {
-                        Ok(()) => backend.run(source_path.clone(), temp_output.clone(), job),
-                        Err(err) => {
-                            failed += 1;
-                            if first_error.is_none() {
-                                first_error = Some(format!(
-                                    "{}: failed to create output directory {}: {err}",
-                                    source_path.display(),
-                                    dir.display()
-                                ));
-                            }
-                            op.progress(Some((completed + failed) as f32 / total as f32));
-                            continue;
-                        }
-                    }
-                } else {
-                    backend.run(source_path.clone(), temp_output.clone(), job)
-                };
-
-                let mut job_failed = None;
-                while let Ok(event) = rx.recv().await {
-                    match event {
-                        UpscaleEvent::Progress(Some(progress)) => {
-                            op.progress(Some((completed as f32 + progress) / total as f32));
-                        }
-                        UpscaleEvent::Progress(None) => {}
-                        UpscaleEvent::Done(out_path) => {
-                            if out_path != temp_output {
-                                eprintln!(
-                                    "Upscale output path mismatch: expected {}, got {}",
-                                    temp_output.display(),
-                                    out_path.display()
-                                );
-                            }
-                            break;
-                        }
-                        UpscaleEvent::Failed(msg) => {
-                            job_failed = Some(msg);
-                            break;
-                        }
-                    }
-                }
-
-                if let Some(msg) = job_failed {
-                    cleanup_upscale_temp_artifacts(&temp_output);
-                    failed += 1;
-                    if first_error.is_none() {
-                        first_error = Some(format!("{}: {msg}", source_path.display()));
-                    }
-                    op.progress(Some((completed + failed) as f32 / total as f32));
-                    continue;
-                }
-
-                match finalize_convert_output(
-                    destination_mode,
-                    &temp_output,
-                    &source_path,
-                    &output_dir,
-                    &filename_suffix,
-                ) {
-                    Ok(final_path) => {
-                        completed += 1;
-                        if let Some(viewer) = viewer_weak.upgrade() {
-                            viewer.handle_batch_convert_commit(
-                                &source_path,
-                                &final_path,
-                                destination_mode,
-                            );
-                        }
-                        op.progress(Some((completed + failed) as f32 / total as f32));
-                    }
-                    Err(msg) => {
-                        failed += 1;
-                        if first_error.is_none() {
-                            first_error = Some(format!("{}: {msg}", source_path.display()));
-                        }
-                        op.progress(Some((completed + failed) as f32 / total as f32));
-                    }
-                }
-            }
-
-            trigger_btn.set_sensitive(true);
-
-            if let Some(viewer) = viewer_weak.upgrade() {
-                if completed > 0 {
-                    if let Some(cb) = viewer.imp().post_save_cb.borrow().as_ref() {
-                        cb();
-                    }
-                }
-                if failed == 0 {
-                    op.complete();
-                    if let Some(window) = viewer.root_window() {
-                        let message = if completed == 1 {
-                            "Image upscaled".to_string()
-                        } else {
-                            format!("{completed} images upscaled")
-                        };
-                        window.add_toast(libadwaita::Toast::new(&message));
-                    }
-                } else {
-                    let message = format!("{completed}/{total} upscaled, {failed} failed");
-                    op.fail(first_error.unwrap_or(message.clone()));
-                    if let Some(window) = viewer.root_window() {
-                        window.add_toast(libadwaita::Toast::new(&message));
-                    }
-                }
-            } else if failed == 0 {
-                op.complete();
-            } else {
-                op.fail(
-                    first_error.unwrap_or_else(|| {
-                        format!("{completed}/{total} upscaled, {failed} failed")
-                    }),
-                );
-            }
-        });
-    }
-
-    /// Export `source` to a temp file in the destination folder, then show
-    /// the before/after comparison.
-    pub fn start_downscale_preview(
-        &self,
-        source: PathBuf,
-        config: crate::export::ExportConfig,
-        destination_mode: crate::export::ConvertDestinationMode,
-    ) {
-        let imp = self.imp();
-        let ops_queue = {
-            let st = imp.state.borrow();
-            let Some(ref rc) = *st else { return };
-            let ops = rc.borrow().ops.clone();
-            ops
-        };
-
-        let max_edge = config.max_edge;
-        let format = config.format;
-        let quality = config.quality;
-        let ext = crate::export::format_extension(format);
-        let pending_suffix = config
-            .filename_suffix
-            .clone()
-            .unwrap_or_else(|| crate::export::export_filename_suffix(max_edge, format));
-        let temp_path = pending_output_path(&output_path_for_convert(
-            ConvertDestinationMode::from_export_mode(destination_mode),
-            &source,
-            &config.destination,
-            &pending_suffix,
-            ext,
-        ));
-
-        let source_c = source.clone();
-        let temp_c = temp_path.clone();
-
-        let (tx, rx) = async_channel::bounded::<Result<(), String>>(1);
-        rayon::spawn(move || {
-            let result = (|| -> Result<(), String> {
-                if let Some(dir) = temp_c.parent() {
-                    std::fs::create_dir_all(dir).map_err(|err| {
-                        format!("failed to create output directory {}: {err}", dir.display())
-                    })?;
-                }
-                crate::export::export_to_path(&source_c, &temp_c, max_edge, format, quality)
-                    .map_err(|e| e.to_string())
-            })();
-            let _ = tx.send_blocking(result);
-        });
-
-        let widget_weak = self.downgrade();
-        let op = ops_queue.add("Preparing preview");
-        let session = Rc::new(ConvertSession {
-            op_id: op.id,
-            source_path: source.clone(),
-            temp_output: temp_path.clone(),
-            default_copy_dir: config.destination.clone(),
-            filename_suffix: config
-                .filename_suffix
-                .clone()
-                .unwrap_or_else(|| crate::export::export_filename_suffix(max_edge, format)),
-            kind: ConvertKind::Downscale,
-            destination_mode: ConvertDestinationMode::from_export_mode(destination_mode),
-        });
-        glib::MainContext::default().spawn_local(async move {
-            if let Ok(result) = rx.recv().await {
-                let Some(viewer) = widget_weak.upgrade() else {
-                    return;
-                };
-                match result {
-                    Ok(()) => {
-                        viewer.finalize_completed_convert(session.as_ref().clone());
-                        op.complete();
-                    }
-                    Err(msg) => {
-                        op.fail(msg.clone());
-                        let dialog =
-                            libadwaita::AlertDialog::new(Some("Export Failed"), Some(&msg));
-                        dialog.add_response("ok", "OK");
-                        if let Some(root) = viewer.root() {
-                            if let Ok(win) = root.downcast::<gtk4::Window>() {
-                                dialog.present(Some(&win));
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    /// Load both images into the comparison widget and switch the stack to the
-    /// "compare" page. `show_actions` controls whether Save/Discard are shown.
-    fn show_comparison_with_actions(
-        &self,
-        before_path: PathBuf,
-        after_path: PathBuf,
-        show_actions: bool,
-    ) {
-        let imp = self.imp();
-        imp.comparison.reset_zoom();
-        imp.stack.set_visible_child_name("compare");
-        let viewer_weak = self.downgrade();
-        imp.comparison.load(before_path, after_path, move || {
-            let Some(viewer) = viewer_weak.upgrade() else {
-                return;
-            };
-            let imp = viewer.imp();
-            imp.progress_bar.set_visible(false);
-            viewer.set_comparison_buttons_visible(show_actions);
-            imp.stack.set_visible_child_name("compare");
-            imp.comparison.grab_focus();
-            viewer.sync_zoom_button();
-        });
-    }
-
-    /// Load both images into the comparison widget, show Commit/Discard, and
-    /// switch the stack to the "compare" page.
-    fn show_comparison(&self, before_path: PathBuf, after_path: PathBuf) {
-        self.show_comparison_with_actions(before_path, after_path, true);
-    }
-
-    pub fn toggle_debug_comparison(&self) {
-        let imp = self.imp();
-        if imp.stack.visible_child_name().as_deref() == Some("compare")
-            && imp.active_convert_op_id.get().is_none()
-        {
-            self.restore_view_mode();
-            return;
-        }
-
-        let path = imp.current_path.borrow().clone().or_else(|| {
-            imp.state.borrow().as_ref().and_then(|state| {
-                state
-                    .borrow()
-                    .library
-                    .selected_entry()
-                    .map(|entry| entry.path())
-            })
-        });
-
-        let Some(path) = path else {
-            return;
-        };
-
-        self.show_comparison_with_actions(path.clone(), path, false);
-    }
-
-    pub fn commit_convert_default(&self) {
-        self.commit_convert();
-    }
-
-    fn finalize_completed_convert(&self, session: ConvertSession) {
-        let Some(state) = self.imp().state.borrow().as_ref().cloned() else {
-            return;
-        };
-
-        let (tx, rx) = async_channel::bounded::<Result<PathBuf, String>>(1);
-        let work_session = session.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send_blocking(finalize_convert_session(&work_session));
-        });
-
-        let op = state
-            .borrow()
-            .ops
-            .clone()
-            .add(format!("Saving {}", session.kind.label().to_lowercase()));
-        let viewer_weak = self.downgrade();
-        glib::MainContext::default().spawn_local(async move {
-            let Some(viewer) = viewer_weak.upgrade() else {
-                return;
-            };
-
-            match rx.recv().await {
-                Ok(Ok(final_path)) => {
-                    op.complete();
-                    viewer.handle_copy_commit(&session, &final_path);
-                    if session.destination_mode == ConvertDestinationMode::Replace
-                        && viewer.imp().current_path.borrow().as_ref() == Some(&session.source_path)
-                    {
-                        viewer.load_image(final_path.clone());
-                    } else if viewer.imp().current_path.borrow().as_ref()
-                        == Some(&session.source_path)
-                    {
-                        viewer.show_comparison_with_actions(
-                            session.source_path.clone(),
-                            final_path,
-                            false,
-                        );
-                    }
-                }
-                Ok(Err(msg)) => {
-                    op.fail(msg.clone());
-                    viewer.present_convert_error("Save Failed", &msg);
-                }
-                Err(_) => {
-                    op.fail("Save operation was cancelled");
-                    viewer.present_convert_error("Save Failed", "Save operation was cancelled");
-                }
-            }
-        });
-    }
-
-    fn commit_convert(&self) {
-        let Some(session) = self.current_convert_session() else {
-            return;
-        };
-        let Some(state) = self.imp().state.borrow().as_ref().cloned() else {
-            return;
-        };
-
-        self.set_comparison_buttons_sensitive(false);
-
-        let (tx, rx) = async_channel::bounded::<Result<PathBuf, String>>(1);
-        let work_session = (*session).clone();
-        std::thread::spawn(move || {
-            let _ = tx.send_blocking(finalize_convert_session(&work_session));
-        });
-
-        let op = state
-            .borrow()
-            .ops
-            .clone()
-            .add(format!("Saving {}", session.kind.label().to_lowercase()));
-        let viewer_weak = self.downgrade();
-        glib::MainContext::default().spawn_local(async move {
-            let Some(viewer) = viewer_weak.upgrade() else {
-                return;
-            };
-
-            match rx.recv().await {
-                Ok(Ok(final_path)) => {
-                    op.complete();
-                    viewer.restore_view_mode();
-                    viewer.finish_convert_session(session.op_id);
-                    viewer.handle_copy_commit(&session, &final_path);
-                    if session.destination_mode == ConvertDestinationMode::Replace
-                        && viewer.imp().current_path.borrow().as_ref() != Some(&final_path)
-                    {
-                        viewer.load_image(final_path.clone());
-                    }
-                }
-                Ok(Err(msg)) => {
-                    op.fail(msg.clone());
-                    viewer.set_comparison_buttons_sensitive(true);
-                    viewer.present_convert_error("Save Failed", &msg);
-                }
-                Err(_) => {
-                    op.fail("Save operation was cancelled");
-                    viewer.set_comparison_buttons_sensitive(true);
-                    viewer.present_convert_error("Save Failed", "Save operation was cancelled");
-                }
-            }
-        });
-    }
-
-    /// Generic discard: deletes the temp output file and restores the view.
-    pub fn discard_convert(&self) {
-        let Some(session) = self.current_convert_session() else {
-            return;
-        };
-        cleanup_upscale_temp_artifacts(&session.temp_output);
-        self.restore_view_mode();
-        self.finish_convert_session(session.op_id);
-    }
-
-    fn restore_view_mode(&self) {
-        let imp = self.imp();
-        imp.comparison.clear();
-        self.set_comparison_buttons_visible(false);
-        imp.stack.set_visible_child_name("view");
-        self.sync_zoom_button();
-    }
-
-    fn register_output_in_current_folder(&self, path: &std::path::Path) {
-        let Some(state) = self.imp().state.borrow().as_ref().cloned() else {
-            return;
-        };
-        let mut state = state.borrow_mut();
-        let _ = state.library.insert_path(path.to_path_buf());
-    }
-
-    fn update_replace_output_in_current_folder(
-        &self,
-        source_path: &std::path::Path,
-        final_path: &std::path::Path,
-    ) {
-        let Some(state_rc) = self.imp().state.borrow().as_ref().cloned() else {
-            return;
-        };
-        let tags_db = state_rc.borrow().tags.clone();
-        if let Some(tags_db) = tags_db.as_ref() {
-            tags_db.rename_path(source_path, final_path);
-        }
-
-        let mut state = state_rc.borrow_mut();
-        let selected_old = state.library.selected_index;
-        let old_index = state.library.index_of_path(source_path);
-        if source_path == final_path {
-            state.library.invalidate_path_caches(final_path);
-            return;
-        }
-        state.library.remove_path(source_path);
-        if state.selected_paths.remove(source_path) {
-            state.selected_paths.insert(final_path.to_path_buf());
-        }
-        let new_index = state.library.insert_path(final_path.to_path_buf());
-        if selected_old == old_index {
-            state.library.selected_index = new_index;
-        }
-    }
-
-    pub(crate) fn handle_batch_convert_commit(
-        &self,
-        source_path: &std::path::Path,
-        final_path: &std::path::Path,
-        destination_mode: ConvertDestinationMode,
-    ) {
-        match destination_mode {
-            ConvertDestinationMode::Export => self.register_output_in_current_folder(final_path),
-            ConvertDestinationMode::Replace => {
-                self.update_replace_output_in_current_folder(source_path, final_path)
-            }
-        }
-        if destination_mode == ConvertDestinationMode::Replace
-            && self.imp().current_path.borrow().as_deref() == Some(source_path)
-        {
-            self.load_image(final_path.to_path_buf());
-        }
-    }
-
-    fn handle_copy_commit(&self, session: &ConvertSession, final_path: &std::path::Path) {
-        self.handle_batch_convert_commit(
-            &session.source_path,
-            final_path,
-            session.destination_mode,
-        );
-        if let Some(cb) = self.imp().post_save_cb.borrow().as_ref() {
-            cb();
-        }
-
-        if let Some(window) = self.root_window() {
-            let dest_dir = final_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .to_path_buf();
-            let msg = format!("{} saved", session.kind.label());
-            let toast = libadwaita::Toast::new(&msg);
-            toast.set_button_label(Some("Open destination"));
-            toast.connect_button_clicked(move |_| {
-                let uri = gio::File::for_path(&dest_dir).uri();
-                let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
-            });
-            window.add_toast(toast);
-        }
-    }
-
-    fn present_convert_error(&self, title: &str, message: &str) {
-        let dialog = libadwaita::AlertDialog::new(Some(title), Some(message));
-        dialog.add_response("ok", "OK");
-        if let Some(root) = self.root() {
-            if let Ok(window) = root.downcast::<gtk4::Window>() {
-                dialog.present(Some(&window));
-            }
-        }
-    }
-}
-
-fn output_path_for_convert(
-    destination_mode: ConvertDestinationMode,
-    input_path: &std::path::Path,
-    destination_dir: &std::path::Path,
-    filename_suffix: &str,
-    ext: &str,
-) -> PathBuf {
-    match destination_mode {
-        ConvertDestinationMode::Export => crate::export::unique_output_path_with_suffix(
-            destination_dir,
-            input_path,
-            filename_suffix,
-            ext,
-        ),
-        ConvertDestinationMode::Replace => {
-            crate::export::replacement_output_path_for_extension(input_path, ext)
-        }
-    }
-}
-
-fn load_upscale_source_dimensions(path: &std::path::Path) -> (u32, u32) {
-    let meta = crate::metadata::ImageMetadata::load(path);
-    if meta.width > 0 && meta.height > 0 {
-        (meta.width, meta.height)
-    } else {
-        (0, 0)
-    }
-}
-
-pub(crate) fn pending_output_path(final_output: &std::path::Path) -> PathBuf {
-    static PENDING_OUTPUT_SEQ: AtomicU64 = AtomicU64::new(1);
-
-    let stem = final_output
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("upscaled");
-    let ext = final_output
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    let suffix = format!(
-        "{}.pending-{}-{}",
-        stem,
-        std::process::id(),
-        PENDING_OUTPUT_SEQ.fetch_add(1, Ordering::Relaxed)
-    );
-    let file_name = if ext.is_empty() {
-        suffix
-    } else {
-        format!("{suffix}.{ext}")
-    };
-    final_output.with_file_name(file_name)
-}
-
-fn finalize_convert_session(session: &ConvertSession) -> Result<PathBuf, String> {
-    finalize_convert_output(
-        session.destination_mode,
-        &session.temp_output,
-        &session.source_path,
-        &session.default_copy_dir,
-        &session.filename_suffix,
-    )
-}
-
-fn finalize_convert_output(
-    destination_mode: ConvertDestinationMode,
-    temp_output: &std::path::Path,
-    source_path: &std::path::Path,
-    destination_dir: &std::path::Path,
-    filename_suffix: &str,
-) -> Result<PathBuf, String> {
-    match destination_mode {
-        ConvertDestinationMode::Export => {
-            finalize_copy_output(temp_output, source_path, destination_dir, filename_suffix)
-        }
-        ConvertDestinationMode::Replace => finalize_replace_output(temp_output, source_path),
-    }
-}
-
-fn finalize_copy_output(
-    temp_output: &std::path::Path,
-    source_path: &std::path::Path,
-    destination_dir: &std::path::Path,
-    filename_suffix: &str,
-) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(destination_dir).map_err(|err| {
-        format!(
-            "failed to create destination folder {}: {err}",
-            destination_dir.display()
-        )
-    })?;
-    let ext = temp_output
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default();
-    let final_path = crate::export::unique_output_path_with_suffix(
-        destination_dir,
-        source_path,
-        filename_suffix,
-        ext,
-    );
-    move_file(temp_output, &final_path)?;
-    let preserved_temp = crate::upscale::runner::preserved_png_temp_path(temp_output);
-    if preserved_temp.exists() {
-        let preserved_final = unique_png_sibling_path(&final_path);
-        move_file(&preserved_temp, &preserved_final)?;
-    }
-    Ok(final_path)
-}
-
-pub(crate) fn finalize_replace_output(
-    temp_output: &std::path::Path,
-    source_path: &std::path::Path,
-) -> Result<PathBuf, String> {
-    let ext = temp_output
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default();
-    let final_path = crate::export::replacement_output_path_for_extension(source_path, ext);
-    move_file(temp_output, &final_path)?;
-    let preserved_temp = crate::upscale::runner::preserved_png_temp_path(temp_output);
-    if preserved_temp.exists() {
-        let preserved_final = unique_png_sibling_path(&final_path);
-        move_file(&preserved_temp, &preserved_final)?;
-    }
-    if final_path != source_path {
-        trash_replaced_source(source_path)?;
-    }
-    Ok(final_path)
-}
-
-#[cfg(not(test))]
-fn trash_replaced_source(source_path: &std::path::Path) -> Result<(), String> {
-    // Schedule on the main thread: gio::File::trash() routes through GVfs/D-Bus and
-    // must not be called from rayon or std threads while the GTK main loop owns the
-    // global GLib main context — doing so deadlocks the background thread forever.
-    let path = source_path.to_path_buf();
-    glib::MainContext::default().invoke(move || {
-        if let Err(err) = gio::File::for_path(&path).trash(None::<&gio::Cancellable>) {
-            eprintln!(
-                "warning: failed to move {} to trash after replacement: {err}",
-                path.display()
-            );
-        }
-    });
-    Ok(())
-}
-
-#[cfg(test)]
-fn trash_replaced_source(source_path: &std::path::Path) -> Result<(), String> {
-    std::fs::remove_file(source_path).map_err(|err| {
-        format!(
-            "failed to remove original {} after replacement: {err}",
-            source_path.display()
-        )
-    })
-}
-
-fn unique_png_sibling_path(base_output: &std::path::Path) -> PathBuf {
-    let stem = base_output
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("upscaled");
-    let parent = base_output
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let candidate = parent.join(format!("{stem}.png"));
-    if !candidate.exists() {
-        return candidate;
-    }
-    for idx in 1.. {
-        let candidate = parent.join(format!("{stem}-{idx}.png"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    unreachable!()
-}
-
-fn cleanup_upscale_temp_artifacts(temp_output: &std::path::Path) {
-    let _ = std::fs::remove_file(temp_output);
-    let _ = std::fs::remove_file(crate::upscale::runner::preserved_png_temp_path(temp_output));
-}
-
-fn upscale_filename_suffix(
-    backend: crate::upscale::UpscaleBackendKind,
-    cli_model: crate::upscale::UpscaleModel,
-    onnx_model: crate::upscale::OnnxUpscaleModel,
-    comfyui_workflow: crate::upscale::ComfyUiWorkflow,
-) -> String {
-    match backend {
-        crate::upscale::UpscaleBackendKind::Cli => match cli_model {
-            crate::upscale::UpscaleModel::Standard => "upscaled".to_string(),
-            crate::upscale::UpscaleModel::Anime => "upscaled-anime".to_string(),
-        },
-        crate::upscale::UpscaleBackendKind::Onnx => {
-            format!("upscaled-onnx-{}", onnx_model.settings_key())
-        }
-        crate::upscale::UpscaleBackendKind::ComfyUi => {
-            if comfyui_workflow.uses_sharpr_model_picker() {
-                match cli_model {
-                    crate::upscale::UpscaleModel::Standard => "upscaled-comfyui".to_string(),
-                    crate::upscale::UpscaleModel::Anime => "upscaled-comfyui-anime".to_string(),
-                }
-            } else {
-                format!("upscaled-{}", comfyui_workflow.settings_key())
-            }
-        }
-    }
-}
-
-fn move_file(src: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
-    match std::fs::rename(src, dest) {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            std::fs::copy(src, dest).map_err(|err| {
-                format!(
-                    "failed to copy {} to {}: {err}",
-                    src.display(),
-                    dest.display()
-                )
-            })?;
-            std::fs::remove_file(src)
-                .map_err(|err| format!("failed to clean up temp file {}: {err}", src.display()))
-                .map(|_| ())
-        }
-    }
 }
 
 fn install_viewer_osd_css() {
@@ -3054,72 +1797,4 @@ fn install_viewer_osd_css() {
             );
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn comfy_preserved_temp_png_uses_temp_stem() {
-        let temp = PathBuf::from("/tmp/photo-upscaled-comfyui.pending-12-3.webp");
-        assert_eq!(
-            crate::upscale::runner::preserved_png_temp_path(&temp),
-            PathBuf::from("/tmp/photo-upscaled-comfyui.pending-12-3.preserved.png")
-        );
-    }
-
-    #[test]
-    fn unique_png_sibling_path_uses_final_output_stem() {
-        let output = PathBuf::from("/tmp/photo-upscaled-comfyui.webp");
-        assert_eq!(
-            unique_png_sibling_path(&output),
-            PathBuf::from("/tmp/photo-upscaled-comfyui.png")
-        );
-    }
-
-    #[test]
-    fn finalize_replace_output_swaps_extension_and_removes_original() {
-        let root = std::env::temp_dir().join(format!(
-            "sharpr-viewer-replace-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let source = root.join("photo.jpg");
-        let temp = root.join("photo.pending.jxl");
-        std::fs::write(&source, b"old").unwrap();
-        std::fs::write(&temp, b"new").unwrap();
-
-        let final_path = finalize_replace_output(&temp, &source).unwrap();
-        assert_eq!(final_path, root.join("photo.jxl"));
-        assert!(!source.exists());
-        assert_eq!(std::fs::read(&final_path).unwrap(), b"new");
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn finalize_replace_output_overwrites_same_extension_in_place() {
-        let root = std::env::temp_dir().join(format!(
-            "sharpr-viewer-replace-same-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let source = root.join("photo.jpg");
-        let temp = root.join("photo.pending.jpg");
-        std::fs::write(&source, b"old").unwrap();
-        std::fs::write(&temp, b"new").unwrap();
-
-        let final_path = finalize_replace_output(&temp, &source).unwrap();
-        assert_eq!(final_path, source);
-        assert_eq!(std::fs::read(&final_path).unwrap(), b"new");
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
 }
