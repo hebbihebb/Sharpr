@@ -58,6 +58,9 @@ mod imp {
     pub struct TasksPage {
         pub queue_list: RefCell<Option<gtk4::ListBox>>,
         pub settings_stack: RefCell<Option<gtk4::Stack>>,
+        pub summary_group: RefCell<Option<libadwaita::PreferencesGroup>>,
+        pub summary_source_row: RefCell<Option<libadwaita::ActionRow>>,
+        pub summary_output_row: RefCell<Option<libadwaita::ActionRow>>,
         pub start_btn: RefCell<Option<gtk4::Button>>,
         pub pause_btn: RefCell<Option<gtk4::Button>>,
         pub clear_btn: RefCell<Option<gtk4::Button>>,
@@ -94,10 +97,12 @@ mod imp {
 
         // State
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
+        pub selected_pipeline_id: RefCell<Option<i64>>,
         pub compare_cb: RefCell<Option<CompareCallback>>,
         pub parent_window: RefCell<WeakRef<gtk4::Window>>,
         pub runner_active: Rc<Cell<bool>>,
         pub paused: Rc<Cell<bool>>,
+        pub selected_is_history: Cell<bool>,
         pub polling_timer: RefCell<Option<glib::SourceId>>,
     }
 
@@ -184,7 +189,7 @@ mod imp {
 
             let queue_list = gtk4::ListBox::new();
             queue_list.add_css_class("boxed-list");
-            queue_list.set_selection_mode(gtk4::SelectionMode::None);
+            queue_list.set_selection_mode(gtk4::SelectionMode::Single);
 
             let scrolled = gtk4::ScrolledWindow::new();
             scrolled.set_vexpand(true);
@@ -226,7 +231,7 @@ mod imp {
 
             let history_list = gtk4::ListBox::new();
             history_list.add_css_class("boxed-list");
-            history_list.set_selection_mode(gtk4::SelectionMode::None);
+            history_list.set_selection_mode(gtk4::SelectionMode::Single);
             history_section.append(&history_list);
 
             // Hidden until there are history entries
@@ -251,6 +256,7 @@ mod imp {
 
             let settings_stack = gtk4::Stack::new();
             settings_stack.set_transition_type(gtk4::StackTransitionType::SlideLeftRight);
+            settings_stack.set_vexpand(true);
 
             // Upscale Settings Page
             let upscale_box = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
@@ -380,9 +386,22 @@ mod imp {
 
             settings_stack.add_named(&export_scrolled, Some("export"));
 
+            let summary_group = libadwaita::PreferencesGroup::new();
+            summary_group.set_title("Summary");
+            summary_group.set_visible(false);
+
+            let summary_source_row = libadwaita::ActionRow::new();
+            summary_source_row.set_title("Source");
+            summary_group.add(&summary_source_row);
+
+            let summary_output_row = libadwaita::ActionRow::new();
+            summary_output_row.set_title("Output");
+            summary_group.add(&summary_output_row);
+
             right_col.append(&op_switcher);
             right_col.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
             right_col.append(&settings_stack);
+            right_col.append(&summary_group);
 
             main_box.append(&left_col);
             main_box.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
@@ -611,6 +630,9 @@ mod imp {
             *self.queue_list.borrow_mut() = Some(queue_list);
             *self.queue_empty_label.borrow_mut() = Some(queue_empty_label);
             *self.settings_stack.borrow_mut() = Some(settings_stack);
+            *self.summary_group.borrow_mut() = Some(summary_group);
+            *self.summary_source_row.borrow_mut() = Some(summary_source_row);
+            *self.summary_output_row.borrow_mut() = Some(summary_output_row);
             *self.start_btn.borrow_mut() = Some(start_btn);
             *self.pause_btn.borrow_mut() = Some(pause_btn);
             *self.clear_btn.borrow_mut() = Some(clear_btn);
@@ -669,6 +691,91 @@ impl TasksPage {
 
     pub fn set_parent_window(&self, window: &gtk4::Window) {
         self.imp().parent_window.borrow_mut().set(Some(window));
+    }
+
+    fn clear_summary(&self) {
+        let imp = self.imp();
+        if let Some(group) = imp.summary_group.borrow().as_ref() {
+            group.set_visible(false);
+        }
+        if let Some(row) = imp.summary_source_row.borrow().as_ref() {
+            row.set_subtitle("");
+            row.set_tooltip_text(None);
+        }
+        if let Some(row) = imp.summary_output_row.borrow().as_ref() {
+            row.set_subtitle("");
+            row.set_tooltip_text(None);
+        }
+    }
+
+    fn update_summary(&self, source: &Path, output: Option<&Path>) {
+        let imp = self.imp();
+        let source_label = source
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| source.display().to_string());
+        if let Some(row) = imp.summary_source_row.borrow().as_ref() {
+            row.set_subtitle(&source_label);
+            row.set_tooltip_text(Some(&source.display().to_string()));
+        }
+        if let Some(row) = imp.summary_output_row.borrow().as_ref() {
+            match output {
+                Some(path) => {
+                    let text = path.display().to_string();
+                    row.set_subtitle(&text);
+                    row.set_tooltip_text(Some(&text));
+                }
+                None => {
+                    row.set_subtitle("Not yet run");
+                    row.set_tooltip_text(None);
+                }
+            }
+        }
+        if let Some(group) = imp.summary_group.borrow().as_ref() {
+            group.set_visible(true);
+        }
+    }
+
+    fn find_pipeline_by_id(idx: &LibraryIndex, pipeline_id: i64) -> Option<Pipeline> {
+        for status in [
+            PipelineStatus::InProgress,
+            PipelineStatus::Queued,
+            PipelineStatus::Completed,
+            PipelineStatus::Failed,
+        ] {
+            if let Some(pipeline) = idx
+                .pipelines_by_status(status)
+                .ok()
+                .and_then(|pipelines| pipelines.into_iter().find(|p| p.id == pipeline_id))
+            {
+                return Some(pipeline);
+            }
+        }
+        None
+    }
+
+    fn show_summary_for_pipeline(&self, pipeline_id: i64) {
+        let Some(state_rc) = self.imp().state.borrow().clone() else {
+            self.clear_summary();
+            return;
+        };
+        let state = state_rc.borrow();
+        let Some(idx) = state.library_index.as_ref() else {
+            self.clear_summary();
+            return;
+        };
+        let Some(pipeline) = Self::find_pipeline_by_id(idx, pipeline_id) else {
+            self.clear_summary();
+            return;
+        };
+        let step = idx
+            .steps_for_pipeline(pipeline_id)
+            .ok()
+            .and_then(|steps| steps.into_iter().next());
+        self.update_summary(
+            &pipeline.source_path,
+            step.as_ref().and_then(|step| step.output_path.as_deref()),
+        );
     }
 
     pub fn set_interrupted_count(&self, n: usize) {
@@ -742,6 +849,114 @@ impl TasksPage {
         if let Some(row) = imp.onnx_model_row.borrow().as_ref() {
             row.set_visible(backend == "onnx");
         }
+    }
+
+    fn load_settings_for_pipeline(&self, pipeline_id: i64) {
+        let Some(state_rc) = self.imp().state.borrow().clone() else {
+            return;
+        };
+        let state = state_rc.borrow();
+        let Some(idx) = state.library_index.as_ref() else {
+            return;
+        };
+        let Some(pipeline) = Self::find_pipeline_by_id(idx, pipeline_id) else {
+            return;
+        };
+        let steps = idx.steps_for_pipeline(pipeline_id).unwrap_or_default();
+        let Some(step) = steps.first() else {
+            return;
+        };
+
+        match step.step_type {
+            StepType::Upscale => {
+                let Ok(settings) = serde_json::from_str::<UpscaleStepSettings>(&step.settings_json) else {
+                    return;
+                };
+                self.set_operation("upscale");
+                self.set_backend(&settings.backend);
+                if let Some(dropdown) = self.imp().scale_dropdown.borrow().as_ref() {
+                    let scale_idx = match settings.scale {
+                        2 => 1,
+                        3 => 2,
+                        4 => 3,
+                        _ => 0,
+                    };
+                    dropdown.set_selected(scale_idx);
+                }
+                if let Some(switch_row) = self.imp().compress_check.borrow().as_ref() {
+                    switch_row.set_active(settings.compress);
+                }
+                if let Some(dropdown) = self.imp().format_dropdown.borrow().as_ref() {
+                    let idx = match settings.format.as_str() {
+                        "webp" => 1,
+                        "jpeg" => 2,
+                        "png" => 3,
+                        _ => 0,
+                    };
+                    dropdown.set_selected(idx);
+                }
+                if let Some(spin) = self.imp().quality_spin.borrow().as_ref() {
+                    spin.set_value(settings.quality as f64);
+                }
+                if let Some(switch_row) = self.imp().keep_png_check.borrow().as_ref() {
+                    switch_row.set_active(settings.keep_png);
+                }
+                if let Some(dropdown) = self.imp().upscale_dest_dropdown.borrow().as_ref() {
+                    dropdown.set_selected(match settings.destination.as_str() {
+                        "source" => 1,
+                        _ => 0,
+                    });
+                }
+                if let Some(dropdown) = self.imp().onnx_model_dropdown.borrow().as_ref() {
+                    let idx = match settings.onnx_model.as_deref() {
+                        Some("swin2sr-compressed-x4") => 1,
+                        Some("swin2sr-real-x4") => 2,
+                        _ => 0,
+                    };
+                    dropdown.set_selected(idx);
+                }
+            }
+            StepType::Export => {
+                let Ok(settings) = serde_json::from_str::<ExportStepSettings>(&step.settings_json) else {
+                    return;
+                };
+                self.set_operation("export");
+                if let Some(dropdown) = self.imp().export_format_dropdown.borrow().as_ref() {
+                    let idx = match settings.format.as_str() {
+                        "webp" => 1,
+                        "png" => 2,
+                        "jpeg" => 3,
+                        _ => 0,
+                    };
+                    dropdown.set_selected(idx);
+                }
+                if let Some(dropdown) = self.imp().export_edge_dropdown.borrow().as_ref() {
+                    let idx = match settings.max_edge {
+                        Some(1080) => 1,
+                        Some(2160) => 2,
+                        Some(4096) => 3,
+                        _ => 0,
+                    };
+                    dropdown.set_selected(idx);
+                }
+                if let Some(spin) = self.imp().export_quality_spin.borrow().as_ref() {
+                    spin.set_value(settings.quality as f64);
+                }
+                if let Some(dropdown) = self.imp().export_dest_dropdown.borrow().as_ref() {
+                    dropdown.set_selected(match settings.destination.as_str() {
+                        "source" => 1,
+                        _ => 0,
+                    });
+                }
+            }
+        }
+
+        *self.imp().selected_pipeline_id.borrow_mut() = Some(pipeline_id);
+        self.imp().selected_is_history.set(false);
+        self.update_summary(
+            &pipeline.source_path,
+            step.output_path.as_deref(),
+        );
     }
 
     pub fn set_state(&self, state: Rc<RefCell<AppState>>) {
@@ -835,6 +1050,47 @@ impl TasksPage {
         }
 
         *imp.state.borrow_mut() = Some(state.clone());
+
+        if let Some(queue_list) = imp.queue_list.borrow().as_ref() {
+            let widget_weak = self.downgrade();
+            let history_list = imp.history_list.borrow().clone();
+            queue_list.connect_row_selected(move |_, row| {
+                let Some(widget) = widget_weak.upgrade() else {
+                    return;
+                };
+                let Some(row) = row else {
+                    return;
+                };
+                if let Ok(id) = row.widget_name().parse::<i64>() {
+                    if let Some(history_list) = history_list.as_ref() {
+                        history_list.unselect_all();
+                    }
+                    widget.load_settings_for_pipeline(id);
+                }
+            });
+        }
+
+        if let Some(history_list) = imp.history_list.borrow().as_ref() {
+            let widget_weak = self.downgrade();
+            let queue_list = imp.queue_list.borrow().clone();
+            history_list.connect_row_selected(move |_, row| {
+                let Some(widget) = widget_weak.upgrade() else {
+                    return;
+                };
+                let Some(row) = row else {
+                    return;
+                };
+                if let Ok(id) = row.widget_name().parse::<i64>() {
+                    if let Some(queue_list) = queue_list.as_ref() {
+                        queue_list.unselect_all();
+                    }
+                    *widget.imp().selected_pipeline_id.borrow_mut() = Some(id);
+                    widget.imp().selected_is_history.set(true);
+                    widget.show_summary_for_pipeline(id);
+                }
+            });
+        }
+
         self.refresh();
 
         // Reveal crash recovery banner if there are unfinished pipelines
@@ -981,6 +1237,33 @@ impl TasksPage {
             list_box.append(&row);
         }
 
+        if !imp.selected_is_history.get() {
+            if let Some(selected_id) = *imp.selected_pipeline_id.borrow() {
+                let mut found = false;
+                let mut child = list_box.first_child();
+                while let Some(widget) = child {
+                    let next = widget.next_sibling();
+                    if let Ok(row) = widget.clone().downcast::<gtk4::ListBoxRow>() {
+                        if row.widget_name().parse::<i64>().ok() == Some(selected_id) {
+                            list_box.select_row(Some(&row));
+                            found = true;
+                            break;
+                        }
+                    }
+                    child = next;
+                }
+                if !found {
+                    list_box.unselect_all();
+                    *imp.selected_pipeline_id.borrow_mut() = None;
+                    self.clear_summary();
+                }
+            } else {
+                list_box.unselect_all();
+            }
+        } else {
+            list_box.unselect_all();
+        }
+
         // --- History ---
         let Some(history_list) = imp.history_list.borrow().clone() else {
             return;
@@ -1009,10 +1292,39 @@ impl TasksPage {
             let row = self.build_history_row(pipeline, idx);
             history_list.append(&row);
         }
+
+        if imp.selected_is_history.get() {
+            if let Some(selected_id) = *imp.selected_pipeline_id.borrow() {
+                let mut found = false;
+                let mut child = history_list.first_child();
+                while let Some(widget) = child {
+                    let next = widget.next_sibling();
+                    if let Ok(row) = widget.clone().downcast::<gtk4::ListBoxRow>() {
+                        if row.widget_name().parse::<i64>().ok() == Some(selected_id) {
+                            history_list.select_row(Some(&row));
+                            found = true;
+                            break;
+                        }
+                    }
+                    child = next;
+                }
+                if !found {
+                    history_list.unselect_all();
+                    *imp.selected_pipeline_id.borrow_mut() = None;
+                    imp.selected_is_history.set(false);
+                    self.clear_summary();
+                }
+            }
+        } else {
+            history_list.unselect_all();
+        }
     }
 
     fn build_queue_row(&self, pipeline: &Pipeline, idx: &LibraryIndex) -> gtk4::ListBoxRow {
         let row = gtk4::ListBoxRow::new();
+        row.set_activatable(true);
+        row.set_selectable(true);
+        row.set_widget_name(&pipeline.id.to_string());
         let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
         row_box.set_margin_top(8);
         row_box.set_margin_bottom(8);
@@ -1109,6 +1421,9 @@ impl TasksPage {
 
     fn build_history_row(&self, pipeline: &Pipeline, idx: &LibraryIndex) -> gtk4::ListBoxRow {
         let row = gtk4::ListBoxRow::new();
+        row.set_activatable(true);
+        row.set_selectable(true);
+        row.set_widget_name(&pipeline.id.to_string());
         let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
         row_box.set_margin_top(8);
         row_box.set_margin_bottom(8);
@@ -1671,12 +1986,15 @@ fn format_step_summary(step: &PipelineStep) -> String {
     match step.step_type {
         StepType::Upscale => {
             if let Ok(s) = serde_json::from_str::<UpscaleStepSettings>(&step.settings_json) {
-                let scale = if s.scale == 0 {
-                    "auto".to_string()
-                } else {
-                    format!("{}×", s.scale)
+                let model_display = match s.model.as_str() {
+                    "anime" => "Anime",
+                    _ => "Standard",
                 };
-                format!("Upscale · {} · {}", s.model, scale)
+                let scale = match s.scale {
+                    0 => "Smart scale".to_string(),
+                    n => format!("{}×", n),
+                };
+                format!("Upscale · {} · {}", model_display, scale)
             } else {
                 "Upscale".to_string()
             }
