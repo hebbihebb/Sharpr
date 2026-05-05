@@ -3158,6 +3158,7 @@ impl SharprWindow {
 
         let tasks_page = TasksPage::new();
         tasks_page.set_state(state.clone());
+        tasks_page.set_parent_window(self.upcast_ref());
         content_stack.add_named(&tasks_page, Some("tasks"));
 
         self.setup_actions(&viewer, &tasks_page, &content_stack, state.clone(), &upscale_banner);

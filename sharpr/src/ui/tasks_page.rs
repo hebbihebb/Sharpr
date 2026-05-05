@@ -59,7 +59,10 @@ mod imp {
         pub queue_list: RefCell<Option<gtk4::ListBox>>,
         pub settings_stack: RefCell<Option<gtk4::Stack>>,
         pub start_btn: RefCell<Option<gtk4::Button>>,
-        pub stop_btn: RefCell<Option<gtk4::Button>>,
+        pub pause_btn: RefCell<Option<gtk4::Button>>,
+        pub clear_btn: RefCell<Option<gtk4::Button>>,
+        pub add_images_btn: RefCell<Option<gtk4::Button>>,
+        pub queue_count_label: RefCell<Option<gtk4::Label>>,
         pub op_upscale_btn: RefCell<Option<gtk4::ToggleButton>>,
         pub op_export_btn: RefCell<Option<gtk4::ToggleButton>>,
         pub crash_banner: RefCell<Option<libadwaita::Banner>>,
@@ -92,7 +95,9 @@ mod imp {
         // State
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub compare_cb: RefCell<Option<CompareCallback>>,
+        pub parent_window: RefCell<WeakRef<gtk4::Window>>,
         pub runner_active: Rc<Cell<bool>>,
+        pub paused: Rc<Cell<bool>>,
         pub polling_timer: RefCell<Option<glib::SourceId>>,
     }
 
@@ -128,14 +133,54 @@ mod imp {
             crash_banner.set_revealed(false);
             left_col.append(&crash_banner);
 
-            let toolbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            let queue_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            queue_header.set_hexpand(true);
+
+            let queue_title = gtk4::Label::new(Some("Queue"));
+            queue_title.add_css_class("heading");
+            queue_title.set_halign(gtk4::Align::Start);
+
+            let queue_count_label = gtk4::Label::new(None);
+            queue_count_label.add_css_class("dim-label");
+            queue_count_label.add_css_class("caption");
+            queue_count_label.set_halign(gtk4::Align::Start);
+            queue_count_label.set_visible(false);
+
+            let header_spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            header_spacer.set_hexpand(true);
+
+            let add_images_btn = gtk4::Button::builder()
+                .label("Add Images")
+                .icon_name("list-add-symbolic")
+                .build();
+            add_images_btn.add_css_class("flat");
+
+            queue_header.append(&queue_title);
+            queue_header.append(&queue_count_label);
+            queue_header.append(&header_spacer);
+            queue_header.append(&add_images_btn);
+
+            let toolbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             toolbar.set_halign(gtk4::Align::End);
-            let start_btn = gtk4::Button::with_label("Start Queue");
+            toolbar.add_css_class("linked");
+
+            let start_btn = gtk4::Button::builder()
+                .label("Start")
+                .icon_name("media-playback-start-symbolic")
+                .build();
             start_btn.add_css_class("suggested-action");
-            let stop_btn = gtk4::Button::with_label("Stop");
-            stop_btn.add_css_class("destructive-action");
+            let pause_btn = gtk4::Button::builder()
+                .label("Pause")
+                .icon_name("media-playback-pause-symbolic")
+                .build();
+            let clear_btn = gtk4::Button::builder()
+                .label("Clear")
+                .icon_name("edit-clear-all-symbolic")
+                .build();
+            clear_btn.add_css_class("destructive-action");
             toolbar.append(&start_btn);
-            toolbar.append(&stop_btn);
+            toolbar.append(&pause_btn);
+            toolbar.append(&clear_btn);
 
             let queue_list = gtk4::ListBox::new();
             queue_list.add_css_class("boxed-list");
@@ -155,6 +200,7 @@ mod imp {
             queue_overlay.set_child(Some(&scrolled));
             queue_overlay.add_overlay(&queue_empty_label);
 
+            left_col.append(&queue_header);
             left_col.append(&toolbar);
             left_col.append(&queue_overlay);
 
@@ -407,6 +453,10 @@ mod imp {
                 });
             }
 
+            // Format/quality only shown when compress is enabled; hide by default
+            format_row.set_visible(false);
+            quality_row.set_visible(false);
+
             // Wire compression row to dependent options visibility
             {
                 let format_row_c = format_row.clone();
@@ -423,17 +473,87 @@ mod imp {
                 let widget_weak = widget.downgrade();
                 start_btn.connect_clicked(move |_| {
                     if let Some(w) = widget_weak.upgrade() {
+                        w.imp().runner_active.set(true);
+                        w.imp().paused.set(false);
                         w.try_start_runner();
+                        w.run_next_pipeline();
+                        w.refresh();
                     }
                 });
             }
             {
                 let widget_weak = widget.downgrade();
-                stop_btn.connect_clicked(move |_| {
+                pause_btn.connect_clicked(move |_| {
                     if let Some(w) = widget_weak.upgrade() {
-                        w.imp().runner_active.set(false);
+                        w.imp().paused.set(true);
                         w.refresh();
                     }
+                });
+            }
+            {
+                let widget_weak = widget.downgrade();
+                clear_btn.connect_clicked(move |_| {
+                    let Some(w) = widget_weak.upgrade() else {
+                        return;
+                    };
+                    if let Some(state_rc) = w.imp().state.borrow().as_ref() {
+                        if let Some(idx) = state_rc.borrow().library_index.as_ref() {
+                            for pipeline in idx
+                                .pipelines_by_status(PipelineStatus::Queued)
+                                .unwrap_or_default()
+                            {
+                                let _ = idx.delete_pipeline(pipeline.id);
+                            }
+                        }
+                    }
+                    w.refresh();
+                });
+            }
+            {
+                let widget_weak = widget.downgrade();
+                add_images_btn.connect_clicked(move |_| {
+                    let Some(w) = widget_weak.upgrade() else {
+                        return;
+                    };
+                    let parent_window = w
+                        .imp()
+                        .parent_window
+                        .borrow()
+                        .upgrade();
+                    let dialog = gtk4::FileDialog::builder()
+                        .title("Add Images to Queue")
+                        .modal(true)
+                        .build();
+
+                    let filter = gtk4::FileFilter::new();
+                    filter.set_name(Some("Images"));
+                    for suffix in ["png", "jpg", "jpeg", "webp", "jxl", "tiff"] {
+                        filter.add_suffix(suffix);
+                    }
+                    let filters = gio::ListStore::new::<gtk4::FileFilter>();
+                    filters.append(&filter);
+                    dialog.set_filters(Some(&filters));
+                    dialog.set_default_filter(Some(&filter));
+
+                    let widget_weak_inner = w.downgrade();
+                    dialog.open_multiple(
+                        parent_window.as_ref(),
+                        None::<&gio::Cancellable>,
+                        move |result| {
+                            let Some(w) = widget_weak_inner.upgrade() else {
+                                return;
+                            };
+                            if let Ok(files) = result {
+                                for i in 0..files.n_items() {
+                                    if let Some(file) = files.item(i).and_downcast::<gio::File>() {
+                                        if let Some(path) = file.path() {
+                                            w.pre_fill_from_path(path);
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    );
                 });
             }
 
@@ -457,7 +577,10 @@ mod imp {
                 crash_banner.connect_button_clicked(move |_| {
                     if let Some(w) = widget_weak.upgrade() {
                         w.imp().crash_banner.borrow().as_ref().map(|b| b.set_revealed(false));
+                        w.imp().runner_active.set(true);
+                        w.imp().paused.set(false);
                         w.try_start_runner();
+                        w.run_next_pipeline();
                     }
                 });
             }
@@ -466,7 +589,10 @@ mod imp {
             *self.queue_empty_label.borrow_mut() = Some(queue_empty_label);
             *self.settings_stack.borrow_mut() = Some(settings_stack);
             *self.start_btn.borrow_mut() = Some(start_btn);
-            *self.stop_btn.borrow_mut() = Some(stop_btn);
+            *self.pause_btn.borrow_mut() = Some(pause_btn);
+            *self.clear_btn.borrow_mut() = Some(clear_btn);
+            *self.add_images_btn.borrow_mut() = Some(add_images_btn);
+            *self.queue_count_label.borrow_mut() = Some(queue_count_label);
             *self.op_upscale_btn.borrow_mut() = Some(op_upscale_btn);
             *self.op_export_btn.borrow_mut() = Some(op_export_btn);
             *self.crash_banner.borrow_mut() = Some(crash_banner);
@@ -516,6 +642,10 @@ glib::wrapper! {
 impl TasksPage {
     pub fn new() -> Self {
         glib::Object::new()
+    }
+
+    pub fn set_parent_window(&self, window: &gtk4::Window) {
+        self.imp().parent_window.borrow_mut().set(Some(window));
     }
 
     pub fn set_interrupted_count(&self, n: usize) {
@@ -800,14 +930,27 @@ impl TasksPage {
             lbl.set_visible(pipelines.is_empty());
         }
 
+        if let Some(lbl) = imp.queue_count_label.borrow().as_ref() {
+            let total = pipelines.len();
+            lbl.set_visible(total > 0);
+            if total > 0 {
+                let noun = if total == 1 { "task" } else { "tasks" };
+                lbl.set_label(&format!("{total} {noun}"));
+            }
+        }
+
         let queued_count = pipelines.iter().filter(|p| p.status == PipelineStatus::Queued).count();
         let runner_active = imp.runner_active.get();
+        let paused = imp.paused.get();
 
         if let Some(btn) = imp.start_btn.borrow().as_ref() {
-            btn.set_sensitive(!runner_active && queued_count > 0);
+            btn.set_sensitive((!runner_active || paused) && queued_count > 0);
         }
-        if let Some(btn) = imp.stop_btn.borrow().as_ref() {
-            btn.set_sensitive(runner_active);
+        if let Some(btn) = imp.pause_btn.borrow().as_ref() {
+            btn.set_sensitive(runner_active && !paused);
+        }
+        if let Some(btn) = imp.clear_btn.borrow().as_ref() {
+            btn.set_sensitive(queued_count > 0);
         }
 
         for pipeline in pipelines {
@@ -881,18 +1024,24 @@ impl TasksPage {
         name_label.add_css_class("bold");
 
         let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
-        let op_type = steps.first().map(|s| match s.step_type {
+        let step = steps.first().cloned();
+        let op_type = step.as_ref().map(|s| match s.step_type {
             StepType::Upscale => "Upscale",
             StepType::Export => "Export",
         }).unwrap_or("Unknown");
-        
-        let op_label = gtk4::Label::new(Some(op_type));
-        op_label.set_halign(gtk4::Align::Start);
-        op_label.add_css_class("dim-label");
-        op_label.add_css_class("caption");
 
         info_box.append(&name_label);
-        info_box.append(&op_label);
+
+        let summary = step
+            .as_ref()
+            .map(format_step_summary)
+            .unwrap_or_default();
+        let summary_label = gtk4::Label::new(Some(&summary));
+        summary_label.set_halign(gtk4::Align::Start);
+        summary_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        summary_label.add_css_class("dim-label");
+        summary_label.add_css_class("caption");
+        info_box.append(&summary_label);
 
         if pipeline.status == PipelineStatus::InProgress {
             let progress = gtk4::ProgressBar::new();
@@ -902,6 +1051,12 @@ impl TasksPage {
         }
 
         row_box.append(&info_box);
+
+        let badge = gtk4::Label::new(Some(op_type));
+        badge.set_valign(gtk4::Align::Start);
+        badge.add_css_class("accent");
+        badge.add_css_class("caption");
+        row_box.append(&badge);
 
         if pipeline.status != PipelineStatus::InProgress {
             let del_btn = gtk4::Button::from_icon_name("window-close-symbolic");
@@ -1149,7 +1304,7 @@ impl TasksPage {
 
     fn run_next_pipeline(&self) {
         let imp = self.imp();
-        if !imp.runner_active.get() { return; }
+        if !imp.runner_active.get() || imp.paused.get() { return; }
 
         let Some(state_rc) = imp.state.borrow().clone() else {
             imp.runner_active.set(false);
