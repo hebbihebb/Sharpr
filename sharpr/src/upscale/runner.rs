@@ -165,9 +165,11 @@ pub(crate) fn finalize_output_without_cleanup(
         if input_w == 0 || input_h == 0 {
             return Err("source dimensions are unavailable".to_string());
         }
-        let tw = input_w.checked_mul(config.requested_scale)
+        let tw = input_w
+            .checked_mul(config.requested_scale)
             .ok_or_else(|| "target width overflowed".to_string())?;
-        let th = input_h.checked_mul(config.requested_scale)
+        let th = input_h
+            .checked_mul(config.requested_scale)
             .ok_or_else(|| "target height overflowed".to_string())?;
         Some((tw, th))
     };

@@ -1,6 +1,6 @@
+use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use gtk4::glib;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 
@@ -125,7 +125,7 @@ impl ComparePage {
 
     fn select_slot(&self, id: u64) {
         let imp = self.imp();
-        
+
         // Deactivate old active slot
         if let Some(old_id) = imp.active_id.get() {
             if let Some(slot) = imp.slots.borrow().iter().find(|s| s.id == old_id) {
@@ -140,9 +140,10 @@ impl ComparePage {
         // Find and activate new slot
         let slot_info = {
             let slots = imp.slots.borrow();
-            slots.iter().find(|s| s.id == id).map(|s| {
-                (s.source.clone(), s.output.clone(), s.container.clone())
-            })
+            slots
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| (s.source.clone(), s.output.clone(), s.container.clone()))
         };
 
         if let Some((source, output, container)) = slot_info {
@@ -163,7 +164,7 @@ impl ComparePage {
     fn remove_slot(&self, id: u64) {
         let imp = self.imp();
         let mut slots = imp.slots.borrow_mut();
-        
+
         if let Some(idx) = slots.iter().position(|s| s.id == id) {
             let slot = slots.remove(idx);
             if let Some(filmstrip_box) = imp.filmstrip_box.borrow().as_ref() {
@@ -237,7 +238,7 @@ mod imp {
             root_box.append(&content_stack);
 
             let filmstrip_panel = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-            
+
             let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
             filmstrip_panel.append(&sep);
 
@@ -283,7 +284,7 @@ mod imp {
 async fn load_thumbnail_for_slot(path: &Path) -> Result<gdk4::Texture, String> {
     let path = path.to_path_buf();
     let (tx, rx) = async_channel::bounded::<Result<gdk4::Texture, String>>(1);
-    
+
     std::thread::spawn(move || {
         let result = (|| -> Result<gdk4::Texture, String> {
             let img = image::open(&path).map_err(|e| e.to_string())?;
@@ -296,11 +297,13 @@ async fn load_thumbnail_for_slot(path: &Path) -> Result<gdk4::Texture, String> {
                 gdk4::MemoryFormat::R8g8b8a8,
                 &bytes,
                 (rgb.width() * 4) as usize,
-            ).upcast())
+            )
+            .upcast())
         })();
         let _ = tx.send_blocking(result);
     });
 
-    rx.recv().await.unwrap_or_else(|_| Err("Thumbnail thread died".to_string()))
+    rx.recv()
+        .await
+        .unwrap_or_else(|_| Err("Thumbnail thread died".to_string()))
 }
-

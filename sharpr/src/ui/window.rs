@@ -874,19 +874,20 @@ impl AppState {
         } else {
             None
         };
-        let (library_index, library_index_interrupted_count, library_index_error) = match LibraryIndex::open() {
-            Ok((index, count)) => (Some(Arc::new(index)), count, None),
-            Err(err) => {
-                let message = err.to_string();
-                crate::bench_event!(
-                    "index.open.fail",
-                    serde_json::json!({
-                        "error": message,
-                    }),
-                );
-                (None, 0, Some(message))
-            }
-        };
+        let (library_index, library_index_interrupted_count, library_index_error) =
+            match LibraryIndex::open() {
+                Ok((index, count)) => (Some(Arc::new(index)), count, None),
+                Err(err) => {
+                    let message = err.to_string();
+                    crate::bench_event!(
+                        "index.open.fail",
+                        serde_json::json!({
+                            "error": message,
+                        }),
+                    );
+                    (None, 0, Some(message))
+                }
+            };
         let disabled_folders = settings
             .active_library()
             .map(|library| library.ignored_folders.clone())
@@ -3161,7 +3162,13 @@ impl SharprWindow {
         tasks_page.set_parent_window(self.upcast_ref());
         content_stack.add_named(&tasks_page, Some("tasks"));
 
-        self.setup_actions(&viewer, &tasks_page, &content_stack, state.clone(), &upscale_banner);
+        self.setup_actions(
+            &viewer,
+            &tasks_page,
+            &content_stack,
+            state.clone(),
+            &upscale_banner,
+        );
 
         let viewer_toolbar = libadwaita::ToolbarView::new();
         viewer_toolbar.add_top_bar(&viewer_header);
@@ -4438,7 +4445,11 @@ impl SharprWindow {
                 Some(gtk4::ShortcutTrigger::parse_string("bracketleft").unwrap()),
                 Some(gtk4::CallbackAction::new(move |_, _| {
                     if let Some(win) = win_weak.upgrade() {
-                        gio::prelude::ActionGroupExt::activate_action(&win, "cycle-page-prev", None);
+                        gio::prelude::ActionGroupExt::activate_action(
+                            &win,
+                            "cycle-page-prev",
+                            None,
+                        );
                     }
                     glib::Propagation::Stop
                 })),
@@ -4450,7 +4461,11 @@ impl SharprWindow {
                 Some(gtk4::ShortcutTrigger::parse_string("bracketright").unwrap()),
                 Some(gtk4::CallbackAction::new(move |_, _| {
                     if let Some(win) = win_weak.upgrade() {
-                        gio::prelude::ActionGroupExt::activate_action(&win, "cycle-page-next", None);
+                        gio::prelude::ActionGroupExt::activate_action(
+                            &win,
+                            "cycle-page-next",
+                            None,
+                        );
                     }
                     glib::Propagation::Stop
                 })),
@@ -4858,10 +4873,13 @@ impl SharprWindow {
             let window_weak = self.downgrade();
             let tasks_page_c = tasks_page.clone();
 
-            convert_action.connect_activate(move |_, _|
-            {
-                let Some(win) = window_weak.upgrade() else { return };
-                let Some(viewer) = viewer_weak.upgrade() else { return };
+            convert_action.connect_activate(move |_, _| {
+                let Some(win) = window_weak.upgrade() else {
+                    return;
+                };
+                let Some(viewer) = viewer_weak.upgrade() else {
+                    return;
+                };
 
                 if let Some(path) = viewer.current_path() {
                     tasks_page_c.pre_fill_from_path(path);

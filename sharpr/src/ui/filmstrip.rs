@@ -1592,7 +1592,6 @@ impl FilmstripPane {
         }
     }
 
-
     fn emit_remove_from_collection_requested(&self, paths: Vec<PathBuf>) {
         if let Some(cb) = self
             .imp()

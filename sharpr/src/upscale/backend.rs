@@ -32,9 +32,9 @@ pub fn make_upscale_backend(
         crate::upscale::UpscaleBackendKind::Onnx => {
             Some(Box::new(OnnxBackend::new(onnx_model)) as Box<dyn UpscaleBackend>)
         }
-        crate::upscale::UpscaleBackendKind::ComfyUi => Some(Box::new(ComfyUiBackend::new(
-            comfyui_url,
-            comfyui_workflow,
-        )) as Box<dyn UpscaleBackend>),
+        crate::upscale::UpscaleBackendKind::ComfyUi => {
+            Some(Box::new(ComfyUiBackend::new(comfyui_url, comfyui_workflow))
+                as Box<dyn UpscaleBackend>)
+        }
     }
 }
