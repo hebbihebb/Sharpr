@@ -253,10 +253,13 @@ mod imp {
             settings_stack.set_transition_type(gtk4::StackTransitionType::SlideLeftRight);
 
             // Upscale Settings Page
-            let upscale_group = libadwaita::PreferencesGroup::new();
+            let upscale_box = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+
+            let input_output_group = libadwaita::PreferencesGroup::new();
+            input_output_group.set_title("Input / Output");
 
             let backend_row = libadwaita::ActionRow::new();
-            backend_row.set_title("Backend");
+            backend_row.set_title("Upscale backend");
             let backend_switcher = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             backend_switcher.add_css_class("linked");
             backend_switcher.set_valign(gtk4::Align::Center);
@@ -280,21 +283,21 @@ mod imp {
 
             let scale_row = libadwaita::ComboRow::new();
             scale_row.set_title("Scale");
-            let scale_model = gtk4::StringList::new(&["Auto (Smart)", "2x", "3x", "4x"]);
+            let scale_model = gtk4::StringList::new(&["Smart scale", "2×", "3×", "4×"]);
             scale_row.set_model(Some(&scale_model));
             let scale_dropdown = scale_row.clone();
 
             let compress_check = libadwaita::SwitchRow::new();
-            compress_check.set_title("Compress output");
+            compress_check.set_title("Compress final image");
 
             let format_row = libadwaita::ComboRow::new();
-            format_row.set_title("Format");
+            format_row.set_title("Output format");
             let format_model = gtk4::StringList::new(&["JXL", "WebP", "JPEG", "PNG"]);
             format_row.set_model(Some(&format_model));
             let format_dropdown = format_row.clone();
 
             let quality_row = libadwaita::ActionRow::new();
-            quality_row.set_title("Quality");
+            quality_row.set_title("Output quality");
             let quality_adj = gtk4::Adjustment::new(85.0, 1.0, 100.0, 1.0, 10.0, 0.0);
             let quality_spin = gtk4::SpinButton::new(Some(&quality_adj), 1.0, 0);
             quality_spin.set_valign(gtk4::Align::Center);
@@ -310,22 +313,37 @@ mod imp {
             upscale_dest_row.set_model(Some(&upscale_dest_model));
             let upscale_dest_dropdown = upscale_dest_row.clone();
 
-            upscale_group.add(&backend_row);
-            upscale_group.add(&onnx_model_row);
-            upscale_group.add(&scale_row);
-            upscale_group.add(&compress_check);
-            upscale_group.add(&format_row);
-            upscale_group.add(&quality_row);
-            upscale_group.add(&keep_png_check);
-            upscale_group.add(&upscale_dest_row);
+            input_output_group.add(&upscale_dest_row);
+            input_output_group.add(&format_row);
+            input_output_group.add(&quality_row);
 
-            settings_stack.add_named(&upscale_group, Some("upscale"));
+            let upscale_group = libadwaita::PreferencesGroup::new();
+            upscale_group.set_title("Upscale");
+            upscale_group.add(&backend_row);
+            upscale_group.add(&scale_row);
+            upscale_group.add(&onnx_model_row);
+
+            let advanced_group = libadwaita::PreferencesGroup::new();
+            advanced_group.set_title("Advanced");
+            advanced_group.add(&compress_check);
+            advanced_group.add(&keep_png_check);
+
+            upscale_box.append(&input_output_group);
+            upscale_box.append(&upscale_group);
+            upscale_box.append(&advanced_group);
+
+            let upscale_scrolled = gtk4::ScrolledWindow::new();
+            upscale_scrolled.set_vexpand(true);
+            upscale_scrolled.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
+            upscale_scrolled.set_child(Some(&upscale_box));
+
+            settings_stack.add_named(&upscale_scrolled, Some("upscale"));
 
             // Export Settings Page
             let export_group = libadwaita::PreferencesGroup::new();
 
             let export_format_row = libadwaita::ComboRow::new();
-            export_format_row.set_title("Format");
+            export_format_row.set_title("Output format");
             let export_format_model = gtk4::StringList::new(&["JXL", "WebP", "PNG", "JPEG"]);
             export_format_row.set_model(Some(&export_format_model));
             let export_format_dropdown = export_format_row.clone();
@@ -337,7 +355,7 @@ mod imp {
             let export_edge_dropdown = export_edge_row.clone();
 
             let export_quality_row = libadwaita::ActionRow::new();
-            export_quality_row.set_title("Quality");
+            export_quality_row.set_title("Output quality");
             let export_quality_adj = gtk4::Adjustment::new(85.0, 1.0, 100.0, 1.0, 10.0, 0.0);
             let export_quality_spin = gtk4::SpinButton::new(Some(&export_quality_adj), 1.0, 0);
             export_quality_spin.set_valign(gtk4::Align::Center);
@@ -355,7 +373,12 @@ mod imp {
             export_group.add(&export_quality_row);
             export_group.add(&export_dest_row);
 
-            settings_stack.add_named(&export_group, Some("export"));
+            let export_scrolled = gtk4::ScrolledWindow::new();
+            export_scrolled.set_vexpand(true);
+            export_scrolled.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
+            export_scrolled.set_child(Some(&export_group));
+
+            settings_stack.add_named(&export_scrolled, Some("export"));
 
             right_col.append(&op_switcher);
             right_col.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
