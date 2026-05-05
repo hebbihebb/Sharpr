@@ -36,14 +36,23 @@ use crate::ui::viewer::{ViewerPane, ZoomMode};
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
-pub struct CompareItem {
-    pub source_path: PathBuf,
-    pub output_path: PathBuf,
-    pub model: String,
-    pub scale: String,
+pub struct CompareAssetInfo {
+    pub title: String,
+    pub path: PathBuf,
     pub format: String,
     pub dimensions: (u32, u32),
     pub file_size: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct CompareItem {
+    pub source_path: PathBuf,
+    pub output_path: PathBuf,
+    pub original_asset: CompareAssetInfo,
+    pub output_asset: CompareAssetInfo,
+    pub preserved_png_asset: Option<CompareAssetInfo>,
+    pub model: String,
+    pub scale: String,
     pub date_added: glib::DateTime,
 }
 

@@ -14,8 +14,10 @@ use crate::export::{
 use crate::library_index::{LibraryIndex, Pipeline, PipelineStatus, PipelineStep, StepType};
 use crate::ui::window::{AppState, CompareItem};
 use crate::upscale::{
-    backend::make_upscale_backend, runner::UpscaleRunner, UpscaleBackendKind,
-    UpscaleCompressionMode, UpscaleJobConfig, UpscaleModel, UpscaleOutputFormat,
+    backend::make_upscale_backend,
+    runner::{preserved_png_temp_path, UpscaleRunner},
+    UpscaleBackendKind, UpscaleCompressionMode, UpscaleJobConfig, UpscaleModel,
+    UpscaleOutputFormat,
 };
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -2004,8 +2006,6 @@ impl TasksPage {
 
                 let mut model = "Unknown".to_string();
                 let mut scale = "-".to_string();
-                let mut format = "-".to_string();
-
                 if let Some(st) = step_type {
                     match st {
                         StepType::Upscale => {
@@ -2013,8 +2013,10 @@ impl TasksPage {
                                 serde_json::from_str::<UpscaleStepSettings>(&step_settings_json)
                             {
                                 model = settings.model.clone();
-                                scale = format!("{}x", settings.scale);
-                                format = settings.format.clone().to_uppercase();
+                                scale = match settings.scale {
+                                    0 => "Smart scale".to_string(),
+                                    value => format!("{value}×"),
+                                };
                             }
                         }
                         StepType::Export => {
@@ -2026,25 +2028,25 @@ impl TasksPage {
                                     .max_edge
                                     .map(|e| format!("Max {}px", e))
                                     .unwrap_or_else(|| "Original".to_string());
-                                format = settings.format.clone().to_uppercase();
                             }
                         }
                     }
                 }
 
-                let (width, height) = image::image_dimensions(&output).unwrap_or((0, 0));
-                let file_size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
                 let date_added = glib::DateTime::from_unix_local(pipeline_created_at)
                     .unwrap_or_else(|_| glib::DateTime::now_local().unwrap());
+                let preserved_png = preserved_png_temp_path(&output);
 
                 let item = CompareItem {
                     source_path: source.clone(),
                     output_path: output.clone(),
+                    original_asset: build_compare_asset_info("Original", &source),
+                    output_asset: build_compare_asset_info(compare_output_title(&output), &output),
+                    preserved_png_asset: preserved_png
+                        .exists()
+                        .then(|| build_compare_asset_info("PNG Sidecar", &preserved_png)),
                     model,
                     scale,
-                    format,
-                    dimensions: (width, height),
-                    file_size,
                     date_added,
                 };
 
@@ -2726,5 +2728,74 @@ fn format_timestamp(unix_secs: i64) -> String {
         format!("{} hr ago", delta / 3600)
     } else {
         format!("{} days ago", delta / 86400)
+    }
+}
+
+fn build_compare_asset_info(title: &str, path: &Path) -> crate::ui::window::CompareAssetInfo {
+    crate::ui::window::CompareAssetInfo {
+        title: title.to_string(),
+        path: path.to_path_buf(),
+        format: compare_asset_format(path),
+        dimensions: image::image_dimensions(path).unwrap_or((0, 0)),
+        file_size: std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0),
+    }
+}
+
+fn compare_output_title(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "Output",
+        _ => "Compressed Output",
+    }
+}
+
+fn compare_asset_format(path: &Path) -> String {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "JPEG".to_string(),
+        Some("png") => "PNG".to_string(),
+        Some("webp") => "WebP".to_string(),
+        Some("jxl") => "JPEG XL".to_string(),
+        Some("avif") => "AVIF".to_string(),
+        Some("tif") | Some("tiff") => "TIFF".to_string(),
+        Some("bmp") => "BMP".to_string(),
+        Some("gif") => "GIF".to_string(),
+        Some(other) => other.to_ascii_uppercase(),
+        None => "Unknown".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compare_output_title_uses_plain_output_for_png() {
+        assert_eq!(
+            compare_output_title(Path::new("/tmp/example.png")),
+            "Output"
+        );
+        assert_eq!(
+            compare_output_title(Path::new("/tmp/example.jxl")),
+            "Compressed Output"
+        );
+    }
+
+    #[test]
+    fn compare_asset_format_normalizes_common_extensions() {
+        assert_eq!(compare_asset_format(Path::new("/tmp/example.jpg")), "JPEG");
+        assert_eq!(
+            compare_asset_format(Path::new("/tmp/example.jxl")),
+            "JPEG XL"
+        );
+        assert_eq!(compare_asset_format(Path::new("/tmp/example.webp")), "WebP");
     }
 }

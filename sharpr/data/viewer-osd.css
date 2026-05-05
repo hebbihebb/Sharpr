@@ -35,3 +35,13 @@
     background-color: rgba(28, 28, 30, 0.78);
     box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
 }
+
+.compare-corner-label {
+    padding: 8px 14px;
+    border-radius: 999px;
+    background-color: rgba(28, 28, 30, 0.78);
+    color: white;
+    font-weight: 700;
+    font-size: 0.92rem;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+}

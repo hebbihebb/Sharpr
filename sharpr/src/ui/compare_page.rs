@@ -1,12 +1,13 @@
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
+use libadwaita::prelude::*;
 
-use crate::ui::window::CompareItem;
+use crate::ui::window::{CompareAssetInfo, CompareItem};
 use crate::upscale::BeforeAfterViewer;
 
 type CompareRemoveCallback = Box<dyn Fn(PathBuf)>;
@@ -34,9 +35,10 @@ impl ComparePage {
             .load(item.source_path.clone(), item.output_path.clone(), || {});
 
         let filename = item
-            .output_path
+            .output_asset
+            .path
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
+            .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| "Unknown".to_string());
         imp.filename_label.set_text(&filename);
 
@@ -44,14 +46,19 @@ impl ComparePage {
             imp.date_label.set_text(&format!("Added {}", date_str));
         }
 
-        imp.model_value.set_text(&item.model);
-        imp.scale_value.set_text(&item.scale);
-        imp.format_value.set_text(&item.format);
-        imp.dims_value
-            .set_text(&format!("{} × {}", item.dimensions.0, item.dimensions.1));
-        imp.size_value
-            .set_text(&format!("{:.2} MB", item.file_size as f64 / 1_048_576.0));
+        imp.model_row.set_subtitle(&item.model);
+        imp.scale_row.set_subtitle(&item.scale);
 
+        update_asset_row(&imp.original_row, &item.original_asset);
+        update_asset_row(&imp.output_row, &item.output_asset);
+        update_sidecar_row(&imp.sidecar_row, item.preserved_png_asset.as_ref());
+        imp.show_original_row
+            .set_subtitle(&folder_display(&item.original_asset.path));
+        imp.show_output_row
+            .set_subtitle(&folder_display(&item.output_asset.path));
+
+        imp.image_details_expander.set_expanded(false);
+        imp.split_view.set_show_sidebar(false);
         imp.details_stack.set_visible_child_name("details");
     }
 
@@ -59,8 +66,91 @@ impl ComparePage {
         let imp = self.imp();
         *imp.current_item.borrow_mut() = None;
         imp.viewer.clear();
+        imp.image_details_expander.set_expanded(false);
+        imp.split_view.set_show_sidebar(false);
         imp.details_stack.set_visible_child_name("empty");
     }
+}
+
+fn update_asset_row(row: &libadwaita::ActionRow, asset: &CompareAssetInfo) {
+    row.set_title(&asset.title);
+    row.set_subtitle(&format_compare_asset_summary(asset));
+}
+
+fn update_sidecar_row(row: &libadwaita::ActionRow, asset: Option<&CompareAssetInfo>) {
+    match asset {
+        Some(asset) => update_asset_row(row, asset),
+        None => {
+            row.set_title("PNG Sidecar");
+            row.set_subtitle("Not generated for this result");
+        }
+    }
+}
+
+fn format_compare_asset_summary(asset: &CompareAssetInfo) -> String {
+    let filename = asset
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| asset.path.display().to_string());
+    format!(
+        "{} · {} · {} × {} · {}",
+        filename,
+        asset.format,
+        asset.dimensions.0,
+        asset.dimensions.1,
+        format_file_size(asset.file_size)
+    )
+}
+
+fn format_file_size(bytes: u64) -> String {
+    if bytes >= 1_048_576 {
+        format!("{:.2} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn folder_display(path: &Path) -> String {
+    path.parent()
+        .map(|parent| parent.display().to_string())
+        .unwrap_or_else(|| "Unknown location".to_string())
+}
+
+fn reveal_in_file_manager(path: &Path) {
+    let uri = gio::File::for_path(path).uri().to_string();
+    let parent_uri = path
+        .parent()
+        .map(|parent| gio::File::for_path(parent).uri().to_string());
+    glib::MainContext::default().spawn_local(async move {
+        let shown = async {
+            let conn = gio::bus_get_future(gio::BusType::Session).await.ok()?;
+            let uris = glib::Variant::array_from_iter::<String>(std::iter::once(uri.to_variant()));
+            let params = glib::Variant::tuple_from_iter([uris, "".to_variant()]);
+            conn.call_future(
+                Some("org.freedesktop.FileManager1"),
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1",
+                "ShowItems",
+                Some(&params),
+                None,
+                gio::DBusCallFlags::NONE,
+                5000,
+            )
+            .await
+            .ok()
+        }
+        .await;
+        if shown.is_none() {
+            if let Some(uri) = parent_uri {
+                let _ =
+                    gio::AppInfo::launch_default_for_uri_future(&uri, gio::AppLaunchContext::NONE)
+                        .await;
+            }
+        }
+    });
 }
 
 mod imp {
@@ -74,11 +164,14 @@ mod imp {
 
         pub filename_label: gtk4::Label,
         pub date_label: gtk4::Label,
-        pub model_value: gtk4::Label,
-        pub scale_value: gtk4::Label,
-        pub format_value: gtk4::Label,
-        pub dims_value: gtk4::Label,
-        pub size_value: gtk4::Label,
+        pub model_row: libadwaita::ActionRow,
+        pub scale_row: libadwaita::ActionRow,
+        pub image_details_expander: libadwaita::ExpanderRow,
+        pub original_row: libadwaita::ActionRow,
+        pub output_row: libadwaita::ActionRow,
+        pub sidecar_row: libadwaita::ActionRow,
+        pub show_original_row: libadwaita::ActionRow,
+        pub show_output_row: libadwaita::ActionRow,
 
         pub current_item: RefCell<Option<CompareItem>>,
         pub compare_remove_cb: RefCell<Option<CompareRemoveCallback>>,
@@ -93,11 +186,14 @@ mod imp {
                 toolbar_revealer: gtk4::Revealer::new(),
                 filename_label: gtk4::Label::new(None),
                 date_label: gtk4::Label::new(None),
-                model_value: gtk4::Label::new(None),
-                scale_value: gtk4::Label::new(None),
-                format_value: gtk4::Label::new(None),
-                dims_value: gtk4::Label::new(None),
-                size_value: gtk4::Label::new(None),
+                model_row: libadwaita::ActionRow::new(),
+                scale_row: libadwaita::ActionRow::new(),
+                image_details_expander: libadwaita::ExpanderRow::new(),
+                original_row: libadwaita::ActionRow::new(),
+                output_row: libadwaita::ActionRow::new(),
+                sidecar_row: libadwaita::ActionRow::new(),
+                show_original_row: libadwaita::ActionRow::new(),
+                show_output_row: libadwaita::ActionRow::new(),
                 current_item: RefCell::new(None),
                 compare_remove_cb: RefCell::new(None),
             }
@@ -122,26 +218,27 @@ mod imp {
 
             self.split_view.set_parent(&*obj);
             self.split_view.set_sidebar_position(gtk4::PackType::End);
-            self.split_view.set_min_sidebar_width(300.0);
-            self.split_view.set_max_sidebar_width(340.0);
+            self.split_view.set_min_sidebar_width(320.0);
+            self.split_view.set_max_sidebar_width(360.0);
+            self.split_view.set_show_sidebar(false);
 
             let center_overlay = gtk4::Overlay::new();
             center_overlay.set_child(Some(&self.viewer));
 
             let original_lbl = gtk4::Label::new(Some("Original"));
-            original_lbl.add_css_class("osd");
+            original_lbl.add_css_class("compare-corner-label");
             original_lbl.set_halign(gtk4::Align::Start);
             original_lbl.set_valign(gtk4::Align::Start);
-            original_lbl.set_margin_top(12);
-            original_lbl.set_margin_start(12);
+            original_lbl.set_margin_top(16);
+            original_lbl.set_margin_start(16);
             center_overlay.add_overlay(&original_lbl);
 
             let upscaled_lbl = gtk4::Label::new(Some("Upscaled"));
-            upscaled_lbl.add_css_class("osd");
+            upscaled_lbl.add_css_class("compare-corner-label");
             upscaled_lbl.set_halign(gtk4::Align::End);
             upscaled_lbl.set_valign(gtk4::Align::Start);
-            upscaled_lbl.set_margin_top(12);
-            upscaled_lbl.set_margin_end(12);
+            upscaled_lbl.set_margin_top(16);
+            upscaled_lbl.set_margin_end(16);
             center_overlay.add_overlay(&upscaled_lbl);
 
             self.toolbar_revealer
@@ -171,13 +268,13 @@ mod imp {
             self.toolbar_revealer.set_child(Some(&toolbar_box));
             center_overlay.add_overlay(&self.toolbar_revealer);
 
-            let inspector_toggle = gtk4::Button::from_icon_name("info-symbolic");
+            let inspector_toggle = gtk4::Button::from_icon_name("info-outline-symbolic");
             inspector_toggle.add_css_class("osd");
             inspector_toggle.set_halign(gtk4::Align::End);
             inspector_toggle.set_valign(gtk4::Align::End);
             inspector_toggle.set_margin_bottom(20);
             inspector_toggle.set_margin_end(20);
-            inspector_toggle.set_tooltip_text(Some("Toggle details"));
+            inspector_toggle.set_tooltip_text(Some("Toggle image details"));
             center_overlay.add_overlay(&inspector_toggle);
 
             self.split_view.set_content(Some(&center_overlay));
@@ -208,113 +305,128 @@ mod imp {
             empty_box.append(&empty_lbl);
             self.details_stack.add_named(&empty_box, Some("empty"));
 
-            let details_box = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-            details_box.set_margin_start(16);
-            details_box.set_margin_end(16);
-            details_box.set_margin_top(16);
-            details_box.set_margin_bottom(16);
-
             self.filename_label.add_css_class("title-4");
             self.filename_label.set_halign(gtk4::Align::Start);
             self.filename_label
                 .set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
-            details_box.append(&self.filename_label);
 
             self.date_label.add_css_class("dim-label");
             self.date_label.add_css_class("caption");
             self.date_label.set_halign(gtk4::Align::Start);
-            details_box.append(&self.date_label);
 
-            let details_heading = gtk4::Label::new(Some("Output Details"));
-            details_heading.add_css_class("heading");
-            details_heading.set_halign(gtk4::Align::Start);
-            details_heading.set_margin_top(12);
-            details_box.append(&details_heading);
+            let details_scrolled = gtk4::ScrolledWindow::new();
+            details_scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+            details_scrolled.set_vexpand(true);
 
-            let grid = gtk4::Grid::new();
-            grid.set_row_spacing(8);
-            grid.set_column_spacing(12);
-            grid.set_margin_top(8);
+            let details_container = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+            details_container.set_margin_start(16);
+            details_container.set_margin_end(16);
+            details_container.set_margin_top(16);
+            details_container.set_margin_bottom(16);
+            details_container.append(&self.filename_label);
+            details_container.append(&self.date_label);
 
-            let add_row =
-                |grid: &gtk4::Grid, label: &str, value_lbl: &gtk4::Label, row: &mut i32| {
-                    let l = gtk4::Label::new(Some(label));
-                    l.set_halign(gtk4::Align::Start);
-                    l.add_css_class("dim-label");
-                    grid.attach(&l, 0, *row, 1, 1);
+            let details_page = libadwaita::PreferencesPage::new();
+            let summary_group = libadwaita::PreferencesGroup::new();
+            summary_group.set_title("Compare");
 
-                    value_lbl.set_halign(gtk4::Align::End);
-                    value_lbl.set_hexpand(true);
-                    grid.attach(value_lbl, 1, *row, 1, 1);
-                    *row += 1;
-                };
+            self.model_row.set_title("Model");
+            summary_group.add(&self.model_row);
 
-            let mut row = 0;
-            add_row(&grid, "Model", &self.model_value, &mut row);
-            add_row(&grid, "Scale", &self.scale_value, &mut row);
-            add_row(&grid, "Format", &self.format_value, &mut row);
-            add_row(&grid, "Dimensions", &self.dims_value, &mut row);
-            add_row(&grid, "File Size", &self.size_value, &mut row);
-            details_box.append(&grid);
+            self.scale_row.set_title("Scale");
+            summary_group.add(&self.scale_row);
 
-            let actions_heading = gtk4::Label::new(Some("Actions"));
-            actions_heading.add_css_class("heading");
-            actions_heading.set_halign(gtk4::Align::Start);
-            actions_heading.set_margin_top(20);
-            details_box.append(&actions_heading);
+            details_page.add(&summary_group);
 
-            let open_btn = gtk4::Button::with_label("Open Output");
-            open_btn.set_halign(gtk4::Align::Fill);
-            details_box.append(&open_btn);
+            let details_group = libadwaita::PreferencesGroup::new();
+            self.image_details_expander.set_title("Image Details");
+            self.image_details_expander
+                .set_subtitle("Original, output, and preserved PNG sidecar");
+            self.image_details_expander.set_expanded(false);
 
-            let tasks_btn = gtk4::Button::with_label("Back to Tasks");
-            tasks_btn.set_halign(gtk4::Align::Fill);
-            details_box.append(&tasks_btn);
+            self.original_row.set_activatable(false);
+            self.output_row.set_activatable(false);
+            self.sidecar_row.set_activatable(false);
+            self.image_details_expander.add_row(&self.original_row);
+            self.image_details_expander.add_row(&self.output_row);
+            self.image_details_expander.add_row(&self.sidecar_row);
+            details_group.add(&self.image_details_expander);
+            details_page.add(&details_group);
 
-            let spacer = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-            spacer.set_vexpand(true);
-            details_box.append(&spacer);
+            let actions_group = libadwaita::PreferencesGroup::new();
+            actions_group.set_title("Actions");
 
-            let remove_btn = gtk4::Button::with_label("Remove from Queue");
-            remove_btn.add_css_class("destructive-action");
+            self.show_original_row.set_title("Show Original in Files");
+            let show_original_btn = gtk4::Button::from_icon_name("folder-open-symbolic");
+            show_original_btn.add_css_class("flat");
+            self.show_original_row.add_suffix(&show_original_btn);
+            actions_group.add(&self.show_original_row);
+
+            self.show_output_row.set_title("Show Output in Files");
+            let show_output_btn = gtk4::Button::from_icon_name("folder-open-symbolic");
+            show_output_btn.add_css_class("flat");
+            self.show_output_row.add_suffix(&show_output_btn);
+            actions_group.add(&self.show_output_row);
+
+            let tasks_row = libadwaita::ActionRow::new();
+            tasks_row.set_title("Back to Tasks");
+            tasks_row.set_subtitle("Return to the task queue");
+            let tasks_btn = gtk4::Button::from_icon_name("go-previous-symbolic");
+            tasks_btn.add_css_class("flat");
+            tasks_row.add_suffix(&tasks_btn);
+            actions_group.add(&tasks_row);
+
+            let remove_row = libadwaita::ActionRow::new();
+            remove_row.set_title("Remove from Compare");
+            remove_row.set_subtitle("Keep the files, remove this item from the compare queue");
+            let remove_btn = gtk4::Button::from_icon_name("user-trash-symbolic");
             remove_btn.add_css_class("flat");
-            remove_btn.set_halign(gtk4::Align::Start);
-            details_box.append(&remove_btn);
+            remove_btn.add_css_class("destructive-action");
+            remove_row.add_suffix(&remove_btn);
+            actions_group.add(&remove_row);
 
-            self.details_stack.add_named(&details_box, Some("details"));
+            details_page.add(&actions_group);
+            details_container.append(&details_page);
+            details_scrolled.set_child(Some(&details_container));
+            self.details_stack
+                .add_named(&details_scrolled, Some("details"));
+
             details_box_outer.append(&self.details_stack);
             self.split_view.set_sidebar(Some(&details_box_outer));
 
-            let split_view_c = self.split_view.clone();
+            let split_view = self.split_view.clone();
             sidebar_close.connect_clicked(move |_| {
-                split_view_c.set_show_sidebar(false);
+                split_view.set_show_sidebar(false);
             });
 
-            let split_view_c = self.split_view.clone();
+            let split_view = self.split_view.clone();
             inspector_toggle.connect_clicked(move |_| {
-                let current = split_view_c.shows_sidebar();
-                split_view_c.set_show_sidebar(!current);
+                let visible = split_view.shows_sidebar();
+                split_view.set_show_sidebar(!visible);
             });
 
-            let viewer_c = self.viewer.clone();
+            let viewer = self.viewer.clone();
             fit_btn.connect_clicked(move |_| {
-                viewer_c.set_zoom_mode(crate::ui::viewer::ZoomMode::Fit);
+                viewer.set_zoom_mode(crate::ui::viewer::ZoomMode::Fit);
             });
-            let viewer_c = self.viewer.clone();
+
+            let viewer = self.viewer.clone();
             zoom_1_1_btn.connect_clicked(move |_| {
-                viewer_c.set_zoom_mode(crate::ui::viewer::ZoomMode::OneToOne);
+                viewer.set_zoom_mode(crate::ui::viewer::ZoomMode::OneToOne);
             });
-            let viewer_c = self.viewer.clone();
+
+            let viewer = self.viewer.clone();
             zoom_in_btn.connect_clicked(move |_| {
-                viewer_c.apply_scroll_zoom(1.1);
+                viewer.apply_scroll_zoom(1.1);
             });
-            let viewer_c = self.viewer.clone();
+
+            let viewer = self.viewer.clone();
             zoom_out_btn.connect_clicked(move |_| {
-                viewer_c.apply_scroll_zoom(1.0 / 1.1);
+                viewer.apply_scroll_zoom(1.0 / 1.1);
             });
 
             let obj_weak = obj.downgrade();
-            open_btn.connect_clicked(move |_| {
+            show_original_btn.connect_clicked(move |_| {
                 let Some(obj) = obj_weak.upgrade() else {
                     return;
                 };
@@ -322,8 +434,19 @@ mod imp {
                 let Some(item) = current_item.as_ref() else {
                     return;
                 };
-                let uri = gio::File::for_path(&item.output_path).uri();
-                let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                reveal_in_file_manager(&item.original_asset.path);
+            });
+
+            let obj_weak = obj.downgrade();
+            show_output_btn.connect_clicked(move |_| {
+                let Some(obj) = obj_weak.upgrade() else {
+                    return;
+                };
+                let current_item = obj.imp().current_item.borrow();
+                let Some(item) = current_item.as_ref() else {
+                    return;
+                };
+                reveal_in_file_manager(&item.output_asset.path);
             });
 
             let obj_weak = obj.downgrade();
