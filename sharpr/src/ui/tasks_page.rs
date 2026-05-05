@@ -33,6 +33,8 @@ pub struct UpscaleStepSettings {
     pub destination: String, // "default" | "source" | "custom"
     #[serde(default)]
     pub custom_path: Option<PathBuf>,
+    #[serde(default)]
+    pub comfyui_workflow: Option<String>, // "esrgan" | "seedvr2"
 }
 
 fn default_destination() -> String {
@@ -84,6 +86,7 @@ mod imp {
         pub format_dropdown: RefCell<Option<libadwaita::ComboRow>>,
         pub quality_spin: RefCell<Option<gtk4::SpinButton>>,
         pub upscale_dest_dropdown: RefCell<Option<libadwaita::ComboRow>>,
+        pub comfyui_workflow_row: RefCell<Option<libadwaita::ComboRow>>,
 
         // Export settings widgets
         pub export_format_dropdown: RefCell<Option<libadwaita::ComboRow>>,
@@ -334,6 +337,12 @@ mod imp {
             upscale_group.add(&scale_row);
             upscale_group.add(&onnx_model_row);
 
+            let comfyui_workflow_row = libadwaita::ComboRow::new();
+            comfyui_workflow_row.set_title("Workflow");
+            comfyui_workflow_row.set_model(Some(&gtk4::StringList::new(&["ESRGAN", "SeedVR2"])));
+            comfyui_workflow_row.set_visible(false); // shown only when ComfyUI backend active
+            upscale_group.add(&comfyui_workflow_row);
+
             let advanced_group = libadwaita::PreferencesGroup::new();
             advanced_group.set_title("Advanced");
             advanced_group.add(&compress_check);
@@ -468,6 +477,7 @@ mod imp {
                 let comfy_btn = backend_comfyui_btn.clone();
                 let cli_btn = backend_cli_btn.clone();
                 let onnx_row = onnx_model_row.clone();
+                let comfyui_wf_row = comfyui_workflow_row.clone();
                 backend_onnx_btn.connect_toggled(move |btn| {
                     if btn.is_active() {
                         if comfy_btn.is_active() {
@@ -477,6 +487,7 @@ mod imp {
                             cli_btn.set_active(false);
                         }
                         onnx_row.set_visible(true);
+                        comfyui_wf_row.set_visible(false);
                     } else if !comfy_btn.is_active() && !cli_btn.is_active() {
                         btn.set_active(true);
                     } else {
@@ -488,6 +499,7 @@ mod imp {
                 let onnx_btn = backend_onnx_btn.clone();
                 let cli_btn = backend_cli_btn.clone();
                 let onnx_row = onnx_model_row.clone();
+                let comfyui_wf_row = comfyui_workflow_row.clone();
                 backend_comfyui_btn.connect_toggled(move |btn| {
                     if btn.is_active() {
                         if onnx_btn.is_active() {
@@ -497,8 +509,11 @@ mod imp {
                             cli_btn.set_active(false);
                         }
                         onnx_row.set_visible(false);
+                        comfyui_wf_row.set_visible(true);
                     } else if !onnx_btn.is_active() && !cli_btn.is_active() {
                         btn.set_active(true);
+                    } else {
+                        comfyui_wf_row.set_visible(false);
                     }
                 });
             }
@@ -506,6 +521,7 @@ mod imp {
                 let onnx_btn = backend_onnx_btn.clone();
                 let comfy_btn = backend_comfyui_btn.clone();
                 let onnx_row = onnx_model_row.clone();
+                let comfyui_wf_row = comfyui_workflow_row.clone();
                 backend_cli_btn.connect_toggled(move |btn| {
                     if btn.is_active() {
                         if onnx_btn.is_active() {
@@ -515,6 +531,7 @@ mod imp {
                             comfy_btn.set_active(false);
                         }
                         onnx_row.set_visible(false);
+                        comfyui_wf_row.set_visible(false);
                     } else if !onnx_btn.is_active() && !comfy_btn.is_active() {
                         btn.set_active(true);
                     }
@@ -673,6 +690,7 @@ mod imp {
             *self.backend_cli_btn.borrow_mut() = Some(backend_cli_btn);
             *self.onnx_model_dropdown.borrow_mut() = Some(onnx_model_dropdown);
             *self.onnx_model_row.borrow_mut() = Some(onnx_model_row);
+            *self.comfyui_workflow_row.borrow_mut() = Some(comfyui_workflow_row);
             *self.scale_dropdown.borrow_mut() = Some(scale_dropdown);
             *self.compress_check.borrow_mut() = Some(compress_check);
             *self.keep_png_check.borrow_mut() = Some(keep_png_check);
@@ -880,6 +898,9 @@ impl TasksPage {
         if let Some(row) = imp.onnx_model_row.borrow().as_ref() {
             row.set_visible(backend == "onnx");
         }
+        if let Some(row) = imp.comfyui_workflow_row.borrow().as_ref() {
+            row.set_visible(backend == "comfyui");
+        }
     }
 
     fn load_settings_for_pipeline(&self, pipeline_id: i64) {
@@ -946,6 +967,13 @@ impl TasksPage {
                         _ => 0,
                     };
                     dropdown.set_selected(idx);
+                }
+                if let Some(row) = self.imp().comfyui_workflow_row.borrow().as_ref() {
+                    let idx = match settings.comfyui_workflow.as_deref() {
+                        Some("seedvr2") => 1,
+                        _ => 0,
+                    };
+                    row.set_selected(idx);
                 }
             }
             StepType::Export => {
@@ -1210,6 +1238,18 @@ impl TasksPage {
             } else {
                 None
             };
+            let comfyui_workflow = if backend == "comfyui" {
+                imp.comfyui_workflow_row
+                    .borrow()
+                    .as_ref()
+                    .map(|row| match row.selected() {
+                        1 => "seedvr2",
+                        _ => "esrgan",
+                    })
+                    .map(|s| s.to_string())
+            } else {
+                None
+            };
             let scale = imp
                 .scale_dropdown
                 .borrow()
@@ -1276,6 +1316,7 @@ impl TasksPage {
                 keep_png,
                 destination: destination.into(),
                 custom_path: None,
+                comfyui_workflow,
             };
             (
                 StepType::Upscale,
@@ -2042,7 +2083,7 @@ impl TasksPage {
             upscaler_binary_path,
             upscaled_output_dir,
             comfyui_url,
-            comfyui_workflow,
+            comfyui_workflow_global,
             onnx_upscale_model,
         ) = {
             let st = state_rc.borrow();
@@ -2053,7 +2094,7 @@ impl TasksPage {
                     .or_else(crate::upscale::UpscaleDetector::find_realesrgan),
                 st.settings.upscaled_output_dir.clone(),
                 st.settings.comfyui_url.clone(),
-                st.settings.comfyui_workflow.clone(),
+                st.settings.comfyui_workflow.clone(), // global fallback
                 st.settings.onnx_upscale_model.clone(),
             )
         };
@@ -2068,12 +2109,6 @@ impl TasksPage {
             };
 
             let backend_kind = UpscaleBackendKind::from_settings(&settings.backend);
-
-            if backend_kind == UpscaleBackendKind::ComfyUi {
-                let _ =
-                    tx.send_blocking(Err("ComfyUI backend not yet supported in queue".to_string()));
-                return;
-            }
 
             let model = UpscaleModel::from_settings(&settings.model);
             let format = UpscaleOutputFormat::from_settings(&settings.format);
@@ -2122,8 +2157,12 @@ impl TasksPage {
                 .unwrap_or_else(|| {
                     crate::upscale::OnnxUpscaleModel::from_settings(&onnx_upscale_model)
                 });
+            let effective_comfyui_workflow = settings
+                .comfyui_workflow
+                .as_deref()
+                .unwrap_or(&comfyui_workflow_global);
             let comfyui_workflow =
-                crate::upscale::ComfyUiWorkflow::from_settings(&comfyui_workflow);
+                crate::upscale::ComfyUiWorkflow::from_settings(effective_comfyui_workflow);
 
             let backend = make_upscale_backend(
                 backend_kind,
