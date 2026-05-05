@@ -91,6 +91,8 @@ mod imp {
         pub export_quality_spin: RefCell<Option<gtk4::SpinButton>>,
         pub export_dest_dropdown: RefCell<Option<libadwaita::ComboRow>>,
 
+        pub add_step_btn: RefCell<Option<gtk4::Button>>,
+
         // History
         pub history_list: RefCell<Option<gtk4::ListBox>>,
         pub clear_history_btn: RefCell<Option<gtk4::Button>>,
@@ -406,6 +408,25 @@ mod imp {
             right_col.append(&op_switcher);
             right_col.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
             right_col.append(&settings_stack);
+
+            let add_step_btn = gtk4::Button::with_label("Add Step");
+            add_step_btn.set_margin_top(6);
+            add_step_btn.set_margin_bottom(6);
+            add_step_btn.set_margin_start(12);
+            add_step_btn.set_margin_end(12);
+            add_step_btn.set_visible(false);
+            add_step_btn.add_css_class("suggested-action");
+            right_col.append(&add_step_btn);
+
+            {
+                let widget_c = widget.clone();
+                add_step_btn.connect_clicked(move |_| {
+                    widget_c.on_add_step_clicked();
+                });
+            }
+
+            *self.add_step_btn.borrow_mut() = Some(add_step_btn);
+
             right_col.append(&summary_group);
 
             main_box.append(&left_col);
@@ -711,6 +732,9 @@ impl TasksPage {
             row.set_subtitle("");
             row.set_tooltip_text(None);
         }
+        if let Some(btn) = imp.add_step_btn.borrow().as_ref() {
+            btn.set_visible(false);
+        }
     }
 
     fn update_summary(&self, source: &Path, output: Option<&Path>) {
@@ -962,6 +986,9 @@ impl TasksPage {
 
         *self.imp().selected_pipeline_id.borrow_mut() = Some(pipeline_id);
         self.imp().selected_is_history.set(false);
+        if let Some(btn) = self.imp().add_step_btn.borrow().as_ref() {
+            btn.set_visible(true);
+        }
         self.update_summary(&pipeline.source_path, step.output_path.as_deref());
     }
 
@@ -1092,6 +1119,9 @@ impl TasksPage {
                     }
                     *widget.imp().selected_pipeline_id.borrow_mut() = Some(id);
                     widget.imp().selected_is_history.set(true);
+                    if let Some(btn) = widget.imp().add_step_btn.borrow().as_ref() {
+                        btn.set_visible(false);
+                    }
                     widget.show_summary_for_pipeline(id);
                 }
             });
@@ -1252,6 +1282,35 @@ impl TasksPage {
                 serde_json::to_string(&settings).unwrap_or_default(),
             )
         }
+    }
+
+    fn on_add_step_clicked(&self) {
+        let imp = self.imp();
+        // Guard: only act if a queued (non-history) pipeline is selected
+        if imp.selected_is_history.get() {
+            return;
+        }
+        let Some(pipeline_id) = *imp.selected_pipeline_id.borrow() else {
+            return;
+        };
+        let Some(state_rc) = imp.state.borrow().clone() else {
+            return;
+        };
+        let state = state_rc.borrow();
+        let Some(idx) = state.library_index.as_ref() else {
+            return;
+        };
+        // Only append to Queued or InProgress pipelines
+        let Some(pipeline) = Self::find_pipeline_by_id(idx, pipeline_id) else {
+            return;
+        };
+        if !matches!(pipeline.status, PipelineStatus::Queued | PipelineStatus::InProgress) {
+            return;
+        }
+        let (step_type, settings_json) = self.current_step_config();
+        let _ = idx.append_pipeline_step(pipeline_id, step_type, &settings_json);
+        drop(state);
+        self.refresh();
     }
 
     pub fn pre_fill_from_path(&self, path: PathBuf) {
