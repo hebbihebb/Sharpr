@@ -282,13 +282,6 @@ mod imp {
             let details_box_outer = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
             details_box_outer.add_css_class("background");
 
-            let sidebar_header = libadwaita::HeaderBar::new();
-            sidebar_header.set_show_end_title_buttons(false);
-            let sidebar_close = gtk4::Button::from_icon_name("window-close-symbolic");
-            sidebar_close.add_css_class("flat");
-            sidebar_header.pack_end(&sidebar_close);
-            details_box_outer.append(&sidebar_header);
-
             self.details_stack
                 .set_transition_type(gtk4::StackTransitionType::Crossfade);
 
@@ -328,7 +321,6 @@ mod imp {
 
             let details_page = libadwaita::PreferencesPage::new();
             let summary_group = libadwaita::PreferencesGroup::new();
-            summary_group.set_title("Compare");
 
             self.model_row.set_title("Model");
             summary_group.add(&self.model_row);
@@ -393,11 +385,6 @@ mod imp {
 
             details_box_outer.append(&self.details_stack);
             self.split_view.set_sidebar(Some(&details_box_outer));
-
-            let split_view = self.split_view.clone();
-            sidebar_close.connect_clicked(move |_| {
-                split_view.set_show_sidebar(false);
-            });
 
             let split_view = self.split_view.clone();
             inspector_toggle.connect_clicked(move |_| {

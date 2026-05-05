@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -56,6 +57,14 @@ pub struct ExportStepSettings {
 }
 
 pub type CompareCallback = Box<dyn Fn(CompareItem)>;
+pub type UserActivityCallback = Box<dyn Fn(bool)>;
+
+pub(super) struct BackgroundTaskRow {
+    row: gtk4::ListBoxRow,
+    progress_bar: gtk4::ProgressBar,
+    status_label: gtk4::Label,
+    active: Cell<bool>,
+}
 
 mod imp {
     use super::*;
@@ -72,6 +81,9 @@ mod imp {
         pub clear_btn: RefCell<Option<gtk4::Button>>,
         pub add_images_btn: RefCell<Option<gtk4::Button>>,
         pub queue_count_label: RefCell<Option<gtk4::Label>>,
+        pub background_status_label: RefCell<Option<gtk4::Label>>,
+        pub background_empty_label: RefCell<Option<gtk4::Label>>,
+        pub background_list: RefCell<Option<gtk4::ListBox>>,
         pub op_upscale_btn: RefCell<Option<gtk4::ToggleButton>>,
         pub op_export_btn: RefCell<Option<gtk4::ToggleButton>>,
         pub crash_banner: RefCell<Option<libadwaita::Banner>>,
@@ -113,6 +125,7 @@ mod imp {
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub selected_pipeline_id: RefCell<Option<i64>>,
         pub compare_cb: RefCell<Option<CompareCallback>>,
+        pub user_activity_cb: RefCell<Option<UserActivityCallback>>,
         pub parent_window: RefCell<WeakRef<gtk4::Window>>,
         pub runner_active: Rc<Cell<bool>>,
         pub paused: Rc<Cell<bool>>,
@@ -122,6 +135,8 @@ mod imp {
         pub queue_row_selected_handler: RefCell<Option<glib::SignalHandlerId>>,
         pub history_row_selected_handler: RefCell<Option<glib::SignalHandlerId>>,
         pub polling_timer: RefCell<Option<glib::SourceId>>,
+        pub(super) background_rows: RefCell<HashMap<u64, BackgroundTaskRow>>,
+        pub(super) background_active_count: Cell<u32>,
     }
 
     #[glib::object_subclass]
@@ -156,6 +171,42 @@ mod imp {
             crash_banner.set_button_label(Some("Resume All"));
             crash_banner.set_revealed(false);
             left_col.append(&crash_banner);
+
+            let background_section = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+
+            let background_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            background_header.set_hexpand(true);
+
+            let background_title = gtk4::Label::new(Some("Background Activity"));
+            background_title.add_css_class("heading");
+            background_title.set_halign(gtk4::Align::Start);
+
+            let background_status_label = gtk4::Label::new(Some("No background activity"));
+            background_status_label.add_css_class("dim-label");
+            background_status_label.add_css_class("caption");
+            background_status_label.set_halign(gtk4::Align::Start);
+
+            let background_spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            background_spacer.set_hexpand(true);
+
+            background_header.append(&background_title);
+            background_header.append(&background_status_label);
+            background_header.append(&background_spacer);
+
+            let background_list = gtk4::ListBox::new();
+            background_list.add_css_class("boxed-list");
+            background_list.set_selection_mode(gtk4::SelectionMode::None);
+            background_list.set_visible(false);
+
+            let background_empty_label = gtk4::Label::new(Some("No background activity"));
+            background_empty_label.add_css_class("dim-label");
+            background_empty_label.add_css_class("caption");
+            background_empty_label.set_halign(gtk4::Align::Start);
+
+            background_section.append(&background_header);
+            background_section.append(&background_list);
+            background_section.append(&background_empty_label);
+            left_col.append(&background_section);
 
             let queue_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
             queue_header.set_hexpand(true);
@@ -756,6 +807,9 @@ mod imp {
             *self.clear_btn.borrow_mut() = Some(clear_btn);
             *self.add_images_btn.borrow_mut() = Some(add_images_btn);
             *self.queue_count_label.borrow_mut() = Some(queue_count_label);
+            *self.background_status_label.borrow_mut() = Some(background_status_label);
+            *self.background_empty_label.borrow_mut() = Some(background_empty_label);
+            *self.background_list.borrow_mut() = Some(background_list);
             *self.op_upscale_btn.borrow_mut() = Some(op_upscale_btn);
             *self.op_export_btn.borrow_mut() = Some(op_export_btn);
             *self.crash_banner.borrow_mut() = Some(crash_banner);
@@ -1410,6 +1464,148 @@ impl TasksPage {
         *self.imp().compare_cb.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn set_user_activity_changed_cb<F: Fn(bool) + 'static>(&self, f: F) {
+        *self.imp().user_activity_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn push_background_op(&self, id: u64, title: &str) {
+        let imp = self.imp();
+        let Some(list_box) = imp.background_list.borrow().clone() else {
+            return;
+        };
+        if imp.background_rows.borrow().contains_key(&id) {
+            return;
+        }
+
+        let title_label = gtk4::Label::new(Some(title));
+        title_label.set_halign(gtk4::Align::Start);
+        title_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        title_label.add_css_class("caption-heading");
+
+        let status_label = gtk4::Label::new(Some("Running"));
+        status_label.set_halign(gtk4::Align::Start);
+        status_label.add_css_class("dim-label");
+        status_label.add_css_class("caption");
+
+        let progress_bar = gtk4::ProgressBar::new();
+        progress_bar.set_pulse_step(0.1);
+        progress_bar.pulse();
+
+        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        content.set_margin_top(8);
+        content.set_margin_bottom(8);
+        content.set_margin_start(12);
+        content.set_margin_end(12);
+        content.append(&title_label);
+        content.append(&status_label);
+        content.append(&progress_bar);
+
+        let row = gtk4::ListBoxRow::new();
+        row.set_selectable(false);
+        row.set_activatable(false);
+        row.set_child(Some(&content));
+
+        list_box.append(&row);
+        imp.background_rows.borrow_mut().insert(
+            id,
+            BackgroundTaskRow {
+                row,
+                progress_bar,
+                status_label,
+                active: Cell::new(true),
+            },
+        );
+        imp.background_active_count
+            .set(imp.background_active_count.get().saturating_add(1));
+        self.refresh_background_activity_ui();
+    }
+
+    pub fn update_background_op(&self, id: u64, fraction: Option<f32>) {
+        let rows = self.imp().background_rows.borrow();
+        if let Some(row) = rows.get(&id) {
+            match fraction {
+                Some(value) => row.progress_bar.set_fraction(value as f64),
+                None => row.progress_bar.pulse(),
+            }
+        }
+    }
+
+    pub fn complete_background_op(&self, id: u64) {
+        self.finish_background_op(id, "Done", Some("dim-label"));
+    }
+
+    pub fn fail_background_op(&self, id: u64, msg: &str) {
+        self.finish_background_op(id, &format!("Failed: {msg}"), Some("error"));
+    }
+
+    pub fn remove_background_op(&self, id: u64) {
+        let imp = self.imp();
+        let removed = imp.background_rows.borrow_mut().remove(&id);
+        if let Some(row) = removed {
+            if row.active.replace(false) {
+                imp.background_active_count
+                    .set(imp.background_active_count.get().saturating_sub(1));
+            }
+            if let Some(list_box) = imp.background_list.borrow().as_ref() {
+                list_box.remove(&row.row);
+            }
+            self.refresh_background_activity_ui();
+        }
+    }
+
+    fn finish_background_op(&self, id: u64, status: &str, css_class: Option<&str>) {
+        let imp = self.imp();
+        let rows = imp.background_rows.borrow();
+        if let Some(row) = rows.get(&id) {
+            row.progress_bar.set_visible(false);
+            row.status_label.set_text(status);
+            row.status_label.remove_css_class("dim-label");
+            row.status_label.remove_css_class("error");
+            row.status_label.add_css_class("caption");
+            if let Some(class_name) = css_class {
+                row.status_label.add_css_class(class_name);
+            }
+            if row.active.replace(false) {
+                imp.background_active_count
+                    .set(imp.background_active_count.get().saturating_sub(1));
+            }
+        }
+        drop(rows);
+        self.refresh_background_activity_ui();
+
+        let widget = self.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
+            widget.remove_background_op(id);
+        });
+    }
+
+    fn refresh_background_activity_ui(&self) {
+        let imp = self.imp();
+        let total = imp.background_rows.borrow().len();
+        let active = imp.background_active_count.get();
+
+        if let Some(list_box) = imp.background_list.borrow().as_ref() {
+            list_box.set_visible(total > 0);
+        }
+        if let Some(empty_label) = imp.background_empty_label.borrow().as_ref() {
+            empty_label.set_visible(total == 0);
+        }
+        if let Some(status_label) = imp.background_status_label.borrow().as_ref() {
+            let status = match active {
+                0 => "No background activity".to_string(),
+                1 => "1 background task running".to_string(),
+                n => format!("{n} background tasks running"),
+            };
+            status_label.set_text(&status);
+        }
+    }
+
+    fn emit_user_activity(&self, active: bool) {
+        if let Some(cb) = self.imp().user_activity_cb.borrow().as_ref() {
+            cb(active);
+        }
+    }
+
     /// Returns the step type and settings JSON currently shown in the settings panel.
     /// Used by window.rs when adding a job from the filmstrip.
     pub fn current_step_config(&self) -> (StepType, String) {
@@ -1660,19 +1856,34 @@ impl TasksPage {
                 lbl.set_visible(pipelines.is_empty());
             }
 
-            if let Some(lbl) = imp.queue_count_label.borrow().as_ref() {
-                let total = pipelines.len();
-                lbl.set_visible(total > 0);
-                if total > 0 {
-                    let noun = if total == 1 { "task" } else { "tasks" };
-                    lbl.set_label(&format!("{total} {noun}"));
-                }
-            }
-
             let queued_count = pipelines
                 .iter()
                 .filter(|p| p.status == PipelineStatus::Queued)
                 .count();
+            let running_count = pipelines
+                .iter()
+                .filter(|p| p.status == PipelineStatus::InProgress)
+                .count();
+
+            self.emit_user_activity(running_count > 0);
+
+            if let Some(lbl) = imp.queue_count_label.borrow().as_ref() {
+                let status = match (running_count, queued_count) {
+                    (0, 0) => "No user tasks".to_string(),
+                    (0, queued) => {
+                        let noun = if queued == 1 { "task" } else { "tasks" };
+                        format!("{queued} queued {noun}")
+                    }
+                    (running, 0) => {
+                        let noun = if running == 1 { "task" } else { "tasks" };
+                        format!("{running} running {noun}")
+                    }
+                    (running, queued) => format!("{running} running • {queued} queued"),
+                };
+                lbl.set_visible(true);
+                lbl.set_label(&status);
+            }
+
             let runner_active = imp.runner_active.get();
             let paused = imp.paused.get();
 

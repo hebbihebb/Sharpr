@@ -3221,6 +3221,12 @@ impl SharprWindow {
         });
 
         let tasks_page = TasksPage::new();
+        {
+            let indicator = ops_indicator.clone();
+            tasks_page.set_user_activity_changed_cb(move |active| {
+                indicator.set_pipeline_active(active);
+            });
+        }
         tasks_page.set_state(state.clone());
         tasks_page.set_parent_window(self.upcast_ref());
         content_stack.add_named(&tasks_page, Some("tasks"));
@@ -3457,15 +3463,31 @@ impl SharprWindow {
         // Drive the indicator from the ops event channel.
         {
             let indicator = ops_indicator.clone();
+            let tasks_page = tasks_page.clone();
             glib::MainContext::default().spawn_local(async move {
                 use crate::ops::queue::OpEvent;
                 while let Ok(event) = ops_rx.recv().await {
                     match event {
-                        OpEvent::Added { id, title } => indicator.push_op(id, &title),
-                        OpEvent::Progress { id, fraction } => indicator.update_op(id, fraction),
-                        OpEvent::Completed(id) => indicator.complete_op(id),
-                        OpEvent::Failed { id, msg } => indicator.fail_op(id, &msg),
-                        OpEvent::Dismissed(id) => indicator.remove_op(id),
+                        OpEvent::Added { id, title } => {
+                            indicator.push_op(id, &title);
+                            tasks_page.push_background_op(id, &title);
+                        }
+                        OpEvent::Progress { id, fraction } => {
+                            indicator.update_op(id, fraction);
+                            tasks_page.update_background_op(id, fraction);
+                        }
+                        OpEvent::Completed(id) => {
+                            indicator.complete_op(id);
+                            tasks_page.complete_background_op(id);
+                        }
+                        OpEvent::Failed { id, msg } => {
+                            indicator.fail_op(id, &msg);
+                            tasks_page.fail_background_op(id, &msg);
+                        }
+                        OpEvent::Dismissed(id) => {
+                            indicator.remove_op(id);
+                            tasks_page.remove_background_op(id);
+                        }
                     }
                 }
             });

@@ -1,57 +1,42 @@
-//! Header-bar tasks and background-operations entry point.
+//! Header-bar tasks entry point.
 //!
-//! The button stays visible in the main header and routes users toward the
-//! Tasks page while still exposing a compact popover for current operations.
+//! The button stays visible in the main header, routes users toward the Tasks
+//! page, and reflects whether any background work or user pipeline is actively
+//! running.
 
-use std::rc::Rc;
 use std::sync::Once;
 
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
-// ---------------------------------------------------------------------------
-// Per-row data kept in the HashMap
-// ---------------------------------------------------------------------------
-
-pub type ActionCallback = Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>>;
-
-struct OpRowWidgets {
-    row: gtk4::ListBoxRow,
-    progress_bar: gtk4::ProgressBar,
-    status_label: gtk4::Label,
-    action_button: gtk4::Button,
-    action: ActionCallback,
-    persistent: std::cell::Cell<bool>,
-}
-
-// ---------------------------------------------------------------------------
-// imp
-// ---------------------------------------------------------------------------
+const IDLE_ICON_CANDIDATES: &[&str] = &[
+    "circle-outline-thick-symbolic",
+    "circle-outline-symbolic",
+    "emblem-system-symbolic",
+];
+const BUSY_ICON_CANDIDATES: &[&str] = &[
+    "spinner-symbolic",
+    "process-working-symbolic",
+    "emblem-synchronizing-symbolic",
+];
 
 mod imp {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashSet;
 
     use gtk4::glib;
     use gtk4::prelude::*;
     use gtk4::subclass::prelude::*;
 
-    use super::OpRowWidgets;
-
     #[derive(Default)]
     pub struct OpsIndicator {
-        // The single child widget owned by this widget (BinLayout).
         pub(super) button: RefCell<Option<gtk4::Button>>,
-        pub(super) icon_stack: RefCell<Option<gtk4::Stack>>,
-        pub(super) spinner: RefCell<Option<gtk4::Spinner>>,
-        pub(super) summary_label: RefCell<Option<gtk4::Label>>,
-        pub(super) popover: RefCell<Option<gtk4::Popover>>,
-        pub(super) go_to_tasks_btn: RefCell<Option<gtk4::Button>>,
-        pub(super) list_box: RefCell<Option<gtk4::ListBox>>,
-        pub(super) clear_btn: RefCell<Option<gtk4::Button>>,
-        pub(super) rows: RefCell<HashMap<u64, OpRowWidgets>>,
-        pub(super) active_count: RefCell<u32>,
+        pub(super) icon: RefCell<Option<gtk4::Image>>,
+        pub(super) idle_icon_name: RefCell<Option<String>>,
+        pub(super) busy_icon_name: RefCell<Option<String>>,
+        pub(super) active_ops: RefCell<HashSet<u64>>,
+        pub(super) pipeline_active: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -71,108 +56,24 @@ mod imp {
             let widget = self.obj();
             super::install_css();
 
-            // ---- Build the summary button (collapsed indicator) ----
-            let spinner = gtk4::Spinner::new();
-            spinner.set_size_request(16, 16);
+            let idle_icon = super::resolve_icon_name(super::IDLE_ICON_CANDIDATES);
+            let busy_icon = super::resolve_icon_name(super::BUSY_ICON_CANDIDATES);
 
-            let idle_icon = gtk4::Image::from_icon_name("emblem-system-symbolic");
-            idle_icon.set_pixel_size(16);
-
-            let icon_stack = gtk4::Stack::new();
-            icon_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
-            icon_stack.set_transition_duration(200);
-            icon_stack.add_named(&idle_icon, Some("idle"));
-            icon_stack.add_named(&spinner, Some("busy"));
-            icon_stack.set_visible_child_name("idle");
-
-            let summary_label = gtk4::Label::new(Some("Tasks"));
-            summary_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-            summary_label.add_css_class("ops-indicator-summary");
+            let icon = gtk4::Image::from_icon_name(&idle_icon);
+            icon.set_pixel_size(16);
 
             let button = gtk4::Button::new();
-            let button_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-            button_box.append(&icon_stack);
-            button_box.append(&summary_label);
-            button.set_child(Some(&button_box));
+            button.set_child(Some(&icon));
             button.add_css_class("flat");
-            button.set_tooltip_text(Some("Tasks and background activity"));
-            button.set_visible(true); // always visible in header bar
-
+            button.add_css_class("ops-indicator-button");
+            button.set_tooltip_text(Some("Tasks"));
+            button.set_visible(true);
             button.set_parent(&*widget);
 
-            // ---- Build the popover ----
-            let heading = gtk4::Label::new(Some("Tasks and Background Activity"));
-            heading.add_css_class("heading");
-            heading.set_halign(gtk4::Align::Start);
-            heading.set_margin_bottom(6);
-
-            let list_box = gtk4::ListBox::new();
-            list_box.set_selection_mode(gtk4::SelectionMode::None);
-            list_box.add_css_class("boxed-list");
-
-            let scrolled = gtk4::ScrolledWindow::new();
-            scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-            scrolled.set_max_content_height(300);
-            scrolled.set_propagate_natural_height(true);
-            scrolled.set_child(Some(&list_box));
-
-            let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
-
-            let clear_btn = gtk4::Button::with_label("Clear completed");
-            clear_btn.set_halign(gtk4::Align::Center);
-
-            let go_to_tasks_btn = gtk4::Button::with_label("Go to Tasks");
-            go_to_tasks_btn.add_css_class("flat");
-            go_to_tasks_btn.set_halign(gtk4::Align::Center);
-
-            let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-            vbox.set_margin_top(12);
-            vbox.set_margin_bottom(12);
-            vbox.set_margin_start(12);
-            vbox.set_margin_end(12);
-            vbox.set_spacing(6);
-            vbox.append(&heading);
-            vbox.append(&scrolled);
-            vbox.append(&sep);
-            vbox.append(&clear_btn);
-            vbox.append(&go_to_tasks_btn);
-
-            let popover = gtk4::Popover::new();
-            popover.set_child(Some(&vbox));
-            popover.set_has_arrow(false);
-            popover.set_position(gtk4::PositionType::Bottom);
-            popover.add_css_class("background");
-            popover.set_parent(&button);
-
-            // Toggle popover on button click
-            {
-                let popover_c = popover.clone();
-                button.connect_clicked(move |_| {
-                    if popover_c.is_visible() {
-                        popover_c.popdown();
-                    } else {
-                        popover_c.popup();
-                    }
-                });
-            }
-
-            // "Clear completed" removes rows that are done/failed
-            {
-                let list_box_c = list_box.clone();
-                let clear_btn_obj = self.obj().clone();
-                clear_btn.connect_clicked(move |_| {
-                    clear_btn_obj.imp().clear_completed(&list_box_c);
-                });
-            }
-
             *self.button.borrow_mut() = Some(button);
-            *self.icon_stack.borrow_mut() = Some(icon_stack);
-            *self.spinner.borrow_mut() = Some(spinner);
-            *self.summary_label.borrow_mut() = Some(summary_label);
-            *self.popover.borrow_mut() = Some(popover);
-            *self.go_to_tasks_btn.borrow_mut() = Some(go_to_tasks_btn);
-            *self.list_box.borrow_mut() = Some(list_box);
-            *self.clear_btn.borrow_mut() = Some(clear_btn);
+            *self.icon.borrow_mut() = Some(icon);
+            *self.idle_icon_name.borrow_mut() = Some(idle_icon);
+            *self.busy_icon_name.borrow_mut() = Some(busy_icon);
         }
 
         fn dispose(&self) {
@@ -183,32 +84,7 @@ mod imp {
     }
 
     impl WidgetImpl for OpsIndicator {}
-
-    impl OpsIndicator {
-        pub fn clear_completed(&self, list_box: &gtk4::ListBox) {
-            let mut rows = self.rows.borrow_mut();
-            let done_ids: Vec<u64> = rows
-                .iter()
-                .filter(|(_, w)| !w.progress_bar.is_visible())
-                .map(|(id, _)| *id)
-                .collect();
-            for id in done_ids {
-                if let Some(w) = rows.remove(&id) {
-                    list_box.remove(&w.row);
-                }
-            }
-            // Update button visibility
-            let button = self.button.borrow();
-            if let Some(btn) = button.as_ref() {
-                btn.set_visible(!rows.is_empty() || *self.active_count.borrow() > 0);
-            }
-        }
-    }
 }
-
-// ---------------------------------------------------------------------------
-// Public wrapper
-// ---------------------------------------------------------------------------
 
 glib::wrapper! {
     pub struct OpsIndicator(ObjectSubclass<imp::OpsIndicator>)
@@ -222,225 +98,74 @@ impl OpsIndicator {
     }
 
     pub fn set_go_to_tasks_cb<F: Fn() + 'static>(&self, f: F) {
-        if let Some(btn) = self.imp().go_to_tasks_btn.borrow().as_ref() {
+        if let Some(btn) = self.imp().button.borrow().as_ref() {
             btn.connect_clicked(move |_| f());
         }
     }
 
-    /// Register a new operation — called when `OpEvent::Added` is received.
-    pub fn push_op(&self, id: u64, title: &str) {
-        let imp = self.imp();
-
-        // Build the row
-        let title_label = gtk4::Label::new(Some(title));
-        title_label.set_halign(gtk4::Align::Start);
-        title_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-        title_label.set_max_width_chars(35);
-
-        let progress_bar = gtk4::ProgressBar::new();
-        progress_bar.set_pulse_step(0.1);
-        progress_bar.pulse(); // start indeterminate
-
-        // Status label (shown instead of progress bar when done/failed)
-        let status_label = gtk4::Label::new(None);
-        status_label.set_halign(gtk4::Align::Start);
-        status_label.set_visible(false);
-
-        let action_button = gtk4::Button::with_label("Open");
-        action_button.add_css_class("flat");
-        action_button.add_css_class("accent");
-        action_button.set_halign(gtk4::Align::Start);
-        action_button.set_visible(false);
-
-        let row_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-        row_box.set_margin_top(8);
-        row_box.set_margin_bottom(8);
-        row_box.set_margin_start(12);
-        row_box.set_margin_end(12);
-        row_box.append(&title_label);
-        row_box.append(&progress_bar);
-        row_box.append(&status_label);
-        row_box.append(&action_button);
-
-        let row = gtk4::ListBoxRow::new();
-        row.set_child(Some(&row_box));
-        row.set_activatable(false);
-
-        if let Some(lb) = imp.list_box.borrow().as_ref() {
-            lb.append(&row);
-        }
-
-        let action: ActionCallback = Rc::new(std::cell::RefCell::new(None));
-        {
-            let action = action.clone();
-            action_button.connect_clicked(move |_| {
-                if let Some(cb) = action.borrow().as_ref() {
-                    cb();
-                }
-            });
-        }
-
-        imp.rows.borrow_mut().insert(
-            id,
-            OpRowWidgets {
-                row,
-                progress_bar,
-                status_label,
-                action_button,
-                action,
-                persistent: std::cell::Cell::new(false),
-            },
-        );
-
-        *imp.active_count.borrow_mut() += 1;
-        self.refresh_summary();
+    pub fn push_op(&self, id: u64, _title: &str) {
+        self.imp().active_ops.borrow_mut().insert(id);
+        self.refresh_icon();
     }
 
-    /// Update progress — called when `OpEvent::Progress` is received.
-    pub fn update_op(&self, id: u64, fraction: Option<f32>) {
-        let rows = self.imp().rows.borrow();
-        if let Some(w) = rows.get(&id) {
-            match fraction {
-                Some(f) => w.progress_bar.set_fraction(f as f64),
-                None => w.progress_bar.pulse(),
-            }
-        }
-    }
+    pub fn update_op(&self, _id: u64, _fraction: Option<f32>) {}
 
-    /// Mark an operation as complete — called when `OpEvent::Completed` is received.
     pub fn complete_op(&self, id: u64) {
-        let imp = self.imp();
-        let rows = imp.rows.borrow();
-        if let Some(w) = rows.get(&id) {
-            w.progress_bar.set_visible(false);
-            w.status_label.set_text("✓ Done");
-            w.status_label.add_css_class("dim-label");
-            w.status_label.set_visible(true);
-        }
-        drop(rows);
-        let count = imp.active_count.borrow().saturating_sub(1);
-        *imp.active_count.borrow_mut() = count;
-        self.refresh_summary();
-        {
-            let widget = self.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
-                if !widget.op_is_persistent(id) {
-                    widget.remove_op(id);
-                }
-            });
-        }
+        self.imp().active_ops.borrow_mut().remove(&id);
+        self.refresh_icon();
     }
 
-    /// Mark an operation as failed — called when `OpEvent::Failed` is received.
-    pub fn fail_op(&self, id: u64, msg: &str) {
-        let imp = self.imp();
-        let rows = imp.rows.borrow();
-        if let Some(w) = rows.get(&id) {
-            w.progress_bar.set_visible(false);
-            w.status_label.set_text(&format!("✗ {}", msg));
-            w.status_label.add_css_class("error");
-            w.status_label.set_visible(true);
-        }
-        drop(rows);
-        let count = imp.active_count.borrow().saturating_sub(1);
-        *imp.active_count.borrow_mut() = count;
-        self.refresh_summary();
-        {
-            let widget = self.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
-                if !widget.op_is_persistent(id) {
-                    widget.remove_op(id);
-                }
-            });
-        }
+    pub fn fail_op(&self, id: u64, _msg: &str) {
+        self.imp().active_ops.borrow_mut().remove(&id);
+        self.refresh_icon();
     }
 
-    /// Remove an op row entirely — called when `OpEvent::Dismissed` is received.
     pub fn remove_op(&self, id: u64) {
+        self.imp().active_ops.borrow_mut().remove(&id);
+        self.refresh_icon();
+    }
+
+    pub fn set_pipeline_active(&self, active: bool) {
+        self.imp().pipeline_active.set(active);
+        self.refresh_icon();
+    }
+
+    fn refresh_icon(&self) {
         let imp = self.imp();
-        let removed = imp.rows.borrow_mut().remove(&id);
-        if let Some(w) = removed {
-            if let Some(lb) = imp.list_box.borrow().as_ref() {
-                lb.remove(&w.row);
-            }
-        }
-        self.refresh_summary();
-    }
+        let busy = !imp.active_ops.borrow().is_empty() || imp.pipeline_active.get();
+        let idle_icon = imp.idle_icon_name.borrow();
+        let busy_icon = imp.busy_icon_name.borrow();
 
-    // ---- Private helpers ----
-
-    fn refresh_summary(&self) {
-        let imp = self.imp();
-        let active = *imp.active_count.borrow();
-        let total_rows = imp.rows.borrow().len();
-
-        if total_rows == 0 {
-            if let Some(sp) = imp.spinner.borrow().as_ref() {
-                sp.stop();
-            }
-            if let Some(stack) = imp.icon_stack.borrow().as_ref() {
-                stack.set_visible_child_name("idle");
-            }
-            return;
-        }
-
-        if let Some(stack) = imp.icon_stack.borrow().as_ref() {
-            if active > 0 {
-                stack.set_visible_child_name("busy");
+        if let Some(icon) = imp.icon.borrow().as_ref() {
+            if busy {
+                if let Some(name) = busy_icon.as_deref() {
+                    icon.set_icon_name(Some(name));
+                }
+                icon.add_css_class("ops-indicator-busy");
             } else {
-                stack.set_visible_child_name("idle");
-            }
-        }
-
-        if let Some(sp) = imp.spinner.borrow().as_ref() {
-            if active > 0 {
-                sp.start();
-            } else {
-                sp.stop();
-            }
-        }
-
-        if let Some(lbl) = imp.summary_label.borrow().as_ref() {
-            if active == 0 {
-                lbl.set_text("Tasks");
-            } else if active == 1 {
-                lbl.set_text("1 running");
-            } else {
-                lbl.set_text(&format!("{} running", active));
+                if let Some(name) = idle_icon.as_deref() {
+                    icon.set_icon_name(Some(name));
+                }
+                icon.remove_css_class("ops-indicator-busy");
             }
         }
     }
+}
 
-    fn op_is_persistent(&self, id: u64) -> bool {
-        self.imp()
-            .rows
-            .borrow()
-            .get(&id)
-            .map(|row| row.persistent.get())
-            .unwrap_or(false)
-    }
-
-    pub fn set_op_action<F>(&self, id: u64, label: &str, action: F)
-    where
-        F: Fn() + 'static,
-    {
-        let rows = self.imp().rows.borrow();
-        if let Some(row) = rows.get(&id) {
-            row.action_button.set_label(label);
-            row.action_button.set_visible(true);
-            row.persistent.set(true);
-            *row.action.borrow_mut() = Some(Rc::new(action));
+fn resolve_icon_name(candidates: &[&str]) -> String {
+    if let Some(display) = gdk4::Display::default() {
+        let theme = gtk4::IconTheme::for_display(&display);
+        for candidate in candidates {
+            if theme.has_icon(candidate) {
+                return (*candidate).to_string();
+            }
         }
     }
-
-    pub fn clear_op_action(&self, id: u64) {
-        let rows = self.imp().rows.borrow();
-        if let Some(row) = rows.get(&id) {
-            row.action_button.set_visible(false);
-            row.persistent.set(false);
-            row.action.borrow_mut().take();
-        }
-    }
+    candidates
+        .first()
+        .copied()
+        .unwrap_or("emblem-system-symbolic")
+        .to_string()
 }
 
 fn install_css() {
@@ -449,9 +174,13 @@ fn install_css() {
         let provider = gtk4::CssProvider::new();
         provider.load_from_string(
             "
-            .ops-indicator-summary {
-                font-weight: 600;
-                font-size: 0.92em;
+            @keyframes ops-indicator-spin {
+                from { -gtk-icon-transform: rotate(0deg); }
+                to { -gtk-icon-transform: rotate(1turn); }
+            }
+
+            .ops-indicator-busy {
+                animation: ops-indicator-spin 1s linear infinite;
             }
             ",
         );
