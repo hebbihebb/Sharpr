@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -13,7 +13,10 @@ use crate::export::{
     export_to_path, resolve_output_dir, unique_output_path, ExportFormat, OutputFolderKind,
 };
 use crate::library_index::{LibraryIndex, Pipeline, PipelineStatus, PipelineStep, StepType};
-use crate::ui::window::{AppState, CompareItem};
+use crate::ui::compare_item::{
+    build_compare_item_from_pipeline, CompareItem, ExportStepSettings, UpscaleStepSettings,
+};
+use crate::ui::window::AppState;
 use crate::upscale::{
     backend::make_upscale_backend,
     runner::{preserved_png_temp_path, UpscaleRunner},
@@ -21,43 +24,46 @@ use crate::upscale::{
     UpscaleOutputFormat,
 };
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct UpscaleStepSettings {
-    pub backend: String, // "cli" | "onnx" | "comfyui"
-    pub model: String,   // "standard" | "anime"
-    #[serde(default)]
-    pub onnx_model: Option<String>,
-    pub scale: u32, // 0 = smart/auto, 2, 3, 4
-    pub compress: bool,
-    pub format: String, // "jxl" | "webp" | "jpeg" | "png"
-    pub quality: u8,
-    #[serde(default)]
-    pub keep_png: bool,
-    #[serde(default = "default_destination")]
-    pub destination: String, // "default" | "source" | "custom"
-    #[serde(default)]
-    pub custom_path: Option<PathBuf>,
-    #[serde(default)]
-    pub comfyui_workflow: Option<String>, // "esrgan" | "seedvr2"
-}
-
-fn default_destination() -> String {
-    "default".to_string()
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct ExportStepSettings {
-    pub format: String,        // "jxl" | "webp" | "png" | "jpeg"
-    pub max_edge: Option<u32>, // None = original size
-    pub quality: u8,
-    #[serde(default = "default_destination")]
-    pub destination: String, // "default" | "source" | "custom"
-    #[serde(default)]
-    pub custom_path: Option<PathBuf>,
-}
-
 pub type CompareCallback = Box<dyn Fn(CompareItem)>;
 pub type UserActivityCallback = Box<dyn Fn(bool)>;
+
+/// Per-item configuration held in memory until Start Queue is pressed.
+#[derive(Clone)]
+pub struct PendingConfig {
+    pub upscale_on: bool,
+    pub upscale: UpscaleStepSettings,
+    pub export_on: bool,
+    pub export: ExportStepSettings,
+}
+
+impl Default for PendingConfig {
+    fn default() -> Self {
+        Self {
+            upscale_on: true,
+            upscale: UpscaleStepSettings {
+                backend: "onnx".to_string(),
+                model: String::new(),
+                onnx_model: None,
+                scale: 0,
+                compress: false,
+                format: "png".to_string(),
+                quality: 85,
+                keep_png: false,
+                destination: "default".to_string(),
+                custom_path: None,
+                comfyui_workflow: None,
+            },
+            export_on: false,
+            export: ExportStepSettings {
+                format: "jxl".to_string(),
+                max_edge: None,
+                quality: 90,
+                destination: "default".to_string(),
+                custom_path: None,
+            },
+        }
+    }
+}
 
 pub(super) struct BackgroundTaskRow {
     row: gtk4::ListBoxRow,
@@ -72,40 +78,32 @@ mod imp {
     #[derive(Default)]
     pub struct TasksPage {
         pub queue_list: RefCell<Option<gtk4::ListBox>>,
-        pub settings_stack: RefCell<Option<gtk4::Stack>>,
-        pub summary_group: RefCell<Option<libadwaita::PreferencesGroup>>,
-        pub summary_source_row: RefCell<Option<libadwaita::ActionRow>>,
-        pub summary_output_row: RefCell<Option<libadwaita::ActionRow>>,
         pub start_btn: RefCell<Option<gtk4::Button>>,
         pub pause_btn: RefCell<Option<gtk4::Button>>,
         pub clear_btn: RefCell<Option<gtk4::Button>>,
         pub add_images_btn: RefCell<Option<gtk4::Button>>,
+        pub remove_btn: RefCell<Option<gtk4::Button>>,
         pub queue_count_label: RefCell<Option<gtk4::Label>>,
         pub background_status_label: RefCell<Option<gtk4::Label>>,
         pub background_empty_label: RefCell<Option<gtk4::Label>>,
         pub background_list: RefCell<Option<gtk4::ListBox>>,
-        pub op_upscale_btn: RefCell<Option<gtk4::ToggleButton>>,
-        pub op_export_btn: RefCell<Option<gtk4::ToggleButton>>,
         pub crash_banner: RefCell<Option<libadwaita::Banner>>,
         pub queue_empty_label: RefCell<Option<gtk4::Label>>,
 
-        // Upscale settings widgets
+        // Upscale toggle + settings
+        pub upscale_toggle: RefCell<Option<gtk4::Switch>>,
+        pub upscale_settings_box: RefCell<Option<gtk4::Box>>,
         pub backend_onnx_btn: RefCell<Option<gtk4::ToggleButton>>,
         pub backend_comfyui_btn: RefCell<Option<gtk4::ToggleButton>>,
         pub backend_cli_btn: RefCell<Option<gtk4::ToggleButton>>,
         pub onnx_model_dropdown: RefCell<Option<libadwaita::ComboRow>>,
         pub onnx_model_row: RefCell<Option<libadwaita::ComboRow>>,
         pub scale_dropdown: RefCell<Option<libadwaita::ComboRow>>,
-        pub compress_check: RefCell<Option<libadwaita::SwitchRow>>,
-        pub keep_png_check: RefCell<Option<libadwaita::SwitchRow>>,
-        pub format_dropdown: RefCell<Option<libadwaita::ComboRow>>,
-        pub quality_spin: RefCell<Option<gtk4::SpinButton>>,
-        pub upscale_dest_dropdown: RefCell<Option<libadwaita::ComboRow>>,
-        pub upscale_custom_row: RefCell<Option<libadwaita::ActionRow>>,
-        pub upscale_custom_label: RefCell<Option<gtk4::Label>>,
         pub comfyui_workflow_row: RefCell<Option<libadwaita::ComboRow>>,
 
-        // Export settings widgets
+        // Convert/Export toggle + settings
+        pub export_toggle: RefCell<Option<gtk4::Switch>>,
+        pub export_settings_box: RefCell<Option<gtk4::Box>>,
         pub export_format_dropdown: RefCell<Option<libadwaita::ComboRow>>,
         pub export_edge_dropdown: RefCell<Option<libadwaita::ComboRow>>,
         pub export_quality_spin: RefCell<Option<gtk4::SpinButton>>,
@@ -114,7 +112,12 @@ mod imp {
         pub export_custom_label: RefCell<Option<gtk4::Label>>,
         pub history_cap_spin: RefCell<Option<gtk4::SpinButton>>,
 
-        pub add_step_btn: RefCell<Option<gtk4::Button>>,
+        // Right panel state
+        pub right_scroll: RefCell<Option<gtk4::ScrolledWindow>>,
+        pub right_settings_box: RefCell<Option<gtk4::Box>>,
+        pub no_selection_label: RefCell<Option<gtk4::Label>>,
+        pub summary_action_list: RefCell<Option<gtk4::Box>>,
+        pub summary_estimated_label: RefCell<Option<gtk4::Label>>,
 
         // History
         pub history_list: RefCell<Option<gtk4::ListBox>>,
@@ -130,13 +133,16 @@ mod imp {
         pub runner_active: Rc<Cell<bool>>,
         pub paused: Rc<Cell<bool>>,
         pub selected_is_history: Cell<bool>,
-        pub upscale_custom_path: RefCell<Option<PathBuf>>,
         pub export_custom_path: RefCell<Option<PathBuf>>,
         pub queue_row_selected_handler: RefCell<Option<glib::SignalHandlerId>>,
         pub history_row_selected_handler: RefCell<Option<glib::SignalHandlerId>>,
         pub polling_timer: RefCell<Option<glib::SourceId>>,
         pub(super) background_rows: RefCell<HashMap<u64, BackgroundTaskRow>>,
         pub(super) background_active_count: Cell<u32>,
+
+        // Per-item pending configurations (not yet committed to DB)
+        pub pending_configs: RefCell<HashMap<i64, PendingConfig>>,
+        pub queue_checked_ids: RefCell<HashSet<i64>>,
     }
 
     #[glib::object_subclass]
@@ -225,25 +231,17 @@ mod imp {
             header_spacer.set_hexpand(true);
 
             let add_images_btn = gtk4::Button::builder()
-                .label("Add Images")
+                .label("+ Add Selected")
                 .icon_name("list-add-symbolic")
                 .build();
             add_images_btn.add_css_class("flat");
-
-            queue_header.append(&queue_title);
-            queue_header.append(&queue_count_label);
-            queue_header.append(&header_spacer);
-            queue_header.append(&add_images_btn);
+            add_images_btn
+                .set_tooltip_text(Some("Browse and add image files to the queue"));
 
             let toolbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             toolbar.set_halign(gtk4::Align::End);
             toolbar.add_css_class("linked");
 
-            let start_btn = gtk4::Button::builder()
-                .label("Start")
-                .icon_name("media-playback-start-symbolic")
-                .build();
-            start_btn.add_css_class("suggested-action");
             let pause_btn = gtk4::Button::builder()
                 .label("Pause")
                 .icon_name("media-playback-pause-symbolic")
@@ -253,9 +251,30 @@ mod imp {
                 .icon_name("edit-clear-all-symbolic")
                 .build();
             clear_btn.add_css_class("destructive-action");
-            toolbar.append(&start_btn);
             toolbar.append(&pause_btn);
             toolbar.append(&clear_btn);
+
+            let remove_btn = gtk4::Button::builder()
+                .label("Remove")
+                .icon_name("list-remove-symbolic")
+                .build();
+            remove_btn.add_css_class("destructive-action");
+            remove_btn.set_sensitive(false);
+            remove_btn.set_tooltip_text(Some("Remove checked items from the queue"));
+            toolbar.append(&remove_btn);
+
+            let start_btn = gtk4::Button::builder()
+                .label("Start Queue")
+                .icon_name("media-playback-start-symbolic")
+                .build();
+            start_btn.add_css_class("suggested-action");
+
+            queue_header.append(&queue_title);
+            queue_header.append(&queue_count_label);
+            queue_header.append(&header_spacer);
+            queue_header.append(&add_images_btn);
+            queue_header.append(&toolbar);
+            queue_header.append(&start_btn);
 
             let queue_list = gtk4::ListBox::new();
             queue_list.add_css_class("boxed-list");
@@ -276,8 +295,27 @@ mod imp {
             queue_overlay.add_overlay(&queue_empty_label);
 
             left_col.append(&queue_header);
-            left_col.append(&toolbar);
             left_col.append(&queue_overlay);
+
+            let drop_zone = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+            drop_zone.add_css_class("card");
+            drop_zone.set_margin_top(4);
+            drop_zone.set_margin_bottom(4);
+            drop_zone.set_halign(gtk4::Align::Fill);
+            let drop_icon = gtk4::Image::from_icon_name("document-save-symbolic");
+            drop_icon.set_pixel_size(28);
+            drop_icon.add_css_class("dim-label");
+            drop_icon.set_margin_top(12);
+            let drop_label = gtk4::Label::new(Some("Drag images here to add to queue"));
+            drop_label.add_css_class("dim-label");
+            let drop_sub = gtk4::Label::new(Some("or use Add Selected from the current view"));
+            drop_sub.add_css_class("dim-label");
+            drop_sub.add_css_class("caption");
+            drop_sub.set_margin_bottom(12);
+            drop_zone.append(&drop_icon);
+            drop_zone.append(&drop_label);
+            drop_zone.append(&drop_sub);
+            left_col.append(&drop_zone);
 
             // --- History section ---
             let history_section = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -310,45 +348,112 @@ mod imp {
             left_col.append(&history_section);
 
             // --- Right Column ---
-            let right_col = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-            right_col.set_width_request(300);
-            right_col.set_margin_top(12);
-            right_col.set_margin_bottom(12);
-            right_col.set_margin_start(12);
-            right_col.set_margin_end(12);
+            let right_col = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            right_col.set_width_request(340);
+            right_col.set_hexpand(false);
 
-            let op_switcher = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-            op_switcher.add_css_class("linked");
-            let op_upscale_btn = gtk4::ToggleButton::with_label("Upscale");
-            let op_export_btn = gtk4::ToggleButton::with_label("Export");
-            op_switcher.append(&op_upscale_btn);
-            op_switcher.append(&op_export_btn);
+            let right_header = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+            right_header.set_margin_top(16);
+            right_header.set_margin_bottom(8);
+            right_header.set_margin_start(16);
+            right_header.set_margin_end(16);
 
-            let settings_stack = gtk4::Stack::new();
-            settings_stack.set_transition_type(gtk4::StackTransitionType::SlideLeftRight);
-            settings_stack.set_vexpand(true);
+            let right_title = gtk4::Label::new(Some("Selected Item Settings"));
+            right_title.add_css_class("title-4");
+            right_title.set_halign(gtk4::Align::Start);
+            right_header.append(&right_title);
 
-            // Upscale Settings Page
-            let upscale_box = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+            let right_subtitle =
+                gtk4::Label::new(Some("Changes apply only to the selected queue item."));
+            right_subtitle.add_css_class("dim-label");
+            right_subtitle.add_css_class("caption");
+            right_subtitle.set_halign(gtk4::Align::Start);
+            right_header.append(&right_subtitle);
 
-            let input_output_group = libadwaita::PreferencesGroup::new();
-            input_output_group.set_title("Input / Output");
+            right_col.append(&right_header);
+            right_col.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+
+            let no_selection_label =
+                gtk4::Label::new(Some("Select a queue item to configure it"));
+            no_selection_label.add_css_class("dim-label");
+            no_selection_label.set_margin_top(32);
+            no_selection_label.set_halign(gtk4::Align::Center);
+            right_col.append(&no_selection_label);
+
+            let right_scroll = gtk4::ScrolledWindow::new();
+            right_scroll.set_vexpand(true);
+            right_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+            right_scroll.set_visible(false);
+
+            let right_settings_box = gtk4::Box::new(gtk4::Orientation::Vertical, 16);
+            right_settings_box.set_margin_top(12);
+            right_settings_box.set_margin_bottom(12);
+            right_settings_box.set_margin_start(16);
+            right_settings_box.set_margin_end(16);
+
+            let upscale_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+            upscale_header.set_hexpand(true);
+
+            let upscale_icon = gtk4::Image::from_icon_name("applications-graphics-symbolic");
+            upscale_icon.add_css_class("accent");
+            upscale_header.append(&upscale_icon);
+
+            let upscale_label = gtk4::Label::new(Some("Upscale"));
+            upscale_label.add_css_class("heading");
+            upscale_label.set_halign(gtk4::Align::Start);
+            upscale_label.set_hexpand(true);
+            upscale_header.append(&upscale_label);
+
+            let upscale_toggle = gtk4::Switch::new();
+            upscale_toggle.set_valign(gtk4::Align::Center);
+            upscale_toggle.set_tooltip_text(Some("Enable AI upscaling for this item"));
+            upscale_header.append(&upscale_toggle);
+            right_settings_box.append(&upscale_header);
+
+            let upscale_settings_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            upscale_settings_box.set_visible(false);
+
+            let upscale_group = libadwaita::PreferencesGroup::new();
 
             let backend_row = libadwaita::ActionRow::new();
-            backend_row.set_title("Upscale backend");
+            backend_row.set_title("Backend");
             let backend_switcher = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             backend_switcher.add_css_class("linked");
             backend_switcher.set_valign(gtk4::Align::Center);
             let backend_onnx_btn = gtk4::ToggleButton::with_label("ONNX");
+            backend_onnx_btn.set_tooltip_text(Some(
+                "Run upscaling locally using ONNX models (no GPU server required)",
+            ));
             let backend_comfyui_btn = gtk4::ToggleButton::with_label("ComfyUI");
+            backend_comfyui_btn
+                .set_tooltip_text(Some("Run upscaling via a local ComfyUI server"));
             let backend_cli_btn = gtk4::ToggleButton::with_label("External CLI");
+            backend_cli_btn.set_tooltip_text(Some(
+                "Run upscaling via the external realesrgan-ncnn-vulkan CLI tool",
+            ));
             backend_switcher.append(&backend_onnx_btn);
             backend_switcher.append(&backend_comfyui_btn);
             backend_switcher.append(&backend_cli_btn);
             backend_row.add_suffix(&backend_switcher);
+            upscale_group.add(&backend_row);
+
+            let scale_row = libadwaita::ComboRow::new();
+            scale_row.set_title("Scale");
+            scale_row.set_subtitle("Uses AI to determine the best output size.");
+            scale_row.set_tooltip_text(Some(
+                "Output resolution multiplier. Smart scale uses AI to pick the best size.",
+            ));
+            let scale_model = gtk4::StringList::new(&["Smart scale", "2×", "3×", "4×"]);
+            scale_row.set_model(Some(&scale_model));
+            let scale_dropdown = scale_row.clone();
+
+            upscale_group.add(&scale_row);
 
             let onnx_model_row = libadwaita::ComboRow::new();
             onnx_model_row.set_title("Model");
+            onnx_model_row.set_tooltip_text(Some(
+                "ONNX model to use. Larger models are slower but may produce better results.",
+            ));
             let onnx_model_list = gtk4::StringList::new(&[
                 "Lightweight ×2 — 8 MB",
                 "Compressed ×4 — 55 MB",
@@ -356,105 +461,48 @@ mod imp {
             ]);
             onnx_model_row.set_model(Some(&onnx_model_list));
             let onnx_model_dropdown = onnx_model_row.clone();
-
-            let scale_row = libadwaita::ComboRow::new();
-            scale_row.set_title("Scale");
-            let scale_model = gtk4::StringList::new(&["Smart scale", "2×", "3×", "4×"]);
-            scale_row.set_model(Some(&scale_model));
-            let scale_dropdown = scale_row.clone();
-
-            let compress_check = libadwaita::SwitchRow::new();
-            compress_check.set_title("Compress final image");
-
-            let format_row = libadwaita::ComboRow::new();
-            format_row.set_title("Output format");
-            let format_model = gtk4::StringList::new(&["JXL", "WebP", "JPEG", "PNG"]);
-            format_row.set_model(Some(&format_model));
-            let format_dropdown = format_row.clone();
-
-            let quality_row = libadwaita::ActionRow::new();
-            quality_row.set_title("Output quality");
-            let quality_adj = gtk4::Adjustment::new(85.0, 1.0, 100.0, 1.0, 10.0, 0.0);
-            let quality_spin = gtk4::SpinButton::new(Some(&quality_adj), 1.0, 0);
-            quality_spin.set_valign(gtk4::Align::Center);
-            quality_row.add_suffix(&quality_spin);
-            quality_row.set_activatable_widget(Some(&quality_spin));
-
-            let keep_png_check = libadwaita::SwitchRow::new();
-            keep_png_check.set_title("Keep raw PNG sidecar");
-
-            let upscale_dest_row = libadwaita::ComboRow::new();
-            upscale_dest_row.set_title("Destination");
-            let upscale_dest_model =
-                gtk4::StringList::new(&["Default", "Same as source", "Custom folder"]);
-            upscale_dest_row.set_model(Some(&upscale_dest_model));
-            let upscale_dest_dropdown = upscale_dest_row.clone();
-
-            let upscale_custom_row = libadwaita::ActionRow::new();
-            upscale_custom_row.set_title("Custom folder");
-            let upscale_custom_label = gtk4::Label::new(Some("Use saved folder"));
-            upscale_custom_label.add_css_class("dim-label");
-            let upscale_choose_btn = gtk4::Button::with_label("Choose…");
-            upscale_custom_row.add_prefix(&upscale_custom_label);
-            upscale_custom_row.add_suffix(&upscale_choose_btn);
-            upscale_custom_row.set_visible(false);
-
-            input_output_group.add(&upscale_dest_row);
-            input_output_group.add(&upscale_custom_row);
-            input_output_group.add(&format_row);
-            input_output_group.add(&quality_row);
-
-            let upscale_group = libadwaita::PreferencesGroup::new();
-            upscale_group.set_title("Upscale");
-            upscale_group.add(&backend_row);
-            upscale_group.add(&scale_row);
             upscale_group.add(&onnx_model_row);
 
             let comfyui_workflow_row = libadwaita::ComboRow::new();
             comfyui_workflow_row.set_title("Workflow");
-            comfyui_workflow_row.set_model(Some(&gtk4::StringList::new(&["ESRGAN", "SeedVR2"])));
-            comfyui_workflow_row.set_visible(false); // shown only when ComfyUI backend active
+            comfyui_workflow_row
+                .set_tooltip_text(Some("ComfyUI workflow to use for upscaling"));
+            comfyui_workflow_row
+                .set_model(Some(&gtk4::StringList::new(&["ESRGAN", "SeedVR2"])));
+            comfyui_workflow_row.set_visible(false);
             upscale_group.add(&comfyui_workflow_row);
 
-            let advanced_group = libadwaita::PreferencesGroup::new();
-            advanced_group.set_title("Advanced");
-            advanced_group.add(&compress_check);
-            advanced_group.add(&keep_png_check);
+            upscale_settings_box.append(&upscale_group);
+            right_settings_box.append(&upscale_settings_box);
 
-            upscale_box.append(&input_output_group);
-            upscale_box.append(&upscale_group);
-            upscale_box.append(&advanced_group);
+            right_settings_box.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
 
-            let upscale_scrolled = gtk4::ScrolledWindow::new();
-            upscale_scrolled.set_vexpand(true);
-            upscale_scrolled.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
-            upscale_scrolled.set_child(Some(&upscale_box));
+            let export_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+            export_header.set_hexpand(true);
+            export_header.set_margin_top(8);
 
-            settings_stack.add_named(&upscale_scrolled, Some("upscale"));
+            let export_icon = gtk4::Image::from_icon_name("document-save-as-symbolic");
+            export_icon.add_css_class("success");
+            export_header.append(&export_icon);
 
-            // Export Settings Page
+            let export_label = gtk4::Label::new(Some("Convert"));
+            export_label.add_css_class("heading");
+            export_label.set_halign(gtk4::Align::Start);
+            export_label.set_hexpand(true);
+            export_header.append(&export_label);
+
+            let export_toggle = gtk4::Switch::new();
+            export_toggle.set_valign(gtk4::Align::Center);
+            export_toggle.set_tooltip_text(Some(
+                "Convert or compress the output to a different format",
+            ));
+            export_header.append(&export_toggle);
+            right_settings_box.append(&export_header);
+
+            let export_settings_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            export_settings_box.set_visible(false);
+
             let export_group = libadwaita::PreferencesGroup::new();
-
-            let export_format_row = libadwaita::ComboRow::new();
-            export_format_row.set_title("Output format");
-            let export_format_model = gtk4::StringList::new(&["JXL", "WebP", "PNG", "JPEG"]);
-            export_format_row.set_model(Some(&export_format_model));
-            let export_format_dropdown = export_format_row.clone();
-
-            let export_edge_row = libadwaita::ComboRow::new();
-            export_edge_row.set_title("Max Edge");
-            let export_edge_model =
-                gtk4::StringList::new(&["Original", "1080px", "2160px", "4096px"]);
-            export_edge_row.set_model(Some(&export_edge_model));
-            let export_edge_dropdown = export_edge_row.clone();
-
-            let export_quality_row = libadwaita::ActionRow::new();
-            export_quality_row.set_title("Output quality");
-            let export_quality_adj = gtk4::Adjustment::new(85.0, 1.0, 100.0, 1.0, 10.0, 0.0);
-            let export_quality_spin = gtk4::SpinButton::new(Some(&export_quality_adj), 1.0, 0);
-            export_quality_spin.set_valign(gtk4::Align::Center);
-            export_quality_row.add_suffix(&export_quality_spin);
-            export_quality_row.set_activatable_widget(Some(&export_quality_spin));
 
             let export_dest_row = libadwaita::ComboRow::new();
             export_dest_row.set_title("Destination");
@@ -462,47 +510,82 @@ mod imp {
                 gtk4::StringList::new(&["Default", "Same as source", "Custom folder"]);
             export_dest_row.set_model(Some(&export_dest_model));
             let export_dest_dropdown = export_dest_row.clone();
+            export_group.add(&export_dest_row);
 
             let export_custom_row = libadwaita::ActionRow::new();
             export_custom_row.set_title("Custom folder");
-            let export_custom_label = gtk4::Label::new(Some("Use saved folder"));
+            let export_custom_label = gtk4::Label::new(Some("Choose a folder"));
             export_custom_label.add_css_class("dim-label");
             let export_choose_btn = gtk4::Button::with_label("Choose…");
             export_custom_row.add_prefix(&export_custom_label);
             export_custom_row.add_suffix(&export_choose_btn);
             export_custom_row.set_visible(false);
-
-            export_group.add(&export_format_row);
-            export_group.add(&export_edge_row);
-            export_group.add(&export_quality_row);
-            export_group.add(&export_dest_row);
             export_group.add(&export_custom_row);
 
-            let export_scrolled = gtk4::ScrolledWindow::new();
-            export_scrolled.set_vexpand(true);
-            export_scrolled.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
-            export_scrolled.set_child(Some(&export_group));
+            let export_format_row = libadwaita::ComboRow::new();
+            export_format_row.set_title("Format");
+            export_format_row
+                .set_tooltip_text(Some("Output file format for converted images"));
+            let export_format_model = gtk4::StringList::new(&["JXL", "WebP", "PNG", "JPEG"]);
+            export_format_row.set_model(Some(&export_format_model));
+            let export_format_dropdown = export_format_row.clone();
+            export_group.add(&export_format_row);
 
-            settings_stack.add_named(&export_scrolled, Some("export"));
+            let export_edge_row = libadwaita::ComboRow::new();
+            export_edge_row.set_title("Max Edge");
+            export_edge_row
+                .set_tooltip_text(Some("Limit the longest edge of the output image"));
+            let export_edge_model =
+                gtk4::StringList::new(&["Original", "1080px", "2160px", "4096px"]);
+            export_edge_row.set_model(Some(&export_edge_model));
+            let export_edge_dropdown = export_edge_row.clone();
+            export_group.add(&export_edge_row);
 
-            let summary_group = libadwaita::PreferencesGroup::new();
-            summary_group.set_title("Summary");
-            summary_group.set_visible(false);
+            let export_quality_row = libadwaita::ActionRow::new();
+            export_quality_row.set_title("Quality");
+            export_quality_row
+                .set_subtitle("Handles format conversion and compression in one step.");
+            let export_quality_adj = gtk4::Adjustment::new(90.0, 1.0, 100.0, 1.0, 10.0, 0.0);
+            let export_quality_spin =
+                gtk4::SpinButton::new(Some(&export_quality_adj), 1.0, 0);
+            export_quality_spin.set_valign(gtk4::Align::Center);
+            export_quality_spin.set_tooltip_text(Some(
+                "Compression quality (1–100). Higher values preserve more detail.",
+            ));
+            export_quality_row.add_suffix(&export_quality_spin);
+            export_quality_row.set_activatable_widget(Some(&export_quality_spin));
+            export_group.add(&export_quality_row);
 
-            let summary_source_row = libadwaita::ActionRow::new();
-            summary_source_row.set_title("Source");
-            summary_group.add(&summary_source_row);
+            export_settings_box.append(&export_group);
+            right_settings_box.append(&export_settings_box);
 
-            let summary_output_row = libadwaita::ActionRow::new();
-            summary_output_row.set_title("Output");
-            summary_group.add(&summary_output_row);
+            right_settings_box.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
 
-            right_col.append(&op_switcher);
+            let summary_header = gtk4::Label::new(Some("This item will perform:"));
+            summary_header.add_css_class("heading");
+            summary_header.set_halign(gtk4::Align::Start);
+            summary_header.set_margin_top(4);
+            right_settings_box.append(&summary_header);
+
+            let summary_action_list = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+            right_settings_box.append(&summary_action_list);
+
+            let summary_estimated_label = gtk4::Label::new(None);
+            summary_estimated_label.add_css_class("dim-label");
+            summary_estimated_label.add_css_class("caption");
+            summary_estimated_label.set_halign(gtk4::Align::Start);
+            right_settings_box.append(&summary_estimated_label);
+
+            right_scroll.set_child(Some(&right_settings_box));
+            right_col.append(&right_scroll);
+
             right_col.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
-            right_col.append(&settings_stack);
-
             let queue_defaults_group = libadwaita::PreferencesGroup::new();
             queue_defaults_group.set_title("Queue & History");
+            queue_defaults_group.set_margin_top(12);
+            queue_defaults_group.set_margin_bottom(12);
+            queue_defaults_group.set_margin_start(12);
+            queue_defaults_group.set_margin_end(12);
             let history_cap_row = libadwaita::ActionRow::new();
             history_cap_row.set_title("History cap");
             history_cap_row.set_subtitle("Maximum completed and failed tasks to keep");
@@ -513,66 +596,17 @@ mod imp {
             queue_defaults_group.add(&history_cap_row);
             right_col.append(&queue_defaults_group);
 
-            let add_step_btn = gtk4::Button::with_label("Add Step");
-            add_step_btn.set_margin_top(6);
-            add_step_btn.set_margin_bottom(6);
-            add_step_btn.set_margin_start(12);
-            add_step_btn.set_margin_end(12);
-            add_step_btn.set_visible(false);
-            add_step_btn.add_css_class("suggested-action");
-            right_col.append(&add_step_btn);
-
-            {
-                let widget_c = widget.clone();
-                add_step_btn.connect_clicked(move |_| {
-                    widget_c.on_add_step_clicked();
-                });
-            }
-
-            *self.add_step_btn.borrow_mut() = Some(add_step_btn);
-
-            right_col.append(&summary_group);
-
             main_box.append(&left_col);
             main_box.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
             main_box.append(&right_col);
 
-            // Wire operation switcher to stack
-            {
-                let settings_stack_c = settings_stack.clone();
-                let export_btn = op_export_btn.clone();
-                op_upscale_btn.connect_toggled(move |btn| {
-                    if btn.is_active() {
-                        if export_btn.is_active() {
-                            export_btn.set_active(false);
-                        }
-                        settings_stack_c.set_visible_child_name("upscale");
-                    } else if !export_btn.is_active() {
-                        btn.set_active(true);
-                    }
-                });
-            }
-            {
-                let settings_stack_c = settings_stack.clone();
-                let upscale_btn = op_upscale_btn.clone();
-                op_export_btn.connect_toggled(move |btn| {
-                    if btn.is_active() {
-                        if upscale_btn.is_active() {
-                            upscale_btn.set_active(false);
-                        }
-                        settings_stack_c.set_visible_child_name("export");
-                    } else if !upscale_btn.is_active() {
-                        btn.set_active(true);
-                    }
-                });
-            }
-
-            // Wire backend switcher and dependent row visibility
+            // Wire backend switcher
             {
                 let comfy_btn = backend_comfyui_btn.clone();
                 let cli_btn = backend_cli_btn.clone();
                 let onnx_row = onnx_model_row.clone();
                 let comfyui_wf_row = comfyui_workflow_row.clone();
+                let widget_weak = widget.downgrade();
                 backend_onnx_btn.connect_toggled(move |btn| {
                     if btn.is_active() {
                         if comfy_btn.is_active() {
@@ -588,6 +622,9 @@ mod imp {
                     } else {
                         onnx_row.set_visible(false);
                     }
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.on_pending_config_changed();
+                    }
                 });
             }
             {
@@ -595,6 +632,7 @@ mod imp {
                 let cli_btn = backend_cli_btn.clone();
                 let onnx_row = onnx_model_row.clone();
                 let comfyui_wf_row = comfyui_workflow_row.clone();
+                let widget_weak = widget.downgrade();
                 backend_comfyui_btn.connect_toggled(move |btn| {
                     if btn.is_active() {
                         if onnx_btn.is_active() {
@@ -610,6 +648,9 @@ mod imp {
                     } else {
                         comfyui_wf_row.set_visible(false);
                     }
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.on_pending_config_changed();
+                    }
                 });
             }
             {
@@ -617,6 +658,7 @@ mod imp {
                 let comfy_btn = backend_comfyui_btn.clone();
                 let onnx_row = onnx_model_row.clone();
                 let comfyui_wf_row = comfyui_workflow_row.clone();
+                let widget_weak = widget.downgrade();
                 backend_cli_btn.connect_toggled(move |btn| {
                     if btn.is_active() {
                         if onnx_btn.is_active() {
@@ -630,30 +672,36 @@ mod imp {
                     } else if !onnx_btn.is_active() && !comfy_btn.is_active() {
                         btn.set_active(true);
                     }
-                });
-            }
-
-            // Format/quality only shown when compress is enabled; hide by default
-            format_row.set_visible(false);
-            quality_row.set_visible(false);
-
-            // Wire compression row to dependent options visibility
-            {
-                let format_row_c = format_row.clone();
-                let quality_row_c = quality_row.clone();
-                compress_check.connect_active_notify(move |row| {
-                    let visible = row.is_active();
-                    format_row_c.set_visible(visible);
-                    quality_row_c.set_visible(visible);
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.on_pending_config_changed();
+                    }
                 });
             }
 
             {
-                let custom_row = upscale_custom_row.clone();
-                upscale_dest_dropdown.connect_selected_item_notify(move |row| {
-                    custom_row.set_visible(row.selected() == 2);
+                let settings_box = upscale_settings_box.clone();
+                let widget_weak = widget.downgrade();
+                upscale_toggle.connect_state_set(move |_sw, active| {
+                    settings_box.set_visible(active);
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.on_pending_config_changed();
+                    }
+                    glib::Propagation::Proceed
                 });
             }
+
+            {
+                let settings_box = export_settings_box.clone();
+                let widget_weak = widget.downgrade();
+                export_toggle.connect_state_set(move |_sw, active| {
+                    settings_box.set_visible(active);
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.on_pending_config_changed();
+                    }
+                    glib::Propagation::Proceed
+                });
+            }
+
             {
                 let custom_row = export_custom_row.clone();
                 export_dest_dropdown.connect_selected_item_notify(move |row| {
@@ -666,6 +714,7 @@ mod imp {
                 let widget_weak = widget.downgrade();
                 start_btn.connect_clicked(move |_| {
                     if let Some(w) = widget_weak.upgrade() {
+                        w.commit_pending_configs_to_db();
                         w.imp().runner_active.set(true);
                         w.imp().paused.set(false);
                         w.try_start_runner();
@@ -698,6 +747,29 @@ mod imp {
                                 let _ = idx.delete_pipeline(pipeline.id);
                             }
                         }
+                    }
+                    w.refresh();
+                });
+            }
+            {
+                let widget_weak = widget.downgrade();
+                remove_btn.connect_clicked(move |_| {
+                    let Some(w) = widget_weak.upgrade() else {
+                        return;
+                    };
+                    let checked: Vec<i64> =
+                        w.imp().queue_checked_ids.borrow().iter().copied().collect();
+                    if let Some(state_rc) = w.imp().state.borrow().as_ref() {
+                        if let Some(idx) = state_rc.borrow().library_index.as_ref() {
+                            for pid in &checked {
+                                let _ = idx.delete_pipeline(*pid);
+                                w.imp().pending_configs.borrow_mut().remove(pid);
+                            }
+                        }
+                    }
+                    w.imp().queue_checked_ids.borrow_mut().clear();
+                    if let Some(btn) = w.imp().remove_btn.borrow().as_ref() {
+                        btn.set_sensitive(false);
                     }
                     w.refresh();
                 });
@@ -748,21 +820,65 @@ mod imp {
 
             {
                 let widget_weak = widget.downgrade();
-                upscale_choose_btn.connect_clicked(move |_| {
+                export_choose_btn.connect_clicked(move |_| {
                     let Some(w) = widget_weak.upgrade() else {
                         return;
                     };
-                    w.choose_custom_destination(true);
+                    w.choose_custom_destination();
                 });
             }
 
             {
                 let widget_weak = widget.downgrade();
-                export_choose_btn.connect_clicked(move |_| {
-                    let Some(w) = widget_weak.upgrade() else {
-                        return;
-                    };
-                    w.choose_custom_destination(false);
+                scale_dropdown.connect_selected_item_notify(move |dd| {
+                    dd.set_subtitle(if dd.selected() == 0 {
+                        "Uses AI to determine the best output size."
+                    } else {
+                        ""
+                    });
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.on_pending_config_changed();
+                    }
+                });
+            }
+            {
+                let widget_weak = widget.downgrade();
+                onnx_model_dropdown.connect_selected_item_notify(move |_| {
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.on_pending_config_changed();
+                    }
+                });
+            }
+            {
+                let widget_weak = widget.downgrade();
+                comfyui_workflow_row.connect_selected_item_notify(move |_| {
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.on_pending_config_changed();
+                    }
+                });
+            }
+            {
+                let widget_weak = widget.downgrade();
+                export_format_dropdown.connect_selected_item_notify(move |_| {
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.on_pending_config_changed();
+                    }
+                });
+            }
+            {
+                let widget_weak = widget.downgrade();
+                export_quality_spin.connect_value_changed(move |_| {
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.on_pending_config_changed();
+                    }
+                });
+            }
+            {
+                let widget_weak = widget.downgrade();
+                export_dest_dropdown.connect_selected_item_notify(move |_| {
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.on_pending_config_changed();
+                    }
                 });
             }
 
@@ -798,22 +914,19 @@ mod imp {
 
             *self.queue_list.borrow_mut() = Some(queue_list);
             *self.queue_empty_label.borrow_mut() = Some(queue_empty_label);
-            *self.settings_stack.borrow_mut() = Some(settings_stack);
-            *self.summary_group.borrow_mut() = Some(summary_group);
-            *self.summary_source_row.borrow_mut() = Some(summary_source_row);
-            *self.summary_output_row.borrow_mut() = Some(summary_output_row);
             *self.start_btn.borrow_mut() = Some(start_btn);
             *self.pause_btn.borrow_mut() = Some(pause_btn);
             *self.clear_btn.borrow_mut() = Some(clear_btn);
             *self.add_images_btn.borrow_mut() = Some(add_images_btn);
+            *self.remove_btn.borrow_mut() = Some(remove_btn);
             *self.queue_count_label.borrow_mut() = Some(queue_count_label);
             *self.background_status_label.borrow_mut() = Some(background_status_label);
             *self.background_empty_label.borrow_mut() = Some(background_empty_label);
             *self.background_list.borrow_mut() = Some(background_list);
-            *self.op_upscale_btn.borrow_mut() = Some(op_upscale_btn);
-            *self.op_export_btn.borrow_mut() = Some(op_export_btn);
             *self.crash_banner.borrow_mut() = Some(crash_banner);
 
+            *self.upscale_toggle.borrow_mut() = Some(upscale_toggle);
+            *self.upscale_settings_box.borrow_mut() = Some(upscale_settings_box);
             *self.backend_onnx_btn.borrow_mut() = Some(backend_onnx_btn);
             *self.backend_comfyui_btn.borrow_mut() = Some(backend_comfyui_btn);
             *self.backend_cli_btn.borrow_mut() = Some(backend_cli_btn);
@@ -821,14 +934,9 @@ mod imp {
             *self.onnx_model_row.borrow_mut() = Some(onnx_model_row);
             *self.comfyui_workflow_row.borrow_mut() = Some(comfyui_workflow_row);
             *self.scale_dropdown.borrow_mut() = Some(scale_dropdown);
-            *self.compress_check.borrow_mut() = Some(compress_check);
-            *self.keep_png_check.borrow_mut() = Some(keep_png_check);
-            *self.format_dropdown.borrow_mut() = Some(format_dropdown);
-            *self.quality_spin.borrow_mut() = Some(quality_spin);
-            *self.upscale_dest_dropdown.borrow_mut() = Some(upscale_dest_dropdown);
-            *self.upscale_custom_row.borrow_mut() = Some(upscale_custom_row);
-            *self.upscale_custom_label.borrow_mut() = Some(upscale_custom_label);
 
+            *self.export_toggle.borrow_mut() = Some(export_toggle);
+            *self.export_settings_box.borrow_mut() = Some(export_settings_box);
             *self.export_format_dropdown.borrow_mut() = Some(export_format_dropdown);
             *self.export_edge_dropdown.borrow_mut() = Some(export_edge_dropdown);
             *self.export_quality_spin.borrow_mut() = Some(export_quality_spin);
@@ -836,6 +944,12 @@ mod imp {
             *self.export_custom_row.borrow_mut() = Some(export_custom_row);
             *self.export_custom_label.borrow_mut() = Some(export_custom_label);
             *self.history_cap_spin.borrow_mut() = Some(history_cap_spin);
+
+            *self.right_scroll.borrow_mut() = Some(right_scroll);
+            *self.right_settings_box.borrow_mut() = Some(right_settings_box);
+            *self.no_selection_label.borrow_mut() = Some(no_selection_label);
+            *self.summary_action_list.borrow_mut() = Some(summary_action_list);
+            *self.summary_estimated_label.borrow_mut() = Some(summary_estimated_label);
 
             *self.history_list.borrow_mut() = Some(history_list);
             *self.clear_history_btn.borrow_mut() = Some(clear_history_btn);
@@ -873,15 +987,6 @@ impl TasksPage {
 
     fn update_custom_destination_labels(&self) {
         let imp = self.imp();
-        if let Some(label) = imp.upscale_custom_label.borrow().as_ref() {
-            label.set_text(
-                &imp.upscale_custom_path
-                    .borrow()
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "Choose a folder".to_string()),
-            );
-        }
         if let Some(label) = imp.export_custom_label.borrow().as_ref() {
             label.set_text(
                 &imp.export_custom_path
@@ -893,14 +998,10 @@ impl TasksPage {
         }
     }
 
-    fn choose_custom_destination(&self, is_upscale: bool) {
+    fn choose_custom_destination(&self) {
         let parent_window = self.imp().parent_window.borrow().upgrade();
         let dialog = gtk4::FileDialog::new();
-        dialog.set_title(if is_upscale {
-            "Choose Upscale Output Folder"
-        } else {
-            "Choose Export Output Folder"
-        });
+        dialog.set_title("Choose Export Output Folder");
 
         let widget_weak = self.downgrade();
         dialog.select_folder(
@@ -916,86 +1017,87 @@ impl TasksPage {
                 let Some(path) = file.path() else {
                     return;
                 };
-                if is_upscale {
-                    *widget.imp().upscale_custom_path.borrow_mut() = Some(path.clone());
-                } else {
-                    *widget.imp().export_custom_path.borrow_mut() = Some(path.clone());
-                }
+                *widget.imp().export_custom_path.borrow_mut() = Some(path.clone());
                 if let Some(state_rc) = widget.imp().state.borrow().as_ref() {
-                    let mut state = state_rc.borrow_mut();
-                    if is_upscale {
-                        state.settings.set_upscaled_output_dir(Some(path));
-                    } else {
-                        state.settings.set_export_output_dir(Some(path));
-                    }
+                    state_rc.borrow_mut().settings.set_export_output_dir(Some(path));
                 }
                 widget.update_custom_destination_labels();
+                widget.on_pending_config_changed();
             },
         );
     }
 
     fn clear_summary(&self) {
         let imp = self.imp();
-        if let Some(group) = imp.summary_group.borrow().as_ref() {
-            group.set_visible(false);
+        if let Some(box_) = imp.summary_action_list.borrow().as_ref() {
+            while let Some(child) = box_.first_child() {
+                child.unparent();
+            }
         }
-        if let Some(row) = imp.summary_source_row.borrow().as_ref() {
-            row.set_subtitle("");
-            row.set_tooltip_text(None);
-        }
-        if let Some(row) = imp.summary_output_row.borrow().as_ref() {
-            row.set_subtitle("");
-            row.set_tooltip_text(None);
-        }
-        if let Some(btn) = imp.add_step_btn.borrow().as_ref() {
-            btn.set_visible(false);
+        if let Some(lbl) = imp.summary_estimated_label.borrow().as_ref() {
+            lbl.set_text("");
         }
     }
 
-    fn update_summary(&self, source: &Path, output: Option<&Path>) {
+    fn update_summary_for_config(&self, config: &PendingConfig) {
         let imp = self.imp();
-        let source_label = source
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| source.display().to_string());
-        if let Some(row) = imp.summary_source_row.borrow().as_ref() {
-            row.set_subtitle(&source_label);
-            row.set_tooltip_text(Some(&source.display().to_string()));
+        let Some(action_list) = imp.summary_action_list.borrow().clone() else {
+            return;
+        };
+        while let Some(child) = action_list.first_child() {
+            child.unparent();
         }
-        if let Some(row) = imp.summary_output_row.borrow().as_ref() {
-            match output {
-                Some(path) => {
-                    let text = path.display().to_string();
-                    row.set_subtitle(&text);
-                    row.set_tooltip_text(Some(&text));
-                }
-                None => {
-                    row.set_subtitle("Not yet run");
-                    row.set_tooltip_text(None);
-                }
-            }
+        if !config.upscale_on && !config.export_on {
+            let lbl = gtk4::Label::new(Some("No actions configured"));
+            lbl.add_css_class("dim-label");
+            lbl.add_css_class("caption");
+            lbl.set_halign(gtk4::Align::Start);
+            action_list.append(&lbl);
         }
-        if let Some(group) = imp.summary_group.borrow().as_ref() {
-            group.set_visible(true);
+        if config.upscale_on {
+            let scale_str = match config.upscale.scale {
+                2 => "2×",
+                4 => "4×",
+                _ => "Smart scale",
+            };
+            let backend_label = match config.upscale.backend.as_str() {
+                "comfyui" => "ComfyUI",
+                "cli" => "External CLI",
+                _ => "ONNX",
+            };
+            let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            let dot = gtk4::Label::new(Some("●"));
+            dot.add_css_class("accent");
+            dot.add_css_class("caption");
+            row.append(&dot);
+            let text = gtk4::Label::new(Some(&format!(
+                "Upscale using {} · {}",
+                backend_label, scale_str
+            )));
+            text.add_css_class("caption");
+            text.set_halign(gtk4::Align::Start);
+            row.append(&text);
+            action_list.append(&row);
         }
-    }
-
-    fn find_pipeline_by_id(idx: &LibraryIndex, pipeline_id: i64) -> Option<Pipeline> {
-        for status in [
-            PipelineStatus::InProgress,
-            PipelineStatus::Queued,
-            PipelineStatus::Completed,
-            PipelineStatus::Failed,
-        ] {
-            if let Some(pipeline) = idx
-                .pipelines_by_status(status)
-                .ok()
-                .and_then(|pipelines| pipelines.into_iter().find(|p| p.id == pipeline_id))
-            {
-                return Some(pipeline);
-            }
+        if config.export_on {
+            let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            let dot = gtk4::Label::new(Some("●"));
+            dot.add_css_class("success");
+            dot.add_css_class("caption");
+            row.append(&dot);
+            let format_upper = config.export.format.to_uppercase();
+            let text = gtk4::Label::new(Some(&format!(
+                "Convert / Export as {} · Q{}",
+                format_upper, config.export.quality
+            )));
+            text.add_css_class("caption");
+            text.set_halign(gtk4::Align::Start);
+            row.append(&text);
+            action_list.append(&row);
         }
-        None
+        if let Some(lbl) = imp.summary_estimated_label.borrow().as_ref() {
+            lbl.set_text("");
+        }
     }
 
     fn first_step(steps: &[PipelineStep]) -> Option<&PipelineStep> {
@@ -1029,28 +1131,6 @@ impl TasksPage {
             .max_by_key(|step| step.step_order)
     }
 
-    fn show_summary_for_pipeline(&self, pipeline_id: i64) {
-        let Some(state_rc) = self.imp().state.borrow().clone() else {
-            self.clear_summary();
-            return;
-        };
-        let state = state_rc.borrow();
-        let Some(idx) = state.library_index.as_ref() else {
-            self.clear_summary();
-            return;
-        };
-        let Some(pipeline) = Self::find_pipeline_by_id(idx, pipeline_id) else {
-            self.clear_summary();
-            return;
-        };
-        let steps = idx.steps_for_pipeline(pipeline_id).unwrap_or_default();
-        let step = Self::latest_output_step(&steps).or_else(|| Self::latest_completed_step(&steps));
-        self.update_summary(
-            &pipeline.source_path,
-            step.and_then(|step| step.output_path.as_deref()),
-        );
-    }
-
     pub fn set_interrupted_count(&self, n: usize) {
         if n == 0 {
             return;
@@ -1064,26 +1144,6 @@ impl TasksPage {
             };
             banner.set_title(&msg);
             banner.set_revealed(true);
-        }
-    }
-
-    fn operation_is_export(&self) -> bool {
-        self.imp()
-            .op_export_btn
-            .borrow()
-            .as_ref()
-            .map(|btn| btn.is_active())
-            .unwrap_or(false)
-    }
-
-    fn set_operation(&self, operation: &str) {
-        let imp = self.imp();
-        let is_export = operation == "export";
-        if let Some(btn) = imp.op_export_btn.borrow().as_ref() {
-            btn.set_active(is_export);
-        }
-        if let Some(btn) = imp.op_upscale_btn.borrow().as_ref() {
-            btn.set_active(!is_export);
         }
     }
 
@@ -1130,6 +1190,284 @@ impl TasksPage {
     }
 
     fn load_settings_for_pipeline(&self, pipeline_id: i64) {
+        *self.imp().selected_pipeline_id.borrow_mut() = Some(pipeline_id);
+        self.imp().selected_is_history.set(false);
+        if let Some(scroll) = self.imp().right_scroll.borrow().as_ref() {
+            scroll.set_visible(true);
+        }
+        if let Some(label) = self.imp().no_selection_label.borrow().as_ref() {
+            label.set_visible(false);
+        }
+
+        let config = self.get_or_init_pending_config(pipeline_id);
+        self.populate_panel_from_config(&config);
+        self.update_summary_for_config(&config);
+    }
+
+    fn get_or_init_pending_config(&self, pipeline_id: i64) -> PendingConfig {
+        if let Some(c) = self.imp().pending_configs.borrow().get(&pipeline_id).cloned() {
+            return c;
+        }
+        let config = self.build_pending_config_from_db(pipeline_id);
+        self.imp()
+            .pending_configs
+            .borrow_mut()
+            .insert(pipeline_id, config.clone());
+        config
+    }
+
+    fn build_pending_config_from_db(&self, pipeline_id: i64) -> PendingConfig {
+        let Some(state_rc) = self.imp().state.borrow().clone() else {
+            return PendingConfig::default();
+        };
+        let state = state_rc.borrow();
+        let Some(idx) = state.library_index.as_ref() else {
+            return PendingConfig::default();
+        };
+        let steps = idx.steps_for_pipeline(pipeline_id).unwrap_or_default();
+        let mut config = PendingConfig::default();
+        config.upscale_on = false;
+        config.export_on = false;
+        for step in &steps {
+            match step.step_type {
+                StepType::Upscale => {
+                    if let Ok(s) = serde_json::from_str::<UpscaleStepSettings>(&step.settings_json)
+                    {
+                        config.upscale_on = true;
+                        config.upscale = s;
+                    }
+                }
+                StepType::Export => {
+                    if let Ok(s) = serde_json::from_str::<ExportStepSettings>(&step.settings_json)
+                    {
+                        config.export_on = true;
+                        config.export = s;
+                    }
+                }
+            }
+        }
+        if steps.is_empty() {
+            config.upscale_on = true;
+        }
+        config
+    }
+
+    fn populate_panel_from_config(&self, config: &PendingConfig) {
+        let imp = self.imp();
+
+        if let Some(sw) = imp.upscale_toggle.borrow().as_ref() {
+            sw.set_active(config.upscale_on);
+        }
+        if let Some(box_) = imp.upscale_settings_box.borrow().as_ref() {
+            box_.set_visible(config.upscale_on);
+        }
+        self.set_backend(&config.upscale.backend);
+        if let Some(d) = imp.scale_dropdown.borrow().as_ref() {
+            let selected = match config.upscale.scale {
+                2 => 1,
+                3 => 2,
+                4 => 3,
+                _ => 0,
+            };
+            d.set_selected(selected);
+            d.set_subtitle(if selected == 0 {
+                "Uses AI to determine the best output size."
+            } else {
+                ""
+            });
+        }
+        if let Some(d) = imp.onnx_model_dropdown.borrow().as_ref() {
+            d.set_selected(match config.upscale.onnx_model.as_deref() {
+                Some("swin2sr-compressed-x4") => 1,
+                Some("swin2sr-real-x4") => 2,
+                _ => 0,
+            });
+        }
+        if let Some(row) = imp.comfyui_workflow_row.borrow().as_ref() {
+            row.set_selected(match config.upscale.comfyui_workflow.as_deref() {
+                Some("seedvr2") => 1,
+                _ => 0,
+            });
+        }
+
+        if let Some(sw) = imp.export_toggle.borrow().as_ref() {
+            sw.set_active(config.export_on);
+        }
+        if let Some(box_) = imp.export_settings_box.borrow().as_ref() {
+            box_.set_visible(config.export_on);
+        }
+        if let Some(d) = imp.export_format_dropdown.borrow().as_ref() {
+            d.set_selected(match config.export.format.as_str() {
+                "webp" => 1,
+                "png" => 2,
+                "jpeg" => 3,
+                _ => 0,
+            });
+        }
+        if let Some(d) = imp.export_edge_dropdown.borrow().as_ref() {
+            d.set_selected(match config.export.max_edge {
+                Some(1080) => 1,
+                Some(2160) => 2,
+                Some(4096) => 3,
+                _ => 0,
+            });
+        }
+        if let Some(s) = imp.export_quality_spin.borrow().as_ref() {
+            s.set_value(config.export.quality as f64);
+        }
+        if let Some(d) = imp.export_dest_dropdown.borrow().as_ref() {
+            d.set_selected(match config.export.destination.as_str() {
+                "source" => 1,
+                "custom" => 2,
+                _ => 0,
+            });
+        }
+        *imp.export_custom_path.borrow_mut() = config.export.custom_path.clone();
+        self.update_custom_destination_labels();
+    }
+
+    fn on_pending_config_changed(&self) {
+        let Some(pid) = *self.imp().selected_pipeline_id.borrow() else {
+            return;
+        };
+        if self.imp().selected_is_history.get() {
+            return;
+        }
+        let config = self.read_config_from_widgets();
+        self.imp()
+            .pending_configs
+            .borrow_mut()
+            .insert(pid, config.clone());
+        self.update_summary_for_config(&config);
+        self.refresh_chips_for_pipeline(pid);
+    }
+
+    fn read_config_from_widgets(&self) -> PendingConfig {
+        let imp = self.imp();
+        let upscale_on = imp
+            .upscale_toggle
+            .borrow()
+            .as_ref()
+            .map(|s| s.is_active())
+            .unwrap_or(false);
+        let export_on = imp
+            .export_toggle
+            .borrow()
+            .as_ref()
+            .map(|s| s.is_active())
+            .unwrap_or(false);
+
+        let backend = self.selected_backend().to_string();
+        let onnx_model = if backend == "onnx" {
+            imp.onnx_model_dropdown
+                .borrow()
+                .as_ref()
+                .map(|d| match d.selected() {
+                    1 => "swin2sr-compressed-x4",
+                    2 => "swin2sr-real-x4",
+                    _ => "swin2sr-lightweight-x2",
+                })
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+        let comfyui_workflow = if backend == "comfyui" {
+            imp.comfyui_workflow_row
+                .borrow()
+                .as_ref()
+                .map(|r| match r.selected() {
+                    1 => "seedvr2",
+                    _ => "esrgan",
+                })
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+        let scale = imp
+            .scale_dropdown
+            .borrow()
+            .as_ref()
+            .map(|d| match d.selected() {
+                1 => 2u32,
+                2 => 3,
+                3 => 4,
+                _ => 0,
+            })
+            .unwrap_or(0);
+        let model = imp
+            .state
+            .borrow()
+            .as_ref()
+            .map(|s| s.borrow().settings.upscaler_default_model.clone())
+            .unwrap_or_default();
+
+        let export_format = imp
+            .export_format_dropdown
+            .borrow()
+            .as_ref()
+            .map(|d| match d.selected() {
+                1 => "webp",
+                2 => "png",
+                3 => "jpeg",
+                _ => "jxl",
+            })
+            .unwrap_or("jxl")
+            .to_string();
+        let max_edge = imp
+            .export_edge_dropdown
+            .borrow()
+            .as_ref()
+            .and_then(|d| match d.selected() {
+                1 => Some(1080u32),
+                2 => Some(2160),
+                3 => Some(4096),
+                _ => None,
+            });
+        let export_quality = imp
+            .export_quality_spin
+            .borrow()
+            .as_ref()
+            .map(|s| s.value() as u8)
+            .unwrap_or(90);
+        let export_dest = imp
+            .export_dest_dropdown
+            .borrow()
+            .as_ref()
+            .map(|d| match d.selected() {
+                1 => "source",
+                2 => "custom",
+                _ => "default",
+            })
+            .unwrap_or("default")
+            .to_string();
+
+        PendingConfig {
+            upscale_on,
+            upscale: UpscaleStepSettings {
+                backend,
+                model,
+                onnx_model,
+                scale,
+                compress: false,
+                format: "png".to_string(),
+                quality: 85,
+                keep_png: false,
+                destination: "default".to_string(),
+                custom_path: None,
+                comfyui_workflow,
+            },
+            export_on,
+            export: ExportStepSettings {
+                format: export_format,
+                max_edge,
+                quality: export_quality,
+                destination: export_dest,
+                custom_path: imp.export_custom_path.borrow().clone(),
+            },
+        }
+    }
+
+    fn commit_pending_configs_to_db(&self) {
         let Some(state_rc) = self.imp().state.borrow().clone() else {
             return;
         };
@@ -1137,174 +1475,71 @@ impl TasksPage {
         let Some(idx) = state.library_index.as_ref() else {
             return;
         };
-        let Some(pipeline) = Self::find_pipeline_by_id(idx, pipeline_id) else {
-            return;
-        };
-        let steps = idx.steps_for_pipeline(pipeline_id).unwrap_or_default();
-        let Some(step) = Self::first_step(&steps) else {
-            return;
-        };
-
-        match step.step_type {
-            StepType::Upscale => {
-                let Ok(settings) = serde_json::from_str::<UpscaleStepSettings>(&step.settings_json)
-                else {
-                    return;
-                };
-                self.set_operation("upscale");
-                self.set_backend(&settings.backend);
-                if let Some(dropdown) = self.imp().scale_dropdown.borrow().as_ref() {
-                    let scale_idx = match settings.scale {
-                        2 => 1,
-                        3 => 2,
-                        4 => 3,
-                        _ => 0,
-                    };
-                    dropdown.set_selected(scale_idx);
-                }
-                if let Some(switch_row) = self.imp().compress_check.borrow().as_ref() {
-                    switch_row.set_active(settings.compress);
-                }
-                if let Some(dropdown) = self.imp().format_dropdown.borrow().as_ref() {
-                    let idx = match settings.format.as_str() {
-                        "webp" => 1,
-                        "jpeg" => 2,
-                        "png" => 3,
-                        _ => 0,
-                    };
-                    dropdown.set_selected(idx);
-                }
-                if let Some(spin) = self.imp().quality_spin.borrow().as_ref() {
-                    spin.set_value(settings.quality as f64);
-                }
-                if let Some(switch_row) = self.imp().keep_png_check.borrow().as_ref() {
-                    switch_row.set_active(settings.keep_png);
-                }
-                if let Some(dropdown) = self.imp().upscale_dest_dropdown.borrow().as_ref() {
-                    dropdown.set_selected(match settings.destination.as_str() {
-                        "source" => 1,
-                        "custom" => 2,
-                        _ => 0,
-                    });
-                }
-                *self.imp().upscale_custom_path.borrow_mut() = settings.custom_path.clone();
-                if let Some(dropdown) = self.imp().onnx_model_dropdown.borrow().as_ref() {
-                    let idx = match settings.onnx_model.as_deref() {
-                        Some("swin2sr-compressed-x4") => 1,
-                        Some("swin2sr-real-x4") => 2,
-                        _ => 0,
-                    };
-                    dropdown.set_selected(idx);
-                }
-                if let Some(row) = self.imp().comfyui_workflow_row.borrow().as_ref() {
-                    let idx = match settings.comfyui_workflow.as_deref() {
-                        Some("seedvr2") => 1,
-                        _ => 0,
-                    };
-                    row.set_selected(idx);
-                }
+        let queued = idx.pipelines_by_status(PipelineStatus::Queued).unwrap_or_default();
+        for pipeline in queued {
+            let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
+            if !steps.is_empty() {
+                continue;
             }
-            StepType::Export => {
-                let Ok(settings) = serde_json::from_str::<ExportStepSettings>(&step.settings_json)
-                else {
-                    return;
-                };
-                self.set_operation("export");
-                if let Some(dropdown) = self.imp().export_format_dropdown.borrow().as_ref() {
-                    let idx = match settings.format.as_str() {
-                        "webp" => 1,
-                        "png" => 2,
-                        "jpeg" => 3,
-                        _ => 0,
-                    };
-                    dropdown.set_selected(idx);
-                }
-                if let Some(dropdown) = self.imp().export_edge_dropdown.borrow().as_ref() {
-                    let idx = match settings.max_edge {
-                        Some(1080) => 1,
-                        Some(2160) => 2,
-                        Some(4096) => 3,
-                        _ => 0,
-                    };
-                    dropdown.set_selected(idx);
-                }
-                if let Some(spin) = self.imp().export_quality_spin.borrow().as_ref() {
-                    spin.set_value(settings.quality as f64);
-                }
-                if let Some(dropdown) = self.imp().export_dest_dropdown.borrow().as_ref() {
-                    dropdown.set_selected(match settings.destination.as_str() {
-                        "source" => 1,
-                        "custom" => 2,
-                        _ => 0,
-                    });
-                }
-                *self.imp().export_custom_path.borrow_mut() = settings.custom_path.clone();
+            let config = self
+                .imp()
+                .pending_configs
+                .borrow()
+                .get(&pipeline.id)
+                .cloned()
+                .unwrap_or_default();
+            if config.upscale_on {
+                let json = serde_json::to_string(&config.upscale).unwrap_or_default();
+                let _ = idx.append_pipeline_step(pipeline.id, StepType::Upscale, &json);
+            }
+            if config.export_on {
+                let json = serde_json::to_string(&config.export).unwrap_or_default();
+                let _ = idx.append_pipeline_step(pipeline.id, StepType::Export, &json);
             }
         }
+    }
 
-        *self.imp().selected_pipeline_id.borrow_mut() = Some(pipeline_id);
-        self.imp().selected_is_history.set(false);
-        if let Some(btn) = self.imp().add_step_btn.borrow().as_ref() {
-            btn.set_visible(true);
-        }
-        self.update_custom_destination_labels();
-        let latest_output = Self::latest_output_step(&steps)
-            .or_else(|| Self::latest_completed_step(&steps))
-            .and_then(|step| step.output_path.as_deref());
-        self.update_summary(&pipeline.source_path, latest_output);
+    fn refresh_chips_for_pipeline(&self, _pipeline_id: i64) {
+        self.refresh();
     }
 
     pub fn set_state(&self, state: Rc<RefCell<AppState>>) {
         let imp = self.imp();
 
-        // Load initial defaults from settings
         {
             let st = state.borrow();
-            self.set_operation("upscale");
             self.set_backend(st.settings.upscale_backend.as_str());
             if let Some(onnx_dd) = imp.onnx_model_dropdown.borrow().as_ref() {
                 let idx = match st.settings.onnx_upscale_model.as_str() {
                     "swin2sr-compressed-x4" => 1,
                     "swin2sr-real-x4" => 2,
-                    _ => 0, // lightweight-x2
+                    _ => 0,
                 };
                 onnx_dd.set_selected(idx);
             }
             if let Some(scale_dd) = imp.scale_dropdown.borrow().as_ref() {
                 scale_dd.set_selected(0);
             }
-            if let Some(compress) = imp.compress_check.borrow().as_ref() {
-                compress.set_active(st.settings.upscale_compress_output);
+            if let Some(upscale_toggle) = imp.upscale_toggle.borrow().as_ref() {
+                upscale_toggle.set_active(true);
             }
-            if let Some(keep_png) = imp.keep_png_check.borrow().as_ref() {
-                keep_png.set_active(st.settings.upscale_keep_raw_png_sidecar);
+            if let Some(box_) = imp.upscale_settings_box.borrow().as_ref() {
+                box_.set_visible(true);
             }
-            if let Some(format_dd) = imp.format_dropdown.borrow().as_ref() {
-                let idx = match st.settings.upscale_compressed_format.as_str() {
-                    "webp" => 1,
-                    "jpeg" => 2,
-                    "png" => 3,
-                    _ => 0, // jxl
-                };
-                format_dd.set_selected(idx);
+            if let Some(export_toggle) = imp.export_toggle.borrow().as_ref() {
+                export_toggle.set_active(false);
             }
-            if let Some(spin) = imp.quality_spin.borrow().as_ref() {
-                spin.set_value(st.settings.upscaler_quality as f64);
+            if let Some(box_) = imp.export_settings_box.borrow().as_ref() {
+                box_.set_visible(false);
             }
-            if let Some(dest_dd) = imp.upscale_dest_dropdown.borrow().as_ref() {
-                dest_dd.set_selected(0);
-            }
-            *imp.upscale_custom_path.borrow_mut() = st.settings.upscaled_output_dir.clone();
-
-            // Export defaults
             if let Some(format_dd) = imp.export_format_dropdown.borrow().as_ref() {
-                format_dd.set_selected(0); // JXL
+                format_dd.set_selected(0);
             }
             if let Some(edge_dd) = imp.export_edge_dropdown.borrow().as_ref() {
-                edge_dd.set_selected(0); // Original
+                edge_dd.set_selected(0);
             }
             if let Some(spin) = imp.export_quality_spin.borrow().as_ref() {
-                spin.set_value(85.0);
+                spin.set_value(90.0);
             }
             if let Some(dest_dd) = imp.export_dest_dropdown.borrow().as_ref() {
                 dest_dd.set_selected(0);
@@ -1316,7 +1551,6 @@ impl TasksPage {
         }
         self.update_custom_destination_labels();
 
-        // Wire backend toggles to persist the selection back to AppSettings
         for backend in ["onnx", "comfyui", "cli"] {
             let button = match backend {
                 "comfyui" => imp.backend_comfyui_btn.borrow().clone(),
@@ -1346,49 +1580,6 @@ impl TasksPage {
                 };
                 if let Ok(mut st) = state_c.try_borrow_mut() {
                     st.settings.set_onnx_upscale_model(key);
-                }
-            });
-        }
-
-        if let Some(compress_row) = imp.compress_check.borrow().as_ref() {
-            let state_c = state.clone();
-            compress_row.connect_active_notify(move |row| {
-                if let Ok(mut st) = state_c.try_borrow_mut() {
-                    st.settings.set_upscale_compress_output(row.is_active());
-                }
-            });
-        }
-
-        if let Some(keep_png_row) = imp.keep_png_check.borrow().as_ref() {
-            let state_c = state.clone();
-            keep_png_row.connect_active_notify(move |row| {
-                if let Ok(mut st) = state_c.try_borrow_mut() {
-                    st.settings
-                        .set_upscale_keep_raw_png_sidecar(row.is_active());
-                }
-            });
-        }
-
-        if let Some(format_dd) = imp.format_dropdown.borrow().as_ref() {
-            let state_c = state.clone();
-            format_dd.connect_selected_item_notify(move |dd| {
-                let key = match dd.selected() {
-                    1 => "webp",
-                    2 => "jpeg",
-                    3 => "png",
-                    _ => "jxl",
-                };
-                if let Ok(mut st) = state_c.try_borrow_mut() {
-                    st.settings.set_upscale_compressed_format(key);
-                }
-            });
-        }
-
-        if let Some(quality_spin) = imp.quality_spin.borrow().as_ref() {
-            let state_c = state.clone();
-            quality_spin.connect_value_changed(move |spin| {
-                if let Ok(mut st) = state_c.try_borrow_mut() {
-                    st.settings.set_upscaler_quality(spin.value() as i32);
                 }
             });
         }
@@ -1440,10 +1631,13 @@ impl TasksPage {
                     }
                     *widget.imp().selected_pipeline_id.borrow_mut() = Some(id);
                     widget.imp().selected_is_history.set(true);
-                    if let Some(btn) = widget.imp().add_step_btn.borrow().as_ref() {
-                        btn.set_visible(false);
+                    widget.clear_summary();
+                    if let Some(scroll) = widget.imp().right_scroll.borrow().as_ref() {
+                        scroll.set_visible(false);
                     }
-                    widget.show_summary_for_pipeline(id);
+                    if let Some(label) = widget.imp().no_selection_label.borrow().as_ref() {
+                        label.set_visible(true);
+                    }
                 }
             });
             *imp.history_row_selected_handler.borrow_mut() = Some(handler);
@@ -1451,7 +1645,6 @@ impl TasksPage {
 
         self.refresh();
 
-        // Reveal crash recovery banner if there are unfinished pipelines
         {
             let n = state.borrow().library_index_interrupted_count;
             self.set_interrupted_count(n);
@@ -1606,202 +1799,10 @@ impl TasksPage {
         }
     }
 
-    /// Returns the step type and settings JSON currently shown in the settings panel.
-    /// Used by window.rs when adding a job from the filmstrip.
-    pub fn current_step_config(&self) -> (StepType, String) {
-        let imp = self.imp();
-        if self.operation_is_export() {
-            // Export
-            let format = imp
-                .export_format_dropdown
-                .borrow()
-                .as_ref()
-                .map(|d| match d.selected() {
-                    1 => "webp",
-                    2 => "png",
-                    3 => "jpeg",
-                    _ => "jxl",
-                })
-                .unwrap_or("jxl");
-            let max_edge =
-                imp.export_edge_dropdown
-                    .borrow()
-                    .as_ref()
-                    .and_then(|d| match d.selected() {
-                        1 => Some(1080u32),
-                        2 => Some(2160),
-                        3 => Some(4096),
-                        _ => None,
-                    });
-            let quality = imp
-                .export_quality_spin
-                .borrow()
-                .as_ref()
-                .map(|s| s.value() as u8)
-                .unwrap_or(85);
-            let destination = imp
-                .export_dest_dropdown
-                .borrow()
-                .as_ref()
-                .map(|d| match d.selected() {
-                    1 => "source",
-                    2 => "custom",
-                    _ => "default",
-                })
-                .unwrap_or("default");
-            let settings = ExportStepSettings {
-                format: format.into(),
-                max_edge,
-                quality,
-                destination: destination.into(),
-                custom_path: imp.export_custom_path.borrow().clone(),
-            };
-            (
-                StepType::Export,
-                serde_json::to_string(&settings).unwrap_or_default(),
-            )
-        } else {
-            // Upscale (default)
-            let backend = self.selected_backend();
-            let onnx_model = if backend == "onnx" {
-                imp.onnx_model_dropdown
-                    .borrow()
-                    .as_ref()
-                    .map(|d| match d.selected() {
-                        1 => "swin2sr-compressed-x4",
-                        2 => "swin2sr-real-x4",
-                        _ => "swin2sr-lightweight-x2",
-                    })
-            } else {
-                None
-            };
-            let comfyui_workflow = if backend == "comfyui" {
-                imp.comfyui_workflow_row
-                    .borrow()
-                    .as_ref()
-                    .map(|row| match row.selected() {
-                        1 => "seedvr2",
-                        _ => "esrgan",
-                    })
-                    .map(|s| s.to_string())
-            } else {
-                None
-            };
-            let scale = imp
-                .scale_dropdown
-                .borrow()
-                .as_ref()
-                .map(|d| match d.selected() {
-                    1 => 2u32,
-                    2 => 3,
-                    3 => 4,
-                    _ => 0,
-                })
-                .unwrap_or(0);
-            let compress = imp
-                .compress_check
-                .borrow()
-                .as_ref()
-                .map(|c| c.is_active())
-                .unwrap_or(false);
-            let keep_png = imp
-                .keep_png_check
-                .borrow()
-                .as_ref()
-                .map(|c| c.is_active())
-                .unwrap_or(false);
-            let format = imp
-                .format_dropdown
-                .borrow()
-                .as_ref()
-                .map(|d| match d.selected() {
-                    1 => "webp",
-                    2 => "jpeg",
-                    3 => "png",
-                    _ => "jxl",
-                })
-                .unwrap_or("jxl");
-            let quality = imp
-                .quality_spin
-                .borrow()
-                .as_ref()
-                .map(|s| s.value() as u8)
-                .unwrap_or(85);
-            let model = imp
-                .state
-                .borrow()
-                .as_ref()
-                .map(|s| s.borrow().settings.upscaler_default_model.clone())
-                .unwrap_or_default();
-            let destination = imp
-                .upscale_dest_dropdown
-                .borrow()
-                .as_ref()
-                .map(|d| match d.selected() {
-                    1 => "source",
-                    2 => "custom",
-                    _ => "default",
-                })
-                .unwrap_or("default");
-            let settings = UpscaleStepSettings {
-                backend: backend.into(),
-                model,
-                onnx_model: onnx_model.map(|s| s.to_string()),
-                scale,
-                compress,
-                format: format.into(),
-                quality,
-                keep_png,
-                destination: destination.into(),
-                custom_path: imp.upscale_custom_path.borrow().clone(),
-                comfyui_workflow,
-            };
-            (
-                StepType::Upscale,
-                serde_json::to_string(&settings).unwrap_or_default(),
-            )
-        }
-    }
-
-    fn on_add_step_clicked(&self) {
-        let imp = self.imp();
-        // Guard: only act if a queued (non-history) pipeline is selected
-        if imp.selected_is_history.get() {
-            return;
-        }
-        let Some(pipeline_id) = *imp.selected_pipeline_id.borrow() else {
-            return;
-        };
-        let Some(state_rc) = imp.state.borrow().clone() else {
-            return;
-        };
-        let state = state_rc.borrow();
-        let Some(idx) = state.library_index.as_ref() else {
-            return;
-        };
-        // Only append to Queued or InProgress pipelines
-        let Some(pipeline) = Self::find_pipeline_by_id(idx, pipeline_id) else {
-            return;
-        };
-        if !matches!(
-            pipeline.status,
-            PipelineStatus::Queued | PipelineStatus::InProgress
-        ) {
-            return;
-        }
-        let (step_type, settings_json) = self.current_step_config();
-        let _ = idx.append_pipeline_step(pipeline_id, step_type, &settings_json);
-        drop(state);
-        self.refresh();
-    }
-
     pub fn pre_fill_from_path(&self, path: PathBuf) {
         if let Some(state_rc) = self.imp().state.borrow().as_ref() {
             if let Some(idx) = state_rc.borrow().library_index.as_ref() {
-                let (step_type, settings_json) = self.current_step_config();
-                if let Ok(pid) = idx.create_pipeline(&path) {
-                    let _ = idx.append_pipeline_step(pid, step_type, &settings_json);
-                }
+                let _ = idx.create_pipeline(&path);
             }
         }
         self.refresh();
@@ -1809,7 +1810,6 @@ impl TasksPage {
 
     pub fn on_pipelines_added(&self) {
         self.refresh();
-        self.try_start_runner();
     }
 
     pub fn refresh(&self) {
@@ -1851,6 +1851,10 @@ impl TasksPage {
 
             let mut pipelines = in_progress;
             pipelines.extend(queued);
+            let visible_queue_ids: HashSet<i64> = pipelines.iter().map(|p| p.id).collect();
+            imp.queue_checked_ids
+                .borrow_mut()
+                .retain(|pid| visible_queue_ids.contains(pid));
 
             if let Some(lbl) = imp.queue_empty_label.borrow().as_ref() {
                 lbl.set_visible(pipelines.is_empty());
@@ -1896,6 +1900,9 @@ impl TasksPage {
             if let Some(btn) = imp.clear_btn.borrow().as_ref() {
                 btn.set_sensitive(queued_count > 0);
             }
+            if let Some(btn) = imp.remove_btn.borrow().as_ref() {
+                btn.set_sensitive(!imp.queue_checked_ids.borrow().is_empty());
+            }
 
             for pipeline in pipelines {
                 let expander = self.build_queue_expander_row(&pipeline, idx);
@@ -1911,11 +1918,33 @@ impl TasksPage {
             );
             history.sort_by(|a, b| b.created_at.cmp(&a.created_at));
             history_section.set_visible(!history.is_empty());
+
             for pipeline in &history {
                 let row = self.build_history_row(pipeline, idx);
                 history_list.append(&row);
             }
+
+            // Sync compare_queue with history
+            {
+                let mut compare_queue = Vec::new();
+                for pipeline in &history {
+                    if let Some(item) = build_compare_item_from_pipeline(pipeline, idx) {
+                        compare_queue.push(item);
+                    }
+                }
+                drop(state); // Drop the immutable borrow before mutably borrowing
+                state_rc.borrow_mut().compare_queue = compare_queue;
+            }
         } // state and idx dropped — row_selected signals are now safe to fire
+
+        // Sync compare view if active
+        if let Some(root) = self.root() {
+            if let Some(window) = root.downcast_ref::<crate::ui::window::SharprWindow>() {
+                if window.app_state().borrow().scope == crate::ui::window::ViewScope::Compare {
+                    window.refresh_compare_view();
+                }
+            }
+        }
 
         // --- Queue selection restore ---
         // Copy value out before the block — select_row fires load_settings_for_pipeline
@@ -1940,9 +1969,21 @@ impl TasksPage {
                     list_box.unselect_all();
                     *imp.selected_pipeline_id.borrow_mut() = None;
                     self.clear_summary();
+                    if let Some(scroll) = imp.right_scroll.borrow().as_ref() {
+                        scroll.set_visible(false);
+                    }
+                    if let Some(label) = imp.no_selection_label.borrow().as_ref() {
+                        label.set_visible(true);
+                    }
                 }
             } else {
                 list_box.unselect_all();
+                if let Some(scroll) = imp.right_scroll.borrow().as_ref() {
+                    scroll.set_visible(false);
+                }
+                if let Some(label) = imp.no_selection_label.borrow().as_ref() {
+                    label.set_visible(true);
+                }
             }
         } else {
             list_box.unselect_all();
@@ -1980,6 +2021,12 @@ impl TasksPage {
                     *imp.selected_pipeline_id.borrow_mut() = None;
                     imp.selected_is_history.set(false);
                     self.clear_summary();
+                    if let Some(scroll) = imp.right_scroll.borrow().as_ref() {
+                        scroll.set_visible(false);
+                    }
+                    if let Some(label) = imp.no_selection_label.borrow().as_ref() {
+                        label.set_visible(true);
+                    }
                 }
             }
         } else {
@@ -2006,13 +2053,46 @@ impl TasksPage {
 
         let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
         expander.set_subtitle(&format_pipeline_composite(pipeline, &steps));
+        expander.set_enable_expansion(!steps.is_empty());
+
+        let check_btn = gtk4::CheckButton::new();
+        check_btn.set_active(
+            self.imp()
+                .queue_checked_ids
+                .borrow()
+                .contains(&pipeline.id),
+        );
+        {
+            let widget_weak = self.downgrade();
+            let pid = pipeline.id;
+            check_btn.connect_toggled(move |btn| {
+                let Some(w) = widget_weak.upgrade() else {
+                    return;
+                };
+                if btn.is_active() {
+                    w.imp().queue_checked_ids.borrow_mut().insert(pid);
+                } else {
+                    w.imp().queue_checked_ids.borrow_mut().remove(&pid);
+                }
+                let has_checked = !w.imp().queue_checked_ids.borrow().is_empty();
+                let remove_btn = w.imp().remove_btn.borrow().clone();
+                if let Some(remove_btn) = remove_btn {
+                    remove_btn.set_sensitive(has_checked);
+                }
+            });
+        }
+        expander.add_prefix(&check_btn);
+
+        let drag_handle = gtk4::Label::new(Some("⠿"));
+        drag_handle.add_css_class("dim-label");
+        drag_handle.set_sensitive(false);
+        expander.add_prefix(&drag_handle);
 
         let picture = gtk4::Picture::new();
         picture.set_size_request(48, 48);
         picture.set_content_fit(gtk4::ContentFit::Cover);
         expander.add_prefix(&picture);
 
-        // Load thumbnail
         {
             let picture_c = picture.clone();
             let path = pipeline.source_path.clone();
@@ -2022,34 +2102,16 @@ impl TasksPage {
                 }
             });
         }
+
+        let chips = self.build_action_chips(pipeline, &steps);
+        expander.add_suffix(&chips);
+
         if pipeline.status == PipelineStatus::InProgress {
             let progress = gtk4::ProgressBar::new();
             progress.set_pulse_step(0.1);
             progress.pulse();
             progress.set_valign(gtk4::Align::Center);
             expander.add_suffix(&progress);
-        }
-
-        if pipeline.status != PipelineStatus::InProgress {
-            let del_btn = gtk4::Button::from_icon_name("window-close-symbolic");
-            del_btn.add_css_class("flat");
-            del_btn.add_css_class("destructive-action");
-
-            {
-                let widget_weak = self.downgrade();
-                let pid = pipeline.id;
-                del_btn.connect_clicked(move |_| {
-                    if let Some(w) = widget_weak.upgrade() {
-                        if let Some(state_rc) = w.imp().state.borrow().as_ref() {
-                            if let Some(idx) = state_rc.borrow().library_index.as_ref() {
-                                let _ = idx.delete_pipeline(pid);
-                            }
-                        }
-                        w.refresh();
-                    }
-                });
-            }
-            expander.add_suffix(&del_btn);
         }
 
         for step in &steps {
@@ -2079,6 +2141,99 @@ impl TasksPage {
         }
 
         expander
+    }
+
+    fn build_action_chips(&self, pipeline: &Pipeline, steps: &[PipelineStep]) -> gtk4::Box {
+        let chips = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+
+        fn make_upscale_chip(backend: &str, scale: u32) -> gtk4::Label {
+            let scale_str = match scale {
+                2 => "2×",
+                3 => "3×",
+                4 => "4×",
+                _ => "Smart scale",
+            };
+            let chip = gtk4::Label::new(Some(&format!(
+                "Upscale · {} · {}",
+                backend, scale_str
+            )));
+            chip.add_css_class("accent");
+            chip.add_css_class("pill");
+            chip
+        }
+
+        fn make_export_chip(format: &str, quality: u8) -> gtk4::Label {
+            let chip = gtk4::Label::new(Some(&format!(
+                "Convert · {} · Q{}",
+                format.to_uppercase(),
+                quality
+            )));
+            chip.add_css_class("success");
+            chip.add_css_class("pill");
+            chip
+        }
+
+        fn append_chip_pair(
+            chips: &gtk4::Box,
+            upscale_chip: Option<gtk4::Label>,
+            export_chip: Option<gtk4::Label>,
+        ) {
+            let has_upscale = upscale_chip.is_some();
+            let has_export = export_chip.is_some();
+            if let Some(upscale_chip) = upscale_chip {
+                chips.append(&upscale_chip);
+            }
+            if has_upscale && has_export {
+                chips.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
+            }
+            if let Some(export_chip) = export_chip {
+                chips.append(&export_chip);
+            }
+        }
+
+        if !steps.is_empty() {
+            let mut upscale_chip = None;
+            let mut export_chip = None;
+            for step in steps {
+                match step.step_type {
+                    StepType::Upscale => {
+                        if let Ok(settings) =
+                            serde_json::from_str::<UpscaleStepSettings>(&step.settings_json)
+                        {
+                            upscale_chip =
+                                Some(make_upscale_chip(&settings.backend, settings.scale));
+                        }
+                    }
+                    StepType::Export => {
+                        if let Ok(settings) =
+                            serde_json::from_str::<ExportStepSettings>(&step.settings_json)
+                        {
+                            export_chip =
+                                Some(make_export_chip(&settings.format, settings.quality));
+                        }
+                    }
+                }
+            }
+            append_chip_pair(&chips, upscale_chip, export_chip);
+        } else if let Some(config) = self.imp().pending_configs.borrow().get(&pipeline.id) {
+            let upscale_chip = config.upscale_on
+                .then(|| make_upscale_chip(&config.upscale.backend, config.upscale.scale));
+            let export_chip = config
+                .export_on
+                .then(|| make_export_chip(&config.export.format, config.export.quality));
+            append_chip_pair(&chips, upscale_chip, export_chip);
+            if !config.upscale_on && !config.export_on {
+                let chip = gtk4::Label::new(Some("⚠ No actions assigned"));
+                chip.add_css_class("warning");
+                chips.append(&chip);
+            }
+        } else {
+            let chip = gtk4::Label::new(Some("⚠ No actions assigned"));
+            chip.add_css_class("warning");
+            chips.append(&chip);
+        }
+
+        chips
     }
 
     fn build_history_row(&self, pipeline: &Pipeline, idx: &LibraryIndex) -> gtk4::ListBoxRow {
@@ -2200,128 +2355,185 @@ impl TasksPage {
         compare_btn.set_sensitive(can_compare);
         compare_btn.set_tooltip_text(Some("Open in Compare page"));
         if can_compare {
-            let source = pipeline.source_path.clone();
-            let output = output_path_opt.clone().unwrap();
-            let pipeline_created_at = pipeline.created_at;
-            let step_settings_json = display_step
-                .as_ref()
-                .map(|s| s.settings_json.clone())
-                .unwrap_or_default();
-            let step_type = display_step.as_ref().map(|s| s.step_type);
-
+            let pipeline_clone = pipeline.clone();
             let widget_weak = self.downgrade();
             compare_btn.connect_clicked(move |_| {
                 let Some(w) = widget_weak.upgrade() else {
                     return;
                 };
 
-                let mut model = "Unknown".to_string();
-                let mut scale = "-".to_string();
-                if let Some(st) = step_type {
-                    match st {
-                        StepType::Upscale => {
-                            if let Ok(settings) =
-                                serde_json::from_str::<UpscaleStepSettings>(&step_settings_json)
-                            {
-                                model = settings.model.clone();
-                                scale = match settings.scale {
-                                    0 => "Smart scale".to_string(),
-                                    value => format!("{value}×"),
-                                };
-                            }
-                        }
-                        StepType::Export => {
-                            if let Ok(settings) =
-                                serde_json::from_str::<ExportStepSettings>(&step_settings_json)
-                            {
-                                model = "None (Export)".to_string();
-                                scale = settings
-                                    .max_edge
-                                    .map(|e| format!("Max {}px", e))
-                                    .unwrap_or_else(|| "Original".to_string());
-                            }
-                        }
-                    }
-                }
-
-                let date_added = glib::DateTime::from_unix_local(pipeline_created_at)
-                    .unwrap_or_else(|_| glib::DateTime::now_local().unwrap());
-                let preserved_png = preserved_png_temp_path(&output);
-
-                let item = CompareItem {
-                    source_path: source.clone(),
-                    output_path: output.clone(),
-                    original_asset: build_compare_asset_info("Original", &source),
-                    output_asset: build_compare_asset_info(compare_output_title(&output), &output),
-                    preserved_png_asset: preserved_png
-                        .exists()
-                        .then(|| build_compare_asset_info("PNG Sidecar", &preserved_png)),
-                    model,
-                    scale,
-                    date_added,
+                let item = {
+                    let state_rc = w.imp().state.borrow();
+                    let Some(state) = state_rc.as_ref() else {
+                        return;
+                    };
+                    let idx = state.borrow().library_index.clone();
+                    let Some(idx) = idx else {
+                        return;
+                    };
+                    build_compare_item_from_pipeline(&pipeline_clone, &idx)
                 };
 
-                let imp = w.imp();
-                let cb_borrow = imp.compare_cb.borrow();
-                if let Some(cb) = cb_borrow.as_ref() {
-                    cb(item);
+                if let Some(item) = item {
+                    let imp = w.imp();
+                    let cb_borrow = imp.compare_cb.borrow();
+                    if let Some(cb) = cb_borrow.as_ref() {
+                        cb(item);
+                    }
                 }
             });
         }
         btn_box.append(&compare_btn);
 
-        // Follow-up step button (available for Completed and Failed)
-        let followup_source: Option<PathBuf> = steps
-            .iter()
-            .rev()
-            .find_map(|s| s.output_path.as_ref().filter(|p| p.exists()).cloned());
-        let followup_btn = gtk4::Button::with_label("Follow-up step");
-        followup_btn.add_css_class("flat");
-        followup_btn.set_sensitive(followup_source.is_some());
-        followup_btn.set_tooltip_text(Some("Queue a new step using this output as input"));
+        let requeue_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        requeue_box.set_valign(gtk4::Align::Center);
 
-        if let Some(followup_path) = followup_source {
-            let widget_weak = self.downgrade();
-            followup_btn.connect_clicked(move |_| {
-                let Some(w) = widget_weak.upgrade() else {
-                    return;
-                };
-                let (step_type, settings_json) = w.current_step_config();
-                if let Some(state_rc) = w.imp().state.borrow().as_ref() {
-                    if let Some(idx) = state_rc.borrow().library_index.as_ref() {
-                        let _ = idx.enqueue_followup(&followup_path, step_type, &settings_json);
+        let source_toggle_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        source_toggle_box.add_css_class("linked");
+        let original_btn = gtk4::ToggleButton::with_label("Original");
+        let result_btn = gtk4::ToggleButton::with_label("Result");
+        source_toggle_box.append(&original_btn);
+        source_toggle_box.append(&result_btn);
+        let output_path_for_requeue = display_step.as_ref().and_then(|s| s.output_path.clone());
+        let png_path_for_requeue = output_path_for_requeue
+            .as_ref()
+            .map(|path| preserved_png_temp_path(path.as_path()))
+            .filter(|path: &PathBuf| path.exists());
+        let png_btn: Option<gtk4::ToggleButton> = png_path_for_requeue.as_ref().map(|_| {
+            let btn = gtk4::ToggleButton::with_label("PNG");
+            source_toggle_box.append(&btn);
+            btn
+        });
+
+        let has_output = display_step
+            .as_ref()
+            .and_then(|s| s.output_path.as_ref())
+            .map(|p| p.exists())
+            .unwrap_or(false);
+        original_btn.set_active(!has_output);
+        result_btn.set_active(has_output);
+        result_btn.set_sensitive(has_output);
+        if let Some(btn) = png_btn.as_ref() {
+            btn.set_active(false);
+        }
+
+        {
+            let ob = original_btn.clone();
+            let png_btn = png_btn.clone();
+            result_btn.connect_toggled(move |btn| {
+                if btn.is_active() && ob.is_active() {
+                    ob.set_active(false);
+                }
+                if btn.is_active() {
+                    if let Some(png_btn) = png_btn.as_ref() {
+                        if png_btn.is_active() {
+                            png_btn.set_active(false);
+                        }
+                    }
+                } else if !btn.is_active() && !ob.is_active() {
+                    if let Some(png_btn) = png_btn.as_ref() {
+                        if !png_btn.is_active() {
+                            ob.set_active(true);
+                        }
+                    } else {
+                        ob.set_active(true);
                     }
                 }
-                w.refresh();
-                w.try_start_runner();
             });
         }
-        btn_box.append(&followup_btn);
-
-        // Re-queue button (failed pipelines only)
-        if pipeline.status == PipelineStatus::Failed {
-            let requeue_btn = gtk4::Button::with_label("Re-queue");
-            requeue_btn.add_css_class("flat");
-            let widget_weak = self.downgrade();
-            let pid = pipeline.id;
-            requeue_btn.connect_clicked(move |_| {
-                let Some(w) = widget_weak.upgrade() else {
-                    return;
-                };
-                if let Some(state_rc) = w.imp().state.borrow().as_ref() {
-                    if let Some(idx) = state_rc.borrow().library_index.as_ref() {
-                        let _ = idx.requeue_pipeline(pid);
+        {
+            let rb = result_btn.clone();
+            let png_btn = png_btn.clone();
+            original_btn.connect_toggled(move |btn| {
+                if btn.is_active() && rb.is_active() {
+                    rb.set_active(false);
+                }
+                if btn.is_active() {
+                    if let Some(png_btn) = png_btn.as_ref() {
+                        if png_btn.is_active() {
+                            png_btn.set_active(false);
+                        }
+                    }
+                } else if !btn.is_active() && !rb.is_active() {
+                    if let Some(png_btn) = png_btn.as_ref() {
+                        if !png_btn.is_active() {
+                            btn.set_active(true);
+                        }
+                    } else {
+                        btn.set_active(true);
                     }
                 }
-                w.refresh();
-                w.try_start_runner();
             });
-            btn_box.append(&requeue_btn);
         }
+        if let Some(png_btn_ref) = png_btn.as_ref() {
+            let original_btn = original_btn.clone();
+            let result_btn = result_btn.clone();
+            png_btn_ref.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    if original_btn.is_active() {
+                        original_btn.set_active(false);
+                    }
+                    if result_btn.is_active() {
+                        result_btn.set_active(false);
+                    }
+                } else if !original_btn.is_active() && !result_btn.is_active() {
+                    btn.set_active(true);
+                }
+            });
+        }
+
+        requeue_box.append(&source_toggle_box);
+
+        let requeue_btn = gtk4::Button::builder()
+            .label("Re-queue")
+            .icon_name("list-add-symbolic")
+            .build();
+        requeue_btn.add_css_class("suggested-action");
+        requeue_btn.add_css_class("flat");
+        requeue_btn
+            .set_tooltip_text(Some("Re-queue this item with the selected source"));
+        let source_path_for_requeue = pipeline.source_path.clone();
+        let png_btn_for_requeue = png_btn.clone();
+        let widget_weak = self.downgrade();
+        requeue_btn.connect_clicked(move |_| {
+            let Some(w) = widget_weak.upgrade() else {
+                return;
+            };
+            let use_png = png_btn_for_requeue
+                .as_ref()
+                .map(|btn| btn.is_active())
+                .unwrap_or(false)
+                && png_path_for_requeue
+                    .as_ref()
+                    .map(|p| p.exists())
+                    .unwrap_or(false);
+            let use_result = result_btn.is_active()
+                && output_path_for_requeue
+                    .as_ref()
+                    .map(|p| p.exists())
+                    .unwrap_or(false);
+            let source = if use_png {
+                png_path_for_requeue.clone().unwrap()
+            } else if use_result {
+                output_path_for_requeue.clone().unwrap()
+            } else {
+                source_path_for_requeue.clone()
+            };
+            if let Some(state_rc) = w.imp().state.borrow().as_ref() {
+                if let Some(idx) = state_rc.borrow().library_index.as_ref() {
+                    let _ = idx.create_pipeline(&source);
+                }
+            }
+            w.refresh();
+        });
+        requeue_box.append(&requeue_btn);
+        btn_box.append(&requeue_box);
 
         // Delete button
         let del_btn = gtk4::Button::from_icon_name("window-close-symbolic");
         del_btn.add_css_class("flat");
+        del_btn.add_css_class("circular");
+        del_btn.set_tooltip_text(Some("Remove from history"));
         {
             let widget_weak = self.downgrade();
             let pid = pipeline.id;
@@ -2424,6 +2636,12 @@ impl TasksPage {
             };
 
             let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
+            if steps.is_empty() {
+                imp.runner_active.set(false);
+                drop(state);
+                self.refresh();
+                return;
+            }
             let step = match steps
                 .iter()
                 .find(|s| s.status == PipelineStatus::Queued)
@@ -2865,6 +3083,10 @@ async fn load_thumbnail_for_row(path: &Path) -> Result<gdk4::Texture, String> {
 }
 
 fn format_pipeline_composite(pipeline: &Pipeline, steps: &[PipelineStep]) -> String {
+    if steps.is_empty() {
+        return String::new();
+    }
+
     if steps
         .iter()
         .all(|step| step.status == PipelineStatus::Queued)
@@ -2942,71 +3164,7 @@ fn format_timestamp(unix_secs: i64) -> String {
     }
 }
 
-fn build_compare_asset_info(title: &str, path: &Path) -> crate::ui::window::CompareAssetInfo {
-    crate::ui::window::CompareAssetInfo {
-        title: title.to_string(),
-        path: path.to_path_buf(),
-        format: compare_asset_format(path),
-        dimensions: image::image_dimensions(path).unwrap_or((0, 0)),
-        file_size: std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0),
-    }
-}
-
-fn compare_output_title(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("png") => "Output",
-        _ => "Compressed Output",
-    }
-}
-
-fn compare_asset_format(path: &Path) -> String {
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("jpg") | Some("jpeg") => "JPEG".to_string(),
-        Some("png") => "PNG".to_string(),
-        Some("webp") => "WebP".to_string(),
-        Some("jxl") => "JPEG XL".to_string(),
-        Some("avif") => "AVIF".to_string(),
-        Some("tif") | Some("tiff") => "TIFF".to_string(),
-        Some("bmp") => "BMP".to_string(),
-        Some("gif") => "GIF".to_string(),
-        Some(other) => other.to_ascii_uppercase(),
-        None => "Unknown".to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn compare_output_title_uses_plain_output_for_png() {
-        assert_eq!(
-            compare_output_title(Path::new("/tmp/example.png")),
-            "Output"
-        );
-        assert_eq!(
-            compare_output_title(Path::new("/tmp/example.jxl")),
-            "Compressed Output"
-        );
-    }
-
-    #[test]
-    fn compare_asset_format_normalizes_common_extensions() {
-        assert_eq!(compare_asset_format(Path::new("/tmp/example.jpg")), "JPEG");
-        assert_eq!(
-            compare_asset_format(Path::new("/tmp/example.jxl")),
-            "JPEG XL"
-        );
-        assert_eq!(compare_asset_format(Path::new("/tmp/example.webp")), "WebP");
-    }
+    // Pipeline formatting tests or other tasks_page specific tests could go here
 }
