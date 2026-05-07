@@ -294,28 +294,79 @@ mod imp {
             queue_overlay.set_child(Some(&scrolled));
             queue_overlay.add_overlay(&queue_empty_label);
 
-            left_col.append(&queue_header);
-            left_col.append(&queue_overlay);
-
-            let drop_zone = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-            drop_zone.add_css_class("card");
-            drop_zone.set_margin_top(4);
-            drop_zone.set_margin_bottom(4);
-            drop_zone.set_halign(gtk4::Align::Fill);
+            let drop_hint_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+            drop_hint_box.set_halign(gtk4::Align::Center);
+            drop_hint_box.set_valign(gtk4::Align::End);
+            drop_hint_box.set_margin_bottom(28);
+            drop_hint_box.set_can_target(false);
             let drop_icon = gtk4::Image::from_icon_name("document-save-symbolic");
             drop_icon.set_pixel_size(28);
             drop_icon.add_css_class("dim-label");
-            drop_icon.set_margin_top(12);
             let drop_label = gtk4::Label::new(Some("Drag images here to add to queue"));
             drop_label.add_css_class("dim-label");
             let drop_sub = gtk4::Label::new(Some("or use Add Selected from the current view"));
             drop_sub.add_css_class("dim-label");
             drop_sub.add_css_class("caption");
-            drop_sub.set_margin_bottom(12);
-            drop_zone.append(&drop_icon);
-            drop_zone.append(&drop_label);
-            drop_zone.append(&drop_sub);
-            left_col.append(&drop_zone);
+            drop_hint_box.append(&drop_icon);
+            drop_hint_box.append(&drop_label);
+            drop_hint_box.append(&drop_sub);
+            queue_overlay.add_overlay(&drop_hint_box);
+
+            left_col.append(&queue_header);
+            left_col.append(&queue_overlay);
+
+            {
+                let widget_weak = widget.downgrade();
+                let drop_target = gtk4::DropTarget::new(
+                    gdk4::FileList::static_type(),
+                    gdk4::DragAction::COPY | gdk4::DragAction::MOVE,
+                );
+                drop_target.connect_drop(move |_, value, _, _| {
+                    let Ok(file_list) = value.get::<gdk4::FileList>() else {
+                        return false;
+                    };
+                    let mut added = false;
+                    if let Some(w) = widget_weak.upgrade() {
+                        for file in file_list.files() {
+                            if let Some(path) = file.path() {
+                                w.pre_fill_from_path(path);
+                                added = true;
+                            }
+                        }
+                    }
+                    added
+                });
+                queue_overlay.add_controller(drop_target);
+            }
+            {
+                let widget_weak = widget.downgrade();
+                let drop_target =
+                    gtk4::DropTarget::new(glib::Type::STRING, gdk4::DragAction::COPY);
+                drop_target.connect_drop(move |_, value, _, _| {
+                    let Ok(uri_list) = value.get::<String>() else {
+                        return false;
+                    };
+                    let mut added = false;
+                    if let Some(w) = widget_weak.upgrade() {
+                        for entry in uri_list.lines().map(str::trim) {
+                            if entry.is_empty() || entry.starts_with('#') {
+                                continue;
+                            }
+                            let path = if entry.contains("://") {
+                                gio::File::for_uri(entry).path()
+                            } else {
+                                Some(PathBuf::from(entry))
+                            };
+                            if let Some(path) = path {
+                                w.pre_fill_from_path(path);
+                                added = true;
+                            }
+                        }
+                    }
+                    added
+                });
+                queue_overlay.add_controller(drop_target);
+            }
 
             // --- History section ---
             let history_section = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -2140,6 +2191,71 @@ impl TasksPage {
             expander.add_row(&child);
         }
 
+        let drag_source = gtk4::DragSource::new();
+        drag_source.set_actions(gdk4::DragAction::MOVE);
+        let pipeline_id = pipeline.id;
+        drag_source.connect_prepare(move |_, _, _| {
+            Some(gdk4::ContentProvider::for_value(
+                &pipeline_id.to_string().to_value(),
+            ))
+        });
+        expander.add_controller(drag_source);
+
+        let widget_weak = self.downgrade();
+        let target_expander = expander.clone();
+        let drop_target = gtk4::DropTarget::new(glib::Type::STRING, gdk4::DragAction::MOVE);
+        drop_target.connect_drop(move |_, value, _, _| {
+            let Ok(dragged_str) = value.get::<String>() else {
+                return false;
+            };
+            let Ok(dragged_id) = dragged_str.parse::<i64>() else {
+                return false;
+            };
+            let Ok(target_id) = target_expander.widget_name().parse::<i64>() else {
+                return false;
+            };
+            if dragged_id == target_id {
+                return false;
+            }
+            let Some(w) = widget_weak.upgrade() else {
+                return false;
+            };
+            let Some(state_rc) = w.imp().state.borrow().as_ref().cloned() else {
+                return false;
+            };
+            let state = state_rc.borrow();
+            let Some(idx) = state.library_index.as_ref() else {
+                return false;
+            };
+            let queued = idx.pipelines_by_status(PipelineStatus::Queued).unwrap_or_default();
+            let Some(dragged_queue_order) = queued
+                .iter()
+                .find(|pipeline| pipeline.id == dragged_id)
+                .map(|pipeline| pipeline.queue_order)
+            else {
+                return false;
+            };
+            let Some(target_queue_order) = queued
+                .iter()
+                .find(|pipeline| pipeline.id == target_id)
+                .map(|pipeline| pipeline.queue_order)
+            else {
+                return false;
+            };
+            let new_order = if dragged_queue_order < target_queue_order {
+                target_queue_order + 1
+            } else {
+                target_queue_order - 1
+            };
+            if idx.reorder_pipeline(dragged_id, new_order).is_err() {
+                return false;
+            }
+            drop(state);
+            w.refresh();
+            true
+        });
+        expander.add_controller(drop_target);
+
         expander
     }
 
@@ -2340,7 +2456,7 @@ impl TasksPage {
         row_box.append(&info_box);
 
         // --- Action buttons ---
-        let btn_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        let btn_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
         btn_box.set_valign(gtk4::Align::Center);
 
         // Compare button (navigates to Compare page)
@@ -2383,11 +2499,6 @@ impl TasksPage {
                 }
             });
         }
-        btn_box.append(&compare_btn);
-
-        let requeue_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-        requeue_box.set_valign(gtk4::Align::Center);
-
         let source_toggle_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         source_toggle_box.add_css_class("linked");
         let original_btn = gtk4::ToggleButton::with_label("Original");
@@ -2482,16 +2593,12 @@ impl TasksPage {
             });
         }
 
-        requeue_box.append(&source_toggle_box);
+        btn_box.append(&source_toggle_box);
 
-        let requeue_btn = gtk4::Button::builder()
-            .label("Re-queue")
-            .icon_name("list-add-symbolic")
-            .build();
-        requeue_btn.add_css_class("suggested-action");
+        let requeue_btn = gtk4::Button::from_icon_name("list-add-symbolic");
         requeue_btn.add_css_class("flat");
-        requeue_btn
-            .set_tooltip_text(Some("Re-queue this item with the selected source"));
+        requeue_btn.add_css_class("circular");
+        requeue_btn.set_tooltip_text(Some("Re-queue with selected source"));
         let source_path_for_requeue = pipeline.source_path.clone();
         let png_btn_for_requeue = png_btn.clone();
         let widget_weak = self.downgrade();
@@ -2526,11 +2633,11 @@ impl TasksPage {
             }
             w.refresh();
         });
-        requeue_box.append(&requeue_btn);
-        btn_box.append(&requeue_box);
+        btn_box.append(&requeue_btn);
+        btn_box.append(&compare_btn);
 
         // Delete button
-        let del_btn = gtk4::Button::from_icon_name("window-close-symbolic");
+        let del_btn = gtk4::Button::from_icon_name("user-trash-symbolic");
         del_btn.add_css_class("flat");
         del_btn.add_css_class("circular");
         del_btn.set_tooltip_text(Some("Remove from history"));
