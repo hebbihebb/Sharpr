@@ -48,75 +48,12 @@ impl ImageMetadata {
             ..Default::default()
         };
 
-        // Attempt EXIF read via rexiv2.
-        // rexiv2/GExiv2 is not thread-safe; serialise all calls with a global mutex.
-        let _guard = rexiv2_lock().lock().unwrap_or_else(|e| e.into_inner());
-        match rexiv2::Metadata::new_from_path(path) {
-            Ok(exif) => {
-                // Pixel dimensions — rexiv2 returns i32 directly (0 if unknown).
-                let w = exif.get_pixel_width();
-                let h = exif.get_pixel_height();
-                if w > 0 && h > 0 {
-                    meta.width = w as u32;
-                    meta.height = h as u32;
-                }
-
-                // gexiv2 0.16 crashes in get_exif_tag_long when called via get_iso_speed; skip for now.
-                meta.iso = None;
-
-                // Shutter speed as a rational fraction string.
-                meta.shutter_speed = exif.get_exposure_time().map(|r| {
-                    if *r.denom() == 1 {
-                        format!("{}", r.numer())
-                    } else {
-                        format!("{}/{}", r.numer(), r.denom())
-                    }
-                });
-
-                // Aperture (f-number).
-                meta.aperture = exif.get_fnumber().map(|f| format!("f/{:.1}", f));
-
-                // Camera make + model from EXIF tags.
-                let make = exif.get_tag_string("Exif.Image.Make").ok();
-                let model = exif.get_tag_string("Exif.Image.Model").ok();
-                meta.camera = match (make.as_deref(), model.as_deref()) {
-                    (Some(mk), Some(mo)) => Some(format!("{} {}", mk.trim(), mo.trim())),
-                    (None, Some(mo)) => Some(mo.trim().to_owned()),
-                    (Some(mk), None) => Some(mk.trim().to_owned()),
-                    _ => None,
-                };
-
-                // Focal length — rexiv2 returns f64 millimetres.
-                meta.focal_length = exif
-                    .get_focal_length()
-                    .map(|mm| format!("{} mm", mm as u32));
-
-                // Lens model — prefer EXIF 2.3 tag, fall back to Makernote variants.
-                meta.lens = exif
-                    .get_tag_string("Exif.Photo.LensModel")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| exif.get_tag_string("Exif.Canon.LensModel").ok())
-                    .or_else(|| exif.get_tag_string("Exif.NikonLd3.LensIDNumber").ok())
-                    .map(|s| s.trim().to_owned());
-
-                // Colour space: tag value 1 = sRGB, 65535 = uncalibrated / Adobe RGB.
-                meta.color_space =
-                    exif.get_tag_string("Exif.Photo.ColorSpace")
-                        .ok()
-                        .and_then(|s| match s.trim() {
-                            "1" => Some("sRGB".to_owned()),
-                            "65535" => Some("Adobe RGB".to_owned()),
-                            _ => None,
-                        });
-            }
-            Err(_) => {
-                // Non-EXIF files (PNG, GIF, …) — get dimensions from the image crate.
-                if let Some((w, h)) = read_dimensions_with_image(path) {
-                    meta.width = w;
-                    meta.height = h;
-                }
-            }
+        // rexiv2 0.10.0 is incompatible with the system gexiv2 0.16.0 — multiple
+        // gexiv2 functions (get_tag_string, get_exif_tag_long, etc.) segfault.
+        // Fall back to the image crate for dimensions until rexiv2 is updated.
+        if let Some((w, h)) = read_dimensions_with_image(path) {
+            meta.width = w;
+            meta.height = h;
         }
 
         meta

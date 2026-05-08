@@ -14,10 +14,8 @@ fn main() {
 
     assert!(status.success(), "glib-compile-schemas failed");
 
-    // Compile GResource bundle (splash image + future assets).
     let gresource = "data/io.github.hebbihebb.Sharpr.gresource.xml";
     println!("cargo:rerun-if-changed={gresource}");
-    println!("cargo:rerun-if-changed=data/splash.png");
     println!("cargo:rerun-if-changed=data/io.github.hebbihebb.Sharpr.png");
 
     glib_build_tools::compile_resources(&["data"], gresource, "sharpr.gresource");
