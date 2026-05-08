@@ -61,8 +61,8 @@ impl ImageMetadata {
                     meta.height = h as u32;
                 }
 
-                // ISO speed.
-                meta.iso = exif.get_iso_speed().map(|v| v.to_string());
+                // gexiv2 0.16 crashes in get_exif_tag_long when called via get_iso_speed; skip for now.
+                meta.iso = None;
 
                 // Shutter speed as a rational fraction string.
                 meta.shutter_speed = exif.get_exposure_time().map(|r| {
