@@ -19,6 +19,19 @@ mod upscale;
 use app::SharprApplication;
 use gtk4::{gio, prelude::*};
 
+extern "C" {
+    fn g_object_unref(obj: *mut std::ffi::c_void);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn gexiv2_metadata_free(metadata: *mut std::ffi::c_void) {
+    if !metadata.is_null() {
+        println!("SHIM: gexiv2_metadata_free({:?})", metadata);
+        g_object_unref(metadata);
+        println!("SHIM: gexiv2_metadata_free done");
+    }
+}
+
 // Embed the compiled GResource bundle into the binary at build time.
 fn register_resources() {
     gio::resources_register_include!("sharpr.gresource")

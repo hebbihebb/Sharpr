@@ -632,7 +632,7 @@ mod imp {
 
             right_col.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
             let queue_defaults_group = libadwaita::PreferencesGroup::new();
-            queue_defaults_group.set_title("Queue & History");
+            queue_defaults_group.set_title("Queue &amp; History");
             queue_defaults_group.set_margin_top(12);
             queue_defaults_group.set_margin_bottom(12);
             queue_defaults_group.set_margin_start(12);

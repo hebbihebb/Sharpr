@@ -23,6 +23,7 @@ use crate::model::{ImageEntry, LibraryManager};
 use crate::tags::smart::SmartModel;
 use crate::thumbnails::worker::{ThumbnailWorkerResponse, WorkerRequest};
 use crate::thumbnails::ThumbnailWorker;
+use crate::ui::compare_item::{build_compare_item_from_pipeline, CompareItem};
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::ops_indicator::OpsIndicator;
 use crate::ui::preferences::build_preferences_window;
@@ -34,27 +35,6 @@ use crate::ui::viewer::{ViewerPane, ZoomMode};
 // ---------------------------------------------------------------------------
 // Shared application state (main thread only, Rc<RefCell<>>)
 // ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug)]
-pub struct CompareAssetInfo {
-    pub title: String,
-    pub path: PathBuf,
-    pub format: String,
-    pub dimensions: (u32, u32),
-    pub file_size: u64,
-}
-
-#[derive(Clone, Debug)]
-pub struct CompareItem {
-    pub source_path: PathBuf,
-    pub output_path: PathBuf,
-    pub original_asset: CompareAssetInfo,
-    pub output_asset: CompareAssetInfo,
-    pub preserved_png_asset: Option<CompareAssetInfo>,
-    pub model: String,
-    pub scale: String,
-    pub date_added: glib::DateTime,
-}
 
 pub type OpenFolderCallback = Rc<dyn Fn(PathBuf)>;
 pub type RefreshCollectionsCallback = Rc<dyn Fn()>;
@@ -3247,15 +3227,12 @@ impl SharprWindow {
             let tasks_page_c = tasks_page.clone();
             let content_stack_c = content_stack.clone();
             filmstrip.connect_add_to_queue_requested(move |paths| {
-                let (step_type, json) = tasks_page_c.current_step_config();
                 let state = state_c.borrow();
                 let Some(idx) = state.library_index.as_ref() else {
                     return;
                 };
                 for path in paths {
-                    if let Ok(pid) = idx.create_pipeline(&path) {
-                        let _ = idx.append_pipeline_step(pid, step_type, &json);
-                    }
+                    let _ = idx.create_pipeline(&path);
                 }
                 drop(state);
                 content_stack_c.set_visible_child_name("tasks");
@@ -4137,6 +4114,31 @@ impl SharprWindow {
                 open_folder(folder);
             });
         }
+
+        // --- Populate Compare Queue from History ---
+        {
+            let state_rc = state.clone();
+            glib::idle_add_local_once(move || {
+                let mut state = state_rc.borrow_mut();
+                if let Some(idx) = state.library_index.clone() {
+                    use crate::library_index::PipelineStatus;
+                    let mut history = idx
+                        .pipelines_by_status(PipelineStatus::Completed)
+                        .unwrap_or_default();
+                    history.extend(
+                        idx.pipelines_by_status(PipelineStatus::Failed)
+                            .unwrap_or_default(),
+                    );
+                    history.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+                    for pipeline in history {
+                        if let Some(item) = build_compare_item_from_pipeline(&pipeline, &idx) {
+                            state.compare_queue.push(item);
+                        }
+                    }
+                }
+            });
+        }
     }
 
     pub fn enter_compare_mode(&self, item: CompareItem) {
@@ -4207,7 +4209,7 @@ impl SharprWindow {
         }
     }
 
-    fn refresh_compare_view(&self) {
+    pub fn refresh_compare_view(&self) {
         let (items, selected_output) = {
             let state = self.app_state();
             let mut state = state.borrow_mut();
@@ -4305,19 +4307,21 @@ impl SharprWindow {
 
     pub fn remove_from_compare_queue(&self, output_path: &Path) {
         let state_rc = self.app_state();
-        let (empty, next_selected) = {
+        let (empty, next_selected, pipeline_id) = {
             let mut state = state_rc.borrow_mut();
             let removed_pos = state
                 .compare_queue
                 .iter()
                 .position(|i| i.output_path == output_path);
+            let pipeline_id = removed_pos.map(|pos| state.compare_queue[pos].pipeline_id);
+
             if let Some(pos) = removed_pos {
                 state.compare_queue.remove(pos);
             }
 
             if state.compare_queue.is_empty() {
                 state.selected_compare_output = None;
-                (true, None)
+                (true, None, pipeline_id)
             } else {
                 let next_selected = if state
                     .selected_compare_output
@@ -4331,9 +4335,16 @@ impl SharprWindow {
                     state.selected_compare_output.clone()
                 };
                 state.selected_compare_output = next_selected.clone();
-                (false, next_selected)
+                (false, next_selected, pipeline_id)
             }
         };
+
+        if let Some(pid) = pipeline_id {
+            let state = state_rc.borrow();
+            if let Some(idx) = state.library_index.as_ref() {
+                let _ = idx.delete_pipeline(pid);
+            }
+        }
 
         if empty {
             if let Some(compare_page) = self.imp().compare_page.borrow().as_ref() {

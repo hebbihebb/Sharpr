@@ -50,6 +50,7 @@ impl ImageMetadata {
 
         // Attempt EXIF read via rexiv2.
         // rexiv2/GExiv2 is not thread-safe; serialise all calls with a global mutex.
+        /*
         let _guard = rexiv2_lock().lock().unwrap_or_else(|e| e.into_inner());
         match rexiv2::Metadata::new_from_path(path) {
             Ok(exif) => {
@@ -62,7 +63,7 @@ impl ImageMetadata {
                 }
 
                 // ISO speed.
-                meta.iso = exif.get_iso_speed().map(|v| v.to_string());
+                meta.iso = None;
 
                 // Shutter speed as a rational fraction string.
                 meta.shutter_speed = exif.get_exposure_time().map(|r| {
@@ -117,6 +118,12 @@ impl ImageMetadata {
                     meta.height = h;
                 }
             }
+        }
+        */
+
+        if let Some((w, h)) = read_dimensions_with_image(path) {
+            meta.width = w;
+            meta.height = h;
         }
 
         meta

@@ -7,7 +7,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 
-use crate::ui::window::{CompareAssetInfo, CompareItem};
+use crate::ui::compare_item::{CompareAssetInfo, CompareItem};
 use crate::upscale::BeforeAfterViewer;
 
 type CompareRemoveCallback = Box<dyn Fn(PathBuf)>;
