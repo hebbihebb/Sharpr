@@ -98,12 +98,12 @@ mod imp {
                             .add_resource_path("/io/github/hebbihebb/Sharpr");
                     }
                     let dialog = adw::AboutDialog::new();
-                    dialog.set_application_name("Sharpr");
+                    dialog.set_application_name("Skerpa");
                     dialog.set_application_icon("io.github.hebbihebb.Sharpr");
-                    dialog.set_developer_name("Sharpr Contributors");
+                    dialog.set_developer_name("Skerpa Contributors");
                     dialog.set_version(APP_DISPLAY_VERSION);
                     dialog.set_license_type(gtk4::License::Gpl30Only);
-                    dialog.set_copyright("© 2026 Sharpr Contributors");
+                    dialog.set_copyright("© 2026 Skerpa Contributors");
                     dialog.set_website("https://github.com/hebbihebb/Sharpr");
                     dialog.set_issue_url("https://github.com/hebbihebb/Sharpr/issues");
                     dialog.add_credit_section(

@@ -5079,7 +5079,7 @@ impl SharprWindow {
         app_section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));
         app_section.append(Some("Manual"), Some("win.show-manual"));
         app_section.append(Some("Preferences"), Some("win.show-preferences"));
-        app_section.append(Some("About Sharpr"), Some("app.about"));
+        app_section.append(Some("About Skerpa"), Some("app.about"));
         menu.append_section(Some("App"), &app_section);
 
         menu

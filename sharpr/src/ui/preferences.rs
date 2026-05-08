@@ -225,7 +225,7 @@ pub fn build_preferences_window(
 
     let comfy_workflow_row = libadwaita::ComboRow::new();
     comfy_workflow_row.set_title("Workflow preset");
-    comfy_workflow_row.set_subtitle("Choose which bundled ComfyUI prompt Sharpr submits");
+    comfy_workflow_row.set_subtitle("Choose which bundled ComfyUI prompt Skerpa submits");
     let comfy_workflow_choices = gtk4::StringList::new(&["ESRGAN", "SeedVR2"]);
     comfy_workflow_row.set_model(Some(&comfy_workflow_choices));
     comfy_workflow_row.set_selected(if settings.comfyui_workflow == "seedvr2" {

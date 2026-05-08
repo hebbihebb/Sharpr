@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>io.github.hebbihebb.Sharpr</id>
-  <name>Sharpr</name>
+  <name>Skerpa</name>
   <summary>A modern image library and viewer</summary>
   <description>
     <p>
-      Sharpr is a fast, modern image library and viewer for Linux.
+      Skerpa is a fast, modern image library and viewer for Linux.
       Browse large photo collections with a three-pane interface,
       inspect detailed metadata, and upscale images using AI — all offline and locally.
     </p>
@@ -30,9 +30,9 @@
   <content_rating type="oars-1.1"/>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
-  <developer_name>Sharpr Contributors</developer_name>
+  <developer_name>Skerpa Contributors</developer_name>
   <developer id="io.github.hebbihebb.Sharpr">
-    <name>Sharpr Contributors</name>
+    <name>Skerpa Contributors</name>
   </developer>
   <provides>
     <binary>sharpr</binary>
