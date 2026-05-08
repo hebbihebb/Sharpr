@@ -370,7 +370,25 @@ fn parse_history_response(json: &Value, prompt_id: &str) -> Result<ComfyUiPollSt
             let message = job["status"]["messages"]
                 .as_array()
                 .and_then(|messages| messages.last())
-                .map(|message| message.to_string())
+                .map(|message| {
+                    if let Some(arr) = message.as_array() {
+                        if arr.get(0).and_then(|v| v.as_str()) == Some("execution_error") {
+                            if let Some(details) = arr.get(1).and_then(|v| v.as_object()) {
+                                let node_id = details
+                                    .get("node_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                let exception_message = details
+                                    .get("exception_message")
+                                    .and_then(|v| v.as_str())
+                                    .or_else(|| details.get("exception_type").and_then(|v| v.as_str()))
+                                    .unwrap_or("Execution error");
+                                return format!("Node {node_id}: {exception_message}");
+                            }
+                        }
+                    }
+                    message.to_string()
+                })
                 .unwrap_or_else(|| "ComfyUI job failed".to_string());
             return Ok(ComfyUiPollState::Failed(message));
         }
@@ -528,5 +546,38 @@ mod tests {
         };
 
         assert_eq!(desired_output_dimensions(&config), Some((3840, 2160)));
+    }
+
+    #[test]
+    fn parse_history_response_handles_execution_error() {
+        let json = json!({
+            "abc123": {
+                "status": {
+                    "status_str": "error",
+                    "messages": [
+                        [
+                            "execution_error",
+                            {
+                                "node_id": "4",
+                                "exception_message": "Some Python error",
+                                "exception_type": "TypeError",
+                                "current_inputs": {
+                                    "batch_size": [1],
+                                    "dit": ["{'model': 'some_model.gguf'}"]
+                                }
+                            }
+                        ]
+                    ]
+                }
+            }
+        });
+
+        let state = parse_history_response(&json, "abc123").unwrap();
+        match state {
+            ComfyUiPollState::Failed(msg) => {
+                assert_eq!(msg, "Node 4: Some Python error");
+            }
+            _ => panic!("expected failed state"),
+        }
     }
 }

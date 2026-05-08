@@ -26,9 +26,7 @@ extern "C" {
 #[no_mangle]
 pub unsafe extern "C" fn gexiv2_metadata_free(metadata: *mut std::ffi::c_void) {
     if !metadata.is_null() {
-        println!("SHIM: gexiv2_metadata_free({:?})", metadata);
         g_object_unref(metadata);
-        println!("SHIM: gexiv2_metadata_free done");
     }
 }
 
