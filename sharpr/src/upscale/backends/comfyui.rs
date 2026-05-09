@@ -266,6 +266,20 @@ impl UpscaleBackend for ComfyUiBackend {
                 }
             }
 
+            // For SeedVR2, resolution = target output shortest edge — calculated
+            // from source dimensions so it scales proportionally rather than
+            // always targeting a fixed 3072px shortest edge.
+            if workflow_mode == ComfyUiWorkflow::SeedVr2 {
+                if let Some((tw, th)) = desired_output_dimensions(&config) {
+                    let shortest_edge = tw.min(th);
+                    if let Some(node) = workflow.get_mut("4") {
+                        if let Some(inputs) = node.get_mut("inputs") {
+                            inputs["resolution"] = json!(shortest_edge);
+                        }
+                    }
+                }
+            }
+
             // 3. Queue
             let prompt_id = match client.queue_prompt(workflow) {
                 Ok(id) => id,
@@ -385,9 +399,10 @@ fn parse_history_response(json: &Value, prompt_id: &str) -> Result<ComfyUiPollSt
                                     .unwrap_or("Execution error");
                                 return format!("Node {node_id}: {exception_message}");
                             }
+                            return "ComfyUI execution error".to_string();
                         }
                     }
-                    message.to_string()
+                    "ComfyUI job failed".to_string()
                 })
                 .unwrap_or_else(|| "ComfyUI job failed".to_string());
             return Ok(ComfyUiPollState::Failed(message));
@@ -576,6 +591,28 @@ mod tests {
         match state {
             ComfyUiPollState::Failed(msg) => {
                 assert_eq!(msg, "Node 4: Some Python error");
+            }
+            _ => panic!("expected failed state"),
+        }
+    }
+
+    #[test]
+    fn parse_history_response_handles_unparseable_execution_error() {
+        let json = json!({
+            "abc123": {
+                "status": {
+                    "status_str": "error",
+                    "messages": [
+                        ["execution_error", "not an object"]
+                    ]
+                }
+            }
+        });
+
+        let state = parse_history_response(&json, "abc123").unwrap();
+        match state {
+            ComfyUiPollState::Failed(msg) => {
+                assert_eq!(msg, "ComfyUI execution error");
             }
             _ => panic!("expected failed state"),
         }
