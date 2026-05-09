@@ -983,7 +983,10 @@ mod tests {
         match result_rx.try_recv() {
             Ok(ThumbnailWorkerResponse::Failed { path }) => assert_eq!(path, fresh_path),
             Ok(ThumbnailWorkerResponse::Success(result)) => {
-                panic!("nonexistent fresh path unexpectedly succeeded: {:?}", result.path)
+                panic!(
+                    "nonexistent fresh path unexpectedly succeeded: {:?}",
+                    result.path
+                )
             }
             Err(err) => panic!("fresh request must produce one failed result: {err}"),
         }
