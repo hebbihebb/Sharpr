@@ -107,17 +107,17 @@ Slower tests are acceptable when they catch important regressions in these areas
 
 > **Note:** This is a living draft. The order below is a starting point, not a committed sequence. It should be revisited once the QA checklist and initial regression tests (steps 1–2) are in place and give a clearer picture of what unblocks what.
 
-1. Add a daily-workflow manual QA checklist covering thumbnail loading, rapid folder switching, keyboard-only navigation, collections, Tasks, compare, generated outputs, and explicit trash.
-2. Add or strengthen regression tests for thumbnail scheduling, stale generation handling, and rapid folder/view switching.
-3. Add a short code comment in `sharpr/src/thumbnails/cache.rs` documenting the private cache design choice (fingerprint-in-filename, O(1) validity, why not freedesktop spec).
-4. Extract compare controller from `window.rs` (`enter_compare_mode`, `exit_compare_mode`, `exit_compare_mode_internal`, `refresh_compare_view`, `handle_compare_selection_change`, `remove_from_compare_queue`) → `src/ui/compare_controller.rs`. *Prerequisite for step 5; first targeted `window.rs` extraction.*
-5. Compare page: remove right-side info panel, add expandable OSD chip with the same content (file info, quality, dimensions, tags).
+1. ~~Add a daily-workflow manual QA checklist covering thumbnail loading, rapid folder switching, keyboard-only navigation, collections, Tasks, compare, generated outputs, and explicit trash.~~ Completed: `cc623b4`
+2. ~~Add or strengthen regression tests for thumbnail scheduling, stale generation handling, and rapid folder/view switching.~~ Completed: `831afd9` (3 new tests: rapid 50-generation bumps, multi-stale drop, burst-then-fresh).
+3. ~~Add a short code comment in `sharpr/src/thumbnails/cache.rs` documenting the private cache design choice (fingerprint-in-filename, O(1) validity, why not freedesktop spec).~~ Completed: `94daef6`
+4. ~~Extract compare controller from `window.rs` (`enter_compare_mode`, `exit_compare_mode`, `exit_compare_mode_internal`, `refresh_compare_view`, `handle_compare_selection_change`, `remove_from_compare_queue`) → `src/ui/compare_controller.rs`. *Prerequisite for step 5; first targeted `window.rs` extraction.*~~ Completed: `83c978d`
+5. ~~Compare page: remove right-side info panel, add expandable OSD chip with the same content (file info, quality, dimensions, tags).~~ Completed: `a1abb6f`. Visual polish (rounded corners, popover approach, readability) noted in GNOME Polish Priorities for a follow-up pass alongside step 6.
 6. Viewer MetadataChip: make expandable on click, showing quality tier, duplicates count if any, tags, and collection membership in the expanded state.
 7. Extract collection dialogs from `window.rs` (`show_new_collection_dialog`, `show_new_library_dialog`, `switch_active_library`, and related helpers) → `src/ui/collection_dialogs.rs`. *Second targeted `window.rs` extraction.*
 8. Action map audit: add a comment-block table at the top of `setup_actions` in `window.rs` listing every registered `win.*`/`app.*` action, its label, default shortcut, and sensitivity rule. Keep menus, `ShortcutController` bindings, and shortcut help aligned going forward.
 9. Define generated-output lineage, default tag/collection inheritance, and auto output collections, then route export/upscale/format results through Tasks.
 10. ~~Make Tasks a visible dashboard for progress, failures, generated files, accept/discard decisions, and output review.~~ **Substantially complete** (commits `44234f2`, `e02b9fb`, `0d6c61a`). Final polish still needed: empty states, failure visibility, and generated-output decision flow.
-11. Audit current virtual-folder flows and refactor toward a common reliability layer only for existing folders, collections, quality, duplicates, compare, and task-generated views.
+11. Audit current virtual-folder flows and refactor toward a common reliability layer only for existing folders, collections, quality, duplicates, compare, and task-generated views. *Partial fix landed: `2bc05f1` fixed filmstrip not refreshing when navigating to compare via page arrows. Known open bug: first-time compare entry shows stale filmstrip entries from the previous folder due to a race between `load_virtual_async` and `filmstrip.refresh_virtual()` — clicking stale entries does nothing. Navigating away and back works around it.*
 12. Add privacy wording and UI affordances for ComfyUI/API backends, non-loopback URLs, and future export metadata preference behavior.
 13. Polish GNOME-facing metadata, naming, empty states, accessible names, and shortcut/manual consistency.
 14. Add migration/reconciliation tests before schema changes that affect collections, task history, generated outputs, or curation data.
