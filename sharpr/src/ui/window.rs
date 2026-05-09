@@ -2319,7 +2319,8 @@ impl SharprWindow {
             let toast_overlay_c = toast_overlay.clone();
             let refresh_c = refresh_sidebar_collections.clone();
             sidebar.connect_collection_delete_requested(move |id| {
-                if let Some(idx) = state_c.borrow().library_index.clone() {
+                let idx = { state_c.borrow().library_index.clone() };
+                if let Some(idx) = idx {
                     let started = std::time::Instant::now();
                     match idx.delete_collection(id) {
                         Ok(()) => {
@@ -2330,7 +2331,16 @@ impl SharprWindow {
                                     "duration_ms": crate::bench::duration_ms(started),
                                 }),
                             );
-                            let was_active = matches!(state_c.borrow().scope, ViewScope::Collection(active) if idx.collection(active).unwrap_or(None).is_none());
+                            let active_collection_id = {
+                                let state = state_c.borrow();
+                                match state.scope {
+                                    ViewScope::Collection(active) => Some(active),
+                                    _ => None,
+                                }
+                            };
+                            let was_active = active_collection_id.is_some_and(|active| {
+                                idx.collection(active).unwrap_or(None).is_none()
+                            });
                             if was_active {
                                 let mut s = state_c.borrow_mut();
                                 s.scope = ViewScope::Search;

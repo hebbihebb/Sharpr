@@ -690,6 +690,7 @@ impl SidebarPane {
             .and_then(|row| row.downcast::<CollectionRow>().ok())
             .map(|row| row.collection_id());
         imp.suppress_collection_signal.set(true);
+        imp.collection_list.unselect_all();
         while let Some(child) = imp.collection_list.first_child() {
             imp.collection_list.remove(&child);
         }
@@ -890,9 +891,12 @@ impl SidebarPane {
             let widget_weak2 = widget.downgrade();
             dialog.connect_response(None, move |_, response| {
                 if response == "delete" {
-                    if let Some(w) = widget_weak2.upgrade() {
-                        w.emit_collection_delete_requested(id);
-                    }
+                    let widget_weak3 = widget_weak2.clone();
+                    glib::idle_add_local_once(move || {
+                        if let Some(w) = widget_weak3.upgrade() {
+                            w.emit_collection_delete_requested(id);
+                        }
+                    });
                 }
             });
             if let Some(root) = row.root() {

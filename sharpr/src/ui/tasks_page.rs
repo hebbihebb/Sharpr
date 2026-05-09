@@ -27,6 +27,29 @@ use crate::upscale::{
 pub type CompareCallback = Box<dyn Fn(CompareItem)>;
 pub type UserActivityCallback = Box<dyn Fn(bool)>;
 
+fn inherit_generated_output_metadata(
+    state: &AppState,
+    source: &Path,
+    output: &Path,
+    step_type: StepType,
+) {
+    if let Some(tags) = state.tags.as_ref() {
+        tags.copy_tags(source, output);
+    }
+
+    let Some(idx) = state.library_index.as_ref() else {
+        return;
+    };
+    let _ = idx.copy_collection_memberships(source, output);
+    let output_collection = match step_type {
+        StepType::Upscale => "Upscaled",
+        StepType::Export => "Exports",
+    };
+    if let Ok(collection_id) = idx.ensure_output_collection(output_collection) {
+        let _ = idx.add_to_collection_by_id(output, collection_id);
+    }
+}
+
 /// Per-item configuration held in memory until Start Queue is pressed.
 #[derive(Clone)]
 pub struct PendingConfig {
@@ -2842,6 +2865,7 @@ impl TasksPage {
     ) {
         let (tx, rx) = async_channel::bounded::<Result<PathBuf, String>>(1);
         let source = effective_source;
+        let source_path_for_metadata = pipeline.source_path.clone();
         let settings_json = step.settings_json.clone();
 
         let export_output_dir = state_rc.borrow().settings.export_output_dir.clone();
@@ -2903,6 +2927,12 @@ impl TasksPage {
                                     PipelineStatus::Completed,
                                     Some(&path),
                                     None,
+                                );
+                                inherit_generated_output_metadata(
+                                    &state,
+                                    &source_path_for_metadata,
+                                    &path,
+                                    step.step_type,
                                 );
                                 let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
                                 if steps.iter().all(|s| s.status == PipelineStatus::Completed) {
@@ -3125,6 +3155,12 @@ impl TasksPage {
                                     PipelineStatus::Completed,
                                     Some(&path),
                                     None,
+                                );
+                                inherit_generated_output_metadata(
+                                    &state,
+                                    &pipeline.source_path,
+                                    &path,
+                                    step.step_type,
                                 );
                                 let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
                                 if steps.iter().all(|s| s.status == PipelineStatus::Completed) {

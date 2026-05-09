@@ -218,6 +218,23 @@ impl TagDatabase {
         rows.filter_map(|r| r.ok()).collect()
     }
 
+    pub fn copy_tags(&self, source: &Path, output: &Path) {
+        if source == output {
+            return;
+        }
+        let Ok(conn) = self.conn.lock() else {
+            return;
+        };
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO file_tags (path, tag)
+             SELECT ?2, tag FROM file_tags WHERE path = ?1",
+            params![
+                source.to_string_lossy().as_ref(),
+                output.to_string_lossy().as_ref()
+            ],
+        );
+    }
+
     pub fn add_tag(&self, path: &Path, tag: &str) {
         let Ok(conn) = self.conn.lock() else {
             return;
@@ -698,6 +715,23 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn copy_tags_adds_source_tags_to_output() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let source = PathBuf::from("/photos/source.jpg");
+        let output = PathBuf::from("/photos/source-upscaled.png");
+
+        db.add_tag(&source, "people");
+        db.add_tag(&source, "model");
+        db.copy_tags(&source, &output);
+        db.copy_tags(&source, &output);
+
+        assert_eq!(
+            db.tags_for_path(&output),
+            vec!["model".to_string(), "people".to_string()]
+        );
     }
 
     #[test]

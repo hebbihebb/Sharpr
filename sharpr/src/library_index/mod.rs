@@ -785,6 +785,66 @@ impl LibraryIndex {
         })
     }
 
+    pub fn ensure_output_collection(&self, name: &str) -> rusqlite::Result<i64> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "collection name cannot be empty".into(),
+            ));
+        }
+
+        {
+            let conn = self.conn()?;
+            if let Some(id) = conn
+                .query_row(
+                    "SELECT id FROM collections WHERE name = ?1",
+                    params![name],
+                    |row| row.get(0),
+                )
+                .optional()?
+            {
+                return Ok(id);
+            }
+        }
+
+        self.create_collection("", None, name, &[], None, None)
+            .map(|collection| collection.id)
+    }
+
+    pub fn add_to_collection_by_id(&self, path: &Path, collection_id: i64) -> rusqlite::Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO collection_items (collection_id, image_path, added_at)
+             VALUES (?1, ?2, ?3)",
+            params![collection_id, path_to_string(path), now_secs()],
+        )?;
+        conn.execute(
+            "UPDATE collections SET updated_at = ?2 WHERE id = ?1",
+            params![collection_id, now_secs()],
+        )?;
+        Ok(())
+    }
+
+    pub fn copy_collection_memberships(
+        &self,
+        source: &Path,
+        output: &Path,
+    ) -> rusqlite::Result<()> {
+        if source == output {
+            return Ok(());
+        }
+
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO collection_items (collection_id, image_path, added_at)
+             SELECT collection_id, ?2, ?3
+             FROM collection_items
+             WHERE image_path = ?1",
+            params![path_to_string(source), path_to_string(output), now_secs()],
+        )?;
+        Ok(())
+    }
+
     pub fn update_collection(
         &self,
         id: i64,
@@ -1966,6 +2026,63 @@ mod tests {
     }
 
     #[test]
+    fn output_collection_helpers_are_idempotent() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let collection_id = idx.ensure_output_collection("Upscaled").unwrap();
+        assert_eq!(
+            idx.ensure_output_collection("Upscaled").unwrap(),
+            collection_id
+        );
+
+        let output = Path::new("/photos/source-upscaled.png");
+        idx.add_to_collection_by_id(output, collection_id).unwrap();
+        idx.add_to_collection_by_id(output, collection_id).unwrap();
+
+        let conn = idx.conn().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM collection_items
+                 WHERE collection_id = ?1 AND image_path = ?2",
+                params![collection_id, path_to_string(output)],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn copy_collection_memberships_adds_output_to_source_collections() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let source = Path::new("/photos/source.jpg");
+        let output = Path::new("/photos/source.jxl");
+        let first = idx
+            .create_collection("", None, "People", &[], None, None)
+            .unwrap();
+        let second = idx
+            .create_collection("", None, "Favorites", &[], None, None)
+            .unwrap();
+
+        idx.add_to_collection_by_id(source, first.id).unwrap();
+        idx.add_to_collection_by_id(source, second.id).unwrap();
+        idx.copy_collection_memberships(source, output).unwrap();
+        idx.copy_collection_memberships(source, output).unwrap();
+
+        let conn = idx.conn().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT collection_id FROM collection_items
+                 WHERE image_path = ?1
+                 ORDER BY collection_id",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map(params![path_to_string(output)], |row| row.get::<_, i64>(0))
+            .unwrap();
+        let collection_ids: Vec<i64> = rows.filter_map(Result::ok).collect();
+        assert_eq!(collection_ids, vec![first.id, second.id]);
+    }
+
+    #[test]
     fn rename_collection() {
         let idx = LibraryIndex::open_in_memory().unwrap();
         let c = idx
@@ -2028,6 +2145,19 @@ mod tests {
             .unwrap();
 
         idx.delete_collection(root.id).unwrap();
+        assert!(idx.list_collections().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_empty_collection_removes_collection() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let collection = idx
+            .create_collection("", None, "Empty", &[], None, None)
+            .unwrap();
+
+        idx.delete_collection(collection.id).unwrap();
+
+        assert!(idx.collection(collection.id).unwrap().is_none());
         assert!(idx.list_collections().unwrap().is_empty());
     }
 
