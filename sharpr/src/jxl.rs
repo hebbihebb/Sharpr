@@ -1,7 +1,8 @@
 use std::mem::MaybeUninit;
 use std::path::Path;
+use std::process::Command;
 use std::ptr;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use image::DynamicImage;
 use jpegxl_rs::encode::{EncoderFrame, EncoderResult, EncoderSpeed};
@@ -257,6 +258,51 @@ pub fn encode_path(
         }),
     );
     Ok(())
+}
+
+pub fn encode_via_cjxl(
+    image: &DynamicImage,
+    output: &Path,
+    quality: u8,
+    effort: u8,
+) -> Result<(), String> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_png = std::env::temp_dir().join(format!("sharpr-jxl-{nanos}.png"));
+
+    let result = image
+        .save(&temp_png)
+        .map_err(|err| format!("write temp PNG {}: {err}", temp_png.display()))
+        .and_then(|_| {
+            Command::new("cjxl")
+                .arg("-q")
+                .arg(quality.to_string())
+                .arg("-e")
+                .arg(effort.to_string())
+                .arg("--lossless_jpeg=0")
+                .arg(&temp_png)
+                .arg(output)
+                .output()
+                .map_err(|err| {
+                    if err.kind() == std::io::ErrorKind::NotFound {
+                        "cjxl not found".to_string()
+                    } else {
+                        format!("run cjxl: {err}")
+                    }
+                })
+        })
+        .and_then(|output_status| {
+            if output_status.status.success() {
+                Ok(())
+            } else {
+                Err(String::from_utf8_lossy(&output_status.stderr).to_string())
+            }
+        });
+
+    let _ = std::fs::remove_file(&temp_png);
+    result
 }
 
 fn speed_for_effort(effort: u8) -> EncoderSpeed {

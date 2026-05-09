@@ -380,9 +380,13 @@ fn save_image(
                 )
                 .map_err(|e| ExportError::Encode(e.to_string()))
         }
-        ExportFormat::Jxl => {
-            crate::jxl::encode_path(img, output, quality, false, 7).map_err(ExportError::Encode)
-        }
+        ExportFormat::Jxl => match crate::jxl::encode_via_cjxl(img, output, quality, 7) {
+            Ok(()) => Ok(()),
+            Err(err) if err.contains("not found") => {
+                crate::jxl::encode_path(img, output, quality, false, 7).map_err(ExportError::Encode)
+            }
+            Err(err) => Err(ExportError::Encode(err)),
+        },
         ExportFormat::Png => {
             let file = std::fs::File::create(output)
                 .map_err(|e| ExportError::Io(format!("create {}: {e}", output.display())))?;
