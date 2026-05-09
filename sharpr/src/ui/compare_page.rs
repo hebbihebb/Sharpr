@@ -41,6 +41,7 @@ impl ComparePage {
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| "Unknown".to_string());
         imp.filename_label.set_text(&filename);
+        imp.collapsed_filename_label.set_text(&filename);
 
         if let Ok(date_str) = item.date_added.format("%B %e, %Y • %H:%M") {
             imp.date_label.set_text(&format!("Added {}", date_str));
@@ -58,17 +59,19 @@ impl ComparePage {
             .set_subtitle(&folder_display(&item.output_asset.path));
 
         imp.image_details_expander.set_expanded(false);
-        imp.split_view.set_show_sidebar(false);
-        imp.details_stack.set_visible_child_name("details");
+        imp.chip_revealer.set_reveal_child(false);
     }
 
     pub fn clear(&self) {
         let imp = self.imp();
         *imp.current_item.borrow_mut() = None;
         imp.viewer.clear();
+        imp.filename_label.set_text("No comparison selected");
+        imp.collapsed_filename_label
+            .set_text("No comparison selected");
+        imp.date_label.set_text("");
         imp.image_details_expander.set_expanded(false);
-        imp.split_view.set_show_sidebar(false);
-        imp.details_stack.set_visible_child_name("empty");
+        imp.chip_revealer.set_reveal_child(false);
     }
 }
 
@@ -157,12 +160,12 @@ mod imp {
     use super::*;
 
     pub struct ComparePage {
-        pub split_view: libadwaita::OverlaySplitView,
-        pub details_stack: gtk4::Stack,
+        pub overlay: gtk4::Overlay,
         pub viewer: BeforeAfterViewer,
-        pub toolbar_revealer: gtk4::Revealer,
+        pub chip_revealer: gtk4::Revealer,
 
         pub filename_label: gtk4::Label,
+        pub collapsed_filename_label: gtk4::Label,
         pub date_label: gtk4::Label,
         pub model_row: libadwaita::ActionRow,
         pub scale_row: libadwaita::ActionRow,
@@ -180,11 +183,11 @@ mod imp {
     impl Default for ComparePage {
         fn default() -> Self {
             Self {
-                split_view: libadwaita::OverlaySplitView::new(),
-                details_stack: gtk4::Stack::new(),
+                overlay: gtk4::Overlay::new(),
                 viewer: BeforeAfterViewer::new(),
-                toolbar_revealer: gtk4::Revealer::new(),
+                chip_revealer: gtk4::Revealer::new(),
                 filename_label: gtk4::Label::new(None),
+                collapsed_filename_label: gtk4::Label::new(Some("No comparison selected")),
                 date_label: gtk4::Label::new(None),
                 model_row: libadwaita::ActionRow::new(),
                 scale_row: libadwaita::ActionRow::new(),
@@ -216,14 +219,8 @@ mod imp {
             self.parent_constructed();
             let obj = self.obj();
 
-            self.split_view.set_parent(&*obj);
-            self.split_view.set_sidebar_position(gtk4::PackType::End);
-            self.split_view.set_min_sidebar_width(320.0);
-            self.split_view.set_max_sidebar_width(360.0);
-            self.split_view.set_show_sidebar(false);
-
-            let center_overlay = gtk4::Overlay::new();
-            center_overlay.set_child(Some(&self.viewer));
+            self.overlay.set_parent(&*obj);
+            self.overlay.set_child(Some(&self.viewer));
 
             let original_lbl = gtk4::Label::new(Some("Original"));
             original_lbl.add_css_class("compare-corner-label");
@@ -231,7 +228,7 @@ mod imp {
             original_lbl.set_valign(gtk4::Align::Start);
             original_lbl.set_margin_top(16);
             original_lbl.set_margin_start(16);
-            center_overlay.add_overlay(&original_lbl);
+            self.overlay.add_overlay(&original_lbl);
 
             let upscaled_lbl = gtk4::Label::new(Some("Upscaled"));
             upscaled_lbl.add_css_class("compare-corner-label");
@@ -239,69 +236,17 @@ mod imp {
             upscaled_lbl.set_valign(gtk4::Align::Start);
             upscaled_lbl.set_margin_top(16);
             upscaled_lbl.set_margin_end(16);
-            center_overlay.add_overlay(&upscaled_lbl);
-
-            self.toolbar_revealer
-                .set_transition_type(gtk4::RevealerTransitionType::SlideUp);
-            self.toolbar_revealer.set_reveal_child(true);
-            self.toolbar_revealer.set_halign(gtk4::Align::Center);
-            self.toolbar_revealer.set_valign(gtk4::Align::End);
-            self.toolbar_revealer.set_margin_bottom(20);
-
-            let toolbar_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-            toolbar_box.add_css_class("osd");
-            toolbar_box.add_css_class("toolbar");
-
-            let fit_btn = gtk4::Button::from_icon_name("zoom-fit-best-symbolic");
-            fit_btn.set_tooltip_text(Some("Fit to window"));
-            let zoom_1_1_btn = gtk4::Button::with_label("1:1");
-            zoom_1_1_btn.set_tooltip_text(Some("Zoom 100%"));
-            let zoom_out_btn = gtk4::Button::from_icon_name("zoom-out-symbolic");
-            let zoom_in_btn = gtk4::Button::from_icon_name("zoom-in-symbolic");
-
-            toolbar_box.append(&fit_btn);
-            toolbar_box.append(&zoom_1_1_btn);
-            toolbar_box.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
-            toolbar_box.append(&zoom_out_btn);
-            toolbar_box.append(&zoom_in_btn);
-
-            self.toolbar_revealer.set_child(Some(&toolbar_box));
-            center_overlay.add_overlay(&self.toolbar_revealer);
-
-            let inspector_toggle = gtk4::Button::from_icon_name("info-outline-symbolic");
-            inspector_toggle.add_css_class("osd");
-            inspector_toggle.set_halign(gtk4::Align::End);
-            inspector_toggle.set_valign(gtk4::Align::End);
-            inspector_toggle.set_margin_bottom(20);
-            inspector_toggle.set_margin_end(20);
-            inspector_toggle.set_tooltip_text(Some("Toggle image details"));
-            center_overlay.add_overlay(&inspector_toggle);
-
-            self.split_view.set_content(Some(&center_overlay));
-
-            let details_box_outer = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-            details_box_outer.add_css_class("background");
-
-            self.details_stack
-                .set_transition_type(gtk4::StackTransitionType::Crossfade);
-
-            let empty_box = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-            empty_box.set_margin_top(24);
-            empty_box.set_margin_bottom(24);
-            empty_box.set_margin_start(16);
-            empty_box.set_margin_end(16);
-            empty_box.set_valign(gtk4::Align::Center);
-            let empty_lbl = gtk4::Label::new(Some("Select an item from the compare filmstrip"));
-            empty_lbl.add_css_class("dim-label");
-            empty_lbl.set_wrap(true);
-            empty_lbl.set_justify(gtk4::Justification::Center);
-            empty_box.append(&empty_lbl);
-            self.details_stack.add_named(&empty_box, Some("empty"));
+            self.overlay.add_overlay(&upscaled_lbl);
 
             self.filename_label.add_css_class("title-4");
             self.filename_label.set_halign(gtk4::Align::Start);
             self.filename_label
                 .set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+
+            self.collapsed_filename_label.set_halign(gtk4::Align::Start);
+            self.collapsed_filename_label
+                .set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+            self.collapsed_filename_label.set_hexpand(true);
 
             self.date_label.add_css_class("dim-label");
             self.date_label.add_css_class("caption");
@@ -309,7 +254,9 @@ mod imp {
 
             let details_scrolled = gtk4::ScrolledWindow::new();
             details_scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-            details_scrolled.set_vexpand(true);
+            details_scrolled.set_min_content_width(320);
+            details_scrolled.set_min_content_height(360);
+            details_scrolled.set_max_content_height(420);
 
             let details_container = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
             details_container.set_margin_start(16);
@@ -380,37 +327,47 @@ mod imp {
             details_page.add(&actions_group);
             details_container.append(&details_page);
             details_scrolled.set_child(Some(&details_container));
-            self.details_stack
-                .add_named(&details_scrolled, Some("details"));
 
-            details_box_outer.append(&self.details_stack);
-            self.split_view.set_sidebar(Some(&details_box_outer));
+            self.chip_revealer
+                .set_transition_type(gtk4::RevealerTransitionType::SlideUp);
+            self.chip_revealer.set_reveal_child(false);
+            self.chip_revealer.set_child(Some(&details_scrolled));
 
-            let split_view = self.split_view.clone();
-            inspector_toggle.connect_clicked(move |_| {
-                let visible = split_view.shows_sidebar();
-                split_view.set_show_sidebar(!visible);
+            let collapsed_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+            collapsed_box.set_margin_top(6);
+            collapsed_box.set_margin_bottom(6);
+            collapsed_box.set_margin_start(10);
+            collapsed_box.set_margin_end(10);
+            let info_icon = gtk4::Image::from_icon_name("info-outline-symbolic");
+            collapsed_box.append(&info_icon);
+            collapsed_box.append(&self.collapsed_filename_label);
+
+            let collapsed_button = gtk4::Button::new();
+            collapsed_button.add_css_class("flat");
+            collapsed_button.set_child(Some(&collapsed_box));
+
+            let chip_content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            chip_content.append(&collapsed_button);
+            chip_content.append(&self.chip_revealer);
+            chip_content.add_css_class("osd");
+            chip_content.set_halign(gtk4::Align::End);
+            chip_content.set_valign(gtk4::Align::End);
+            chip_content.set_margin_bottom(20);
+            chip_content.set_margin_end(20);
+            chip_content.set_tooltip_text(Some("Toggle image details"));
+            self.overlay.add_overlay(&chip_content);
+
+            let revealer = self.chip_revealer.clone();
+            collapsed_button.connect_clicked(move |_| {
+                revealer.set_reveal_child(!revealer.reveals_child());
             });
 
-            let viewer = self.viewer.clone();
-            fit_btn.connect_clicked(move |_| {
-                viewer.set_zoom_mode(crate::ui::viewer::ZoomMode::Fit);
+            let revealer = self.chip_revealer.clone();
+            let background_click = gtk4::GestureClick::new();
+            background_click.connect_pressed(move |_, _, _, _| {
+                revealer.set_reveal_child(false);
             });
-
-            let viewer = self.viewer.clone();
-            zoom_1_1_btn.connect_clicked(move |_| {
-                viewer.set_zoom_mode(crate::ui::viewer::ZoomMode::OneToOne);
-            });
-
-            let viewer = self.viewer.clone();
-            zoom_in_btn.connect_clicked(move |_| {
-                viewer.apply_scroll_zoom(1.1);
-            });
-
-            let viewer = self.viewer.clone();
-            zoom_out_btn.connect_clicked(move |_| {
-                viewer.apply_scroll_zoom(1.0 / 1.1);
-            });
+            self.viewer.add_controller(background_click);
 
             let obj_weak = obj.downgrade();
             show_original_btn.connect_clicked(move |_| {
@@ -462,11 +419,11 @@ mod imp {
                 }
             });
 
-            self.details_stack.set_visible_child_name("empty");
+            self.filename_label.set_text("No comparison selected");
         }
 
         fn dispose(&self) {
-            self.split_view.unparent();
+            self.overlay.unparent();
         }
     }
 
