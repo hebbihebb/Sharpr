@@ -4518,6 +4518,27 @@ impl SharprWindow {
         state: Rc<RefCell<AppState>>,
         _upscale_banner: &libadwaita::Banner,
     ) {
+        // Action map — win.* and app.* actions registered by this window
+        //
+        // Name                     Label                         Shortcut                         Sensitivity
+        // ───────────────────────────────────────────────────────────────────────────────────────────────────
+        // win.find-duplicates      Find Duplicates               —                                always
+        // win.show-tags            Browse Tags                   —                                always
+        // win.scan-quality         Scan Quality                  —                                always
+        // win.go-to-viewer         Go to View Page               <Ctrl>1 (ShortcutController)     always
+        // win.go-to-tags           Go to Tags Page               <Ctrl>2 (ShortcutController)     always
+        // win.go-to-tasks          Go to Tasks Page              <Ctrl>3 (ShortcutController)     always
+        // win.go-to-compare        Go to Compare Page            <Ctrl>4 (ShortcutController)     always
+        // win.cycle-page-prev      Previous Page                 [ (ShortcutController)           always
+        // win.cycle-page-next      Next Page                     ] (ShortcutController)           always
+        // win.show-help-overlay    Keyboard Shortcuts            —                                always (built-in)
+        // win.toggle-presentation  Toggle Presentation Mode      F11 (ShortcutController)         always
+        // win.zoom-mode            Zoom Mode (stateful: fit/1:1) <Ctrl>0 fit (ShortcutController) always
+        // win.show-metadata        Show Metadata Overlay         <Alt>Return (ShortcutController) always
+        // win.show-manual          Open Manual                   —                                always
+        // win.show-preferences     Open Preferences              —                                always
+        // win.convert              Convert Format                —                                always; requires current image
+        // app.about                About                         —                                always
         let w = self.downgrade();
         let toggle_presentation_action = gio::SimpleAction::new("toggle-presentation", None);
         toggle_presentation_action.connect_activate(move |_, _| {
