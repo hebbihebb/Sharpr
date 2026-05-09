@@ -298,7 +298,7 @@ gThumb has a substantial editor/tool surface:
 - JPEG/metadata-related operations.
 - Print and desktop background tools.
 
-Sharpr’s editing scope is intentionally different. It has export and upscale/comparison workflows rather than an integrated destructive editor. Owner direction makes this stricter: originals should not be modified, rotate probably does not belong, and crop/resize/format conversion should live only in export/task workflows.
+Sharpr’s editing scope is intentionally different. It has export and upscale/comparison workflows rather than an integrated destructive editor. Owner direction makes this stricter: originals should not be modified, rotate/flip is out of scope, and crop/resize/format conversion should live only in export/task workflows.
 
 Recommendation for Sharpr: do not become a full pixel editor immediately. Instead, add “curation-safe edits”:
 
@@ -347,7 +347,7 @@ Recommendation for Sharpr: do not switch wholesale to `.ui` templates. Instead, 
 | Tags | Metadata/comment tags and catalog organization | SQLite tag DB, smart tagging, collections-as-tags migration |
 | Search | Filters/search can become catalogs | Search exists, but saved searches are out of scope for now |
 | Duplicates | Not a central feature in inspected 4.0 alpha source | Perceptual hash duplicate detection |
-| Quality scoring | Not a central feature | Sharpness/resolution quality classes |
+| Quality scoring | Not a central feature | Resolution-based quality tiers (720p/900p/1080p/1440p/4K+) |
 | Metadata | Very strong EXIF/IPTC/XMP/comment categories and property views | Reading/orientation/tag storage; no embedded metadata writing direction |
 | Color management | lcms2/colord integration, ICC-aware save path | Less visible color management; Glycin may handle decode path, export paths need policy |
 | Thumbnailing | Standard-size cache, validation, failed thumbnail records, video film holes | Worker pools, generation cancellation, private cache, hash/sharpness integration |
@@ -422,10 +422,10 @@ The original comparison report intentionally used gThumb as a broad feature map.
 - Folders are the truth; SQLite supports speed, stability, cache, task history, and curation state.
 - No saved searches for now.
 - Collections, Tasks, generated-output tracking, and the filmstrip are central.
-- Compare already behaves like a virtual folder by populating the filmstrip from compare/task results.
+- Compare populates the filmstrip from compare/task results, but this behavior is fragile and needs hardening before it can be relied on.
 - Originals are never modified. Explicit trash is allowed; export/upscale/format conversion creates controlled outputs.
 - No embedded metadata writing, no IPTC/XMP tag export, no import workflow, no batch rename, and no arbitrary scripts.
-- Rotate probably does not belong and may be removed in favor of opening the image in the default viewer/editor.
+- Rotate/flip is intentionally out of scope. GNOME Image Viewer handles pixel-level adjustments; code removal from Sharpr is still pending.
 - Flathub is not a real target, but GNOME polish, keyboard accessibility, thumbnail reliability, and manual QA are core.
 
 ### 1. Add A `LibraryView`/`ContentSource` Layer
@@ -504,7 +504,7 @@ Sharpr should not compete with gThumb’s full editor. The best near-term work i
 - Compare output management.
 - Generated-output collection/tag inheritance.
 
-Rotate probably does not belong; users can open the image in the default viewer/editor when they need editing.
+Rotate/flip is out of scope; users can open the image in GNOME Image Viewer when they need pixel-level adjustments.
 
 ### 7. Document Decoder Boundaries
 

@@ -31,17 +31,13 @@ The biggest polish gaps are metadata quality, sandbox clarity, screenshot accura
 
 ## Must Fix For GNOME Polish
 
-1. Align product name everywhere.
-
-   Current metadata uses both "Sharpr" and "Skerpa". Owner decision is Sharpr for now, so make app name, metainfo, README, icon identity, about dialog, and repository docs consistent.
+1. ~~Align product name everywhere.~~ *(Done: metainfo.xml updated — name, description, summary, developer name, and release notes now all use Sharpr.)*
 
 2. Replace draft screenshot metadata.
 
-   `io.github.hebbihebb.Sharpr.metainfo.xml` points to `DesignDocs/UI design draft_v2.png`. AppStream screenshots should show the actual app, preferably current release UI, with stable URLs.
+   `io.github.hebbihebb.Sharpr.metainfo.xml` still points to `DesignDocs/UI design draft_v2.png`. A TODO comment has been left in the file. Replace with a real screenshot of the current UI when one is available.
 
-3. Clarify the privacy and network story.
-
-   The metainfo says AI upscaling works "all offline and locally", but ComfyUI can upload images to a user-configured HTTP server. Reword to "local by default" or explicitly call out configurable local/remote backends.
+3. ~~Clarify the privacy and network story.~~ *(Done: metainfo description now says "local by default" and names ComfyUI as a configurable backend rather than claiming everything is offline.)*
 
 4. Review Flatpak permissions.
 

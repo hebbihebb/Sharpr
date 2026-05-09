@@ -14,7 +14,7 @@ The 100k-image risks are predictable: too much path-heavy work, unbounded result
 
 - Thumbnail loading is the most feared regression area.
 - The filmstrip is a defining feature, so performance work must prioritize filmstrip correctness and responsiveness.
-- Compare already behaves like a virtual folder by populating the filmstrip from compare/task results.
+- Compare populates the filmstrip from compare/task results, but this behavior is fragile and needs hardening before it can be relied on.
 - Tasks are central for queued work, generated outputs, and user decisions.
 - Slower tests are acceptable if they catch important regressions.
 - Saved searches are out of scope, so virtual-view testing should focus on folders, collections, quality, duplicates, compare, and task-generated views.
@@ -45,48 +45,6 @@ The 100k-image risks are predictable: too much path-heavy work, unbounded result
 - Main-thread list-store updates if rows are appended too aggressively.
 - ComfyUI/upscale/export memory usage when finalizing large outputs.
 - Network-mounted or slow HDD folders where metadata calls and directory traversal are latency-bound.
-
-## Top 10 Performance Improvements or Tests
-
-1. Add a stress fixture generator.
-
-   Generate fake folder trees with 10k and 100k files, mixed extensions, hidden folders, long names, and nested directories. Use tiny valid images plus corrupt files.
-
-2. Add benchmark scenarios around folder open.
-
-   Measure cold index, warm index, changed mtime, deleted files, ignored folders, and network/slow storage simulation.
-
-3. Cap or backpressure result channels.
-
-   Review unbounded channels in thumbnail, hash, sharpness, metadata, and virtual-view flows. Add bounded queues or coalescing where stale results are expected.
-
-4. Separate visible thumbnails from derived analysis.
-
-   Ensure phash and sharpness never delay visible thumbnail generation or folder switching.
-
-5. Add pixel-count guards before decode.
-
-   Refuse or downsample extreme images before allocating full decoded buffers in thumbnail/export/upscale paths.
-
-6. Batch main-thread UI updates.
-
-   For large row loads and virtual views, append/update in chunks so the GTK main loop keeps repainting.
-
-7. Add SQLite query plans to performance tests.
-
-   Check `EXPLAIN QUERY PLAN` for folder, quality, duplicate, collection, task-history, and generated-output queries.
-
-8. Measure benchmark logger overhead.
-
-   At 100k thumbnails, benchmark logging should remain opt-in and avoid becoming the bottleneck.
-
-9. Add cancellation semantics to virtual views.
-
-   Folder switching has generation counters; duplicates, quality scans, collections, compare/task-result views, and metadata backfills should use similar stale-result rejection.
-
-10. Test rapid folder switching.
-
-   Repeatedly switch between large folders while thumbnails, metadata, phash, quality tasks, compare views, and task-generated results are active. Verify no stale images appear and memory returns to baseline.
 
 ## Safe Now vs Risky
 

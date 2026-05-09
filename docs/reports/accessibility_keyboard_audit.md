@@ -22,53 +22,11 @@ The first accessibility goal should be simple: a user should be able to open a f
 
 - Focus order is likely accidental in parts of the main shell because the app is code-built rather than template-driven.
 - Custom drawing appears in color swatches and overlay widgets; these may need explicit labels or accessible roles.
-- Some status is color-coded, especially quality scoring in the metadata overlay/manual, and should also be represented in text.
+- Quality scoring is purely resolution-based with text tier labels ("720p or lower", "1080p", "4K+", etc.) already shown. Other status indicators (task state, errors) should also have text alongside any color coding.
 - Icon-only buttons often have tooltips, but tooltips are not a full substitute for accessible names.
 - Delete/trash is keyboard-accessible through `Delete`; destructive intent should be confirmed or undoable.
 - Popovers/dialogs need consistent Escape behavior, default buttons, and initial focus.
 - Compare, tasks, collections, and tag-edit flows may be harder to reach or operate without a mouse than the core viewer.
-
-## Top 10 Keyboard and Accessibility Fixes
-
-1. Define and test a primary focus order.
-
-   Target order: sidebar, filmstrip, viewer controls/overlays, compare/tasks switcher, header controls, current dialog/popover.
-
-2. Add accessible labels for icon-only buttons.
-
-   Keep existing tooltips, but also set accessible names/descriptions where GTK exposes them, especially for main menu, sidebar toggle, page navigation, zoom, compare inspector, trash/remove, tag, smart-tag, and upscale controls.
-
-3. Make quality/status text explicit.
-
-   Do not rely only on green/amber/red. Metadata chips and task rows should expose labels such as "Good quality", "Fair quality", "Needs attention", "Failed", "Queued", or "Completed".
-
-4. Audit custom widgets.
-
-   Review `MetadataChip`, `TagCard`, `CompareItem`, color swatches, filmstrip tiles, and viewer overlays for accessible roles, names, and keyboard activation.
-
-5. Ensure all dialogs set useful initial focus.
-
-   Collection dialogs, tag editor, export/upscale dialogs, preferences, and confirmations should focus the first meaningful control and support Enter/Escape predictably.
-
-6. Add keyboard access for sidebar sections and virtual views.
-
-   Duplicates, quality filters, collections, task-result views, disabled folders, and folder rows should be reachable and activatable without pointer-only gestures.
-
-7. Verify filmstrip tile navigation.
-
-   Arrow keys should move selection, Enter should open/select, context actions should have keyboard alternatives, and focus should remain visible.
-
-8. Make compare workflow keyboard-friendly.
-
-   Add predictable shortcuts or focusable controls for entering compare, switching compared items, moving the slider, accepting generated outputs, and leaving compare.
-
-9. Improve shortcut discoverability.
-
-   Keep `help-overlay.ui`, README, and manual synchronized. Add missing common actions only after confirming they do not conflict with text inputs.
-
-10. Add a manual keyboard-only QA script to release checks.
-
-   This should be run before public releases and after major UI changes.
 
 ## Affected Files and Widgets
 
@@ -97,7 +55,7 @@ The first accessibility goal should be simple: a user should be able to open a f
 2. Without using the mouse, open the main menu and reach folder/library controls.
 3. Open or select a folder from the sidebar.
 4. Move focus into the filmstrip and select next/previous images.
-5. Use `Alt+Left`, `Alt+Right`, `0`, `Z`, `F11`, and `Alt+Return`.
+5. Use `Alt+Left`, `Alt+Right`, `Ctrl+0` (fit to window), `F11`, and `Alt+Return`.
 6. Open the shortcuts overlay with `?`, close it with Escape.
 7. Open tag editing with `Ctrl+T`, add/remove a tag, and return to the viewer.
 8. Open Duplicates and Quality views from the sidebar or menu.

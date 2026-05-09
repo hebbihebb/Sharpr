@@ -15,7 +15,7 @@ The main model risks are schema evolution, duplicate source-of-truth boundaries,
 - Folders are the truth; SQLite supports performance, cache, stability, task history, and curation state.
 - Collections are central and generated outputs should probably inherit relevant tags/collections.
 - Tasks are central for background work, queued work, generated outputs, and user decisions.
-- Compare already behaves like a virtual folder by populating the filmstrip from compare/task results.
+- Compare populates the filmstrip from compare/task results, but this behavior is fragile and needs hardening before it can be relied on.
 - No saved searches for now.
 - No embedded metadata writing and no Sharpr tag export to IPTC/XMP.
 - Optional PNG sidecars are user-controlled output artifacts, not a general metadata sidecar system.
@@ -40,7 +40,7 @@ The main model risks are schema evolution, duplicate source-of-truth boundaries,
 - `schema_meta` records a schema version, but migrations are mostly additive helper functions rather than a clearly versioned migration list.
 - Tags and sharpness are in `tags.sqlite3`, while library index data is in `library-index.sqlite`. This separation is workable, but source-of-truth boundaries must stay explicit.
 - Collections have evolved toward tag-backed behavior. That is useful, but it increases migration pressure around inherited tags, collection identity, and tag renames.
-- Compare/task-generated virtual views need reliable identity and stale-result handling because they populate the filmstrip like folders.
+- Compare/task-generated virtual views need reliable identity and stale-result handling because they populate the filmstrip like folders. Current known issue: when entering compare view the filmstrip shows the compared item at the top but then populates the remainder with the previous folder's contents, leaking unrelated images into the view. The intended design is for the compare filmstrip to be driven by a smart collection populated from the Tasks history queue.
 - Cache-like data and user-authored data share databases. Quality scores, phash, and metadata status are recomputable; tags, collections, ignored folders, task decisions, and generated-output links are user data.
 
 ## Top 5 Migration and Data-Safety Improvements
@@ -76,7 +76,6 @@ Recommended behavior:
 - Tasks own queued work, generated outputs, and user decisions.
 - Compare/task result views can act like virtual folders by populating the filmstrip.
 - Generated outputs should preserve traceability to source images and likely inherit relevant tags/collections.
-- Collections remain explicit user grouping.
 - Tags remain reusable labels.
 - Ignored folders must be respected across all current views.
 

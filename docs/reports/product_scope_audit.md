@@ -17,7 +17,7 @@ Sharpr is for sorting images for quality review. Its strongest shape is: folders
 - No saved searches for now.
 - Do not modify originals. Explicit trash is allowed; export/upscale/format conversion creates controlled outputs.
 - No embedded metadata writing, no Sharpr tag export to IPTC/XMP, and no arbitrary scripts.
-- No import workflow, no batch rename, and rotate probably does not belong.
+- No import workflow, no batch rename, and rotate/flip does not belong (feature is out of scope; code removal still pending).
 - AI stays for now; user-configurable ComfyUI/API backends are feasible.
 - Flathub is not a real target, but GNOME polish still matters.
 
@@ -30,7 +30,7 @@ Sharpr is for sorting images for quality review. Its strongest shape is: folders
 - Better metadata display for quality review, without embedded metadata editing.
 - Tag and collection workflows, including collection-inherited tags.
 - Duplicate review with safe compare and curation actions.
-- Quality scoring, sharpness backfill, and quality filters.
+- Quality scoring (resolution-based tiers) and quality filters.
 - Export/downscale workflows with safe output paths.
 - AI upscale as a task workflow, especially when local and optional.
 - Compare views that populate the filmstrip from compare/task results.
@@ -57,7 +57,7 @@ These are useful, but they should come after thumbnail reliability, keyboard acc
 - Batch rename.
 - Arbitrary scripts/user-defined shell actions.
 - Full image editing tools.
-- Rotate/orientation editing unless it is re-justified as export-only behavior.
+- Rotate/orientation editing (intentionally out of scope; code removal still pending).
 
 ## Features That Risk Bloating the App
 
