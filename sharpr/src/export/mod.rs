@@ -59,8 +59,6 @@ pub struct ExportConfig {
 
 #[derive(Debug)]
 pub struct ExportResult {
-    #[allow(dead_code)]
-    pub source: PathBuf,
     pub output: PathBuf,
 }
 
@@ -133,10 +131,7 @@ pub fn export_image(source: &Path, config: &ExportConfig) -> Result<ExportResult
         }),
     );
 
-    Ok(ExportResult {
-        source: source.to_path_buf(),
-        output,
-    })
+    Ok(ExportResult { output })
 }
 
 // ---------------------------------------------------------------------------

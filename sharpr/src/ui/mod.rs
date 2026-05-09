@@ -3,7 +3,6 @@ pub mod compare_page;
 pub mod filmstrip;
 pub mod filter_bar;
 pub mod help_window;
-pub mod image_ops;
 pub mod metadata_chip;
 pub mod ops_indicator;
 pub mod preferences;

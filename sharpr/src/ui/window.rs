@@ -106,23 +106,6 @@ fn parse_collection_tags_input(input: &str) -> Vec<String> {
     tags
 }
 
-#[allow(dead_code)]
-fn effective_selected_paths(state: &AppState) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = state
-        .selected_paths
-        .iter()
-        .filter(|path| state.library.entry_for_path(path).is_some())
-        .cloned()
-        .collect();
-    if paths.is_empty() {
-        if let Some(entry) = state.library.selected_entry() {
-            paths.push(entry.path());
-        }
-    }
-    paths.sort();
-    paths
-}
-
 fn remove_path_from_action_selection(state: &mut AppState, path: &Path) {
     state.selected_paths.remove(path);
     state
@@ -677,11 +660,7 @@ fn start_metadata_indexer(
         for info in pending {
             match image::image_dimensions(&info.path) {
                 Ok((width, height)) => {
-                    let quality = crate::quality::scorer::score_file_info(
-                        Some((width, height)),
-                        info.file_size,
-                        &info.extension,
-                    );
+                    let quality = crate::quality::scorer::score_file_info(Some((width, height)));
                     if index
                         .update_image_metadata(&info.path, width, height, quality.class)
                         .is_ok()
@@ -953,7 +932,6 @@ mod imp {
         pub result_rx: RefCell<Option<Receiver<ThumbnailWorkerResponse>>>,
         pub hash_result_rx: RefCell<Option<Receiver<HashResult>>>,
         pub sharpness_result_rx: RefCell<Option<Receiver<SharpnessResult>>>,
-        pub sharpness_backfill: RefCell<Option<crate::quality::backfill::SharpnessBackfill>>,
         pub global_thumbnail_op: RefCell<Option<crate::ops::queue::OpHandle>>,
         pub toast_overlay: RefCell<Option<libadwaita::ToastOverlay>>,
         pub sidebar: RefCell<Option<SidebarPane>>,
@@ -986,7 +964,6 @@ mod imp {
                 result_rx: RefCell::new(None),
                 hash_result_rx: RefCell::new(None),
                 sharpness_result_rx: RefCell::new(None),
-                sharpness_backfill: RefCell::new(None),
                 global_thumbnail_op: RefCell::new(None),
                 toast_overlay: RefCell::new(None),
                 sidebar: RefCell::new(None),
@@ -1284,12 +1261,6 @@ impl SharprWindow {
         let (worker, result_rx, hash_result_rx, sharpness_result_rx) =
             ThumbnailWorker::spawn(thread_count, tags.clone());
 
-        if let Some(db) = tags {
-            let backfill =
-                crate::quality::backfill::SharpnessBackfill::spawn(db, worker.sharpness_sender());
-            *self.imp().sharpness_backfill.borrow_mut() = Some(backfill);
-        }
-
         *self.imp().thumbnail_worker.borrow_mut() = Some(worker);
         *self.imp().result_rx.borrow_mut() = Some(result_rx);
         *self.imp().hash_result_rx.borrow_mut() = Some(hash_result_rx);
@@ -1397,13 +1368,6 @@ impl SharprWindow {
 
         if let Some(worker) = self.imp().metadata_worker.borrow().as_ref() {
             viewer.set_metadata_worker(worker.handle(), metadata_result_rx);
-        }
-
-        {
-            let filmstrip_ps = filmstrip.clone();
-            viewer.set_post_save_callback(move || {
-                filmstrip_ps.schedule_visible_thumbnails();
-            });
         }
 
         let content_stack = gtk4::Stack::new();
@@ -1630,7 +1594,6 @@ impl SharprWindow {
                 let sidebar_rx = sidebar_c.clone();
                 let state_rx = state_c.clone();
                 let path_rx = path.clone();
-                let window_weak_rx = window_weak.clone();
                 let toast_overlay_rx = toast_overlay_c.clone();
                 glib::MainContext::default().spawn_local(async move {
                     let Ok(first_result) = rx.recv().await else {
@@ -1753,19 +1716,6 @@ impl SharprWindow {
 
                     viewer_rx.clear();
                     filmstrip_rx.refresh();
-
-                    // Queue unscored images into the idle sharpness backfill.
-                    if let Some(win) = window_weak_rx.upgrade() {
-                        if let Some(backfill) = win.imp().sharpness_backfill.borrow().as_ref() {
-                            let paths: Vec<_> = {
-                                let st = state_rx.borrow();
-                                (0..st.library.image_count())
-                                    .filter_map(|i| st.library.entry_at(i).map(|e| e.path()))
-                                    .collect()
-                            };
-                            backfill.enqueue(paths);
-                        }
-                    }
 
                     let thumb_total = state_rx.borrow().library.image_count();
                     crate::bench_event!(
@@ -5057,13 +5007,6 @@ impl SharprWindow {
         view_section.append(Some("Show Overlay"), Some("win.show-metadata"));
         menu.append_section(Some("View"), &view_section);
 
-        let transform_section = gio::Menu::new();
-        transform_section.append(Some("Rotate 90° Clockwise"), Some("win.rotate-cw"));
-        transform_section.append(Some("Rotate 90° Counter-Clockwise"), Some("win.rotate-ccw"));
-        transform_section.append(Some("Flip Horizontal"), Some("win.flip-h"));
-        transform_section.append(Some("Flip Vertical"), Some("win.flip-v"));
-        menu.append_section(Some("Rotate & Flip"), &transform_section);
-
         let convert_section = gio::Menu::new();
         convert_section.append(Some("Convert…"), Some("win.convert"));
         menu.append_section(Some("Convert"), &convert_section);
@@ -5181,17 +5124,6 @@ impl SharprWindow {
         }
         self.add_action(&pref_action);
 
-        for name in ["rotate-cw", "rotate-ccw", "flip-h", "flip-v"] {
-            let a = gio::SimpleAction::new(name, None);
-            let viewer_weak = viewer.downgrade();
-            let op = name.to_owned();
-            a.connect_activate(move |_, _| {
-                if let Some(v) = viewer_weak.upgrade() {
-                    v.apply_transform(&op);
-                }
-            });
-            self.add_action(&a);
-        }
         let convert_action = gio::SimpleAction::new("convert", None);
         {
             let viewer_weak = viewer.downgrade();

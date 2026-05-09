@@ -58,26 +58,13 @@ impl QualityScore {
     }
 }
 
-/// Keep the displayed tier resolution-based even when a sharpness result is
-/// available. Sharpness is a separate quality signal and should not move an
-/// image between resolution buckets.
-pub fn blend_with_sharpness(base: &QualityScore, _sharpness_norm: f64) -> QualityScore {
-    base.clone()
-}
-
 pub fn score_metadata(meta: &ImageMetadata) -> QualityScore {
     score_file_info(
         Some((meta.width, meta.height)).filter(|(width, height)| *width > 0 && *height > 0),
-        meta.file_size_bytes,
-        &meta.format,
     )
 }
 
-pub fn score_file_info(
-    dimensions: Option<(u32, u32)>,
-    _file_size_bytes: u64,
-    _format: &str,
-) -> QualityScore {
+pub fn score_file_info(dimensions: Option<(u32, u32)>) -> QualityScore {
     score_dimensions(dimensions)
 }
 
@@ -176,12 +163,5 @@ mod tests {
         let score = score_dimensions(None);
         assert_eq!(score.score, 0);
         assert_eq!(score.class, QualityClass::NeedsUpscale);
-    }
-
-    #[test]
-    fn sharpness_does_not_change_resolution_tier() {
-        let base = score_raw(1920, 1080);
-        let blended = blend_with_sharpness(&base, 0.0);
-        assert_eq!(blended, base);
     }
 }

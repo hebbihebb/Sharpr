@@ -639,14 +639,10 @@ impl LibraryManager {
 
         let file_size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
         let dimensions = image::image_dimensions(path).ok();
-        let format = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or_default();
         let cached = CachedImageData {
             file_size,
             dimensions,
-            quality: crate::quality::scorer::score_file_info(dimensions, file_size, format),
+            quality: crate::quality::scorer::score_file_info(dimensions),
         };
         cache.insert(path.to_path_buf(), cached.clone());
         cached

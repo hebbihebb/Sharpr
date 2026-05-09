@@ -1,7 +1,6 @@
 use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -11,7 +10,7 @@ use std::sync::{Arc, Once};
 use crate::quality::{scorer, QualityScore};
 use crate::tags::TagDatabase;
 use crate::ui::metadata_chip::MetadataChip;
-use crate::ui::window::{AppState, SharprWindow};
+use crate::ui::window::AppState;
 
 const TAG_CHIP_COLOR_PALETTE: &[&str] = &[
     "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
@@ -181,14 +180,6 @@ mod imp {
         pub(super) tag_state: Rc<RefCell<TagPopoverState>>,
         /// Path of the image currently displayed — set by load_image(), cleared by clear().
         pub current_path: RefCell<Option<PathBuf>>,
-        /// Temporary buffer for unsaved in-memory edits (e.g. rotations).
-        /// Cleared on every new image load.
-        pub current_rgba: RefCell<Option<(Vec<u8>, u32, u32)>>,
-        /// True when apply_transform() has been called and the result is unsaved.
-        pub pending_edit: Cell<bool>,
-        /// Edit Save/Discard buttons owned by the window header.
-        pub edit_commit_btn: RefCell<Option<gtk4::Button>>,
-        pub edit_discard_btn: RefCell<Option<gtk4::Button>>,
         /// Zoom/Fit toggle button in the header — stored so mode changes can
         /// update the icon without an extra signal.
         pub zoom_btn: std::cell::RefCell<Option<gtk4::Button>>,
@@ -206,8 +197,6 @@ mod imp {
         pub load_gen: Cell<u64>,
         /// Handle for submitting metadata load requests to the shared metadata worker.
         pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
-        /// Called after a successful edit save so the filmstrip can refresh thumbnails.
-        pub post_save_cb: RefCell<Option<Box<dyn Fn()>>>,
         /// Called when the "Manage tags" button in the popover is clicked.
         pub manage_tags_cb: RefCell<Option<Box<dyn Fn()>>>,
         /// Last metadata-only quality score set for the displayed image, kept so
@@ -464,10 +453,6 @@ mod imp {
                 suggestions_add_all,
                 tag_state,
                 current_path: RefCell::new(None),
-                current_rgba: RefCell::new(None),
-                pending_edit: Cell::new(false),
-                edit_commit_btn: RefCell::new(None),
-                edit_discard_btn: RefCell::new(None),
                 zoom_btn: std::cell::RefCell::new(None),
                 zoom: Cell::new(1.0),
                 zoom_mode: Cell::new(super::ZoomMode::Fit),
@@ -479,7 +464,6 @@ mod imp {
                 drag_adjustments: Cell::new((0.0, 0.0)),
                 load_gen: Cell::new(0),
                 metadata_handle: RefCell::new(None),
-                post_save_cb: RefCell::new(None),
                 manage_tags_cb: RefCell::new(None),
                 base_quality: RefCell::new(None),
             }
@@ -520,23 +504,8 @@ impl ViewerPane {
         widget
     }
 
-    /// Called once by the window after layout to store the edit Save/Discard buttons.
-    pub fn set_edit_buttons(&self, commit: gtk4::Button, discard: gtk4::Button) {
-        *self.imp().edit_commit_btn.borrow_mut() = Some(commit);
-        *self.imp().edit_discard_btn.borrow_mut() = Some(discard);
-    }
-
     pub fn current_path(&self) -> Option<PathBuf> {
         self.imp().current_path.borrow().clone()
-    }
-
-    fn set_edit_buttons_visible_on(imp: &imp::ViewerPane, visible: bool) {
-        if let Some(ref btn) = *imp.edit_commit_btn.borrow() {
-            btn.set_visible(visible);
-        }
-        if let Some(ref btn) = *imp.edit_discard_btn.borrow() {
-            btn.set_visible(visible);
-        }
     }
 
     fn build_ui(&self) {
@@ -693,19 +662,6 @@ impl ViewerPane {
         });
     }
 
-    /// Register a callback invoked after a successful edit save.
-    /// Used by the window to trigger filmstrip thumbnail refresh.
-    pub fn set_post_save_callback(&self, cb: impl Fn() + 'static) {
-        *self.imp().post_save_cb.borrow_mut() = Some(Box::new(cb));
-    }
-
-    #[allow(dead_code)]
-    fn root_window(&self) -> Option<SharprWindow> {
-        self.ancestor(SharprWindow::static_type())?
-            .downcast::<SharprWindow>()
-            .ok()
-    }
-
     /// Register a callback invoked when "Manage tags" is clicked in the popover.
     pub fn connect_manage_tags(&self, cb: impl Fn() + 'static) {
         *self.imp().manage_tags_cb.borrow_mut() = Some(Box::new(cb));
@@ -725,9 +681,6 @@ impl ViewerPane {
         imp.error_label.set_visible(false);
         self.reset_zoom();
         *imp.current_path.borrow_mut() = None;
-        *imp.current_rgba.borrow_mut() = None;
-        imp.pending_edit.set(false);
-        Self::set_edit_buttons_visible_on(imp, false);
     }
 
     /// Load and display a full-resolution image from `path`.
@@ -751,8 +704,6 @@ impl ViewerPane {
         imp.tag_chips_expanded.set(false);
         imp.tag_popover.popdown();
         *imp.current_path.borrow_mut() = Some(path.clone());
-        imp.pending_edit.set(false);
-        Self::set_edit_buttons_visible_on(imp, false);
         imp.spinner.start();
         imp.spinner.set_visible(true);
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
@@ -760,7 +711,6 @@ impl ViewerPane {
         imp.tag_osd.set_visible(false);
         imp.error_label.set_visible(false);
         self.set_quality_score(None);
-        *imp.current_rgba.borrow_mut() = None;
         self.refresh_tag_summary();
 
         let picture = imp.picture.clone();
@@ -1051,175 +1001,36 @@ impl ViewerPane {
         imp.metadata_chip.update_quality(Some(quality));
     }
 
-    /// Blend a sharpness result into the quality display for the currently
-    /// shown image.  Does nothing if `path` doesn't match the displayed image.
-    pub fn apply_sharpness(&self, path: &std::path::Path, sharpness_norm: f64) {
+    /// Refresh the quality display for the currently shown image after a
+    /// sharpness result arrives. Resolution remains the displayed tier.
+    pub fn apply_sharpness(&self, path: &std::path::Path, _sharpness_norm: f64) {
         let imp = self.imp();
         if imp.current_path.borrow().as_deref() != Some(path) {
             return;
         }
         let base = imp.base_quality.borrow().clone();
         let Some(base) = base else { return };
-        let blended = crate::quality::scorer::blend_with_sharpness(&base, sharpness_norm);
-        imp.metadata_chip.update_quality(Some(&blended));
+        imp.metadata_chip.update_quality(Some(&base));
     }
 
     pub fn zoom_mode(&self) -> ZoomMode {
         self.imp().zoom_mode.get()
     }
 
-    /// Returns the RGBA bytes of the currently displayed image, checking the
-    /// in-memory edit buffer first and falling back to downloading the active
-    /// texture. Returns `None` if no image is currently displayed.
-    fn current_rgba_or_cached(&self) -> Option<(Vec<u8>, u32, u32)> {
-        let imp = self.imp();
-        if let Some(v) = imp.current_rgba.borrow().clone() {
-            return Some(v);
-        }
-
-        let texture = imp.picture.paintable()?.downcast::<gdk4::Texture>().ok()?;
+    /// Returns RGBA bytes for the currently displayed texture.
+    fn displayed_rgba(&self) -> Option<(Vec<u8>, u32, u32)> {
+        let texture = self
+            .imp()
+            .picture
+            .paintable()?
+            .downcast::<gdk4::Texture>()
+            .ok()?;
         let width = texture.width() as u32;
         let height = texture.height() as u32;
         let mut bytes = vec![0u8; (width * height * 4) as usize];
 
         texture.download(&mut bytes, (width * 4) as usize);
         Some((bytes, width, height))
-    }
-
-    /// Apply an in-memory transform to the currently displayed image.
-    /// `op` is one of: `"rotate-cw"`, `"rotate-ccw"`, `"flip-h"`, `"flip-v"`.
-    /// Falls back to downloading the active texture if the edit buffer is absent.
-    pub fn apply_transform(&self, op: &str) {
-        use gdk4::{MemoryFormat, MemoryTexture};
-        use image::imageops;
-
-        let imp = self.imp();
-        // Take the in-memory buffer if available; otherwise download from texture.
-        let rgba_from_buffer = imp.current_rgba.borrow_mut().take();
-        let rgba_from_buffer = rgba_from_buffer.or_else(|| self.current_rgba_or_cached());
-        let Some((rgba_bytes, w, h)) = rgba_from_buffer else {
-            return;
-        };
-        if w == 0 || h == 0 {
-            *imp.current_rgba.borrow_mut() = Some((rgba_bytes, w, h));
-            return;
-        }
-
-        let Some(buf) = image::RgbaImage::from_raw(w, h, rgba_bytes) else {
-            return;
-        };
-
-        let transformed = match op {
-            "rotate-cw" => image::DynamicImage::ImageRgba8(imageops::rotate90(&buf)),
-            "rotate-ccw" => image::DynamicImage::ImageRgba8(imageops::rotate270(&buf)),
-            "flip-h" => image::DynamicImage::ImageRgba8(imageops::flip_horizontal(&buf)),
-            "flip-v" => image::DynamicImage::ImageRgba8(imageops::flip_vertical(&buf)),
-            _ => {
-                let rgba_bytes = buf.into_raw();
-                *imp.current_rgba.borrow_mut() = Some((rgba_bytes, w, h));
-                return;
-            }
-        };
-
-        let rgba = transformed.into_rgba8();
-        let (nw, nh) = (rgba.width(), rgba.height());
-        let new_rgba_bytes = rgba.into_raw();
-        *imp.current_rgba.borrow_mut() = Some((new_rgba_bytes.clone(), nw, nh));
-        let gbytes = glib::Bytes::from_owned(new_rgba_bytes);
-        let texture = MemoryTexture::new(
-            nw as i32,
-            nh as i32,
-            MemoryFormat::R8g8b8a8,
-            &gbytes,
-            (nw * 4) as usize,
-        );
-        imp.picture
-            .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
-        self.reset_zoom();
-        self.imp().pending_edit.set(true);
-        Self::set_edit_buttons_visible_on(self.imp(), true);
-    }
-
-    /// Write the current in-memory texture back to the source file on disk.
-    /// JPEG writes are gated because they require lossy re-encoding. PNG and
-    /// other lossless outputs save immediately.
-    pub fn save_edit(&self) {
-        let imp = self.imp();
-        let path = match imp.current_path.borrow().clone() {
-            Some(p) => p,
-            None => return,
-        };
-        let Some((rgba, w, h)) = self.current_rgba_or_cached() else {
-            return;
-        };
-        if w == 0 || h == 0 {
-            return;
-        }
-
-        if crate::ui::image_ops::requires_jpeg_reencode_warning(&path) {
-            let dialog = libadwaita::AlertDialog::new(
-                Some("Save JPEG Edit?"),
-                Some("Saving will re-encode this JPEG, which may reduce quality. Save anyway?"),
-            );
-            dialog.add_response("cancel", "Cancel");
-            dialog.add_response("save", "Save");
-            dialog.set_default_response(Some("save"));
-            dialog.set_close_response("cancel");
-            dialog.set_response_appearance("save", libadwaita::ResponseAppearance::Suggested);
-
-            let viewer_weak = self.downgrade();
-            dialog.connect_response(None, move |_, response| {
-                if response != "save" {
-                    return;
-                }
-                let Some(viewer) = viewer_weak.upgrade() else {
-                    return;
-                };
-                viewer.finish_save_edit(path.clone(), rgba.clone(), w, h);
-            });
-            let parent_window = self.root().and_then(|r| r.downcast::<gtk4::Window>().ok());
-            dialog.present(parent_window.as_ref());
-            return;
-        }
-
-        self.finish_save_edit(path, rgba, w, h);
-    }
-
-    /// Reload the original file from disk, discarding the in-memory transform.
-    pub fn discard_edit(&self) {
-        let path = self.imp().current_path.borrow().clone();
-        if let Some(p) = path {
-            self.load_image(p); // load_image clears pending_edit and hides buttons
-        }
-    }
-
-    fn finish_save_edit(&self, path: PathBuf, rgba: Vec<u8>, w: u32, h: u32) {
-        let imp = self.imp();
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        let result = crate::ui::image_ops::save_edit_pixels(&path, &ext, &rgba, w, h);
-
-        if let Ok(saved_path) = result {
-            if let Some(ref rc) = *imp.state.borrow() {
-                rc.borrow_mut().library.invalidate_path_caches(&saved_path);
-            }
-            imp.pending_edit.set(false);
-            Self::set_edit_buttons_visible_on(imp, false);
-            if let Some(ref cb) = *imp.post_save_cb.borrow() {
-                cb();
-            }
-            self.load_image(saved_path);
-        } else {
-            eprintln!(
-                "save_edit: failed to write {}: {}",
-                path.display(),
-                result.err().unwrap_or_else(|| "unknown error".to_string())
-            );
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -1396,7 +1207,7 @@ impl ViewerPane {
                 return;
             };
             let imp = viewer.imp();
-            let Some((rgba, w, h)) = viewer.current_rgba_or_cached() else {
+            let Some((rgba, w, h)) = viewer.displayed_rgba() else {
                 return;
             };
             let tagger = imp

@@ -69,7 +69,7 @@ pub struct ThumbnailWorker {
     /// Number of visible-channel workers, used for clean shutdown.
     visible_worker_count: usize,
     preload_worker_count: usize,
-    /// Sender side of the sharpness channel — hand to the backfill worker too.
+    /// Sender side of the sharpness channel used by thumbnail workers.
     sharpness_tx: Sender<SharpnessResult>,
 }
 
@@ -424,8 +424,8 @@ impl ThumbnailWorker {
         self.generation.clone()
     }
 
-    /// Clone of the sharpness sender — hand this to the backfill worker so
-    /// results flow through the same channel.
+    /// Clone of the sharpness sender so external workers can report through
+    /// the same channel.
     pub fn sharpness_sender(&self) -> Sender<SharpnessResult> {
         self.sharpness_tx.clone()
     }
@@ -781,8 +781,8 @@ fn thumbnail_cache_path(source_path: &Path) -> Option<PathBuf> {
     super::cache::thumbnail_cache_path(source_path)
 }
 
-/// Load cached thumbnail pixels (Sharpr disk cache or system GNOME cache).
-/// Used by both the backfill worker and `compute_hash`.
+/// Load cached thumbnail pixels from the Sharpr disk cache or system GNOME cache.
+/// Used by hash and sharpness work that can reuse existing thumbnail pixels.
 pub(crate) fn load_cached_rgba(path: &Path) -> Option<(Vec<u8>, u32, u32)> {
     load_cached_thumbnail(path)
         .or_else(|| load_system_thumbnail(path))

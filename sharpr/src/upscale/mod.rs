@@ -3,7 +3,6 @@ pub mod backend;
 pub mod backends;
 pub mod comparison;
 pub mod detector;
-pub mod downloader;
 pub mod runner;
 pub mod tiling;
 
