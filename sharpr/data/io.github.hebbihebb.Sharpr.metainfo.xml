@@ -1,13 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>io.github.hebbihebb.Sharpr</id>
-  <name>Skerpa</name>
-  <summary>A modern image library and viewer</summary>
+  <name>Sharpr</name>
+  <summary>Fast image quality review for Linux</summary>
   <description>
     <p>
-      Skerpa is a fast, modern image library and viewer for Linux.
-      Browse large photo collections with a three-pane interface,
-      inspect detailed metadata, and upscale images using AI — all offline and locally.
+      Sharpr is a fast, local-first image quality review tool for Linux.
+      Open a folder, move through the filmstrip, decide what to keep, compare
+      similar images, tag and collect the keepers, and send export or upscale
+      work through Tasks. Folders are the source of truth; Sharpr never modifies
+      your original files.
+    </p>
+    <p>
+      Features include a GNOME-native three-pane layout, SQLite-backed library
+      index, collections with tag inheritance, duplicate detection, resolution-based
+      quality scoring, export to JPEG/PNG/WebP/JXL, and optional AI upscaling via
+      local ONNX models or a configurable ComfyUI backend.
     </p>
   </description>
   <url type="homepage">https://github.com/hebbihebb/Sharpr</url>
@@ -16,11 +24,22 @@
   <launchable type="desktop-id">io.github.hebbihebb.Sharpr.desktop</launchable>
   <screenshots>
     <screenshot type="default">
-      <caption>Three-pane image browser showing the photo library, filmstrip, and metadata overlay.</caption>
+      <caption>Three-pane image browser showing the folder sidebar, filmstrip, and viewer.</caption>
+      <!-- TODO: replace with a real screenshot of the current UI -->
       <image>https://raw.githubusercontent.com/hebbihebb/Sharpr/main/DesignDocs/UI%20design%20draft_v2.png</image>
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.2.0" date="2026-05-09">
+      <description>
+        <p>
+          SQLite library index, tags and collections with tag inheritance,
+          duplicate detection via dHash, resolution-based quality scoring,
+          export pipeline (JPEG/PNG/WebP/JXL), AI upscaling via ONNX and
+          ComfyUI backends, Tasks dashboard, compare page, and presentation mode.
+        </p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-04-04">
       <description>
         <p>Initial MVP release: three-pane adaptive UI, thumbnail filmstrip, image preview, metadata overlay.</p>
@@ -30,9 +49,9 @@
   <content_rating type="oars-1.1"/>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
-  <developer_name>Skerpa Contributors</developer_name>
+  <developer_name>Sharpr Contributors</developer_name>
   <developer id="io.github.hebbihebb.Sharpr">
-    <name>Skerpa Contributors</name>
+    <name>Sharpr Contributors</name>
   </developer>
   <provides>
     <binary>sharpr</binary>
@@ -46,7 +65,11 @@
     <keyword>viewer</keyword>
     <keyword>photo</keyword>
     <keyword>gallery</keyword>
+    <keyword>curation</keyword>
+    <keyword>quality</keyword>
+    <keyword>duplicates</keyword>
     <keyword>upscale</keyword>
+    <keyword>collections</keyword>
   </keywords>
   <requires>
     <display_length compare="ge">768</display_length>
