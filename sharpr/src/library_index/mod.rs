@@ -142,6 +142,7 @@ impl LibraryIndex {
         let interrupted_count = {
             let conn = pool.get().map_err(|_| rusqlite::Error::InvalidQuery)?;
             initialize_schema(&conn)?;
+            invalidate_legacy_quality_labels(&conn)?;
             ensure_collection_schema(&conn)?;
             ensure_pipeline_schema(&conn)?;
             recover_interrupted_pipelines(&conn)?
@@ -1492,6 +1493,17 @@ fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+fn invalidate_legacy_quality_labels(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE images
+         SET quality_class = NULL,
+             metadata_status = 'missing'
+         WHERE quality_class IN ('Excellent', 'Good', 'Fair', 'Poor', 'Needs Upscale')",
+        [],
+    )?;
+    Ok(())
+}
+
 fn ensure_collection_schema(conn: &Connection) -> rusqlite::Result<()> {
     let columns = table_columns(conn, "collections")?;
     if !columns.iter().any(|column| column == "parent_id") {
@@ -1609,6 +1621,7 @@ impl LibraryIndex {
         let manager = SqliteConnectionManager::memory().with_init(|conn| {
             configure_connection(conn)?;
             initialize_schema(conn)?;
+            invalidate_legacy_quality_labels(conn)?;
             ensure_collection_schema(conn)?;
             ensure_pipeline_schema(conn)?;
             Ok(())
@@ -1662,7 +1675,7 @@ mod tests {
         let idx = LibraryIndex::open_in_memory().unwrap();
         let info = make_info("/photos", "a.jpg", 1000, Some(100));
         idx.upsert_image_basic(&info).unwrap();
-        idx.update_image_metadata(Path::new("/photos/a.jpg"), 1920, 1080, QualityClass::Good)
+        idx.update_image_metadata(Path::new("/photos/a.jpg"), 1920, 1080, QualityClass::Fair)
             .unwrap();
         idx.update_image_phash(Path::new("/photos/a.jpg"), 0xdeadbeef)
             .unwrap();
@@ -1682,7 +1695,7 @@ mod tests {
         let idx = LibraryIndex::open_in_memory().unwrap();
         let info = make_info("/photos", "a.jpg", 1000, Some(100));
         idx.upsert_image_basic(&info).unwrap();
-        idx.update_image_metadata(Path::new("/photos/a.jpg"), 1920, 1080, QualityClass::Good)
+        idx.update_image_metadata(Path::new("/photos/a.jpg"), 1920, 1080, QualityClass::Fair)
             .unwrap();
         idx.update_image_phash(Path::new("/photos/a.jpg"), 0xdeadbeef)
             .unwrap();
@@ -1725,7 +1738,7 @@ mod tests {
             .unwrap();
         idx.upsert_image_basic(&make_info("/photos", "keep.jpg", 200, None))
             .unwrap();
-        idx.update_image_metadata(Path::new("/photos/keep.jpg"), 800, 600, QualityClass::Good)
+        idx.update_image_metadata(Path::new("/photos/keep.jpg"), 1600, 900, QualityClass::Poor)
             .unwrap();
 
         // Reconcile with keep.jpg (unchanged) and new.jpg; old.jpg is gone.
@@ -1742,7 +1755,7 @@ mod tests {
         // keep.jpg metadata should be preserved (unchanged file).
         let keep_row = rows.iter().find(|r| r.filename == "keep.jpg").unwrap();
         assert_eq!(keep_row.metadata_status, "ready");
-        assert_eq!(keep_row.width, Some(800));
+        assert_eq!(keep_row.width, Some(1600));
         // new.jpg needs metadata.
         assert!(pending.iter().any(|p| p.filename == "new.jpg"));
     }
@@ -1759,7 +1772,7 @@ mod tests {
             Path::new("/photos/good.jpg"),
             1920,
             1080,
-            QualityClass::Good,
+            QualityClass::Fair,
         )
         .unwrap();
         idx.update_image_metadata(
@@ -1770,8 +1783,8 @@ mod tests {
         )
         .unwrap();
 
-        let good = idx.images_by_quality(QualityClass::Good).unwrap();
-        assert_eq!(good, vec![PathBuf::from("/photos/good.jpg")]);
+        let fair = idx.images_by_quality(QualityClass::Fair).unwrap();
+        assert_eq!(fair, vec![PathBuf::from("/photos/good.jpg")]);
 
         let upscale = idx.images_by_quality(QualityClass::NeedsUpscale).unwrap();
         assert_eq!(upscale, vec![PathBuf::from("/photos/small.jpg")]);
@@ -1782,12 +1795,42 @@ mod tests {
         let idx = LibraryIndex::open_in_memory().unwrap();
         idx.upsert_image_basic(&make_info("/ignored", "a.jpg", 100, None))
             .unwrap();
-        idx.update_image_metadata(Path::new("/ignored/a.jpg"), 1920, 1080, QualityClass::Good)
+        idx.update_image_metadata(Path::new("/ignored/a.jpg"), 1920, 1080, QualityClass::Fair)
             .unwrap();
         idx.set_folder_ignored(Path::new("/ignored"), true).unwrap();
 
-        let good = idx.images_by_quality(QualityClass::Good).unwrap();
-        assert!(good.is_empty(), "ignored folder images should be excluded");
+        let fair = idx.images_by_quality(QualityClass::Fair).unwrap();
+        assert!(fair.is_empty(), "ignored folder images should be excluded");
+    }
+
+    #[test]
+    fn legacy_quality_labels_are_marked_for_recompute() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        idx.upsert_image_basic(&make_info("/photos", "a.jpg", 100, None))
+            .unwrap();
+        let conn = idx.pool.get().unwrap();
+        conn.execute(
+            "UPDATE images
+             SET quality_class = 'Good',
+                 metadata_status = 'ready'
+             WHERE path = '/photos/a.jpg'",
+            [],
+        )
+        .unwrap();
+
+        invalidate_legacy_quality_labels(&conn).unwrap();
+
+        let (quality_class, metadata_status): (Option<String>, String) = conn
+            .query_row(
+                "SELECT quality_class, metadata_status
+                 FROM images
+                 WHERE path = '/photos/a.jpg'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(quality_class, None);
+        assert_eq!(metadata_status, "missing");
     }
 
     #[test]

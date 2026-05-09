@@ -983,7 +983,7 @@ mod tests {
 
         let poor = root.join("poor.jpg");
         let excellent = root.join("excellent.bmp");
-        write_jpeg(&poor, 1280, 720, 65);
+        write_jpeg(&poor, 1600, 900, 65);
         write_bmp(&excellent, 6000, 4000);
 
         let (_, cache, filtered) = LibraryManager::filter_paths_by_quality_class(

@@ -50,7 +50,7 @@ mod imp {
             quality_row.set_halign(gtk4::Align::Start);
             quality_row.add_css_class("metadata-osd-quality-row");
 
-            let quality_score_label = gtk4::Label::new(Some("IQ --"));
+            let quality_score_label = gtk4::Label::new(Some("Res --"));
             quality_score_label.set_halign(gtk4::Align::Start);
             quality_score_label.set_xalign(0.0);
             quality_score_label.add_css_class("metadata-osd-quality-score");
@@ -161,7 +161,7 @@ impl MetadataChip {
         let imp = self.imp();
         let Some(quality) = quality else {
             imp.has_quality.set(false);
-            imp.quality_score_label.set_text("IQ --");
+            imp.quality_score_label.set_text("Res --");
             imp.quality_class_label.set_text("");
             imp.quality_row.set_visible(false);
             for class_name in ["success", "warning", "error"] {
@@ -175,8 +175,7 @@ impl MetadataChip {
         };
 
         imp.has_quality.set(true);
-        imp.quality_score_label
-            .set_text(&format!("IQ {}%", quality.score));
+        imp.quality_score_label.set_text("Res");
         imp.quality_class_label.set_text(quality.class.label());
         imp.quality_class_label
             .set_tooltip_text(Some(&quality.tooltip()));
@@ -214,7 +213,7 @@ impl MetadataChip {
         imp.metadata_label.set_text("");
         imp.has_metadata.set(false);
         imp.metadata_label.set_visible(false);
-        imp.quality_score_label.set_text("IQ --");
+        imp.quality_score_label.set_text("Res --");
         imp.quality_class_label.set_text("");
         imp.quality_class_label.set_tooltip_text(None);
         imp.has_quality.set(false);

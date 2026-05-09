@@ -2158,13 +2158,11 @@ impl SharprWindow {
             let quality_action =
                 gio::SimpleAction::new("scan-quality", Some(glib::VariantTy::STRING));
             quality_action.connect_activate(move |_, param| {
-                let class = match param.and_then(|p| p.str()) {
-                    Some("Excellent") => crate::quality::QualityClass::Excellent,
-                    Some("Good") => crate::quality::QualityClass::Good,
-                    Some("Fair") => crate::quality::QualityClass::Fair,
-                    Some("Poor") => crate::quality::QualityClass::Poor,
-                    Some("Needs Upscale") => crate::quality::QualityClass::NeedsUpscale,
-                    _ => return,
+                let Some(class) = param
+                    .and_then(|p| p.str())
+                    .and_then(crate::quality::QualityClass::from_label)
+                else {
+                    return;
                 };
                 let expected_gen = window_weak.upgrade().and_then(|win| {
                     let gen = win.bump_thumbnail_generation("smart.quality");

@@ -11,20 +11,31 @@ pub enum QualityClass {
 
 impl QualityClass {
     pub const ALL: [Self; 5] = [
-        Self::Excellent,
-        Self::Good,
-        Self::Fair,
-        Self::Poor,
         Self::NeedsUpscale,
+        Self::Poor,
+        Self::Fair,
+        Self::Good,
+        Self::Excellent,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Excellent => "Excellent",
-            Self::Good => "Good",
-            Self::Fair => "Fair",
-            Self::Poor => "Poor",
-            Self::NeedsUpscale => "Needs Upscale",
+            Self::NeedsUpscale => "720p or lower",
+            Self::Poor => "900p",
+            Self::Fair => "1080p",
+            Self::Good => "1440p",
+            Self::Excellent => "4K+",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "720p or lower" => Some(Self::NeedsUpscale),
+            "900p" => Some(Self::Poor),
+            "1080p" => Some(Self::Fair),
+            "1440p" => Some(Self::Good),
+            "4K+" => Some(Self::Excellent),
+            _ => None,
         }
     }
 }
@@ -39,7 +50,7 @@ pub struct QualityScore {
 impl QualityScore {
     pub fn tooltip(&self) -> String {
         format!(
-            "IQ: {}% • {}\n{}",
+            "Resolution: {}% • {}\n{}",
             self.score,
             self.class.label(),
             self.reason
@@ -47,50 +58,30 @@ impl QualityScore {
     }
 }
 
-/// Blend a metadata-derived base score with a normalised sharpness value
-/// (0.0–1.0 from `blur::normalize_sharpness`).  The base score accounts for
-/// resolution/format (60 %), sharpness for perceived focus quality (40 %).
-pub fn blend_with_sharpness(base: &QualityScore, sharpness_norm: f64) -> QualityScore {
-    let sharpness_component = (sharpness_norm * 100.0).round() as u8;
-    let blended = ((base.score as f64 * 0.6) + (sharpness_component as f64 * 0.4))
-        .round()
-        .clamp(0.0, 100.0) as u8;
-    let class = classify(blended);
-    let reason = if sharpness_norm < 0.25 {
-        "Soft focus detected".to_string()
-    } else if sharpness_norm < 0.5 {
-        "Moderate sharpness".to_string()
-    } else {
-        base.reason.clone()
-    };
-    QualityScore {
-        score: blended,
-        class,
-        reason,
-    }
+/// Keep the displayed tier resolution-based even when a sharpness result is
+/// available. Sharpness is a separate quality signal and should not move an
+/// image between resolution buckets.
+pub fn blend_with_sharpness(base: &QualityScore, _sharpness_norm: f64) -> QualityScore {
+    base.clone()
 }
 
 pub fn score_metadata(meta: &ImageMetadata) -> QualityScore {
     score_file_info(
         Some((meta.width, meta.height)).filter(|(width, height)| *width > 0 && *height > 0),
         meta.file_size_bytes,
-        &normalize_format(&meta.format),
+        &meta.format,
     )
 }
 
 pub fn score_file_info(
     dimensions: Option<(u32, u32)>,
-    file_size_bytes: u64,
-    format: &str,
+    _file_size_bytes: u64,
+    _format: &str,
 ) -> QualityScore {
-    score_dimensions(dimensions, file_size_bytes, normalize_format(format))
+    score_dimensions(dimensions)
 }
 
-fn score_dimensions(
-    dimensions: Option<(u32, u32)>,
-    file_size_bytes: u64,
-    format: String,
-) -> QualityScore {
+fn score_dimensions(dimensions: Option<(u32, u32)>) -> QualityScore {
     let Some((width, height)) = dimensions else {
         return QualityScore {
             score: 0,
@@ -107,179 +98,90 @@ fn score_dimensions(
         };
     }
 
-    let pixels = (width as f64) * (height as f64);
-    let megapixels = pixels / 1_000_000.0;
-    let long_edge = width.max(height);
-    let bpp = if pixels > 0.0 {
-        file_size_bytes as f64 / pixels
-    } else {
-        0.0
-    };
-
-    let long_edge_score = score_long_edge(long_edge);
-    let megapixel_score = score_megapixels(megapixels);
-    let detail_score = ((long_edge_score as f64 * 0.65) + (megapixel_score as f64 * 0.35)).round();
-    let compression_score = score_compression(&format, bpp);
-    let format_score = score_format(&format);
-
-    let total =
-        ((detail_score * 0.5) + (compression_score as f64 * 0.3) + (format_score as f64 * 0.2))
-            .round()
-            .clamp(0.0, 100.0) as u8;
-    let class = classify(total);
-    let reason = build_reason(long_edge, detail_score as u8, compression_score, &format);
+    let short_edge = width.min(height);
+    let class = classify_short_edge(short_edge);
+    let score = score_short_edge(short_edge);
+    let reason = build_reason(width, height, short_edge);
 
     QualityScore {
-        score: total,
+        score,
         class,
         reason,
     }
 }
 
-fn score_long_edge(long_edge: u32) -> u8 {
-    match long_edge {
-        8000.. => 100,
-        6000..=7999 => 90,
-        4500..=5999 => 80,
-        3840..=4499 => 70,
-        2560..=3839 => 55,
-        1920..=2559 => 40,
-        1280..=1919 => 25,
-        _ => 10,
+fn classify_short_edge(short_edge: u32) -> QualityClass {
+    match short_edge {
+        0..=720 => QualityClass::NeedsUpscale,
+        721..=900 => QualityClass::Poor,
+        901..=1080 => QualityClass::Fair,
+        1081..=1440 => QualityClass::Good,
+        _ => QualityClass::Excellent,
     }
 }
 
-fn score_megapixels(megapixels: f64) -> u8 {
-    match megapixels {
-        mp if mp >= 40.0 => 100,
-        mp if mp >= 24.0 => 90,
-        mp if mp >= 16.0 => 80,
-        mp if mp >= 10.0 => 70,
-        mp if mp >= 5.0 => 50,
-        mp if mp >= 2.0 => 30,
-        _ => 10,
+fn score_short_edge(short_edge: u32) -> u8 {
+    match classify_short_edge(short_edge) {
+        QualityClass::NeedsUpscale => 20,
+        QualityClass::Poor => 40,
+        QualityClass::Fair => 60,
+        QualityClass::Good => 80,
+        QualityClass::Excellent => 100,
     }
 }
 
-fn score_compression(format: &str, bpp: f64) -> u8 {
-    let (floor, target) = match format {
-        "AVIF" | "HEIC" | "HEIF" => (0.15, 0.60),
-        "JXL" => (0.18, 0.70),
-        "WEBP" => (0.20, 0.80),
-        "PNG" => (0.30, 2.00),
-        "TIFF" | "TIF" => (0.40, 2.50),
-        "BMP" => (0.40, 2.50),
-        "GIF" => (0.10, 0.40),
-        _ => (0.25, 1.50),
-    };
-
-    if bpp <= floor {
-        return 18;
-    }
-    if bpp >= target {
-        return 100;
-    }
-
-    (((bpp - floor) / (target - floor)) * 82.0 + 18.0)
-        .round()
-        .clamp(0.0, 100.0) as u8
-}
-
-fn score_format(format: &str) -> u8 {
-    match format {
-        "PNG" | "TIFF" | "TIF" => 96,
-        "JXL" => 95,
-        "AVIF" | "HEIC" | "HEIF" => 94,
-        "WEBP" => 90,
-        "JPEG" | "JPG" => 76,
-        "BMP" => 68,
-        "GIF" | "ICO" => 30,
-        _ => 60,
-    }
-}
-
-fn classify(score: u8) -> QualityClass {
-    match score {
-        85..=100 => QualityClass::Excellent,
-        70..=84 => QualityClass::Good,
-        50..=69 => QualityClass::Fair,
-        30..=49 => QualityClass::Poor,
-        _ => QualityClass::NeedsUpscale,
-    }
-}
-
-fn build_reason(long_edge: u32, detail_score: u8, compression_score: u8, format: &str) -> String {
-    if long_edge < 1920 {
-        return "Low resolution for wallpaper use".to_string();
-    }
-
-    if detail_score >= 70 && compression_score >= 74 {
-        if matches!(
-            format,
-            "AVIF" | "HEIC" | "HEIF" | "JXL" | "WEBP" | "PNG" | "TIFF" | "TIF"
-        ) {
-            return "High resolution, efficient format".to_string();
-        }
-        return "High resolution, lightly compressed".to_string();
-    }
-
-    if compression_score < 40 {
-        return "Good resolution, heavy compression".to_string();
-    }
-
-    if detail_score >= 50 {
-        return "Good resolution, moderate compression".to_string();
-    }
-
-    "Moderate resolution, moderate compression".to_string()
-}
-
-fn normalize_format(format: &str) -> String {
-    format.trim().to_ascii_uppercase()
+fn build_reason(width: u32, height: u32, short_edge: u32) -> String {
+    format!("{width} × {height}; short edge {short_edge}px")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn score_raw(width: u32, height: u32, file_size_bytes: u64, format: &str) -> QualityScore {
-        score_dimensions(Some((width, height)), file_size_bytes, format.to_string())
+    fn score_raw(width: u32, height: u32) -> QualityScore {
+        score_dimensions(Some((width, height)))
     }
 
     #[test]
-    fn class_boundaries_match_product_ranges() {
-        assert_eq!(classify(85), QualityClass::Excellent);
-        assert_eq!(classify(70), QualityClass::Good);
-        assert_eq!(classify(50), QualityClass::Fair);
-        assert_eq!(classify(30), QualityClass::Poor);
-        assert_eq!(classify(29), QualityClass::NeedsUpscale);
+    fn labels_match_resolution_tiers() {
+        assert_eq!(QualityClass::NeedsUpscale.label(), "720p or lower");
+        assert_eq!(QualityClass::Poor.label(), "900p");
+        assert_eq!(QualityClass::Fair.label(), "1080p");
+        assert_eq!(QualityClass::Good.label(), "1440p");
+        assert_eq!(QualityClass::Excellent.label(), "4K+");
     }
 
     #[test]
-    fn high_resolution_efficient_image_scores_high() {
-        let score = score_raw(3840, 2160, 5_800_000, "AVIF");
-        assert!(score.score >= 70, "score was {}", score.score);
-        assert_eq!(score.class, QualityClass::Good);
+    fn short_edge_boundaries_match_resolution_tiers() {
+        assert_eq!(score_raw(1280, 720).class, QualityClass::NeedsUpscale);
+        assert_eq!(score_raw(1281, 721).class, QualityClass::Poor);
+        assert_eq!(score_raw(1600, 900).class, QualityClass::Poor);
+        assert_eq!(score_raw(1601, 901).class, QualityClass::Fair);
+        assert_eq!(score_raw(1920, 1080).class, QualityClass::Fair);
+        assert_eq!(score_raw(1921, 1081).class, QualityClass::Good);
+        assert_eq!(score_raw(2560, 1440).class, QualityClass::Good);
+        assert_eq!(score_raw(2561, 1441).class, QualityClass::Excellent);
     }
 
     #[test]
-    fn low_resolution_small_jpeg_needs_upscale() {
-        let score = score_raw(960, 640, 65_000, "JPEG");
-        assert!(score.score < 30, "score was {}", score.score);
+    fn portrait_and_landscape_share_resolution_tier() {
+        assert_eq!(score_raw(1920, 1080).class, QualityClass::Fair);
+        assert_eq!(score_raw(1080, 1920).class, QualityClass::Fair);
+        assert_eq!(score_raw(3840, 2160).class, QualityClass::Excellent);
+        assert_eq!(score_raw(2160, 3840).class, QualityClass::Excellent);
+    }
+
+    #[test]
+    fn missing_dimensions_use_lowest_tier() {
+        let score = score_dimensions(None);
+        assert_eq!(score.score, 0);
         assert_eq!(score.class, QualityClass::NeedsUpscale);
     }
 
     #[test]
-    fn moderate_wallpaper_jpeg_scores_poor_to_fair() {
-        let score = score_raw(1920, 1080, 800_000, "JPEG");
-        assert!(
-            (35..=65).contains(&score.score),
-            "score was {}",
-            score.score
-        );
-        assert!(matches!(
-            score.class,
-            QualityClass::Poor | QualityClass::Fair
-        ));
+    fn sharpness_does_not_change_resolution_tier() {
+        let base = score_raw(1920, 1080);
+        let blended = blend_with_sharpness(&base, 0.0);
+        assert_eq!(blended, base);
     }
 }
