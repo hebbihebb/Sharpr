@@ -312,8 +312,9 @@ mod imp {
             drop_hint_box.append(&drop_sub);
             queue_overlay.add_overlay(&drop_hint_box);
 
-            left_col.append(&queue_header);
-            left_col.append(&queue_overlay);
+            let queue_section = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+            queue_section.append(&queue_header);
+            queue_section.append(&queue_overlay);
 
             {
                 let widget_weak = widget.downgrade();
@@ -391,12 +392,24 @@ mod imp {
             let history_list = gtk4::ListBox::new();
             history_list.add_css_class("boxed-list");
             history_list.set_selection_mode(gtk4::SelectionMode::Single);
-            history_section.append(&history_list);
+
+            let history_scroll = gtk4::ScrolledWindow::new();
+            history_scroll.set_vexpand(true);
+            history_scroll.set_child(Some(&history_list));
+            history_section.append(&history_scroll);
+            history_section.set_vexpand(true);
 
             // Hidden until there are history entries
             history_section.set_visible(false);
 
-            left_col.append(&history_section);
+            let queue_history_paned = gtk4::Paned::new(gtk4::Orientation::Vertical);
+            queue_history_paned.set_vexpand(true);
+            queue_history_paned.set_wide_handle(false);
+            queue_history_paned.set_shrink_start_child(false);
+            queue_history_paned.set_shrink_end_child(false);
+            queue_history_paned.set_start_child(Some(&queue_section));
+            queue_history_paned.set_end_child(Some(&history_section));
+            left_col.append(&queue_history_paned);
 
             // --- Right Column ---
             let right_col = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -1728,6 +1741,7 @@ impl TasksPage {
 
         let status_label = gtk4::Label::new(Some("Running"));
         status_label.set_halign(gtk4::Align::Start);
+        status_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         status_label.add_css_class("dim-label");
         status_label.add_css_class("caption");
 
@@ -2432,6 +2446,7 @@ impl TasksPage {
             .unwrap_or_default();
         let op_label = gtk4::Label::new(Some(&op_summary));
         op_label.set_halign(gtk4::Align::Start);
+        op_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         op_label.add_css_class("dim-label");
         op_label.add_css_class("caption");
         info_box.append(&op_label);
@@ -2440,6 +2455,7 @@ impl TasksPage {
         let ts = format_timestamp(pipeline.created_at);
         let ts_label = gtk4::Label::new(Some(&ts));
         ts_label.set_halign(gtk4::Align::Start);
+        ts_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         ts_label.add_css_class("dim-label");
         ts_label.add_css_class("caption");
         info_box.append(&ts_label);
@@ -2449,6 +2465,7 @@ impl TasksPage {
             self.resolve_status_display(pipeline, status_step.as_ref());
         let status_label = gtk4::Label::new(Some(&status_text));
         status_label.set_halign(gtk4::Align::Start);
+        status_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         status_label.add_css_class(status_class);
         status_label.add_css_class("caption");
         info_box.append(&status_label);
