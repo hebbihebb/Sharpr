@@ -1,3 +1,4 @@
+pub mod collection_dialogs;
 pub mod compare_item;
 pub mod compare_page;
 pub mod filmstrip;

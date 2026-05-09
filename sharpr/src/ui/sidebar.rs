@@ -696,9 +696,14 @@ impl SidebarPane {
         for coll in visible_collections(collections, &imp.collapsed_collection_ids.borrow()) {
             let has_children = collections.iter().any(|c| c.parent_id == Some(coll.id));
             let is_collapsed = imp.collapsed_collection_ids.borrow().contains(&coll.id);
-            let effective_color = root_colors
-                .get(&root_collection_id(coll.id, collections))
-                .map(String::as_str)
+            let effective_color = coll
+                .color
+                .as_deref()
+                .or_else(|| {
+                    root_colors
+                        .get(&root_collection_id(coll.id, collections))
+                        .map(String::as_str)
+                })
                 .unwrap_or_else(|| fallback_collection_color(coll.id));
             let row = CollectionRow::new(
                 &coll,
