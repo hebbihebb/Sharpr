@@ -2864,15 +2864,9 @@ impl TasksPage {
                 _ => ExportFormat::Jxl,
             };
 
-            let dest_dir = if step.step_order > 1 {
-                let work_dir = glib::user_data_dir()
-                    .join("sharpr")
-                    .join("pipeline_work")
-                    .join(pipeline.id.to_string());
-                std::fs::create_dir_all(&work_dir).ok();
-                work_dir
-            } else if settings.destination == "source" {
-                source
+            let dest_dir = if settings.destination == "source" {
+                pipeline
+                    .source_path
                     .parent()
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| PathBuf::from("."))
@@ -2926,6 +2920,13 @@ impl TasksPage {
                                             .join(pipeline.id.to_string()),
                                     )
                                     .ok();
+                                } else {
+                                    // More steps remain — reset pipeline to Queued so
+                                    // run_next_pipeline can find it (it queries status='queued').
+                                    let _ = idx.set_pipeline_status(
+                                        pipeline.id,
+                                        PipelineStatus::Queued,
+                                    );
                                 }
                             }
                             Ok(Err(e)) => {
@@ -3143,6 +3144,13 @@ impl TasksPage {
                                             .join(pipeline.id.to_string()),
                                     )
                                     .ok();
+                                } else {
+                                    // More steps remain — reset pipeline to Queued so
+                                    // run_next_pipeline can find it (it queries status='queued').
+                                    let _ = idx.set_pipeline_status(
+                                        pipeline.id,
+                                        PipelineStatus::Queued,
+                                    );
                                 }
                             }
                             Ok(Err(e)) => {
