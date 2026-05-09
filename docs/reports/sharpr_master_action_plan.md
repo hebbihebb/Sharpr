@@ -38,6 +38,7 @@ Tasks is a central dashboard, not a hidden log. It should show progress, failure
 - Rotate/orientation editing (intentionally out of scope; use GNOME Image Viewer or another app for pixel-level adjustments — Sharpr does not modify originals). The rotate/flip menu items, actions, and save logic have been removed.
 - Sharpness backfill (background thread that computed Laplacian sharpness scores) — removed. Quality is now purely resolution-based and sharpness data was not used for classification; the quality scorer now exposes only resolution-based scoring.
 - ONNX model downloader — removed as orphaned dead code. ONNX upscale support now expects local model files without an unused downloader path.
+- Splash screen — removed (commit `0ecb923`).
 - Flathub as a real release target.
 - Translations as a near-term priority.
 - gThumb-style multi-page property sidebar (EXIF/IPTC/XMP pages in a separate slide-in panel). The `MetadataChip` OSD is the right direction; see expandable chip decision in Default Workflow Decisions.
@@ -77,7 +78,7 @@ Slower tests are acceptable when they catch important regressions in these areas
 
 ## GNOME Polish Priorities
 
-- Keep the public name Sharpr consistently across metadata, README, about dialog, screenshots, and desktop/appdata files.
+- Keep the public name Sharpr consistently across metadata, README, about dialog, screenshots, and desktop/appdata files. ⚠️ Commit `a527a13` renamed the display name to "Skerpa" — this needs to be reverted. Sharpr is the correct public name.
 - Treat Flatpak/AppStream checks as quality signals, not a release target.
 - Keep app metadata honest about local-first behavior and configurable network backends.
 - Add accessible names for icon-only controls and keep shortcut help, manual, and README aligned.
@@ -86,6 +87,7 @@ Slower tests are acceptable when they catch important regressions in these areas
 - Trash confirmation dialog is not yet implemented — Delete key currently sends the file to trash immediately without any prompt. A confirmation dialog is planned.
 - ComfyUI non-loopback warning is not yet implemented — no warning is shown in preferences when the ComfyUI URL points outside localhost. This is a planned security polish item.
 - Thumbnail cache: Sharpr uses a private `~/.cache/sharpr/thumbnails-r1/` cache with fingerprint-in-filename (`{path_hash}-{size}-{mtime_secs}-{mtime_nanos}.png`) for O(1) validity checking without reading cached files. This is intentionally better for Sharpr's use case than the freedesktop `~/.cache/thumbnails/` spec, which requires reading PNG text chunks per entry and computing URI MD5s. Add a short code comment in `sharpr/src/thumbnails/cache.rs` documenting this choice so the design intent is clear to future contributors.
+- OSD chip design polish (compare page and future viewer chip): the current chip implementation is functional but needs visual refinement. Specifically: (1) the pill/button has no rounded corners — should use GNOME HIG-appropriate corner radius; (2) the expanded panel background is too transparent, making text hard to read — consider a semi-opaque solid background or a popover-style widget with its own surface. A `gtk4::Popover` may be the right GNOME HIG answer for the expanded state: it provides rounded corners, a proper surface with solid background, and standard dismiss behavior (click outside to close). Research the HIG recommendation for floating info panels before implementing. This applies equally to the viewer MetadataChip expansion (step 6 of the implementation order).
 
 ## Risk List
 
@@ -114,7 +116,7 @@ Slower tests are acceptable when they catch important regressions in these areas
 7. Extract collection dialogs from `window.rs` (`show_new_collection_dialog`, `show_new_library_dialog`, `switch_active_library`, and related helpers) → `src/ui/collection_dialogs.rs`. *Second targeted `window.rs` extraction.*
 8. Action map audit: add a comment-block table at the top of `setup_actions` in `window.rs` listing every registered `win.*`/`app.*` action, its label, default shortcut, and sensitivity rule. Keep menus, `ShortcutController` bindings, and shortcut help aligned going forward.
 9. Define generated-output lineage, default tag/collection inheritance, and auto output collections, then route export/upscale/format results through Tasks.
-10. Make Tasks a visible dashboard for progress, failures, generated files, accept/discard decisions, and output review.
+10. ~~Make Tasks a visible dashboard for progress, failures, generated files, accept/discard decisions, and output review.~~ **Substantially complete** (commits `44234f2`, `e02b9fb`, `0d6c61a`). Final polish still needed: empty states, failure visibility, and generated-output decision flow.
 11. Audit current virtual-folder flows and refactor toward a common reliability layer only for existing folders, collections, quality, duplicates, compare, and task-generated views.
 12. Add privacy wording and UI affordances for ComfyUI/API backends, non-loopback URLs, and future export metadata preference behavior.
 13. Polish GNOME-facing metadata, naming, empty states, accessible names, and shortcut/manual consistency.
