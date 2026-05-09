@@ -909,6 +909,91 @@ mod tests {
     }
 
     #[test]
+    fn rapid_generation_bumps_are_monotonic_and_clear_pending() {
+        let worker = make_worker();
+        let mut previous = worker.current_generation();
+
+        for idx in 0..50 {
+            {
+                let arc = worker.pending_set();
+                let mut pending = arc.lock().unwrap();
+                pending.insert(PathBuf::from(format!("/nonexistent/pending-{idx}.jpg")));
+            }
+
+            let bumped = worker.bump_generation();
+            assert!(
+                bumped > previous,
+                "generation must strictly increase on rapid bump {idx}"
+            );
+            assert_eq!(worker.current_generation(), bumped);
+            assert_eq!(
+                worker.pending_count(),
+                0,
+                "pending set must be empty after rapid bump {idx}"
+            );
+            previous = bumped;
+        }
+    }
+
+    #[test]
+    fn multiple_stale_requests_are_silently_dropped_by_worker() {
+        let (worker, result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let stale_gen = worker.current_generation();
+        worker.bump_generation();
+
+        let tx = worker.visible_sender();
+        for idx in 0..5 {
+            tx.send_blocking(WorkerRequest::Thumbnail {
+                path: PathBuf::from(format!("/nonexistent/stale-{idx}.jpg")),
+                gen: stale_gen,
+            })
+            .unwrap();
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            result_rx.try_recv().is_err(),
+            "stale requests must not produce thumbnail results"
+        );
+    }
+
+    #[test]
+    fn fresh_request_after_stale_burst_is_the_only_result() {
+        let (worker, result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let stale_gen = worker.current_generation();
+        let current_gen = worker.bump_generation();
+
+        let tx = worker.visible_sender();
+        for idx in 0..5 {
+            tx.send_blocking(WorkerRequest::Thumbnail {
+                path: PathBuf::from(format!("/nonexistent/stale-burst-{idx}.jpg")),
+                gen: stale_gen,
+            })
+            .unwrap();
+        }
+
+        let fresh_path = PathBuf::from("/nonexistent/fresh-after-stale.jpg");
+        tx.send_blocking(WorkerRequest::Thumbnail {
+            path: fresh_path.clone(),
+            gen: current_gen,
+        })
+        .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        match result_rx.try_recv() {
+            Ok(ThumbnailWorkerResponse::Failed { path }) => assert_eq!(path, fresh_path),
+            Ok(ThumbnailWorkerResponse::Success(result)) => {
+                panic!("nonexistent fresh path unexpectedly succeeded: {:?}", result.path)
+            }
+            Err(err) => panic!("fresh request must produce one failed result: {err}"),
+        }
+        assert!(
+            result_rx.try_recv().is_err(),
+            "only the fresh request should produce a result"
+        );
+    }
+
+    #[test]
     fn jxl_thumbnail_worker_emits_result_for_real_sample() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/test.jxl");
         if !path.exists() {
