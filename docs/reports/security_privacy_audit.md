@@ -10,6 +10,15 @@ Sharpr has a good security posture for a local image curation app because its pr
 
 The main risks are not exotic remote exploits. They are practical desktop-product risks: non-Glycin decoding still exists in thumbnail, export, JPEG XL, metadata, quality, hash, and upscale paths; ComfyUI uploads full source images to a configured HTTP endpoint; benchmark logs can contain private file paths; the Flatpak manifest currently grants broad read access to home; and delete/trash behavior needs consistently visible confirmation and failure handling.
 
+## Owner Decisions / Product Corrections
+
+- Originals are never modified by Sharpr workflows. The only destructive file action is explicit user trash.
+- No embedded metadata writing and no Sharpr tag export to IPTC/XMP.
+- Optional PNG sidecars are user-controlled generated-output artifacts.
+- Export metadata privacy should be handled later through a one-time preference popup and persistent toggle.
+- SQLite stores support data: cache, stability state, task history, and curation state. Folders remain the truth.
+- Generated/upscaled/exported files should probably inherit relevant tags/collections and may be auto-added to output collections.
+
 ## High-Risk Issues
 
 No immediate high-risk issue was found that obviously contradicts Sharpr's local-first model in normal default use. The closest high-risk area is ComfyUI when pointed at a non-local server: Sharpr uploads the source image and downloads generated output over the configured URL from `comfyui-url`, which defaults to `http://127.0.0.1:8188` but is user-editable.
@@ -84,7 +93,7 @@ Mitigation:
 
 ### Original File Safety Needs End-to-End Review
 
-Sharpr is mostly non-destructive: tags, collections, quality, phash, and pipeline data are stored in SQLite databases rather than embedded in original files. Export and upscale write to configured output folders. Delete uses GIO trash rather than direct deletion in window/filmstrip flows.
+Sharpr's policy should be stricter than "mostly non-destructive": originals are never modified by normal workflows. Tags, collections, quality, phash, and pipeline data are stored outside original files. Export, upscale, and format conversion write controlled outputs. Delete uses GIO trash and must remain an explicit user action.
 
 Remaining risk:
 
@@ -107,7 +116,7 @@ Mitigation:
 
 ## Low-Risk Polish Issues
 
-- Metadata privacy: EXIF/GPS is displayed and indexed for dimensions/quality, but Sharpr does not appear to write EXIF/XMP/IPTC back to source files. Export behavior should explicitly state whether metadata is preserved or stripped.
+- Metadata privacy: EXIF/GPS is displayed and indexed for dimensions/quality. Sharpr should not write embedded metadata or export Sharpr tags to IPTC/XMP. Export metadata preservation/stripping should become a later one-time preference popup plus preference toggle.
 - SQLite portability: library and tag databases live under `dirs::data_local_dir()/sharpr`, which is appropriate, but README should say where Sharpr stores local library data and how to remove it.
 - Path handling: ignored-folder checks use `Path::starts_with`; symlink/canonical path behavior should be documented and tested.
 - Network timeouts: ComfyUI health check has a timeout; upload, queue, poll, and download should also have bounded timeouts.
@@ -116,7 +125,7 @@ Mitigation:
 ## Things Sharpr Already Does Well
 
 - Main viewer path is Glycin-oriented.
-- Original organization data is stored out-of-band in SQLite.
+- Original files are not modified for curation state.
 - AI upscale UI is hidden by preference by default.
 - ComfyUI defaults to loopback.
 - Long-running work uses background workers and main-thread result draining.
@@ -132,8 +141,9 @@ Mitigation:
 4. Reconsider `home:ro` for Flatpak release builds.
 5. Add corrupt/huge image tests for worker/export/upscale decode paths.
 6. Add trash confirmation or undo, then manually test Delete and filmstrip trash.
-7. Document where SQLite databases live and how to remove them.
+7. Document where SQLite databases live, what they store, and that folders remain the truth.
+8. Add tests around generated output inheriting tags/collections once that behavior is implemented.
 
 ## Honest Privacy Promise
 
-Sharpr is a local-first, non-destructive image library viewer. It stores tags, collections, quality scores, hashes, pipeline history, and library indexes in local SQLite databases under the user's data directory and does not modify original image files for normal curation workflows. Network access is only needed for user-configured integrations such as ComfyUI or build-time packaging downloads; using a remote ComfyUI server uploads the selected image to that server. Benchmark logs are opt-in and may contain local file paths.
+Sharpr is a local-first, non-destructive image quality review tool. Folders are the truth, and Sharpr stores cache, tags, collections, quality scores, hashes, task history, generated-output state, and library indexes in local SQLite databases under the user's data directory. Sharpr does not modify original image files; export, upscale, and format conversion create controlled outputs, and trash only happens after explicit user action. Network access is only needed for user-configured integrations such as ComfyUI or build-time packaging downloads; using a remote ComfyUI server uploads the selected image to that server. Benchmark logs are opt-in and may contain local file paths.

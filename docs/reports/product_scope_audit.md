@@ -6,34 +6,58 @@ Report orientation: feature discipline for a viewer-first local image curation a
 
 ## Product Identity
 
-Sharpr should stay a viewer-first, local-first, non-destructive image curation tool. Its strongest shape is: browse large local image libraries, compare images, tag and collect images, find duplicates, judge quality, export variants, and optionally run upscale workflows. It should not become a full photo editor, a Lightroom clone, a file manager, or a generic AI workflow frontend.
+Sharpr is for sorting images for quality review. Its strongest shape is: folders as the truth, a defining filmstrip, collections as central curation objects, Tasks as the home for background work and generated outputs, and compare/quality/duplicate workflows that help users decide what to keep. It should not become a full photo editor, a Lightroom clone, a file manager, or a generic automation host.
+
+## Owner Decisions / Product Corrections
+
+- Folders are the truth; SQLite exists for speed, stability, cache, task history, and curation state.
+- Collections are central. Generated, upscaled, or exported files should probably inherit relevant tags/collections and may be auto-added to upscale, format, or output collections.
+- Tasks are central for background work, queued work, generated outputs, and user decisions.
+- The filmstrip is a defining feature, including compare/task-result virtual-folder behavior.
+- No saved searches for now.
+- Do not modify originals. Explicit trash is allowed; export/upscale/format conversion creates controlled outputs.
+- No embedded metadata writing, no Sharpr tag export to IPTC/XMP, and no arbitrary scripts.
+- No import workflow, no batch rename, and rotate probably does not belong.
+- AI stays for now; user-configurable ComfyUI/API backends are feasible.
+- Flathub is not a real target, but GNOME polish still matters.
 
 ## Core Features That Strengthen Sharpr
 
-- Saved searches as durable virtual views.
-- Better metadata display and metadata-based filtering.
+- Filmstrip reliability and fast thumbnail loading.
+- Collections, collection inheritance, and output collections.
+- Tasks as the central queue/history/decision surface.
+- Generated-output tracking for exports, upscales, and format conversions.
+- Better metadata display for quality review, without embedded metadata editing.
 - Tag and collection workflows, including collection-inherited tags.
 - Duplicate review with safe compare and curation actions.
 - Quality scoring, sharpness backfill, and quality filters.
 - Export/downscale workflows with safe output paths.
 - AI upscale as a task workflow, especially when local and optional.
-- Freedesktop thumbnail cache support if it improves desktop integration without weakening Sharpr's cache model.
-- Viewer-only mode if it makes browsing faster and calmer without splitting the app identity.
-- Color management for accurate viewing if scoped to display correctness, not editing.
+- Compare views that populate the filmstrip from compare/task results.
+- Keyboard-only navigation and accessibility.
 
 ## Useful Features That Should Wait
 
-- Metadata editing.
-- Sidecar support.
-- Batch rename.
-- Import workflow.
-- Format conversion beyond export/task workflows.
-- Scriptable actions.
-- Advanced saved-search predicate builder.
-- Plugin/backends system.
-- Multi-library sync/export/import UX beyond basic backup.
+- Export metadata privacy preference and one-time popup.
+- Freedesktop thumbnail cache support if it improves desktop integration without weakening Sharpr's cache model.
+- Viewer-only or lite mode, later, if AI-heavy features need separation.
+- Color management for accurate viewing if scoped to display correctness, not editing.
+- Plugin-like backend boundaries for ComfyUI/API providers.
+- Backup/export UX for Sharpr curation data only.
 
-These are useful, but they should come after release-readiness, keyboard accessibility, data migration discipline, and large-library stress testing.
+These are useful, but they should come after thumbnail reliability, keyboard accessibility, collection/task correctness, data migration discipline, and large-library stress testing.
+
+## Deferred Or Out Of Scope
+
+- Saved searches.
+- Embedded metadata writing.
+- Sidecar metadata systems, except user-controlled PNG output sidecars.
+- Exporting Sharpr tags to IPTC/XMP.
+- Import workflows.
+- Batch rename.
+- Arbitrary scripts/user-defined shell actions.
+- Full image editing tools.
+- Rotate/orientation editing unless it is re-justified as export-only behavior.
 
 ## Features That Risk Bloating the App
 
@@ -52,57 +76,58 @@ These features create support burden and dilute the curation identity. If any ar
 
 - ComfyUI backend: keep behind advanced settings and make network/upload behavior clear.
 - AI upscale: keep as a task with progress, output preview, and explicit save/discard.
-- Scriptable actions: advanced-only, disabled by default, with clear trust warnings.
-- Metadata writing/sidecars: advanced curation feature, not a default viewer operation.
-- Batch rename and format conversion: task workflow with preview and undo-safe output, not inline file-manager behavior.
+- User-configurable API backends: feasible as explicit backends, not arbitrary scripts.
+- Format conversion: task/export workflow only, with controlled outputs.
+- PNG sidecars: user-controlled output option only.
 - Model downloads: advanced/task flow with source, size, license, and storage location shown.
 
 ## Feature Evaluation
 
-- Saved searches: yes, near-term. They fit SQLite and curation.
-- Metadata editing: later. Useful, but raises source-file and sidecar safety questions.
-- Sidecar support: later with metadata editing. Do not rush.
-- Batch rename: later, task workflow only.
-- Import workflow: wait. Sharpr can open existing folders first.
+- Saved searches: out of scope for now.
+- Metadata editing: no embedded metadata writing.
+- Sidecar support: only optional user-controlled PNG sidecars for generated output.
+- Batch rename: out of scope.
+- Import workflow: out of scope; Sharpr works with folders and library hot swap.
 - Format conversion: limited export workflow only.
 - Color management: yes eventually for viewing correctness.
 - Freedesktop thumbnail cache: worth exploring for desktop integration and cache hits.
-- Scriptable actions: advanced-only, likely plugin/backend shaped.
+- Scriptable actions: no arbitrary scripts.
 - Full image editing tools: no for core app.
 - ComfyUI/upscale integration: keep optional, local-first, and task-scoped.
-- Viewer-only mode: yes if it improves focus and performance without hiding curation permanently.
-- Plugins/backends/advanced mode: useful later for upscale, export encoders, scripts, and metadata providers.
+- Viewer-only/lite mode: possible later, not now.
+- Plugins/backends/advanced mode: useful later for upscale/API backends and export encoders, not scripts.
 
 ## Recommended 3-Phase Roadmap
 
 Phase 1: Make Sharpr shippable.
 
 - Security/privacy wording and ComfyUI consent.
-- Release/Flathub metadata cleanup.
-- Keyboard-only accessibility pass.
-- Large-library benchmark harness.
+- GNOME metadata polish, without treating Flathub as a release target.
+- Keyboard-only accessibility pass focused on filmstrip, collections, Tasks, and compare.
+- Thumbnail and rapid-folder-switching regression harness.
 - Migration tests before new schema work.
+- Generated-output tracking through Tasks and collections.
 
 Phase 2: Strengthen curation.
 
-- Saved searches as first-class virtual views.
-- Better metadata filtering.
+- Collection/tag inheritance for generated outputs.
+- Better metadata display for quality review.
 - Duplicate review polish.
 - Quality view polish and measurable thresholds.
-- Backup/export/import for user-authored curation data.
+- Backup/export for user-authored curation data.
 
 Phase 3: Add controlled power features.
 
-- Sidecar-aware metadata editing.
-- Batch rename and conversion as explicit task workflows.
+- Export metadata privacy preference and one-time popup.
+- Format conversion as explicit export/task workflow.
 - Color management.
 - Freedesktop thumbnail cache integration.
-- Advanced backends/plugins for AI, scripts, and export encoders.
+- Advanced backends for AI/API integrations and export encoders.
 
 ## Positioning Statement
 
-Sharpr is a fast, local-first image library viewer for Linux that helps you curate large folders without modifying your originals. It combines a GNOME-native browsing experience with tags, collections, duplicate detection, quality scoring, compare tools, safe export workflows, and optional local AI upscaling for users who want deeper review without turning their image viewer into a full photo editor.
+Sharpr is a fast, local-first image quality review tool for Linux. It treats folders as the truth, keeps originals untouched unless the user explicitly trashes them, and uses a GNOME-native filmstrip, collections, duplicate/quality review, compare tools, Tasks, safe generated outputs, and optional AI upscaling to help users sort large image folders without becoming a full photo editor.
 
 ## Practical Product Rule
 
-If a feature helps users decide which local images are worth keeping, grouping, comparing, exporting, or enhancing, it probably belongs. If it changes originals, manages the whole filesystem, edits pixels directly, or requires cloud-style workflows, it should wait, move behind advanced/task UI, or stay out.
+If a feature helps users decide which local images are worth keeping, grouping, comparing, exporting, enhancing, or reviewing as generated outputs, it probably belongs. If it changes originals, writes embedded metadata, manages imports, renames batches, edits pixels directly, or runs arbitrary scripts, it should stay out.

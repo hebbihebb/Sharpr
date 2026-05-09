@@ -10,6 +10,15 @@ Sharpr already has the right architecture for large folders: chunked loading, ba
 
 The 100k-image risks are predictable: too much path-heavy work, unbounded result queues, eager metadata/hash/quality work, expensive virtual views, full-path benchmark logs, image decode memory spikes, and rapid folder switching while workers are still producing results. The next performance work should be measurable stress testing before optimization.
 
+## Owner Decisions / Product Corrections
+
+- Thumbnail loading is the most feared regression area.
+- The filmstrip is a defining feature, so performance work must prioritize filmstrip correctness and responsiveness.
+- Compare already behaves like a virtual folder by populating the filmstrip from compare/task results.
+- Tasks are central for queued work, generated outputs, and user decisions.
+- Slower tests are acceptable if they catch important regressions.
+- Saved searches are out of scope, so virtual-view testing should focus on folders, collections, quality, duplicates, compare, and task-generated views.
+
 ## Current Strengths
 
 - Thumbnail worker has visible and preload pools.
@@ -31,7 +40,7 @@ The 100k-image risks are predictable: too much path-heavy work, unbounded result
 - Thumbnail decode memory spikes for huge images or many large PNG/JXL/WebP files.
 - Unbounded result channels for thumbnail, hash, sharpness, metadata, and some virtual-view flows.
 - Hash and sharpness work chained after thumbnail generation, which can compete with visible responsiveness.
-- Quality and duplicate virtual views that require broad index scans or background metadata completion.
+- Quality, duplicate, collection, compare, and task-result virtual views that require broad index scans or background metadata completion.
 - Benchmark logging of every thumbnail/hash path when enabled, which can become heavy at 100k scale.
 - Main-thread list-store updates if rows are appended too aggressively.
 - ComfyUI/upscale/export memory usage when finalizing large outputs.
@@ -65,7 +74,7 @@ The 100k-image risks are predictable: too much path-heavy work, unbounded result
 
 7. Add SQLite query plans to performance tests.
 
-   Check `EXPLAIN QUERY PLAN` for folder, quality, duplicate, collection, and future saved-search queries.
+   Check `EXPLAIN QUERY PLAN` for folder, quality, duplicate, collection, task-history, and generated-output queries.
 
 8. Measure benchmark logger overhead.
 
@@ -73,11 +82,11 @@ The 100k-image risks are predictable: too much path-heavy work, unbounded result
 
 9. Add cancellation semantics to virtual views.
 
-   Folder switching has generation counters; duplicates, quality scans, metadata backfills, and search should use similar stale-result rejection.
+   Folder switching has generation counters; duplicates, quality scans, collections, compare/task-result views, and metadata backfills should use similar stale-result rejection.
 
 10. Test rapid folder switching.
 
-   Repeatedly switch between large folders while thumbnails, metadata, phash, and quality tasks are active. Verify no stale images appear and memory returns to baseline.
+   Repeatedly switch between large folders while thumbnails, metadata, phash, quality tasks, compare views, and task-generated results are active. Verify no stale images appear and memory returns to baseline.
 
 ## Safe Now vs Risky
 
@@ -87,7 +96,7 @@ Safe now:
 - Add query-plan checks.
 - Add path redaction option for benchmark logs.
 - Add stale-result generation counters to more virtual views.
-- Add documentation for expected large-library behavior.
+- Add documentation for expected large-library and task-result filmstrip behavior.
 
 Risky without measurement:
 
@@ -105,6 +114,8 @@ Risky without measurement:
 - 100k files with 1 percent changed mtimes.
 - 100k files with 10 percent deleted/moved.
 - Rapid switch across five 5k-image folders.
+- Rapid switch between folders, collections, quality, duplicates, compare, and task-result filmstrip views.
+- Generated-output tracking during export/upscale completion.
 - Huge single image: very large dimensions, normal file size.
 - Corrupt image batch: 1k files that fail decode.
 - Slow storage: artificial latency around metadata reads.
@@ -127,4 +138,4 @@ Risky without measurement:
 
 ## Practical Position
 
-Sharpr is architecturally prepared for large libraries, but it needs hard numbers before broad optimization. The best next step is a repeatable stress harness that makes 10k and 100k image workflows measurable across folder open, thumbnail display, virtual views, memory, and cancellation.
+Sharpr is architecturally prepared for large libraries, but it needs hard numbers before broad optimization. The best next step is a repeatable stress harness that makes 10k and 100k image workflows measurable across folder open, thumbnail display, filmstrip updates, collections, compare/task virtual folders, generated-output tracking, memory, and cancellation.

@@ -1,14 +1,22 @@
-# Sharpr Release and Flathub Readiness Audit
+# Sharpr GNOME Polish and Packaging Readiness Audit
 
 Date: 2026-05-09  
 Sharpr checkout: `/home/hebbi/Projects/Sharpr`  
-Report orientation: practical checklist for publishing as a serious GNOME/Flatpak app
+Report orientation: practical GNOME polish checklist, not a Flathub release goal
 
 ## Executive Summary
 
-Sharpr already has the core release shape of a GNOME application: app ID, desktop file, metainfo, icon, GSettings schema, GResource assets, Flatpak manifest, README, manual, shortcuts overlay, about dialog, and a documented native and Flatpak run path. It is close enough to treat release work as polish and risk reduction, not a ground-up packaging effort.
+Sharpr already has the core shape of a GNOME application: app ID, desktop file, metainfo, icon, GSettings schema, GResource assets, Flatpak manifest, README, manual, shortcuts overlay, about dialog, and a documented native and Flatpak run path. Flathub is not a real target right now, so the packaging guidance should be treated as a quality checklist rather than a release gate.
 
-The biggest blockers before a public release are metadata quality, sandbox clarity, screenshot accuracy, dependency/bundled-binary review, and a repeatable release checklist. Flathub readiness needs stricter attention to AppStream completeness, Flatpak permissions, license clarity for bundled Real-ESRGAN and ONNX Runtime artifacts, and clean install behavior.
+The biggest polish gaps are metadata quality, sandbox clarity, screenshot accuracy, dependency/bundled-binary review, clean install behavior, and a repeatable manual QA checklist.
+
+## Owner Decisions / Product Corrections
+
+- Flathub is not a real target, but GNOME polish still matters.
+- Name remains Sharpr for now.
+- Translations are not a priority.
+- Keyboard navigation/accessibility is core.
+- Manual QA is wanted and slower tests are acceptable if they catch important regressions.
 
 ## Already Acceptable
 
@@ -21,11 +29,11 @@ The biggest blockers before a public release are metadata quality, sandbox clari
 - Native run path is documented and matches repo instructions.
 - Flatpak manifest builds vendored Rust sources offline and caps jobs to reduce memory pressure.
 
-## Must Fix Before Public Release
+## Must Fix For GNOME Polish
 
 1. Align product name everywhere.
 
-   Current metadata uses both "Sharpr" and "Skerpa". Decide the public name and make app name, metainfo, README, icon identity, about dialog, and repository docs consistent.
+   Current metadata uses both "Sharpr" and "Skerpa". Owner decision is Sharpr for now, so make app name, metainfo, README, icon identity, about dialog, and repository docs consistent.
 
 2. Replace draft screenshot metadata.
 
@@ -47,12 +55,12 @@ The biggest blockers before a public release are metadata quality, sandbox clari
 
    Metainfo currently lists only `0.1.0` with an MVP description. Public release should include current features: SQLite library index, tags/collections, duplicate detection, quality scoring, export, upscale backends, and major fixes.
 
-## Should Fix Before Flathub
+## Packaging Quality Checklist
 
 - Validate AppStream metadata with `appstreamcli validate`.
 - Validate desktop file with `desktop-file-validate`.
-- Confirm icon sizes and install paths meet Flathub expectations.
-- Reassess runtime version `"50"` and SDK extension versions against current Flathub availability at release time.
+- Confirm icon sizes and install paths follow GNOME/AppStream expectations.
+- Reassess runtime version `"50"` and SDK extension versions before distributing Flatpak builds.
 - Avoid claims that all AI workflows are offline if ComfyUI may be remote.
 - Ensure a clean first-run experience when no library is configured and no previous GSettings exist.
 - Add a short Help or manual section for where Sharpr stores local indexes and how to reset them.
@@ -64,7 +72,7 @@ The biggest blockers before a public release are metadata quality, sandbox clari
 
 - Add a concise "What Sharpr is not" line: not a full editor, not a cloud photo service, not a Lightroom replacement.
 - Add metainfo developer/contact quality improvements if Flathub review asks for them.
-- Add localized strings later, but do not block a first personal open-source release on translations.
+- Leave translations for later; they are not a priority now.
 - Add in-app empty states for "No library selected", "No images", "No duplicates", "No tasks", and "AI upscale hidden".
 - Add a visible first-run folder action that explains local-first/non-destructive behavior without becoming a landing page.
 
@@ -89,13 +97,14 @@ The biggest blockers before a public release are metadata quality, sandbox clari
 - Pass: Flatpak build/install/run from a clean checkout
 - Pass: AppStream and desktop validation
 - Pass: first run with empty settings
-- Pass: open a Pictures folder, navigate images, switch folders, and close/reopen app
-- Pass: tag image, create collection, reopen app, verify persistence
-- Pass: run duplicate view, quality view, export, and an upscale task
+- Pass: open a folder, navigate the filmstrip, switch folders rapidly, and close/reopen app
+- Pass: tag image, create collection, generate output, verify tag/collection inheritance behavior
+- Pass: run duplicate view, quality view, compare/task-result virtual views, export, and an upscale task
+- Pass: complete keyboard-only navigation through sidebar, filmstrip, viewer, collections, Tasks, compare, dialogs, and preferences
 - Pass: test Delete/trash and cancellation/failure paths
 - Pass: verify screenshots, app name, summary, release notes, URLs, and license fields
 - Pass: verify no public release text overpromises privacy or offline behavior
 
 ## Practical Release Position
 
-Sharpr can be released as a personal open-source GNOME image curation app once metadata, screenshots, privacy wording, permissions, and licensing are cleaned up. Flathub readiness is mostly a packaging and trust-polish task, not a major architecture blocker.
+Sharpr can be polished as a serious GNOME image quality review app without treating Flathub as the target. AppStream, desktop-file, permission, license, and screenshot checks still matter because they improve trust and integration.

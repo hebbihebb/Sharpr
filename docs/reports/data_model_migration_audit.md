@@ -2,17 +2,28 @@
 
 Date: 2026-05-09  
 Sharpr checkout: `/home/hebbi/Projects/Sharpr`  
-Report orientation: SQLite/library index growth, migration safety, and future saved searches
+Report orientation: SQLite/library index growth, migration safety, and curation state reliability
 
 ## Executive Summary
 
-Sharpr's persistent data model is a major strength. The app separates original files from curation data, uses SQLite for library index state, has tags and quality in a local database, tracks ignored folders, and keeps pipeline state for long-running export/upscale workflows. This supports the product identity: non-destructive local curation.
+Sharpr's persistent data model is a major strength, but it is support infrastructure rather than the truth. Folders are the truth; SQLite exists for speed, stability, cache, task history, and curation state. The app separates original files from curation data, has tags and quality in local databases, tracks ignored folders, and keeps pipeline state for long-running export/upscale workflows.
 
-The main model risks are schema evolution, duplicate source-of-truth boundaries, path identity assumptions, and future feature pressure. Saved searches can fit cleanly, but only if they are modeled as first-class query definitions instead of being encoded in UI state or overloaded collection rows.
+The main model risks are schema evolution, duplicate source-of-truth boundaries, path identity assumptions, generated-output lineage, and collection/tag inheritance. Saved searches are out of scope for now and should not drive near-term schema design.
+
+## Owner Decisions / Product Corrections
+
+- Folders are the truth; SQLite supports performance, cache, stability, task history, and curation state.
+- Collections are central and generated outputs should probably inherit relevant tags/collections.
+- Tasks are central for background work, queued work, generated outputs, and user decisions.
+- Compare already behaves like a virtual folder by populating the filmstrip from compare/task results.
+- No saved searches for now.
+- No embedded metadata writing and no Sharpr tag export to IPTC/XMP.
+- Optional PNG sidecars are user-controlled output artifacts, not a general metadata sidecar system.
 
 ## What Is Solid
 
-- Original files are not the source of Sharpr curation state.
+- Original files are not modified by Sharpr curation state.
+- Folders remain the source of file truth.
 - `LibraryIndex` stores folders, images, collections, collection items, pipelines, and pipeline steps.
 - Images preserve metadata/phash/quality when file size and mtime are unchanged and invalidate cached fields when they change.
 - Folder reconciliation is transaction-based and removes stale rows for missing paths.
@@ -29,8 +40,8 @@ The main model risks are schema evolution, duplicate source-of-truth boundaries,
 - `schema_meta` records a schema version, but migrations are mostly additive helper functions rather than a clearly versioned migration list.
 - Tags and sharpness are in `tags.sqlite3`, while library index data is in `library-index.sqlite`. This separation is workable, but source-of-truth boundaries must stay explicit.
 - Collections have evolved toward tag-backed behavior. That is useful, but it increases migration pressure around inherited tags, collection identity, and tag renames.
-- Search exists as a `ViewScope`, but there is not yet a durable saved-search table.
-- Cache-like data and user-authored data share databases. Quality scores, phash, and metadata status are recomputable; tags, collections, ignored folders, and saved searches are user data.
+- Compare/task-generated virtual views need reliable identity and stale-result handling because they populate the filmstrip like folders.
+- Cache-like data and user-authored data share databases. Quality scores, phash, and metadata status are recomputable; tags, collections, ignored folders, task decisions, and generated-output links are user data.
 
 ## Top 5 Migration and Data-Safety Improvements
 
@@ -46,46 +57,38 @@ The main model risks are schema evolution, duplicate source-of-truth boundaries,
 
    Cover symlinks, case-only rename behavior where possible, Unicode filenames, very long filenames, hidden folders, removable roots, and ignored-folder descendants.
 
-4. Add backup/export/import for user data.
+4. Add backup/export for user data.
 
-   A minimal JSON or SQLite export for tags, collections, ignored folders, and saved searches would reduce data-loss fear before larger schema work.
+   A minimal JSON or SQLite export for tags, collections, ignored folders, task decisions, and generated-output links would reduce data-loss fear before larger schema work.
 
 5. Add reconciliation tests for moves and disappearing files.
 
    Test file move, rename, mtime change, same path/new content, missing file, and reappearing file with previous cached metadata.
 
-## Saved Searches Representation
+## Current Virtual View Representation
 
-Saved searches should be a first-class table, not overloaded as collections.
+Saved searches are out of scope for now. Any future `LibraryView` or `ContentSource` layer should be justified as a reliability/refactoring aid for existing folders, collections, quality views, duplicates, compare, and task-generated virtual views, not as a path toward saved searches.
 
-Recommended model:
+Recommended behavior:
 
-- `saved_searches`
-- Stable `id`
-- `name`
-- `query_json`
-- `sort_order`
-- `created_at`
-- `updated_at`
-
-The `query_json` should encode a small typed predicate model rather than raw SQL. Initial predicates can stay modest: text terms, tags, quality class, file extension, folder root, duplicate status, date/mtime ranges, and dimensions. The UI can compile this predicate into index/tag queries.
-
-Behavior:
-
-- Saved searches are virtual views. They do not own image membership.
+- Folders load from filesystem truth, with SQLite as cache/index.
+- Collections remain explicit user grouping and should be central in the model.
+- Tasks own queued work, generated outputs, and user decisions.
+- Compare/task result views can act like virtual folders by populating the filmstrip.
+- Generated outputs should preserve traceability to source images and likely inherit relevant tags/collections.
 - Collections remain explicit user grouping.
 - Tags remain reusable labels.
-- Search results should respect ignored folders.
-- Query execution should use indexed columns where possible and fall back carefully for tag joins.
+- Ignored folders must be respected across all current views.
 
 ## Tests to Add Before Schema Changes
 
 - Open an old schema fixture and migrate to current without data loss.
 - Collection migration preserves name, tags, color, icon, parent, and item membership.
-- Ignored folders exclude descendants in folder scan, smart views, tags, duplicates, quality, and saved searches.
+- Ignored folders exclude descendants in folder scan, smart views, tags, duplicates, quality, compare, and task-generated views.
 - Tag database and library index stay coherent when a file disappears and later reappears.
-- Saved search predicates serialize/deserialize and reject unknown predicate versions gracefully.
-- Backup/export/import round-trips user-authored data.
+- Generated outputs inherit or intentionally skip source tags/collections according to a tested rule.
+- Task/compare virtual-folder results do not show stale outputs after folder switching or task completion.
+- Backup/export round-trips user-authored curation data.
 - Unicode and long paths survive insert, query, and display.
 - Pipeline recovery handles queued, in-progress, completed, and failed states after restart.
 
@@ -102,4 +105,4 @@ Behavior:
 
 ## Practical Position
 
-Sharpr's data model is good enough for current curation workflows, but future growth should be migration-led. The next schema feature should add explicit migration tests first, then saved searches as virtual query definitions, while keeping original image files untouched and user-authored data easy to back up.
+Sharpr's data model is good enough for current curation workflows, but future growth should be migration-led and folder-truth-first. The next schema work should focus on generated-output tracking, collection/tag inheritance, task history reliability, and migration tests, while keeping original image files untouched and user-authored data easy to back up.
