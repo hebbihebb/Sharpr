@@ -1,7 +1,7 @@
-use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
-use crate::library_index::{Pipeline, StepType, LibraryIndex};
+use crate::library_index::{LibraryIndex, Pipeline, StepType};
 use crate::upscale::runner::preserved_png_temp_path;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub struct CompareAssetInfo {
@@ -109,12 +109,10 @@ pub fn build_compare_item_from_pipeline(
     let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
 
     // We want the latest completed/failed step that has an output
-    let display_step = steps.iter().rev().find(|s| {
-        s.output_path
-            .as_ref()
-            .map(|p| p.exists())
-            .unwrap_or(false)
-    })?;
+    let display_step = steps
+        .iter()
+        .rev()
+        .find(|s| s.output_path.as_ref().map(|p| p.exists()).unwrap_or(false))?;
 
     let mut model = "Unknown".to_string();
     let mut scale = "-".to_string();
@@ -191,4 +189,3 @@ mod tests {
         assert_eq!(compare_asset_format(Path::new("/tmp/example.webp")), "WebP");
     }
 }
-

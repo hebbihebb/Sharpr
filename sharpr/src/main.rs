@@ -24,6 +24,10 @@ extern "C" {
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `metadata` must be a valid gexiv2 metadata pointer owned by the caller, or
+/// null. Non-null pointers are released exactly once through `g_object_unref`.
 pub unsafe extern "C" fn gexiv2_metadata_free(metadata: *mut std::ffi::c_void) {
     if !metadata.is_null() {
         g_object_unref(metadata);

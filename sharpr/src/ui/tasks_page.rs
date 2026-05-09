@@ -235,8 +235,7 @@ mod imp {
                 .icon_name("list-add-symbolic")
                 .build();
             add_images_btn.add_css_class("flat");
-            add_images_btn
-                .set_tooltip_text(Some("Browse and add image files to the queue"));
+            add_images_btn.set_tooltip_text(Some("Browse and add image files to the queue"));
 
             let toolbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             toolbar.set_halign(gtk4::Align::End);
@@ -341,8 +340,7 @@ mod imp {
             }
             {
                 let widget_weak = widget.downgrade();
-                let drop_target =
-                    gtk4::DropTarget::new(glib::Type::STRING, gdk4::DragAction::COPY);
+                let drop_target = gtk4::DropTarget::new(glib::Type::STRING, gdk4::DragAction::COPY);
                 drop_target.connect_drop(move |_, value, _, _| {
                     let Ok(uri_list) = value.get::<String>() else {
                         return false;
@@ -437,8 +435,7 @@ mod imp {
             right_col.append(&right_header);
             right_col.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
 
-            let no_selection_label =
-                gtk4::Label::new(Some("Select a queue item to configure it"));
+            let no_selection_label = gtk4::Label::new(Some("Select a queue item to configure it"));
             no_selection_label.add_css_class("dim-label");
             no_selection_label.set_margin_top(32);
             no_selection_label.set_halign(gtk4::Align::Center);
@@ -489,8 +486,7 @@ mod imp {
                 "Run upscaling locally using ONNX models (no GPU server required)",
             ));
             let backend_comfyui_btn = gtk4::ToggleButton::with_label("ComfyUI");
-            backend_comfyui_btn
-                .set_tooltip_text(Some("Run upscaling via a local ComfyUI server"));
+            backend_comfyui_btn.set_tooltip_text(Some("Run upscaling via a local ComfyUI server"));
             let backend_cli_btn = gtk4::ToggleButton::with_label("External CLI");
             backend_cli_btn.set_tooltip_text(Some(
                 "Run upscaling via the external realesrgan-ncnn-vulkan CLI tool",
@@ -529,10 +525,8 @@ mod imp {
 
             let comfyui_workflow_row = libadwaita::ComboRow::new();
             comfyui_workflow_row.set_title("Workflow");
-            comfyui_workflow_row
-                .set_tooltip_text(Some("ComfyUI workflow to use for upscaling"));
-            comfyui_workflow_row
-                .set_model(Some(&gtk4::StringList::new(&["ESRGAN", "SeedVR2"])));
+            comfyui_workflow_row.set_tooltip_text(Some("ComfyUI workflow to use for upscaling"));
+            comfyui_workflow_row.set_model(Some(&gtk4::StringList::new(&["ESRGAN", "SeedVR2"])));
             comfyui_workflow_row.set_visible(false);
             upscale_group.add(&comfyui_workflow_row);
 
@@ -557,9 +551,8 @@ mod imp {
 
             let export_toggle = gtk4::Switch::new();
             export_toggle.set_valign(gtk4::Align::Center);
-            export_toggle.set_tooltip_text(Some(
-                "Convert or compress the output to a different format",
-            ));
+            export_toggle
+                .set_tooltip_text(Some("Convert or compress the output to a different format"));
             export_header.append(&export_toggle);
             right_settings_box.append(&export_header);
 
@@ -588,8 +581,7 @@ mod imp {
 
             let export_format_row = libadwaita::ComboRow::new();
             export_format_row.set_title("Format");
-            export_format_row
-                .set_tooltip_text(Some("Output file format for converted images"));
+            export_format_row.set_tooltip_text(Some("Output file format for converted images"));
             let export_format_model = gtk4::StringList::new(&["JXL", "WebP", "PNG", "JPEG"]);
             export_format_row.set_model(Some(&export_format_model));
             let export_format_dropdown = export_format_row.clone();
@@ -597,8 +589,7 @@ mod imp {
 
             let export_edge_row = libadwaita::ComboRow::new();
             export_edge_row.set_title("Max Edge");
-            export_edge_row
-                .set_tooltip_text(Some("Limit the longest edge of the output image"));
+            export_edge_row.set_tooltip_text(Some("Limit the longest edge of the output image"));
             let export_edge_model =
                 gtk4::StringList::new(&["Original", "1080px", "2160px", "4096px"]);
             export_edge_row.set_model(Some(&export_edge_model));
@@ -610,8 +601,7 @@ mod imp {
             export_quality_row
                 .set_subtitle("Handles format conversion and compression in one step.");
             let export_quality_adj = gtk4::Adjustment::new(90.0, 1.0, 100.0, 1.0, 10.0, 0.0);
-            let export_quality_spin =
-                gtk4::SpinButton::new(Some(&export_quality_adj), 1.0, 0);
+            let export_quality_spin = gtk4::SpinButton::new(Some(&export_quality_adj), 1.0, 0);
             export_quality_spin.set_valign(gtk4::Align::Center);
             export_quality_spin.set_tooltip_text(Some(
                 "Compression quality (1–100). Higher values preserve more detail.",
@@ -1083,7 +1073,10 @@ impl TasksPage {
                 };
                 *widget.imp().export_custom_path.borrow_mut() = Some(path.clone());
                 if let Some(state_rc) = widget.imp().state.borrow().as_ref() {
-                    state_rc.borrow_mut().settings.set_export_output_dir(Some(path));
+                    state_rc
+                        .borrow_mut()
+                        .settings
+                        .set_export_output_dir(Some(path));
                 }
                 widget.update_custom_destination_labels();
                 widget.on_pending_config_changed();
@@ -1269,7 +1262,13 @@ impl TasksPage {
     }
 
     fn get_or_init_pending_config(&self, pipeline_id: i64) -> PendingConfig {
-        if let Some(c) = self.imp().pending_configs.borrow().get(&pipeline_id).cloned() {
+        if let Some(c) = self
+            .imp()
+            .pending_configs
+            .borrow()
+            .get(&pipeline_id)
+            .cloned()
+        {
             return c;
         }
         let config = self.build_pending_config_from_db(pipeline_id);
@@ -1289,9 +1288,11 @@ impl TasksPage {
             return PendingConfig::default();
         };
         let steps = idx.steps_for_pipeline(pipeline_id).unwrap_or_default();
-        let mut config = PendingConfig::default();
-        config.upscale_on = false;
-        config.export_on = false;
+        let mut config = PendingConfig {
+            upscale_on: false,
+            export_on: false,
+            ..PendingConfig::default()
+        };
         for step in &steps {
             match step.step_type {
                 StepType::Upscale => {
@@ -1302,8 +1303,7 @@ impl TasksPage {
                     }
                 }
                 StepType::Export => {
-                    if let Ok(s) = serde_json::from_str::<ExportStepSettings>(&step.settings_json)
-                    {
+                    if let Ok(s) = serde_json::from_str::<ExportStepSettings>(&step.settings_json) {
                         config.export_on = true;
                         config.export = s;
                     }
@@ -1477,16 +1477,16 @@ impl TasksPage {
             })
             .unwrap_or("jxl")
             .to_string();
-        let max_edge = imp
-            .export_edge_dropdown
-            .borrow()
-            .as_ref()
-            .and_then(|d| match d.selected() {
-                1 => Some(1080u32),
-                2 => Some(2160),
-                3 => Some(4096),
-                _ => None,
-            });
+        let max_edge =
+            imp.export_edge_dropdown
+                .borrow()
+                .as_ref()
+                .and_then(|d| match d.selected() {
+                    1 => Some(1080u32),
+                    2 => Some(2160),
+                    3 => Some(4096),
+                    _ => None,
+                });
         let export_quality = imp
             .export_quality_spin
             .borrow()
@@ -1539,7 +1539,9 @@ impl TasksPage {
         let Some(idx) = state.library_index.as_ref() else {
             return;
         };
-        let queued = idx.pipelines_by_status(PipelineStatus::Queued).unwrap_or_default();
+        let queued = idx
+            .pipelines_by_status(PipelineStatus::Queued)
+            .unwrap_or_default();
         for pipeline in queued {
             let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
             if !steps.is_empty() {
@@ -2121,12 +2123,7 @@ impl TasksPage {
         expander.set_enable_expansion(!steps.is_empty());
 
         let check_btn = gtk4::CheckButton::new();
-        check_btn.set_active(
-            self.imp()
-                .queue_checked_ids
-                .borrow()
-                .contains(&pipeline.id),
-        );
+        check_btn.set_active(self.imp().queue_checked_ids.borrow().contains(&pipeline.id));
         {
             let widget_weak = self.downgrade();
             let pid = pipeline.id;
@@ -2241,7 +2238,9 @@ impl TasksPage {
             let Some(idx) = state.library_index.as_ref() else {
                 return false;
             };
-            let queued = idx.pipelines_by_status(PipelineStatus::Queued).unwrap_or_default();
+            let queued = idx
+                .pipelines_by_status(PipelineStatus::Queued)
+                .unwrap_or_default();
             let Some(dragged_queue_order) = queued
                 .iter()
                 .find(|pipeline| pipeline.id == dragged_id)
@@ -2283,10 +2282,7 @@ impl TasksPage {
                 4 => "4×",
                 _ => "Smart scale",
             };
-            let chip = gtk4::Label::new(Some(&format!(
-                "Upscale · {} · {}",
-                backend, scale_str
-            )));
+            let chip = gtk4::Label::new(Some(&format!("Upscale · {} · {}", backend, scale_str)));
             chip.add_css_class("accent");
             chip.add_css_class("pill");
             chip
@@ -2346,7 +2342,8 @@ impl TasksPage {
             }
             append_chip_pair(&chips, upscale_chip, export_chip);
         } else if let Some(config) = self.imp().pending_configs.borrow().get(&pipeline.id) {
-            let upscale_chip = config.upscale_on
+            let upscale_chip = config
+                .upscale_on
                 .then(|| make_upscale_chip(&config.upscale.backend, config.upscale.scale));
             let export_chip = config
                 .export_on
@@ -2923,10 +2920,8 @@ impl TasksPage {
                                 } else {
                                     // More steps remain — reset pipeline to Queued so
                                     // run_next_pipeline can find it (it queries status='queued').
-                                    let _ = idx.set_pipeline_status(
-                                        pipeline.id,
-                                        PipelineStatus::Queued,
-                                    );
+                                    let _ = idx
+                                        .set_pipeline_status(pipeline.id, PipelineStatus::Queued);
                                 }
                             }
                             Ok(Err(e)) => {
@@ -3147,10 +3142,8 @@ impl TasksPage {
                                 } else {
                                     // More steps remain — reset pipeline to Queued so
                                     // run_next_pipeline can find it (it queries status='queued').
-                                    let _ = idx.set_pipeline_status(
-                                        pipeline.id,
-                                        PipelineStatus::Queued,
-                                    );
+                                    let _ = idx
+                                        .set_pipeline_status(pipeline.id, PipelineStatus::Queued);
                                 }
                             }
                             Ok(Err(e)) => {

@@ -386,7 +386,7 @@ fn parse_history_response(json: &Value, prompt_id: &str) -> Result<ComfyUiPollSt
                 .and_then(|messages| messages.last())
                 .map(|message| {
                     if let Some(arr) = message.as_array() {
-                        if arr.get(0).and_then(|v| v.as_str()) == Some("execution_error") {
+                        if arr.first().and_then(|v| v.as_str()) == Some("execution_error") {
                             if let Some(details) = arr.get(1).and_then(|v| v.as_object()) {
                                 let node_id = details
                                     .get("node_id")
@@ -395,7 +395,9 @@ fn parse_history_response(json: &Value, prompt_id: &str) -> Result<ComfyUiPollSt
                                 let exception_message = details
                                     .get("exception_message")
                                     .and_then(|v| v.as_str())
-                                    .or_else(|| details.get("exception_type").and_then(|v| v.as_str()))
+                                    .or_else(|| {
+                                        details.get("exception_type").and_then(|v| v.as_str())
+                                    })
                                     .unwrap_or("Execution error");
                                 return format!("Node {node_id}: {exception_message}");
                             }
