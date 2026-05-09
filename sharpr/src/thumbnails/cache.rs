@@ -1,5 +1,11 @@
 use std::path::{Path, PathBuf};
 
+// Private cache at ~/.cache/sharpr/thumbnails-r1/ with fingerprint-in-filename
+// ({path_hash}-{size}-{mtime_secs}-{mtime_nanos}.png). Validity is O(1): stat the
+// source, reconstruct the expected filename, check existence — no cache reads needed.
+// This beats the freedesktop spec, which requires reading PNG text chunks per entry
+// and computing URI MD5s, both of which scale poorly when scanning large folders.
+
 /// Returns the expected disk-cache path for a source image, or `None` if
 /// the source file's metadata can't be read or the cache directory can't
 /// be determined.
