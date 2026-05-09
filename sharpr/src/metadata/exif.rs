@@ -1,10 +1,4 @@
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
-
-pub(crate) fn rexiv2_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
 
 /// Display-ready snapshot of image metadata.
 #[derive(Default, Debug, Clone)]

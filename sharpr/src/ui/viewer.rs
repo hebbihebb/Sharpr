@@ -2,7 +2,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Once};
@@ -674,6 +674,9 @@ impl ViewerPane {
         imp.tag_popover.popdown();
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
+        imp.metadata_chip.update_tags(&[]);
+        imp.metadata_chip.update_collections(&[]);
+        imp.metadata_chip.update_duplicate_count(0);
         imp.tag_osd.set_visible(false);
         self.set_quality_score(None);
         imp.spinner.stop();
@@ -708,6 +711,9 @@ impl ViewerPane {
         imp.spinner.set_visible(true);
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
+        imp.metadata_chip.update_tags(&[]);
+        imp.metadata_chip.update_collections(&[]);
+        imp.metadata_chip.update_duplicate_count(0);
         imp.tag_osd.set_visible(false);
         imp.error_label.set_visible(false);
         self.set_quality_score(None);
@@ -999,6 +1005,49 @@ impl ViewerPane {
             return;
         };
         imp.metadata_chip.update_quality(Some(quality));
+    }
+
+    fn update_metadata_chip_context(&self, path: &std::path::Path, tags: &[String]) {
+        let imp = self.imp();
+        imp.metadata_chip.update_tags(tags);
+
+        let library_index = imp
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|state| state.borrow().library_index.clone());
+
+        let tag_set: HashSet<&str> = tags.iter().map(String::as_str).collect();
+        let collection_names = library_index
+            .as_ref()
+            .and_then(|index| index.list_collections().ok())
+            .map(|collections| {
+                collections
+                    .into_iter()
+                    .filter(|collection| {
+                        tag_set.contains(collection.primary_tag.as_str())
+                            || collection
+                                .extra_tags
+                                .iter()
+                                .any(|tag| tag_set.contains(tag.as_str()))
+                    })
+                    .map(|collection| collection.name)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        imp.metadata_chip.update_collections(&collection_names);
+
+        let duplicate_count = library_index
+            .as_ref()
+            .and_then(|index| index.duplicate_groups().ok())
+            .and_then(|groups| {
+                groups
+                    .into_iter()
+                    .find(|group| group.iter().any(|candidate| candidate == path))
+                    .map(|group| group.len().saturating_sub(1))
+            })
+            .unwrap_or(0);
+        imp.metadata_chip.update_duplicate_count(duplicate_count);
     }
 
     /// Refresh the quality display for the currently shown image after a
@@ -1484,6 +1533,9 @@ impl ViewerPane {
         let path = match imp.current_path.borrow().clone() {
             Some(path) => path,
             None => {
+                imp.metadata_chip.update_tags(&[]);
+                imp.metadata_chip.update_collections(&[]);
+                imp.metadata_chip.update_duplicate_count(0);
                 imp.tag_osd.set_visible(false);
                 return;
             }
@@ -1495,6 +1547,7 @@ impl ViewerPane {
             .as_ref()
             .and_then(|state| state.borrow().tags.clone());
         let Some(db) = db else {
+            self.update_metadata_chip_context(&path, &[]);
             imp.tag_osd.set_visible(false);
             return;
         };
@@ -1513,6 +1566,7 @@ impl ViewerPane {
         }
 
         let tags = db.tags_for_path(&path);
+        self.update_metadata_chip_context(&path, &tags);
         const MAX_CHIPS: usize = 4;
         let expanded = imp.tag_chips_expanded.get();
         let shown = if expanded {

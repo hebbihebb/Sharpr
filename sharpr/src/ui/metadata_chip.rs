@@ -20,6 +20,12 @@ mod imp {
         pub quality_score_label: gtk4::Label,
         pub quality_class_label: gtk4::Label,
         pub quality_segments: [gtk4::Box; 5],
+        pub popover: gtk4::Popover,
+        pub popover_quality_label: gtk4::Label,
+        pub popover_tags_label: gtk4::Label,
+        pub popover_collections_label: gtk4::Label,
+        pub popover_duplicates_label: gtk4::Label,
+        pub duplicate_count: std::cell::Cell<usize>,
         pub enabled: std::cell::Cell<bool>,
         pub has_metadata: std::cell::Cell<bool>,
         pub has_quality: std::cell::Cell<bool>,
@@ -82,6 +88,48 @@ mod imp {
             card.append(&metadata_label);
             card.append(&quality_row);
 
+            let popover = gtk4::Popover::new();
+            popover.set_autohide(true);
+
+            let popover_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+            popover_box.set_margin_top(12);
+            popover_box.set_margin_bottom(12);
+            popover_box.set_margin_start(12);
+            popover_box.set_margin_end(12);
+
+            let popover_quality_label = gtk4::Label::new(Some("Quality: Not available"));
+            popover_quality_label.set_halign(gtk4::Align::Start);
+            popover_quality_label.set_xalign(0.0);
+
+            let popover_tags_label = gtk4::Label::new(Some("No tags"));
+            popover_tags_label.set_halign(gtk4::Align::Start);
+            popover_tags_label.set_xalign(0.0);
+            popover_tags_label.set_wrap(true);
+
+            let popover_collections_label = gtk4::Label::new(Some("No collections"));
+            popover_collections_label.set_halign(gtk4::Align::Start);
+            popover_collections_label.set_xalign(0.0);
+            popover_collections_label.set_wrap(true);
+
+            let popover_duplicates_label = gtk4::Label::new(None);
+            popover_duplicates_label.set_halign(gtk4::Align::Start);
+            popover_duplicates_label.set_xalign(0.0);
+            popover_duplicates_label.set_visible(false);
+
+            popover_box.append(&popover_quality_label);
+            popover_box.append(&popover_tags_label);
+            popover_box.append(&popover_collections_label);
+            popover_box.append(&popover_duplicates_label);
+            popover.set_child(Some(&popover_box));
+            popover.set_parent(&card);
+
+            let popover_clone = popover.clone();
+            let click = gtk4::GestureClick::new();
+            click.connect_pressed(move |_, _, _, _| {
+                popover_clone.popup();
+            });
+            card.add_controller(click);
+
             Self {
                 card,
                 metadata_label,
@@ -89,6 +137,12 @@ mod imp {
                 quality_score_label,
                 quality_class_label,
                 quality_segments,
+                popover,
+                popover_quality_label,
+                popover_tags_label,
+                popover_collections_label,
+                popover_duplicates_label,
+                duplicate_count: std::cell::Cell::new(0),
                 enabled: std::cell::Cell::new(true),
                 has_metadata: std::cell::Cell::new(false),
                 has_quality: std::cell::Cell::new(false),
@@ -109,6 +163,7 @@ mod imp {
 
     impl ObjectImpl for MetadataChip {
         fn dispose(&self) {
+            self.popover.unparent();
             self.card.unparent();
         }
     }
@@ -163,6 +218,7 @@ impl MetadataChip {
             imp.has_quality.set(false);
             imp.quality_score_label.set_text("Res --");
             imp.quality_class_label.set_text("");
+            imp.popover_quality_label.set_text("Quality: Not available");
             imp.quality_row.set_visible(false);
             for class_name in ["success", "warning", "error"] {
                 imp.quality_class_label.remove_css_class(class_name);
@@ -177,6 +233,11 @@ impl MetadataChip {
         imp.has_quality.set(true);
         imp.quality_score_label.set_text("Res");
         imp.quality_class_label.set_text(quality.class.label());
+        imp.popover_quality_label.set_text(&format!(
+            "Quality: {} · {} / 100",
+            quality.class.label(),
+            quality.score
+        ));
         imp.quality_class_label
             .set_tooltip_text(Some(&quality.tooltip()));
         imp.quality_row.set_visible(true);
@@ -207,6 +268,38 @@ impl MetadataChip {
         self.sync_visibility();
     }
 
+    pub fn update_tags(&self, tags: &[String]) {
+        let label = if tags.is_empty() {
+            "No tags".to_string()
+        } else {
+            format!("Tags: {}", tags.join(", "))
+        };
+        self.imp().popover_tags_label.set_text(&label);
+    }
+
+    pub fn update_collections(&self, names: &[String]) {
+        let label = if names.is_empty() {
+            "No collections".to_string()
+        } else {
+            format!("In: {}", names.join(", "))
+        };
+        self.imp().popover_collections_label.set_text(&label);
+    }
+
+    pub fn update_duplicate_count(&self, count: usize) {
+        let imp = self.imp();
+        imp.duplicate_count.set(count);
+        if count == 0 {
+            imp.popover_duplicates_label.set_text("");
+            imp.popover_duplicates_label.set_visible(false);
+        } else {
+            let image_text = if count == 1 { "image" } else { "images" };
+            imp.popover_duplicates_label
+                .set_text(&format!("{count} similar {image_text} found"));
+            imp.popover_duplicates_label.set_visible(true);
+        }
+    }
+
     /// Hide and clear all labels (e.g. before a new image loads).
     pub fn clear(&self) {
         let imp = self.imp();
@@ -216,6 +309,10 @@ impl MetadataChip {
         imp.quality_score_label.set_text("Res --");
         imp.quality_class_label.set_text("");
         imp.quality_class_label.set_tooltip_text(None);
+        imp.popover_quality_label.set_text("Quality: Not available");
+        self.update_tags(&[]);
+        self.update_collections(&[]);
+        self.update_duplicate_count(0);
         imp.has_quality.set(false);
         imp.quality_row.set_visible(false);
         for class_name in ["success", "warning", "error"] {
