@@ -3229,6 +3229,8 @@ impl SharprWindow {
                     let name = stack.visible_child_name().unwrap_or_default();
                     if name != "compare" {
                         window.exit_compare_mode();
+                    } else {
+                        window.refresh_compare_view();
                     }
                 }
             });
