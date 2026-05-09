@@ -35,9 +35,9 @@ Tasks is a central dashboard, not a hidden log. It should show progress, failure
 - Exporting Sharpr tags to IPTC/XMP.
 - Arbitrary scripts/user-defined shell actions.
 - Full image editor features.
-- Rotate/orientation editing (intentionally out of scope; use GNOME Image Viewer or another app for pixel-level adjustments — Sharpr does not modify originals). The rotate/flip menu items, actions, and save logic have been removed.
+- Rotate/orientation editing (intentionally out of scope; use GNOME Image Viewer or another app for pixel-level adjustments — Sharpr does not modify originals). The rotate/flip menu items, actions, and save logic have been removed (`a8bc908`).
 - Sharpness backfill (background thread that computed Laplacian sharpness scores) — removed. Quality is now purely resolution-based and sharpness data was not used for classification; the quality scorer now exposes only resolution-based scoring.
-- ONNX model downloader — removed as orphaned dead code. ONNX upscale support now expects local model files without an unused downloader path.
+- ONNX model downloader — removed as orphaned dead code (`a8bc908`). ONNX upscale support now expects local model files without an unused downloader path.
 - Splash screen — removed (commit `0ecb923`).
 - Flathub as a real release target.
 - Translations as a near-term priority.
@@ -60,6 +60,24 @@ Format conversion belongs only in export/task workflows. A future lite mode may 
 - Remote ComfyUI/API backends are allowed when Sharpr clearly says the image will leave the machine.
 - **MetadataChip — Expandable OSD, No Separate Panel:** The `MetadataChip` OSD in the viewer is expandable on click/tap. Collapsed: compact chip (current behavior). Expanded: taller inline panel showing quality tier, duplicates count if any, tags, and collection membership. Dismissible by clicking outside or a second tap. Both states stay anchored bottom-right of the viewer. No separate property sidebar will be added.
 - **Compare Page — Remove Right-Side Panel, Use Expandable OSD Chip:** The compare page's existing slide-out right-side info panel is removed. An expandable OSD chip in the same info-icon position replaces it, with the same expand/collapse behavior as the viewer chip. Panel content (file info, quality, dimensions, tags) migrates to the chip's expanded state. This unifies the interaction model across viewer and compare pages.
+
+## Focused Image Sets
+
+A Focused Image Set is any non-folder source that temporarily drives the filmstrip: compare queues, task results, generated outputs, duplicate groups, quality views, collection views, or tag-filtered views.
+
+Focused Image Sets must:
+- have a stable identity/name,
+- carry a generation token,
+- replace the filmstrip contents atomically,
+- drop stale async results,
+- keep selection and path indexes consistent,
+- never bleed entries from the previous folder or previous focused view.
+
+Folder browsing remains the default source of truth. Focused Image Sets are temporary views over known image paths, not replacement libraries.
+
+**Performance invariant (non-negotiable):** Any refactor of the filmstrip to support Focused Image Sets must not degrade the current filmstrip performance. The filmstrip's visible/preload scheduling, two-queue thumbnail dispatch, generation-aware stale-drop, and LRU cache behavior are high-performance by design. Filmstrip changes must be verified against rapid scrolling, rapid folder switching, and large folder load before being considered done. If a proposed implementation requires touching the thumbnail scheduling or factory binding paths, treat that as a red flag and find an approach that wraps or extends rather than rewrites those paths.
+
+This concept subsumes the earlier "virtual-folder audit" goal (see step 11 of the Implementation Order) and is the design target for all non-folder filmstrip sources. Every focused view — compare queue, task results, collections, quality, duplicates, generated outputs — should be a conforming `FocusedImageSet`.
 
 ## Testing Priorities
 
@@ -116,9 +134,14 @@ Slower tests are acceptable when they catch important regressions in these areas
 6. ~~Viewer MetadataChip: make expandable on click, showing quality tier, duplicates count if any, tags, and collection membership in the expanded state.~~ Completed: `c2f1306`. Follow-up OSD chip unification pass (compare page + viewer sharing the same popover design) noted in GNOME Polish Priorities.
 7. ~~Extract collection dialogs from `window.rs` (`show_new_collection_dialog`, `show_new_library_dialog`, `switch_active_library`, and related helpers) → `src/ui/collection_dialogs.rs`. *Second targeted `window.rs` extraction.*~~ Completed: `54fb01a`. Also fixed two pre-existing bugs found during extraction: a borrow-conflict that could panic at runtime, and child collection color display always falling back to the root color.
 8. ~~Action map audit: add a comment-block table at the top of `setup_actions` in `window.rs` listing every registered `win.*`/`app.*` action, its label, default shortcut, and sensitivity rule. Keep menus, `ShortcutController` bindings, and shortcut help aligned going forward.~~ Completed: `8713c14`.
-9. Define generated-output lineage, default tag/collection inheritance, and auto output collections, then route export/upscale/format results through Tasks.
-10. ~~Make Tasks a visible dashboard for progress, failures, generated files, accept/discard decisions, and output review.~~ **Substantially complete** (commits `44234f2`, `e02b9fb`, `0d6c61a`). Final polish still needed: empty states, failure visibility, and generated-output decision flow.
-11. Audit current virtual-folder flows and refactor toward a common reliability layer only for existing folders, collections, quality, duplicates, compare, and task-generated views. *Partial fix landed: `2bc05f1` fixed filmstrip not refreshing when navigating to compare via page arrows. Known open bug: first-time compare entry shows stale filmstrip entries from the previous folder due to a race between `load_virtual_async` and `filmstrip.refresh_virtual()` — clicking stale entries does nothing. Navigating away and back works around it.*
+9. ~~Define generated-output lineage, default tag/collection inheritance, and auto output collections, then route export/upscale/format results through Tasks.~~ Completed: `5991809`. Tags and collection memberships are copied from source to output on step completion; "Upscaled" and "Exports" auto-collections are created on first use. A pre-existing delete bug in collections was also found, fixed, and tested during this pass.
+10. ~~Make Tasks a visible dashboard for progress, failures, generated files, accept/discard decisions, and output review.~~ **Substantially complete** (commits `44234f2`, `e02b9fb`, `0d6c61a`). Final polish still needed: empty states, failure visibility, and generated-output decision flow. *Known bug: editing any setting on the Tasks page triggers a full reload of all images in both the queue and history lists. Suspected cause: a settings-change signal is wired too broadly and re-drives the full queue/history population rather than just updating the affected row. Investigate before adding more settings controls to the Tasks page.*
+11. Implement Focused Image Sets as the common reliability layer for all non-folder filmstrip sources (see Focused Image Sets section). *Known bug: after a generated output is added to a collection (e.g. via step 9 auto-collection), clicking that collection in the browser immediately shows "collection empty" and the filmstrip does not populate — clicking the collection a second time correctly shows the contents. Suspected cause: the collection view does not wait for the underlying model update to settle before querying, or the model change notification is not flushing before the first render. This bug should be fixed as part of sub-step 11d (collection view as FocusedImageSet).* Sub-steps:
+    a. Define a `FocusedImageSet` type (identity/name, generation token, image paths) in a new module.
+    b. Refactor the filmstrip to accept a `FocusedImageSet` and replace contents atomically, dropping async results that carry a stale generation token.
+    c. Implement compare queue as a `FocusedImageSet` — this fixes the known first-open race: stale filmstrip entries from the previous folder appear when entering compare mode (via arrows or clicking compare in the history queue). The filmstrip self-corrects only after navigating back and forth with the arrows. `2bc05f1` landed a related fix but the core race remains.
+    d. Implement collection, quality-class, duplicate-group, and tag-filtered views as `FocusedImageSet`.
+    e. Implement task-generated output results as a `FocusedImageSet` (pairs with step 9 lineage work).
 12. Add privacy wording and UI affordances for ComfyUI/API backends, non-loopback URLs, and future export metadata preference behavior.
 13. Polish GNOME-facing metadata, naming, empty states, accessible names, and shortcut/manual consistency.
 14. Add migration/reconciliation tests before schema changes that affect collections, task history, generated outputs, or curation data.
