@@ -6,6 +6,7 @@ use gio::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::config::FolderMode;
+use crate::focused_image_set;
 use crate::library_index::{basic_info_from_path, BasicImageInfo, IndexedImage};
 use crate::model::image_entry::ImageEntry;
 use crate::quality::{QualityClass, QualityScore};
@@ -89,6 +90,7 @@ pub struct LibraryManager {
     pub store: gio::ListStore,
     pub current_folder: Option<PathBuf>,
     pub selected_index: Option<u32>,
+    pub virtual_generation: u64,
     folder_history: FxHashMap<PathBuf, u32>,
     /// O(1) path → list index lookup, kept in sync with `store`.
     pub(crate) path_to_index: FxHashMap<PathBuf, u32>,
@@ -110,6 +112,7 @@ impl LibraryManager {
             store: gio::ListStore::new::<ImageEntry>(),
             current_folder: None,
             selected_index: None,
+            virtual_generation: 0,
             folder_history: FxHashMap::default(),
             path_to_index: FxHashMap::default(),
             all_known_paths: HashSet::new(),
@@ -457,8 +460,10 @@ impl LibraryManager {
         }
     }
 
-    /// Returns true if `path` is in the cache or currently being decoded.
-    pub fn load_virtual(&mut self, paths: &[PathBuf]) -> Vec<PathBuf> {
+    /// Populate the current store with a virtual image set.
+    pub fn load_virtual(&mut self, paths: &[PathBuf]) -> (u64, Vec<PathBuf>) {
+        let generation = focused_image_set::next_generation();
+        self.virtual_generation = generation;
         self.store.remove_all();
         self.path_to_index.clear();
         self.active_thumbnail_cache.clear();
@@ -481,7 +486,7 @@ impl LibraryManager {
             self.store.append(&entry);
             self.path_to_index.insert(path.clone(), index as u32);
         }
-        metadata_pending
+        (generation, metadata_pending)
     }
 
     pub fn apply_cached_image_data(&mut self, path: &Path, cached: CachedImageData) {
@@ -919,10 +924,23 @@ mod tests {
         let mut library = LibraryManager::new();
         library.insert_hash(path.clone(), 0xabcd);
 
-        let pending = library.load_virtual(std::slice::from_ref(&path));
+        let (generation, pending) = library.load_virtual(std::slice::from_ref(&path));
 
+        assert_ne!(generation, 0);
         assert_eq!(pending, vec![path.clone()]);
         assert_eq!(library.all_hashes_snapshot(), vec![(path, 0xabcd)]);
+    }
+
+    #[test]
+    fn load_virtual_bumps_generation_each_time() {
+        let path = PathBuf::from("/photos/a.jpg");
+        let mut library = LibraryManager::new();
+
+        let (first, _) = library.load_virtual(std::slice::from_ref(&path));
+        let (second, _) = library.load_virtual(&[]);
+
+        assert_eq!(library.virtual_generation, second);
+        assert!(second > first);
     }
 
     #[test]

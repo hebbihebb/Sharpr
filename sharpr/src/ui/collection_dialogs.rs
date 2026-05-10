@@ -335,7 +335,7 @@ pub(super) fn switch_active_library(
             .unwrap_or_default();
         st.selected_paths.clear();
         st.scope = ViewScope::Search;
-        st.library.load_virtual(&[]);
+        let _ = st.library.load_virtual(&[]);
     }
     sidebar.imp().collapsed_folder_paths.borrow_mut().clear();
     sidebar.refresh_active_library(state.clone());

@@ -450,7 +450,7 @@ pub(super) fn load_virtual_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf
             .cloned()
             .collect()
     };
-    let pending = {
+    let (generation, pending) = {
         let mut st = state.borrow_mut();
         st.library.load_virtual(&paths)
     };
@@ -480,7 +480,7 @@ pub(super) fn load_virtual_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf
     glib::MainContext::default().spawn_local(async move {
         while let Ok(result) = rx.recv().await {
             let mut st = state_rx.borrow_mut();
-            if st.library.current_folder.is_none() {
+            if st.library.current_folder.is_none() && st.library.virtual_generation == generation {
                 st.library
                     .apply_cached_image_data(&result.path, result.cached);
             }
@@ -1623,7 +1623,7 @@ impl SharprWindow {
                             .map(|folder| folder.starts_with(&path))
                             .unwrap_or(false)
                     {
-                        st.library.load_virtual(&[]);
+                        let _ = st.library.load_virtual(&[]);
                         st.scope = ViewScope::Search;
                     } else if !matches!(st.scope, ViewScope::Folder(_)) {
                         let visible_paths: Vec<PathBuf> = (0..st.library.image_count())
@@ -1632,7 +1632,7 @@ impl SharprWindow {
                                 !path_is_disabled(image_path, &st.disabled_folders)
                             })
                             .collect();
-                        st.library.load_virtual(&visible_paths);
+                        let _ = st.library.load_virtual(&visible_paths);
                     }
                     st.disabled_folders.clone()
                 };
