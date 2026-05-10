@@ -166,6 +166,7 @@ mod imp {
         // Per-item pending configurations (not yet committed to DB)
         pub pending_configs: RefCell<HashMap<i64, PendingConfig>>,
         pub queue_checked_ids: RefCell<HashSet<i64>>,
+        pub queue_chip_suffixes: RefCell<HashMap<i64, gtk4::Box>>,
     }
 
     #[glib::object_subclass]
@@ -1588,8 +1589,58 @@ impl TasksPage {
         }
     }
 
-    fn refresh_chips_for_pipeline(&self, _pipeline_id: i64) {
-        self.refresh();
+    fn refresh_chips_for_pipeline(&self, pipeline_id: i64) {
+        let Some(queue_list) = self.imp().queue_list.borrow().clone() else {
+            return;
+        };
+        let pipeline_name = pipeline_id.to_string();
+        let mut child = queue_list.first_child();
+        while let Some(widget) = child {
+            let next = widget.next_sibling();
+            let Some(expander) = widget
+                .clone()
+                .downcast::<libadwaita::ExpanderRow>()
+                .ok()
+                .or_else(|| {
+                    widget
+                        .downcast::<gtk4::ListBoxRow>()
+                        .ok()
+                        .and_then(|row| row.child())
+                        .and_then(|child| child.downcast::<libadwaita::ExpanderRow>().ok())
+                })
+            else {
+                child = next;
+                continue;
+            };
+
+            if expander.widget_name() != pipeline_name {
+                child = next;
+                continue;
+            }
+
+            if let Some(chips) = self
+                .imp()
+                .queue_chip_suffixes
+                .borrow_mut()
+                .remove(&pipeline_id)
+            {
+                expander.remove(&chips);
+            }
+            let config = self
+                .imp()
+                .pending_configs
+                .borrow()
+                .get(&pipeline_id)
+                .cloned()
+                .unwrap_or_default();
+            let chips = Self::build_action_chips_from_config(&config);
+            expander.add_suffix(&chips);
+            self.imp()
+                .queue_chip_suffixes
+                .borrow_mut()
+                .insert(pipeline_id, chips);
+            return;
+        }
     }
 
     pub fn set_state(&self, state: Rc<RefCell<AppState>>) {
@@ -1913,6 +1964,7 @@ impl TasksPage {
         let Some(history_section) = imp.history_section.borrow().clone() else {
             return;
         };
+        imp.queue_chip_suffixes.borrow_mut().clear();
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
         }
@@ -2190,6 +2242,10 @@ impl TasksPage {
 
         let chips = self.build_action_chips(pipeline, &steps);
         expander.add_suffix(&chips);
+        self.imp()
+            .queue_chip_suffixes
+            .borrow_mut()
+            .insert(pipeline.id, chips);
 
         if pipeline.status == PipelineStatus::InProgress {
             let progress = gtk4::ProgressBar::new();
@@ -2365,19 +2421,57 @@ impl TasksPage {
             }
             append_chip_pair(&chips, upscale_chip, export_chip);
         } else if let Some(config) = self.imp().pending_configs.borrow().get(&pipeline.id) {
-            let upscale_chip = config
-                .upscale_on
-                .then(|| make_upscale_chip(&config.upscale.backend, config.upscale.scale));
-            let export_chip = config
-                .export_on
-                .then(|| make_export_chip(&config.export.format, config.export.quality));
-            append_chip_pair(&chips, upscale_chip, export_chip);
-            if !config.upscale_on && !config.export_on {
-                let chip = gtk4::Label::new(Some("⚠ No actions assigned"));
-                chip.add_css_class("warning");
-                chips.append(&chip);
-            }
+            return Self::build_action_chips_from_config(config);
         } else {
+            let chip = gtk4::Label::new(Some("⚠ No actions assigned"));
+            chip.add_css_class("warning");
+            chips.append(&chip);
+        }
+
+        chips
+    }
+
+    fn build_action_chips_from_config(config: &PendingConfig) -> gtk4::Box {
+        let chips = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+
+        let upscale_chip = config.upscale_on.then(|| {
+            let scale_str = match config.upscale.scale {
+                2 => "2×",
+                3 => "3×",
+                4 => "4×",
+                _ => "Smart scale",
+            };
+            let chip = gtk4::Label::new(Some(&format!(
+                "Upscale · {} · {}",
+                config.upscale.backend, scale_str
+            )));
+            chip.add_css_class("accent");
+            chip.add_css_class("pill");
+            chip
+        });
+        let export_chip = config.export_on.then(|| {
+            let chip = gtk4::Label::new(Some(&format!(
+                "Convert · {} · Q{}",
+                config.export.format.to_uppercase(),
+                config.export.quality
+            )));
+            chip.add_css_class("success");
+            chip.add_css_class("pill");
+            chip
+        });
+
+        let has_upscale = upscale_chip.is_some();
+        let has_export = export_chip.is_some();
+        if let Some(upscale_chip) = upscale_chip {
+            chips.append(&upscale_chip);
+        }
+        if has_upscale && has_export {
+            chips.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
+        }
+        if let Some(export_chip) = export_chip {
+            chips.append(&export_chip);
+        }
+        if !config.upscale_on && !config.export_on {
             let chip = gtk4::Label::new(Some("⚠ No actions assigned"));
             chip.add_css_class("warning");
             chips.append(&chip);
