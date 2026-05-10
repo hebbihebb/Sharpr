@@ -8,6 +8,20 @@ use libadwaita::prelude::*;
 use crate::config::{AppSettings, FolderMode, LibraryConfig};
 use crate::ui::window::SharprWindow;
 
+fn is_local_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let stripped = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .unwrap_or(trimmed);
+    stripped.starts_with("localhost")
+        || stripped.starts_with("127.0.0.1")
+        || stripped.starts_with("::1")
+}
+
 pub fn build_preferences_window(
     settings: &AppSettings,
     parent: &SharprWindow,
@@ -214,22 +228,6 @@ pub fn build_preferences_window(
 
     let privacy_banner =
         libadwaita::Banner::new("This URL is outside your machine — images will leave your device");
-    privacy_banner.set_revealed(false);
-
-    let is_local_url = |url: &str| -> bool {
-        let trimmed = url.trim();
-        if trimmed.is_empty() {
-            return true;
-        }
-        let stripped = trimmed
-            .strip_prefix("http://")
-            .or_else(|| trimmed.strip_prefix("https://"))
-            .unwrap_or(trimmed);
-        stripped.starts_with("localhost")
-            || stripped.starts_with("127.0.0.1")
-            || stripped.starts_with("::1")
-    };
-
     privacy_banner.set_revealed(!is_local_url(&settings.comfyui_url));
 
     {
@@ -242,21 +240,7 @@ pub fn build_preferences_window(
                 .borrow_mut()
                 .settings
                 .set_comfyui_url(text.as_str());
-
-            let text_str = text.as_str();
-            let trimmed = text_str.trim();
-            let is_local = if trimmed.is_empty() {
-                true
-            } else {
-                let stripped = trimmed
-                    .strip_prefix("http://")
-                    .or_else(|| trimmed.strip_prefix("https://"))
-                    .unwrap_or(trimmed);
-                stripped.starts_with("localhost")
-                    || stripped.starts_with("127.0.0.1")
-                    || stripped.starts_with("::1")
-            };
-            privacy_banner_c.set_revealed(!is_local);
+            privacy_banner_c.set_revealed(!is_local_url(text.as_str()));
         });
     }
 
