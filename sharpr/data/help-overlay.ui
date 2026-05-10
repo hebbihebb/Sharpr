@@ -23,6 +23,36 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
+                <property name="title">Move selected image to trash</property>
+                <property name="accelerator">Delete</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Inline filename search</property>
+                <property name="accelerator">&lt;Control&gt;f</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Toggle sidebar</property>
+                <property name="accelerator">F9</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Cycle pages forward / back</property>
+                <property name="accelerator">bracketright bracketleft</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Go to Viewer / Tags / Tasks / Compare</property>
+                <property name="accelerator">&lt;Control&gt;1 &lt;Control&gt;2 &lt;Control&gt;3 &lt;Control&gt;4</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
                 <property name="title">Toggle fullscreen / Exit presentation</property>
                 <property name="accelerator">F11</property>
               </object>

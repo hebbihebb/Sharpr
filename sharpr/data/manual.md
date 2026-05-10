@@ -9,7 +9,7 @@ Sharpr supports three upscale backends. Choose one in **Preferences → Upscale 
 | Backend | Requires | Best for |
 |---|---|---|
 | **CLI** (default) | RealESRGAN-NCNN-Vulkan binary | Fastest GPU upscaling, no setup beyond the binary |
-| **ONNX** | Nothing — models download on demand | No external tools; works without a GPU |
+| **ONNX** | Local model files | No external tools; works without a GPU |
 | **ComfyUI** | A running ComfyUI server | Custom workflows, your own model library |
 
 ### CLI backend — RealESRGAN-NCNN-Vulkan
@@ -34,7 +34,7 @@ Select **ONNX** as the backend in Preferences and choose a model:
 - **Compressed ×4** (55 MB) — optimised for compressed or low-quality source images
 - **Realworld ×4** (55 MB) — highest quality for photographs
 
-The model file is downloaded automatically on first use and stored in `~/.local/share/sharpr/models/`. No GPU required; inference runs on CPU via ONNX Runtime. Transparency (alpha channel) is preserved.
+Place the model file at the path shown in Preferences. No GPU required; inference runs on CPU via ONNX Runtime. Transparency (alpha channel) is preserved.
 
 ### ComfyUI backend
 
@@ -56,12 +56,17 @@ The viewer displays the selected image at full resolution. Click and drag to pan
 
 | Shortcut | Action |
 |---|---|
-| ← → Arrow keys | Previous / next image |
+| Alt + ← → | Previous / next image |
 | Ctrl + Scroll | Zoom in / out |
 | Ctrl + 0 | Reset zoom to fit window |
-| Z | Toggle 1:1 pixel view |
 | Alt + Return | Toggle metadata and tag overlay |
 | Ctrl + T | Open tag editor |
+| Ctrl + F | Inline filename search |
+| F9 | Toggle sidebar |
+| [ / ] | Cycle between pages |
+| Ctrl + 1 / 2 / 3 / 4 | Go to Viewer / Tags / Tasks / Compare |
+| F11 | Toggle fullscreen |
+| Delete | Move selected image to trash |
 
 ## Metadata Overlay
 
@@ -83,11 +88,9 @@ The **Tags** section in the sidebar lists every tag in your library with an imag
 
 The **Duplicates** section uses perceptual hashing (dHash) to find visually similar images. Groups are shown in the filmstrip so you can compare and delete unwanted copies.
 
-## Editing
+## Upscaling
 
-Use the **View menu (⋮)** to rotate an image 90° clockwise or counter-clockwise, or to flip it horizontally or vertically. Changes are applied in memory and written back to the original file when you press **Save Edit**. Press **Discard** to revert.
-
-The **Upscale** action runs AI upscaling using whichever backend is configured in Preferences (CLI, ONNX, or ComfyUI). A before/after comparison slider lets you inspect the result before committing or discarding.
+The **Upscale** action runs AI upscaling using whichever backend is configured in Preferences (CLI, ONNX, or ComfyUI). A before/after comparison slider lets you inspect the result. The output is saved as a new file; the original is never modified.
 
 ## Preferences
 
