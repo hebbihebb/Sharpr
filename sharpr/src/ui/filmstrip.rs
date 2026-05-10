@@ -1123,6 +1123,12 @@ impl FilmstripPane {
         self.refresh();
     }
 
+    pub fn clear_model(&self) {
+        self.imp()
+            .selection_model
+            .set_model(None::<&gio::ListStore>);
+    }
+
     pub fn refresh_collection_colors(&self, collections: &[crate::library_index::Collection]) {
         *self.imp().tag_root_color.borrow_mut() = collection_tag_color_map(collections);
         self.imp().list_view.queue_draw();

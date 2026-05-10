@@ -31,8 +31,13 @@ impl ComparePage {
         let imp = self.imp();
         *imp.current_item.borrow_mut() = Some(item.clone());
 
+        let before_path = if item.source_path.exists() {
+            item.source_path.clone()
+        } else {
+            item.output_path.clone()
+        };
         imp.viewer
-            .load(item.source_path.clone(), item.output_path.clone(), || {});
+            .load(before_path, item.output_path.clone(), || {});
 
         let filename = item
             .output_asset

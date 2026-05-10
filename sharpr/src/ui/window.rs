@@ -61,6 +61,8 @@ pub struct AppState {
     pub selected_paths: HashSet<PathBuf>,
     /// The single content scope currently loaded into the filmstrip.
     pub scope: ViewScope,
+    /// Identity of the current focused image set used to reject stale async work.
+    pub current_focused_set: Option<crate::focused_image_set::FocusedImageSet>,
     /// The scope to restore when leaving a temporary view like Compare.
     pub previous_scope: Option<ViewScope>,
     /// The page to restore when compare mode exits itself.
@@ -99,6 +101,11 @@ pub(super) fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
             sidebar.clear_collection_selection();
         }
     }
+}
+
+fn is_active_folder_load(state: &AppState, path: &Path) -> bool {
+    matches!(&state.scope, ViewScope::Folder(scope_path) if scope_path == path)
+        && state.library.current_folder.as_deref() == Some(path)
 }
 
 fn remove_path_from_action_selection(state: &mut AppState, path: &Path) {
@@ -593,6 +600,7 @@ impl AppState {
             ops,
             selected_paths: HashSet::new(),
             scope: ViewScope::default(),
+            current_focused_set: None,
             previous_scope: None,
             previous_content_page: None,
             compare_queue: Vec::new(),
@@ -1288,9 +1296,7 @@ impl SharprWindow {
                         return;
                     };
 
-                    if state_rx.borrow().library.current_folder.as_deref()
-                        != Some(path_rx.as_path())
-                    {
+                    if !is_active_folder_load(&state_rx.borrow(), path_rx.as_path()) {
                         crate::bench_event!(
                             "folder.open.stale_result",
                             serde_json::json!({ "path": path_rx.display().to_string() }),
@@ -1354,6 +1360,9 @@ impl SharprWindow {
                         let total_rows = rows.len();
                         {
                             let mut st = state_rx.borrow_mut();
+                            if !is_active_folder_load(&st, path_rx.as_path()) {
+                                return;
+                            }
                             st.library.start_load_folder(&path_rx);
                         }
 
@@ -1367,7 +1376,7 @@ impl SharprWindow {
                             {
                                 let mut st = state_rx.borrow_mut();
                                 // Check if we are still on the same folder before applying chunk.
-                                if st.library.current_folder.as_deref() == Some(path_rx.as_path()) {
+                                if is_active_folder_load(&st, path_rx.as_path()) {
                                     st.library.append_indexed_rows(chunk);
                                 } else {
                                     return; // Stale folder open.
@@ -1386,6 +1395,9 @@ impl SharprWindow {
 
                         {
                             let mut st = state_rx.borrow_mut();
+                            if !is_active_folder_load(&st, path_rx.as_path()) {
+                                return;
+                            }
                             st.library.finish_load_folder();
                         }
 
@@ -1397,6 +1409,10 @@ impl SharprWindow {
                                 "duration_ms": crate::bench::duration_ms(started),
                             }),
                         );
+                    }
+
+                    if !is_active_folder_load(&state_rx.borrow(), path_rx.as_path()) {
+                        return;
                     }
 
                     let scope = state_rx.borrow().scope.clone();
@@ -1444,9 +1460,7 @@ impl SharprWindow {
                             basic_count,
                         }) = rx.recv().await
                         {
-                            if state_rx.borrow().library.current_folder.as_deref()
-                                == Some(path_rx.as_path())
-                            {
+                            if is_active_folder_load(&state_rx.borrow(), path_rx.as_path()) {
                                 metadata_pending = pending;
 
                                 let cached_paths: std::collections::HashSet<PathBuf> = {
@@ -2658,6 +2672,7 @@ impl SharprWindow {
             let viewer_c = viewer.clone();
             let state_c = state.clone();
             let window_weak = self.downgrade();
+            let content_stack_c = content_stack.clone();
             filmstrip.connect_image_selected(move |index| {
                 let (path, scope) = {
                     let Ok(mut state) = state_c.try_borrow_mut() else {
@@ -2673,7 +2688,20 @@ impl SharprWindow {
                     )
                 };
                 if let Some(path) = path {
-                    if scope == ViewScope::Compare {
+                    let compare_visible = content_stack_c
+                        .visible_child_name()
+                        .as_deref()
+                        .map(|name| name == "compare")
+                        .unwrap_or(false);
+                    if compare_visible {
+                        crate::bench_event!(
+                            "compare.selection",
+                            serde_json::json!({
+                                "path": path.display().to_string(),
+                                "scope": format!("{scope:?}"),
+                                "compare_visible": compare_visible,
+                            }),
+                        );
                         if let Some(window) = window_weak.upgrade() {
                             window.handle_compare_selection_change(path);
                         }
@@ -2925,10 +2953,25 @@ impl SharprWindow {
             content_stack.connect_visible_child_name_notify(move |stack| {
                 if let Some(window) = window_weak.upgrade() {
                     let name = stack.visible_child_name().unwrap_or_default();
-                    if name != "compare" {
-                        window.exit_compare_mode();
+                    if name == "compare" {
+                        if window.app_state().borrow().scope != ViewScope::Compare {
+                            window.refresh_compare_view();
+                        }
+                    } else if name.as_str() == "viewer" {
+                        let compare_output = {
+                            let st = window.app_state();
+                            let st = st.borrow();
+                            (st.scope == ViewScope::Compare)
+                                .then(|| st.selected_compare_output.clone())
+                                .flatten()
+                        };
+                        if let Some(path) = compare_output {
+                            if let Some(viewer) = window.imp().viewer.borrow().as_ref() {
+                                viewer.load_image(path);
+                            }
+                        }
                     } else {
-                        window.refresh_compare_view();
+                        window.exit_compare_mode();
                     }
                 }
             });
@@ -2940,9 +2983,15 @@ impl SharprWindow {
         for (page_name, _page_label) in Self::PAGE_ORDER {
             let action_name = format!("go-to-{}", page_name);
             let content_stack_c = content_stack.clone();
+            let window_weak = self.downgrade();
             let name = *page_name;
             let action = gio::SimpleAction::new(&action_name, None);
             action.connect_activate(move |_, _| {
+                if name == "compare" {
+                    if let Some(window) = window_weak.upgrade() {
+                        window.refresh_compare_view();
+                    }
+                }
                 content_stack_c.set_visible_child_name(name);
             });
             self.add_action(&action);
@@ -2957,6 +3006,7 @@ impl SharprWindow {
         let cycle_prev_action = gio::SimpleAction::new("cycle-page-prev", None);
         {
             let content_stack_c = content_stack.clone();
+            let window_weak = self.downgrade();
             cycle_prev_action.connect_activate(move |_, _| {
                 let current = content_stack_c
                     .visible_child_name()
@@ -2972,7 +3022,13 @@ impl SharprWindow {
                     idx - 1
                 };
                 content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideRight);
-                content_stack_c.set_visible_child_name(Self::PAGE_ORDER[prev_idx].0);
+                let name = Self::PAGE_ORDER[prev_idx].0;
+                if name == "compare" {
+                    if let Some(window) = window_weak.upgrade() {
+                        window.refresh_compare_view();
+                    }
+                }
+                content_stack_c.set_visible_child_name(name);
             });
         }
         self.add_action(&cycle_prev_action);
@@ -2980,6 +3036,7 @@ impl SharprWindow {
         let cycle_next_action = gio::SimpleAction::new("cycle-page-next", None);
         {
             let content_stack_c = content_stack.clone();
+            let window_weak = self.downgrade();
             cycle_next_action.connect_activate(move |_, _| {
                 let current = content_stack_c
                     .visible_child_name()
@@ -2991,7 +3048,13 @@ impl SharprWindow {
                     .unwrap_or(0);
                 let next_idx = (idx + 1) % Self::PAGE_ORDER.len();
                 content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideLeft);
-                content_stack_c.set_visible_child_name(Self::PAGE_ORDER[next_idx].0);
+                let name = Self::PAGE_ORDER[next_idx].0;
+                if name == "compare" {
+                    if let Some(window) = window_weak.upgrade() {
+                        window.refresh_compare_view();
+                    }
+                }
+                content_stack_c.set_visible_child_name(name);
             });
         }
         self.add_action(&cycle_next_action);
@@ -4329,18 +4392,13 @@ impl SharprWindow {
                         (result.width * 4) as usize,
                     );
 
-                    // Use the path→index lookup built by LibraryManager to avoid a
-                    // linear scan for every completed thumbnail.
-                    let mut applied_index = None;
+                    // Virtual views can contain duplicate paths. Update every matching
+                    // row there; normal folders keep the O(1) path lookup.
+                    let mut applied_indices = Vec::new();
                     {
                         let st = state.borrow();
-                        if let Some(idx) = st.library.index_of_path(&result_path) {
-                            if let Some(entry) = st.library.entry_at(idx) {
-                                entry
-                                    .set_thumbnail(Some(texture.clone().upcast::<gdk4::Texture>()));
-                                applied_index = Some(idx);
-                            }
-                        } else {
+                        let entries = st.library.entries_for_path(&result_path);
+                        if entries.is_empty() {
                             crate::bench_event!(
                                 "thumbnail.apply_skipped",
                                 serde_json::json!({
@@ -4349,6 +4407,12 @@ impl SharprWindow {
                                     "reason": "not_in_active_view",
                                 }),
                             );
+                        } else {
+                            for (idx, entry) in entries {
+                                entry
+                                    .set_thumbnail(Some(texture.clone().upcast::<gdk4::Texture>()));
+                                applied_indices.push(idx);
+                            }
                         }
                     }
 
@@ -4358,16 +4422,16 @@ impl SharprWindow {
                         st.library.insert_thumbnail(
                             result_path.clone(),
                             texture.upcast(),
-                            applied_index.is_some(),
+                            !applied_indices.is_empty(),
                         );
-                        if let Some(idx) = applied_index {
+                        if !applied_indices.is_empty() {
                             let (active_cache_len, global_cache_len, global_cache_max) =
                                 st.library.thumbnail_cache_stats();
                             crate::bench_event!(
                                 "thumbnail.apply",
                                 serde_json::json!({
                                     "path": result_path.display().to_string(),
-                                    "index": idx,
+                                    "indices": applied_indices,
                                     "source": source,
                                     "worker_ms": worker_ms,
                                     "active_cache_len": active_cache_len,
@@ -4380,10 +4444,8 @@ impl SharprWindow {
                 } else {
                     // Handle failure by marking the entry as failed in the library.
                     let st = state.borrow();
-                    if let Some(idx) = st.library.index_of_path(&result_path) {
-                        if let Some(entry) = st.library.entry_at(idx) {
-                            entry.set_thumbnail_failed(true);
-                        }
+                    for (_, entry) in st.library.entries_for_path(&result_path) {
+                        entry.set_thumbnail_failed(true);
                     }
                 }
 

@@ -1,6 +1,21 @@
 use super::*;
 
 impl SharprWindow {
+    pub fn prepare_compare_view(&self) {
+        let state_rc = self.app_state();
+        let mut state = state_rc.borrow_mut();
+        if state.compare_queue.is_empty() {
+            return;
+        }
+        if state.scope != ViewScope::Compare {
+            state.previous_scope = Some(state.scope.clone());
+            state.scope = ViewScope::Compare;
+        }
+        if state.selected_compare_output.is_none() {
+            state.selected_compare_output = Some(state.compare_queue[0].output_path.clone());
+        }
+    }
+
     pub fn enter_compare_mode(&self, item: CompareItem) {
         let state_rc = self.app_state();
         {
@@ -70,25 +85,36 @@ impl SharprWindow {
     }
 
     pub fn refresh_compare_view(&self) {
+        self.prepare_compare_view();
+
+        let _ = self.bump_thumbnail_generation("compare.enter");
+        self.complete_thumbnail_ops();
+
         let (items, selected_output) = {
             let state = self.app_state();
-            let mut state = state.borrow_mut();
-            if state.selected_compare_output.is_none() && !state.compare_queue.is_empty() {
-                state.selected_compare_output = Some(state.compare_queue[0].output_path.clone());
-            }
+            let state = state.borrow();
             (
                 state.compare_queue.clone(),
                 state.selected_compare_output.clone(),
             )
         };
 
-        load_virtual_async(
-            &self.app_state(),
-            &items
-                .iter()
-                .map(|i| i.output_path.clone())
-                .collect::<Vec<_>>(),
-        );
+        let paths = items
+            .iter()
+            .map(|i| i.output_path.clone())
+            .collect::<Vec<_>>();
+        let focused = crate::focused_image_set::FocusedImageSet {
+            name: "Compare".to_string(),
+            generation: crate::focused_image_set::next_generation(),
+            paths: paths.clone(),
+        };
+        self.app_state().borrow_mut().current_focused_set = Some(focused);
+
+        if let Some(filmstrip) = self.imp().filmstrip.borrow().as_ref() {
+            filmstrip.clear_model();
+        }
+
+        load_virtual_async(&self.app_state(), &paths);
 
         if let Some(sidebar) = self.imp().sidebar.borrow().as_ref() {
             apply_scope_to_sidebar(&ViewScope::Compare, sidebar);
@@ -152,11 +178,17 @@ impl SharprWindow {
         let item = {
             let mut state = state_rc.borrow_mut();
             state.selected_compare_output = Some(output_path.clone());
-            state
+            let item = state
                 .compare_queue
                 .iter()
-                .find(|i| i.output_path == output_path)
-                .cloned()
+                .find(|i| compare_paths_match(&i.output_path, &output_path))
+                .cloned();
+            item.or_else(|| {
+                state
+                    .library_index
+                    .as_ref()
+                    .and_then(|idx| compare_item_for_output_path(idx, &output_path))
+            })
         };
         if let Some(item) = item {
             if let Some(compare_page) = self.imp().compare_page.borrow().as_ref() {
@@ -218,4 +250,35 @@ impl SharprWindow {
             }
         }
     }
+}
+
+fn compare_paths_match(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn compare_item_for_output_path(
+    index: &crate::library_index::LibraryIndex,
+    output_path: &Path,
+) -> Option<CompareItem> {
+    use crate::library_index::PipelineStatus;
+
+    let mut history = index
+        .pipelines_by_status(PipelineStatus::Completed)
+        .unwrap_or_default();
+    history.extend(
+        index
+            .pipelines_by_status(PipelineStatus::Failed)
+            .unwrap_or_default(),
+    );
+
+    history.into_iter().find_map(|pipeline| {
+        let item = build_compare_item_from_pipeline(&pipeline, index)?;
+        compare_paths_match(&item.output_path, output_path).then_some(item)
+    })
 }

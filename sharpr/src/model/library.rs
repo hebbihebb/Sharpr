@@ -335,6 +335,24 @@ impl LibraryManager {
         self.entry_at(self.index_of_path(path)?)
     }
 
+    pub fn entries_for_path(&self, path: &std::path::Path) -> Vec<(u32, ImageEntry)> {
+        if self.current_folder.is_some() {
+            return self
+                .index_of_path(path)
+                .and_then(|index| self.entry_at(index).map(|entry| (index, entry)))
+                .into_iter()
+                .collect();
+        }
+
+        (0..self.store.n_items())
+            .filter_map(|index| {
+                self.entry_at(index)
+                    .filter(|entry| entry.path() == path)
+                    .map(|entry| (index, entry))
+            })
+            .collect()
+    }
+
     pub fn restore_index_for(&self, folder: &Path) -> Option<u32> {
         self.folder_history.get(folder).copied()
     }
