@@ -108,6 +108,17 @@ Slower tests are acceptable when they catch important regressions in these areas
 - OSD chip design polish (compare page and future viewer chip): the current chip implementation is functional but needs visual refinement. Specifically: (1) the pill/button has no rounded corners — should use GNOME HIG-appropriate corner radius; (2) the expanded panel background is too transparent, making text hard to read — consider a semi-opaque solid background or a popover-style widget with its own surface. A `gtk4::Popover` may be the right GNOME HIG answer for the expanded state: it provides rounded corners, a proper surface with solid background, and standard dismiss behavior (click outside to close). Research the HIG recommendation for floating info panels before implementing. This applies equally to the viewer MetadataChip expansion (step 6 of the implementation order).
 - OSD chip unification (follow-up after step 6): once the viewer MetadataChip is rebuilt with a `gtk4::Popover` for its expanded state, give the compare page OSD chip (`compare_page.rs`) the same design pass so both chips use the same visual pattern. The two chips could then potentially share a common implementation — either by extracting a shared base widget or by reusing `MetadataChip` directly in `ComparePage`. Worth evaluating once step 6 is done and the shape of the popover API is clear.
 
+## Structured Logging
+
+Sharpr has a built-in structured logging system in `src/bench.rs`. It is **enabled by default** on every launch and writes JSONL to `~/.cache/sharpr/logs/run-<timestamp>-<pid>.jsonl`. Up to 20 log files are kept automatically.
+
+Control via env vars:
+- `SHARPR_BENCH=0` — disable entirely
+- `SHARPR_BENCH_LOG=<path>` — override file path
+- `SHARPR_BENCH_LOG_LIMIT=<n>` — override retention count
+
+Use `bench_event!`, `bench_warn!`, `bench_error!` macros when adding new observable events. Do not use `println!`/`eprintln!` for structured output.
+
 ## Risk List
 
 - Thumbnail loading regression would damage the core experience fastest.

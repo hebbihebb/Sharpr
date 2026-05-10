@@ -48,6 +48,17 @@ GSETTINGS_SCHEMA_DIR=data cargo run
 
 **Optional/privacy-sensitive features:** AI tagging (ONNX ResNet, local), ComfyUI upscaling (local server), and any future API-based features must remain opt-in and clearly indicate when an image may leave the machine.
 
+## Structured Logging (`bench.rs`)
+
+Sharpr has a built-in structured logging system in `src/bench.rs`. It is **enabled by default** and writes JSONL to `~/.cache/sharpr/logs/run-<timestamp>-<pid>.jsonl` on every launch. Old files are auto-trimmed (default: 20 kept).
+
+Key env vars:
+- `SHARPR_BENCH=0` — disable logging
+- `SHARPR_BENCH_LOG=<path>` — override output file path
+- `SHARPR_BENCH_LOG_LIMIT=<n>` — override how many old log files to keep
+
+Use `bench_event!`, `bench_warn!`, `bench_error!` macros in new code. Do not use `println!`/`eprintln!` for structured output.
+
 ## Architectural & Engineering Rules
 
 See `AGENTS.md` for the full rules. Summary:

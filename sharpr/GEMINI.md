@@ -29,33 +29,46 @@ Strictly adhere to the following established patterns when adding or modifying c
    - Use `AdwBreakpoint` for adaptive, responsive changes.
 
 ## Code Quality & Validation
-Before finalizing any execution, ensure you run the project's quality checks. Note that cargo commands must be run with the GNOME/GSettings runtime environment (specifically `GSETTINGS_SCHEMA_DIR=data`):
+Before finalizing any execution, ensure you run the project's quality checks. `GSETTINGS_SCHEMA_DIR=data` is only required for `cargo run` — do not prepend it to build, test, clippy, or other commands.
 - **Full Sweep:** `./check.sh` (Standard pre-handoff/pre-commit sweep)
-- **Lints:** `GSETTINGS_SCHEMA_DIR=data cargo clippy -- -D warnings`
+- **Lints:** `cargo clippy -- -D warnings`
 - **Formatting:** `cargo fmt`
-- **Build (Debug):** `GSETTINGS_SCHEMA_DIR=data cargo build`
-- **Build (Release):** `GSETTINGS_SCHEMA_DIR=data cargo build --release`
-- **Tests:** `GSETTINGS_SCHEMA_DIR=data cargo nextest run` (Preferred behavior-test path; fallback to `cargo test`)
+- **Build (Debug):** `cargo build`
+- **Build (Release):** `cargo build --release`
+- **Tests:** `cargo nextest run` (Preferred behavior-test path; fallback to `cargo test`)
 - **Supply Chain:** `cargo deny check` and `cargo machete` (For dependency/supply-chain work)
 
 ## Directory Structure & Responsibilities
 - `src/main.rs`: Entry point and rexiv2 initialization.
 - `src/app.rs`: The `AdwApplication` subclass.
-- `src/ui/window.rs`: Main `AdwApplicationWindow` containing the 3-pane layout and breakpoints.
+- `src/ui/window/`: Main window module; `AppState`, three-pane layout, action setup (~5,270 lines — do not add new behavior here directly).
 - `src/ui/sidebar.rs`: Folder tree explorer (`SidebarPane`).
 - `src/ui/filmstrip.rs`: `GtkListView` thumbnail strip (`FilmstripPane`).
 - `src/ui/viewer.rs`: Full-resolution image preview, zoom, and panning (`ViewerPane`).
-- `src/ui/compare_page.rs`: (NEW) Multi-slot image comparison page.
+- `src/ui/compare_controller.rs`: Compare mode state — enter/exit/refresh, selection, queue management.
+- `src/ui/compare_page.rs`: Before/after comparison page with expandable OSD chip.
+- `src/ui/compare_item.rs`: `CompareItem`, `CompareAssetInfo` — data types for compare entries.
+- `src/ui/tasks_page.rs`: Tasks dashboard — pipeline/export progress, failures, generated outputs.
 - `src/ui/metadata_chip.rs`: Floating EXIF overlay (`MetadataChip`).
-- `src/model/`: Core `GObject` models including `ImageEntry`, `FolderNode`, and `LibraryManager`.
-- `src/thumbnails/`: The background thumbnail decoding worker.
+- `src/ui/filter_bar.rs`: Quality-class and tag filter bar.
+- `src/ui/ops_indicator.rs`: Floating pill showing background-op progress.
+- `src/ui/tag_browser.rs`: Tag browser grid/list with `TagCard` tiles.
+- `src/ui/tag_card.rs`: Individual tag card widget.
+- `src/ui/help_window.rs`: Help window loaded from GResource.
+- `src/model/`: Core `GObject` models (`ImageEntry`, `FolderNode`, `LibraryManager`).
+- `src/thumbnails/`: Background thumbnail decoding worker (two-queue: visible priority + preload).
+- `src/image_pipeline/`: Shared decode pipeline and preview workers.
 - `src/metadata/`: The rexiv2 EXIF/XMP wrapper.
-- `src/upscale/`: NCNN subprocess runner.
+- `src/upscale/`: Multiple upscale backends — CLI/ncnn-vulkan (`backends/cli.rs`), ComfyUI (`backends/comfyui.rs`), ONNX (`backends/onnx.rs`); also comparison viewer (`comparison.rs`) and backend detector (`detector.rs`).
+- `src/library_index/`: SQLite-backed persistent index.
+- `src/tags/`: Tag database, auto-tagger, ONNX smart tagger.
+- `src/quality/`: Quality scoring (resolution-based) and blur detection.
+- `src/export/`: Export pipeline (JPEG/JXL/PNG/WebP).
+- `src/ops/`: Background op progress (`OpHandle`/`OpEvent`).
 - `src/config/`: JSON settings/GSettings.
 
 ## Git Workflow & Conventions
 - **Task Commits:** When a task is completed, commit the task immediately. After committing, always use `cargo build` so the user can immediately test the application.
 - **Bug Fixes:** If a bug is found and fixed related to recent work, amend it to the previous commit rather than creating a new one.
 - **Pushing Changes:** Only push when explicitly told to do so by the user.
-- **Pre-Push Checks:** Before pushing, review git status and ensure the working directory is clean and the branch is properly merged.
-- **Direct Pushes:** Do not create a Pull Request (PR). Push directly to `main` unless actively working on a different branch.
+- **Direct Pushes:** Do not create a Pull Request (PR). Push directly to `main` if the user asks to push.
