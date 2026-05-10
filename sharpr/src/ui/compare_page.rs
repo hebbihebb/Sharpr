@@ -303,12 +303,14 @@ mod imp {
             self.show_original_row.set_title("Show Original in Files");
             let show_original_btn = gtk4::Button::from_icon_name("folder-open-symbolic");
             show_original_btn.add_css_class("flat");
+            show_original_btn.set_tooltip_text(Some("Show original file in Files"));
             self.show_original_row.add_suffix(&show_original_btn);
             actions_group.add(&self.show_original_row);
 
             self.show_output_row.set_title("Show Output in Files");
             let show_output_btn = gtk4::Button::from_icon_name("folder-open-symbolic");
             show_output_btn.add_css_class("flat");
+            show_output_btn.set_tooltip_text(Some("Show output file in Files"));
             self.show_output_row.add_suffix(&show_output_btn);
             actions_group.add(&self.show_output_row);
 
@@ -317,6 +319,7 @@ mod imp {
             tasks_row.set_subtitle("Return to the task queue");
             let tasks_btn = gtk4::Button::from_icon_name("go-previous-symbolic");
             tasks_btn.add_css_class("flat");
+            tasks_btn.set_tooltip_text(Some("Back to Tasks"));
             tasks_row.add_suffix(&tasks_btn);
             actions_group.add(&tasks_row);
 
@@ -326,6 +329,7 @@ mod imp {
             let remove_btn = gtk4::Button::from_icon_name("user-trash-symbolic");
             remove_btn.add_css_class("flat");
             remove_btn.add_css_class("destructive-action");
+            remove_btn.set_tooltip_text(Some("Remove from compare queue"));
             remove_row.add_suffix(&remove_btn);
             actions_group.add(&remove_row);
 

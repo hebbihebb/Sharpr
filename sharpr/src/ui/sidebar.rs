@@ -1501,6 +1501,7 @@ impl FolderRow {
         disclosure.set_icon_name(folder_disclosure_icon_name(is_collapsed));
         disclosure.set_sensitive(has_children);
         disclosure.set_opacity(if has_children { 1.0 } else { 0.0 });
+        disclosure.set_tooltip_text(Some("Expand or collapse"));
         *row.imp().disclosure_button.borrow_mut() = Some(disclosure.clone());
         let name_label = gtk4::Label::new(Some(label));
         name_label.set_halign(gtk4::Align::Start);
@@ -1635,6 +1636,7 @@ impl CollectionRow {
         });
         disclosure.set_sensitive(has_children);
         disclosure.set_opacity(if has_children { 1.0 } else { 0.0 });
+        disclosure.set_tooltip_text(Some("Expand or collapse"));
         *row.imp().disclosure_button.borrow_mut() = Some(disclosure.clone());
 
         // Keep collections on the same symbolic icon coloring path as folders.

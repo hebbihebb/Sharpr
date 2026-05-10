@@ -57,6 +57,7 @@ impl TagCard {
         menu_button.set_icon_name("view-more-symbolic");
         menu_button.add_css_class("flat");
         menu_button.add_css_class("tag-card-menu");
+        menu_button.set_tooltip_text(Some("More options"));
         menu_button.set_halign(gtk4::Align::End);
         menu_button.set_valign(gtk4::Align::Start);
         menu_button.set_margin_top(8);
