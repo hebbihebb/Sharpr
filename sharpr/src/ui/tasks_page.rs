@@ -111,7 +111,7 @@ mod imp {
         pub background_empty_label: RefCell<Option<gtk4::Label>>,
         pub background_list: RefCell<Option<gtk4::ListBox>>,
         pub crash_banner: RefCell<Option<libadwaita::Banner>>,
-        pub queue_empty_label: RefCell<Option<gtk4::Label>>,
+        pub queue_empty_status: RefCell<Option<libadwaita::StatusPage>>,
 
         // Upscale toggle + settings
         pub upscale_toggle: RefCell<Option<gtk4::Switch>>,
@@ -307,33 +307,16 @@ mod imp {
             scrolled.set_vexpand(true);
             scrolled.set_child(Some(&queue_list));
 
-            let queue_empty_label = gtk4::Label::new(Some("Queue is empty"));
-            queue_empty_label.add_css_class("dim-label");
-            queue_empty_label.set_margin_top(20);
-            queue_empty_label.set_margin_bottom(20);
-            queue_empty_label.set_visible(false);
+            let queue_empty_status = libadwaita::StatusPage::builder()
+                .icon_name("document-open-recent-symbolic")
+                .title("Queue is empty")
+                .description("Drag images here, use the + button, or Add Selected from the viewer")
+                .build();
+            queue_empty_status.set_visible(false);
 
             let queue_overlay = gtk4::Overlay::new();
             queue_overlay.set_child(Some(&scrolled));
-            queue_overlay.add_overlay(&queue_empty_label);
-
-            let drop_hint_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-            drop_hint_box.set_halign(gtk4::Align::Center);
-            drop_hint_box.set_valign(gtk4::Align::End);
-            drop_hint_box.set_margin_bottom(28);
-            drop_hint_box.set_can_target(false);
-            let drop_icon = gtk4::Image::from_icon_name("document-save-symbolic");
-            drop_icon.set_pixel_size(28);
-            drop_icon.add_css_class("dim-label");
-            let drop_label = gtk4::Label::new(Some("Drag images here to add to queue"));
-            drop_label.add_css_class("dim-label");
-            let drop_sub = gtk4::Label::new(Some("or use Add Selected from the current view"));
-            drop_sub.add_css_class("dim-label");
-            drop_sub.add_css_class("caption");
-            drop_hint_box.append(&drop_icon);
-            drop_hint_box.append(&drop_label);
-            drop_hint_box.append(&drop_sub);
-            queue_overlay.add_overlay(&drop_hint_box);
+            queue_overlay.add_overlay(&queue_empty_status);
 
             let queue_section = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
             queue_section.append(&queue_header);
@@ -993,7 +976,7 @@ mod imp {
             }
 
             *self.queue_list.borrow_mut() = Some(queue_list);
-            *self.queue_empty_label.borrow_mut() = Some(queue_empty_label);
+            *self.queue_empty_status.borrow_mut() = Some(queue_empty_status);
             *self.start_btn.borrow_mut() = Some(start_btn);
             *self.pause_btn.borrow_mut() = Some(pause_btn);
             *self.clear_btn.borrow_mut() = Some(clear_btn);
@@ -2003,8 +1986,8 @@ impl TasksPage {
                 .borrow_mut()
                 .retain(|pid| visible_queue_ids.contains(pid));
 
-            if let Some(lbl) = imp.queue_empty_label.borrow().as_ref() {
-                lbl.set_visible(pipelines.is_empty());
+            if let Some(status) = imp.queue_empty_status.borrow().as_ref() {
+                status.set_visible(pipelines.is_empty());
             }
 
             let queued_count = pipelines
@@ -2141,8 +2124,8 @@ impl TasksPage {
                 .borrow_mut()
                 .retain(|pid| visible_queue_ids.contains(pid));
 
-            if let Some(lbl) = imp.queue_empty_label.borrow().as_ref() {
-                lbl.set_visible(pipelines.is_empty());
+            if let Some(status) = imp.queue_empty_status.borrow().as_ref() {
+                status.set_visible(pipelines.is_empty());
             }
 
             let queued_count = pipelines

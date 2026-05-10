@@ -129,6 +129,8 @@ mod imp {
         pub suggestions_list: gtk4::ListBox,
         pub scroll: gtk4::ScrolledWindow,
         pub list_view: gtk4::ListView,
+        pub content_stack: gtk4::Stack,
+        pub empty_status: libadwaita::StatusPage,
         pub selection_model: gtk4::SingleSelection,
         pub image_selected_cb: RefCell<Option<ImageSelectedCallback>>,
         pub search_changed_cb: RefCell<Option<SearchChangedCallback>>,
@@ -190,6 +192,11 @@ mod imp {
                 suggestions_list,
                 scroll: gtk4::ScrolledWindow::new(),
                 list_view,
+                content_stack: gtk4::Stack::new(),
+                empty_status: libadwaita::StatusPage::builder()
+                    .icon_name("image-x-generic-symbolic")
+                    .title("No images in this folder")
+                    .build(),
                 selection_model,
                 image_selected_cb: RefCell::new(None),
                 search_changed_cb: RefCell::new(None),
@@ -954,7 +961,10 @@ impl FilmstripPane {
         imp.scroll.set_hexpand(true);
         imp.scroll.set_child(Some(&imp.list_view));
 
-        imp.root_box.append(&imp.scroll);
+        imp.content_stack.add_named(&imp.scroll, Some("list"));
+        imp.content_stack.add_named(&imp.empty_status, Some("empty"));
+
+        imp.root_box.append(&imp.content_stack);
         imp.toolbar_view.set_content(Some(&imp.root_box));
         imp.toolbar_view.set_parent(self);
 
@@ -1096,6 +1106,13 @@ impl FilmstripPane {
         let store = state_rc.borrow().library.store.clone();
         imp.selection_model.set_model(None::<&gio::ListStore>);
         imp.selection_model.set_model(Some(&store));
+
+        if store.n_items() == 0 {
+            imp.content_stack.set_visible_child_name("empty");
+        } else {
+            imp.content_stack.set_visible_child_name("list");
+        }
+
         self.schedule_visible_thumbnails();
         if imp.refresh_schedule_pending.replace(true) {
             return;

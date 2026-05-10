@@ -1071,6 +1071,13 @@ impl SharprWindow {
         content_stack.set_transition_type(gtk4::StackTransitionType::SlideLeft);
         content_stack.set_transition_duration(200);
 
+        let welcome_page = libadwaita::StatusPage::builder()
+            .icon_name("folder-open-symbolic")
+            .title("No folder open")
+            .description("Open a folder from the sidebar to start browsing")
+            .build();
+        content_stack.add_named(&welcome_page, Some("welcome"));
+
         {
             let content_stack_c = content_stack.clone();
             viewer.connect_manage_tags(move || {
@@ -1170,7 +1177,7 @@ impl SharprWindow {
                     win.clear_inline_search(true);
                 }
                 let current_page = content_stack.visible_child_name().unwrap_or_default();
-                if current_page == "viewer" || current_page == "compare" {
+                if current_page == "viewer" || current_page == "compare" || current_page == "welcome" {
                     content_stack.set_visible_child_name("viewer");
                 }
                 let cache_max = AppSettings::load().thumbnail_cache_max as usize;
@@ -2706,6 +2713,10 @@ impl SharprWindow {
                             window.handle_compare_selection_change(path);
                         }
                     } else {
+                        let current_page = content_stack_c.visible_child_name().unwrap_or_default();
+                        if current_page == "welcome" {
+                            content_stack_c.set_visible_child_name("viewer");
+                        }
                         viewer_c.load_image(path);
                     }
                 }
@@ -2946,7 +2957,7 @@ impl SharprWindow {
             });
         }
 
-        content_stack.set_visible_child_name("viewer");
+        content_stack.set_visible_child_name("welcome");
 
         {
             let window_weak = self.downgrade();
