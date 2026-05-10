@@ -2,7 +2,7 @@
 
 A high-performance, local-first image curation tool and viewer for Linux, built with GTK4, Libadwaita, and Rust.
 
-![Sharpr — Dark mode showing image curation and the high-resolution viewer](./dark.jpg)
+![Sharpr — Dark mode showing image curation and the high-resolution viewer](./screenshot.webp)
 
 ## Features
 
