@@ -349,16 +349,16 @@ mod imp {
                     let Ok(file_list) = value.get::<gdk4::FileList>() else {
                         return false;
                     };
-                    let mut added = false;
+                    let mut paths = Vec::new();
                     if let Some(w) = widget_weak.upgrade() {
                         for file in file_list.files() {
                             if let Some(path) = file.path() {
-                                w.pre_fill_from_path(path);
-                                added = true;
+                                paths.push(path);
                             }
                         }
+                        return w.add_paths_to_queue(paths);
                     }
-                    added
+                    false
                 });
                 queue_overlay.add_controller(drop_target);
             }
@@ -369,7 +369,7 @@ mod imp {
                     let Ok(uri_list) = value.get::<String>() else {
                         return false;
                     };
-                    let mut added = false;
+                    let mut paths = Vec::new();
                     if let Some(w) = widget_weak.upgrade() {
                         for entry in uri_list.lines().map(str::trim) {
                             if entry.is_empty() || entry.starts_with('#') {
@@ -381,12 +381,12 @@ mod imp {
                                 Some(PathBuf::from(entry))
                             };
                             if let Some(path) = path {
-                                w.pre_fill_from_path(path);
-                                added = true;
+                                paths.push(path);
                             }
                         }
+                        return w.add_paths_to_queue(paths);
                     }
-                    added
+                    false
                 });
                 queue_overlay.add_controller(drop_target);
             }
@@ -883,13 +883,15 @@ mod imp {
                                 return;
                             };
                             if let Ok(files) = result {
+                                let mut paths = Vec::new();
                                 for i in 0..files.n_items() {
                                     if let Some(file) = files.item(i).and_downcast::<gio::File>() {
                                         if let Some(path) = file.path() {
-                                            w.pre_fill_from_path(path);
+                                            paths.push(path);
                                         }
                                     }
                                 }
+                                w.add_paths_to_queue(paths);
                             }
                         },
                     );
@@ -1941,16 +1943,157 @@ impl TasksPage {
     }
 
     pub fn pre_fill_from_path(&self, path: PathBuf) {
+        self.add_paths_to_queue(vec![path]);
+    }
+
+    fn add_paths_to_queue(&self, paths: Vec<PathBuf>) -> bool {
+        if paths.is_empty() {
+            return false;
+        }
+        let mut added = false;
         if let Some(state_rc) = self.imp().state.borrow().as_ref() {
             if let Some(idx) = state_rc.borrow().library_index.as_ref() {
-                let _ = idx.create_pipeline(&path);
+                for path in paths {
+                    if idx.create_pipeline(&path).is_ok() {
+                        added = true;
+                    }
+                }
             }
         }
-        self.refresh();
+        if added {
+            self.refresh_queue();
+        }
+        added
     }
 
     pub fn on_pipelines_added(&self) {
-        self.refresh();
+        self.refresh_queue();
+    }
+
+    fn refresh_queue(&self) {
+        let imp = self.imp();
+        let Some(list_box) = imp.queue_list.borrow().clone() else {
+            return;
+        };
+        imp.queue_chip_suffixes.borrow_mut().clear();
+        while let Some(child) = list_box.first_child() {
+            list_box.remove(&child);
+        }
+
+        let Some(state_rc) = imp.state.borrow().clone() else {
+            return;
+        };
+        {
+            let state = state_rc.borrow();
+            let Some(idx) = state.library_index.as_ref() else {
+                return;
+            };
+
+            let in_progress = idx
+                .pipelines_by_status(PipelineStatus::InProgress)
+                .unwrap_or_default();
+            let queued = idx
+                .pipelines_by_status(PipelineStatus::Queued)
+                .unwrap_or_default();
+
+            let mut pipelines = in_progress;
+            pipelines.extend(queued);
+            let visible_queue_ids: HashSet<i64> = pipelines.iter().map(|p| p.id).collect();
+            imp.queue_checked_ids
+                .borrow_mut()
+                .retain(|pid| visible_queue_ids.contains(pid));
+
+            if let Some(lbl) = imp.queue_empty_label.borrow().as_ref() {
+                lbl.set_visible(pipelines.is_empty());
+            }
+
+            let queued_count = pipelines
+                .iter()
+                .filter(|p| p.status == PipelineStatus::Queued)
+                .count();
+            let running_count = pipelines
+                .iter()
+                .filter(|p| p.status == PipelineStatus::InProgress)
+                .count();
+
+            self.emit_user_activity(running_count > 0);
+
+            if let Some(lbl) = imp.queue_count_label.borrow().as_ref() {
+                let status = match (running_count, queued_count) {
+                    (0, 0) => "No user tasks".to_string(),
+                    (0, queued) => {
+                        let noun = if queued == 1 { "task" } else { "tasks" };
+                        format!("{queued} queued {noun}")
+                    }
+                    (running, 0) => {
+                        let noun = if running == 1 { "task" } else { "tasks" };
+                        format!("{running} running {noun}")
+                    }
+                    (running, queued) => format!("{running} running • {queued} queued"),
+                };
+                lbl.set_visible(true);
+                lbl.set_label(&status);
+            }
+
+            let runner_active = imp.runner_active.get();
+            let paused = imp.paused.get();
+
+            if let Some(btn) = imp.start_btn.borrow().as_ref() {
+                btn.set_sensitive((!runner_active || paused) && queued_count > 0);
+            }
+            if let Some(btn) = imp.pause_btn.borrow().as_ref() {
+                btn.set_sensitive(runner_active && !paused);
+            }
+            if let Some(btn) = imp.clear_btn.borrow().as_ref() {
+                btn.set_sensitive(queued_count > 0);
+            }
+            if let Some(btn) = imp.remove_btn.borrow().as_ref() {
+                btn.set_sensitive(!imp.queue_checked_ids.borrow().is_empty());
+            }
+
+            for pipeline in pipelines {
+                let expander = self.build_queue_expander_row(&pipeline, idx);
+                list_box.append(&expander);
+            }
+        }
+
+        let queue_selected_id = *imp.selected_pipeline_id.borrow();
+        if !imp.selected_is_history.get() {
+            if let Some(selected_id) = queue_selected_id {
+                let mut found = false;
+                let mut child = list_box.first_child();
+                while let Some(widget) = child {
+                    let next = widget.next_sibling();
+                    if let Ok(row) = widget.clone().downcast::<gtk4::ListBoxRow>() {
+                        if row.widget_name().parse::<i64>().ok() == Some(selected_id) {
+                            list_box.select_row(Some(&row));
+                            found = true;
+                            break;
+                        }
+                    }
+                    child = next;
+                }
+                if !found {
+                    list_box.unselect_all();
+                    *imp.selected_pipeline_id.borrow_mut() = None;
+                    self.clear_summary();
+                    if let Some(scroll) = imp.right_scroll.borrow().as_ref() {
+                        scroll.set_visible(false);
+                    }
+                    if let Some(label) = imp.no_selection_label.borrow().as_ref() {
+                        label.set_visible(true);
+                    }
+                }
+            } else {
+                list_box.unselect_all();
+                if let Some(scroll) = imp.right_scroll.borrow().as_ref() {
+                    scroll.set_visible(false);
+                }
+                if let Some(label) = imp.no_selection_label.borrow().as_ref() {
+                    label.set_visible(true);
+                }
+            }
+        }
     }
 
     pub fn refresh(&self) {
@@ -2343,7 +2486,7 @@ impl TasksPage {
                 return false;
             }
             drop(state);
-            w.refresh();
+            w.refresh_queue();
             true
         });
         expander.add_controller(drop_target);
