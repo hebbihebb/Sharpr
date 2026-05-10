@@ -1692,6 +1692,19 @@ impl LibraryIndex {
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         Ok(Self { pool })
     }
+
+    fn open_bare_db() -> rusqlite::Result<Self> {
+        let manager = SqliteConnectionManager::memory().with_init(|conn| {
+            configure_connection(conn)?;
+            initialize_schema(conn)?;
+            Ok(())
+        });
+        let pool = Pool::builder()
+            .max_size(1)
+            .build(manager)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        Ok(Self { pool })
+    }
 }
 
 #[cfg(test)]
@@ -2454,5 +2467,146 @@ mod tests {
         let steps = idx.steps_for_pipeline(pid).unwrap();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].step_type, StepType::Export);
+    }
+
+    #[test]
+    fn ensure_collection_schema_adds_missing_columns() {
+        let idx = LibraryIndex::open_bare_db().unwrap();
+        let conn = idx.conn().unwrap();
+
+        // Verify columns before migration
+        let columns = table_columns(&conn, "collections").unwrap();
+        assert!(!columns.iter().any(|c| c == "parent_id"));
+
+        ensure_collection_schema(&conn).unwrap();
+
+        let columns = table_columns(&conn, "collections").unwrap();
+        assert!(columns.iter().any(|c| c == "parent_id"));
+        assert!(columns.iter().any(|c| c == "primary_tag"));
+        assert!(columns.iter().any(|c| c == "extra_tags_json"));
+        assert!(columns.iter().any(|c| c == "tag_migrated_at"));
+        assert!(columns.iter().any(|c| c == "color"));
+        assert!(columns.iter().any(|c| c == "icon_name"));
+        assert!(columns.iter().any(|c| c == "library_id"));
+    }
+
+    #[test]
+    fn ensure_collection_schema_preserves_existing_rows() {
+        let idx = LibraryIndex::open_bare_db().unwrap();
+        let conn = idx.conn().unwrap();
+
+        let now = now_secs();
+        conn.execute(
+            "INSERT INTO collections (id, name, created_at, updated_at) VALUES (1, 'Travel', ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+
+        ensure_collection_schema(&conn).unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, primary_tag, extra_tags_json, parent_id, color FROM collections WHERE id = 1",
+            )
+            .unwrap();
+        let (name, primary_tag, extra_tags_json, parent_id, color): (
+            String,
+            String,
+            String,
+            Option<i64>,
+            Option<String>,
+        ) = stmt
+            .query_row([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap();
+
+        assert_eq!(name, "Travel");
+        assert_eq!(primary_tag, "travel");
+        assert_eq!(extra_tags_json, "[]");
+        assert_eq!(parent_id, None);
+        assert_eq!(color, None);
+    }
+
+    #[test]
+    fn ensure_collection_schema_is_idempotent() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let conn = idx.conn().unwrap();
+
+        // Should succeed first time (it already ran in open_in_memory, so this is technically the second time)
+        ensure_collection_schema(&conn).unwrap();
+        // Should succeed third time
+        ensure_collection_schema(&conn).unwrap();
+    }
+
+    #[test]
+    fn recover_interrupted_pipelines_resets_in_progress() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let conn = idx.conn().unwrap();
+
+        let now = now_secs();
+        // Pipeline 1: in_progress
+        conn.execute(
+            "INSERT INTO pipelines (id, source_path, status, created_at) VALUES (1, '/a.jpg', 'in_progress', ?1)",
+            params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pipeline_steps (pipeline_id, step_order, step_type, status, created_at) VALUES (1, 1, 'upscale', 'in_progress', ?1)",
+            params![now],
+        )
+        .unwrap();
+
+        // Pipeline 2: queued
+        conn.execute(
+            "INSERT INTO pipelines (id, source_path, status, created_at) VALUES (2, '/b.jpg', 'queued', ?1)",
+            params![now],
+        )
+        .unwrap();
+
+        // Pipeline 3: completed
+        conn.execute(
+            "INSERT INTO pipelines (id, source_path, status, created_at) VALUES (3, '/c.jpg', 'completed', ?1)",
+            params![now],
+        )
+        .unwrap();
+
+        let count = recover_interrupted_pipelines(&conn).unwrap();
+        assert_eq!(count, 1);
+
+        let p1_status: String = conn
+            .query_row("SELECT status FROM pipelines WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let s1_status: String = conn
+            .query_row(
+                "SELECT status FROM pipeline_steps WHERE pipeline_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(p1_status, "queued");
+        assert_eq!(s1_status, "queued");
+
+        let p2_status: String = conn
+            .query_row("SELECT status FROM pipelines WHERE id = 2", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(p2_status, "queued");
+
+        let p3_status: String = conn
+            .query_row("SELECT status FROM pipelines WHERE id = 3", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(p3_status, "completed");
     }
 }
