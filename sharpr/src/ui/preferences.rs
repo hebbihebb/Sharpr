@@ -212,14 +212,51 @@ pub fn build_preferences_window(
     comfy_url_row.set_title("Server URL");
     comfy_url_row.set_text(&settings.comfyui_url);
 
+    let privacy_banner =
+        libadwaita::Banner::new("This URL is outside your machine — images will leave your device");
+    privacy_banner.set_revealed(false);
+
+    let is_local_url = |url: &str| -> bool {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return true;
+        }
+        let stripped = trimmed
+            .strip_prefix("http://")
+            .or_else(|| trimmed.strip_prefix("https://"))
+            .unwrap_or(trimmed);
+        stripped.starts_with("localhost")
+            || stripped.starts_with("127.0.0.1")
+            || stripped.starts_with("::1")
+    };
+
+    privacy_banner.set_revealed(!is_local_url(&settings.comfyui_url));
+
     {
         let parent_c = parent.clone();
+        let privacy_banner_c = privacy_banner.clone();
         comfy_url_row.connect_changed(move |row| {
+            let text = row.text();
             parent_c
                 .app_state()
                 .borrow_mut()
                 .settings
-                .set_comfyui_url(row.text().as_str());
+                .set_comfyui_url(text.as_str());
+
+            let text_str = text.as_str();
+            let trimmed = text_str.trim();
+            let is_local = if trimmed.is_empty() {
+                true
+            } else {
+                let stripped = trimmed
+                    .strip_prefix("http://")
+                    .or_else(|| trimmed.strip_prefix("https://"))
+                    .unwrap_or(trimmed);
+                stripped.starts_with("localhost")
+                    || stripped.starts_with("127.0.0.1")
+                    || stripped.starts_with("::1")
+            };
+            privacy_banner_c.set_revealed(!is_local);
         });
     }
 
@@ -292,6 +329,10 @@ pub fn build_preferences_window(
     comfy_group.add(&comfy_workflow_row);
     comfy_group.add(&test_row);
     upscaler_page.add(&comfy_group);
+
+    let privacy_group = libadwaita::PreferencesGroup::new();
+    privacy_group.add(&privacy_banner);
+    upscaler_page.add(&privacy_group);
 
     window.add(&upscaler_page);
 
