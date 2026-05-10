@@ -12,7 +12,7 @@ pub fn show_help_window(parent: &impl gtk4::prelude::IsA<gtk4::Widget>) {
     let text = std::str::from_utf8(bytes.as_ref()).unwrap_or("");
 
     let dialog = adw::Dialog::new();
-    dialog.set_title("Skerpa Manual");
+    dialog.set_title("Sharpr Manual");
     dialog.set_content_width(620);
     dialog.set_content_height(700);
 
