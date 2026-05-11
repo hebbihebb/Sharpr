@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::Once;
 
 use gtk4::gdk;
+use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
@@ -482,39 +483,27 @@ impl TagBrowser {
     }
 
     fn attach_tag_menu(&self, menu_button: &gtk4::MenuButton, tag: &str) {
-        let popover = gtk4::Popover::new();
-        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-        content.set_margin_top(8);
-        content.set_margin_bottom(8);
-        content.set_margin_start(8);
-        content.set_margin_end(8);
+        let menu = gio::Menu::new();
+        menu.append(Some("Create Collection"), Some("tag.create-collection"));
+        menu.append(Some("Delete Tag"), Some("tag.delete"));
+        let popover = gtk4::PopoverMenu::from_model(Some(&menu));
 
-        let create_button = gtk4::Button::with_label("Create Collection");
-        create_button.add_css_class("flat");
-        create_button.set_halign(gtk4::Align::Fill);
-
-        let delete_button = gtk4::Button::with_label("Delete Tag");
-        delete_button.add_css_class("flat");
-        delete_button.add_css_class("destructive-action");
-        delete_button.set_halign(gtk4::Align::Fill);
-
+        let group = gio::SimpleActionGroup::new();
         let widget_weak = self.downgrade();
         let tag_name = tag.to_string();
-        let popover_weak = popover.downgrade();
-        create_button.connect_clicked(move |_| {
+        let create_collection = gio::SimpleAction::new("create-collection", None);
+        create_collection.connect_activate(move |_, _| {
             let Some(widget) = widget_weak.upgrade() else {
                 return;
             };
             widget.emit_tag_create_collection_requested(&tag_name);
-            if let Some(popover) = popover_weak.upgrade() {
-                popover.popdown();
-            }
         });
+        group.add_action(&create_collection);
 
         let widget_weak = self.downgrade();
         let tag_name = tag.to_string();
-        let popover_weak = popover.downgrade();
-        delete_button.connect_clicked(move |_| {
+        let delete = gio::SimpleAction::new("delete", None);
+        delete.connect_activate(move |_, _| {
             let Some(widget) = widget_weak.upgrade() else {
                 return;
             };
@@ -528,14 +517,10 @@ impl TagBrowser {
             }
             widget.emit_tags_activated(SelectionModifiers::default());
             widget.refresh();
-            if let Some(popover) = popover_weak.upgrade() {
-                popover.popdown();
-            }
         });
+        group.add_action(&delete);
 
-        content.append(&create_button);
-        content.append(&delete_button);
-        popover.set_child(Some(&content));
+        menu_button.insert_action_group("tag", Some(&group));
         menu_button.set_popover(Some(&popover));
     }
 

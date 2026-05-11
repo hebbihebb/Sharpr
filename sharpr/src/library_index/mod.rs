@@ -903,25 +903,36 @@ impl LibraryIndex {
         Ok(())
     }
 
-    pub fn reparent_collection(&self, id: i64, new_parent_id: i64) -> rusqlite::Result<()> {
-        if id == new_parent_id {
-            return Err(rusqlite::Error::InvalidParameterName(
-                "collection cannot be its own parent".into(),
-            ));
-        }
+    pub fn reparent_collection(&self, id: i64, new_parent_id: Option<i64>) -> rusqlite::Result<()> {
         let Some(collection) = self.collection(id)? else {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         };
-        if self.collection(new_parent_id)?.is_none() {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
+        if let Some(parent_id) = new_parent_id {
+            if id == parent_id {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "collection cannot be its own parent".into(),
+                ));
+            }
+            if self.collection(parent_id)?.is_none() {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
         }
         let collections = self.list_collections()?;
-        if collections.iter().any(|c| c.parent_id == Some(id)) {
-            return Err(rusqlite::Error::InvalidParameterName(
-                "only leaf collections can be reparented".into(),
-            ));
+        if let Some(parent_id) = new_parent_id {
+            let mut current = Some(parent_id);
+            while let Some(current_id) = current {
+                if current_id == id {
+                    return Err(rusqlite::Error::InvalidParameterName(
+                        "collection cannot be moved under its own child".into(),
+                    ));
+                }
+                current = collections
+                    .iter()
+                    .find(|collection| collection.id == current_id)
+                    .and_then(|collection| collection.parent_id);
+            }
         }
-        if collection.parent_id == Some(new_parent_id) {
+        if collection.parent_id == new_parent_id {
             return Ok(());
         }
         let now = now_secs();
@@ -2210,13 +2221,13 @@ mod tests {
             .create_collection("", None, "Diffusion", &[], None, None)
             .unwrap();
 
-        idx.reparent_collection(diffusion.id, art.id).unwrap();
+        idx.reparent_collection(diffusion.id, Some(art.id)).unwrap();
         let moved = idx.collection(diffusion.id).unwrap().unwrap();
         assert_eq!(moved.parent_id, Some(art.id));
     }
 
     #[test]
-    fn reparent_rejects_non_leaf_collection() {
+    fn reparent_collection_allows_subtrees_but_rejects_cycles() {
         let idx = LibraryIndex::open_in_memory().unwrap();
         let art = idx
             .create_collection("", None, "Art", &[], None, None)
@@ -2224,10 +2235,18 @@ mod tests {
         let root = idx
             .create_collection("", None, "People", &[], None, None)
             .unwrap();
-        idx.create_collection("", Some(root.id), "Model", &[], None, None)
+        let model = idx
+            .create_collection("", Some(root.id), "Model", &[], None, None)
             .unwrap();
 
-        assert!(idx.reparent_collection(root.id, art.id).is_err());
+        idx.reparent_collection(root.id, Some(art.id)).unwrap();
+        assert_eq!(
+            idx.collection(root.id).unwrap().unwrap().parent_id,
+            Some(art.id)
+        );
+        assert!(idx.reparent_collection(root.id, Some(model.id)).is_err());
+        idx.reparent_collection(root.id, None).unwrap();
+        assert_eq!(idx.collection(root.id).unwrap().unwrap().parent_id, None);
     }
 
     #[test]

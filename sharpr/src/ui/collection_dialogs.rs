@@ -9,8 +9,12 @@ use libadwaita::prelude::*;
 
 use crate::config::FolderMode;
 use crate::library_index::normalize_collection_tag;
+use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::sidebar::SidebarPane;
-use crate::ui::window::{AppState, ViewScope};
+use crate::ui::viewer::ViewerPane;
+use crate::ui::window::{
+    apply_scope_to_sidebar, collection_paths_from_services, load_virtual_async, AppState, ViewScope,
+};
 
 pub(super) fn parse_collection_tags_input(input: &str) -> Vec<String> {
     let mut tags = Vec::new();
@@ -223,6 +227,214 @@ pub(super) fn show_new_collection_dialog<F>(
                         "Could not create collection: {e}"
                     )));
                 }
+            }
+        }
+    });
+    dialog.present(Some(&window));
+}
+
+pub(super) fn show_rename_collection_dialog<F>(
+    window: gtk4::Window,
+    id: i64,
+    state: Rc<RefCell<AppState>>,
+    toast_overlay: libadwaita::ToastOverlay,
+    refresh: F,
+    filmstrip: FilmstripPane,
+    viewer: ViewerPane,
+    sidebar: SidebarPane,
+) where
+    F: Fn() + Clone + 'static,
+{
+    let Some(idx) = state.borrow().library_index.clone() else {
+        return;
+    };
+    let Some(collection) = idx.collection(id).ok().flatten() else {
+        return;
+    };
+
+    let dialog = libadwaita::AlertDialog::new(Some("Rename Collection"), None);
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("save", "Save");
+    dialog.set_default_response(Some("save"));
+    dialog.set_close_response("cancel");
+    dialog.set_response_appearance("save", libadwaita::ResponseAppearance::Suggested);
+
+    let name_entry = gtk4::Entry::new();
+    name_entry.set_text(&collection.name);
+    name_entry.select_region(0, -1);
+    name_entry.set_activates_default(true);
+    let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+    box_.set_margin_top(6);
+    box_.append(&name_entry);
+    dialog.set_extra_child(Some(&box_));
+
+    let state_d = state.clone();
+    let toast_d = toast_overlay.clone();
+    let refresh_d = refresh.clone();
+    let filmstrip_d = filmstrip.clone();
+    let viewer_d = viewer.clone();
+    let sidebar_d = sidebar.clone();
+    let name_clone = name_entry.clone();
+    dialog.connect_response(None, move |_, response| {
+        if response != "save" {
+            return;
+        }
+        let services = {
+            let state = state_d.borrow();
+            (state.library_index.clone(), state.tags.clone())
+        };
+        let (Some(idx), Some(tags_db)) = services else {
+            return;
+        };
+        let Some(before) = idx.collection(id).ok().flatten() else {
+            return;
+        };
+        let new_name = name_clone.text().to_string();
+        let (active_root_buf, disabled) = {
+            let s = state_d.borrow();
+            (
+                s.settings.active_library().map(|lib| lib.root.clone()),
+                s.disabled_folders.clone(),
+            )
+        };
+        let old_scope_paths = collection_paths_from_services(
+            &idx,
+            &tags_db,
+            id,
+            active_root_buf.as_deref(),
+            &disabled,
+        );
+        let old_primary = before.primary_tag.clone();
+        let new_primary = normalize_collection_tag(&new_name);
+        let started = std::time::Instant::now();
+        match idx.update_collection(
+            id,
+            &new_name,
+            &before.extra_tags,
+            before.color.as_deref(),
+            before.icon_name.as_deref(),
+        ) {
+            Ok(()) => {
+                if old_primary != new_primary {
+                    tags_db.replace_tag_in_paths(&old_scope_paths, &old_primary, &new_primary);
+                }
+                crate::bench_event!(
+                    "collection.update",
+                    serde_json::json!({
+                        "collection_id": id,
+                        "duration_ms": crate::bench::duration_ms(started),
+                    }),
+                );
+                refresh_d();
+                let is_active_collection = {
+                    let state = state_d.borrow();
+                    matches!(state.scope, ViewScope::Collection(active) if active == id)
+                };
+                if is_active_collection {
+                    let (active_root_buf, disabled) = {
+                        let s = state_d.borrow();
+                        (
+                            s.settings.active_library().map(|lib| lib.root.clone()),
+                            s.disabled_folders.clone(),
+                        )
+                    };
+                    let paths = collection_paths_from_services(
+                        &idx,
+                        &tags_db,
+                        id,
+                        active_root_buf.as_deref(),
+                        &disabled,
+                    );
+                    state_d.borrow_mut().scope = ViewScope::Collection(id);
+                    load_virtual_async(&state_d, &paths);
+                    filmstrip_d.refresh_virtual();
+                    let scope = state_d.borrow().scope.clone();
+                    apply_scope_to_sidebar(&scope, &sidebar_d);
+                    if state_d.borrow().library.entry_at(0).is_some() {
+                        state_d.borrow_mut().library.selected_index = Some(0);
+                        filmstrip_d.navigate_to(0);
+                    } else {
+                        viewer_d.clear();
+                    }
+                }
+            }
+            Err(e) => {
+                toast_d.add_toast(libadwaita::Toast::new(&format!(
+                    "Could not rename collection: {e}"
+                )));
+            }
+        }
+    });
+    dialog.present(Some(&window));
+    name_entry.grab_focus();
+}
+
+pub(super) fn show_change_color_dialog<F>(
+    window: gtk4::Window,
+    id: i64,
+    state: Rc<RefCell<AppState>>,
+    toast_overlay: libadwaita::ToastOverlay,
+    refresh: F,
+) where
+    F: Fn() + Clone + 'static,
+{
+    let Some(idx) = state.borrow().library_index.clone() else {
+        return;
+    };
+    let Some(collection) = idx.collection(id).ok().flatten() else {
+        return;
+    };
+
+    let dialog = libadwaita::AlertDialog::new(Some("Change Collection Color"), None);
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("save", "Save");
+    dialog.set_default_response(Some("save"));
+    dialog.set_close_response("cancel");
+    dialog.set_response_appearance("save", libadwaita::ResponseAppearance::Suggested);
+
+    let (color_swatch_row, selected_color) = build_color_swatch_row(collection.color.as_deref());
+    let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+    box_.set_margin_top(6);
+    box_.append(&color_swatch_row);
+    dialog.set_extra_child(Some(&box_));
+
+    let state_d = state.clone();
+    let toast_d = toast_overlay.clone();
+    let refresh_d = refresh.clone();
+    let selected_color_clone = selected_color.clone();
+    dialog.connect_response(None, move |_, response| {
+        if response != "save" {
+            return;
+        }
+        let Some(idx) = state_d.borrow().library_index.clone() else {
+            return;
+        };
+        let Some(before) = idx.collection(id).ok().flatten() else {
+            return;
+        };
+        let selected_color = selected_color_clone.borrow().clone();
+        let started = std::time::Instant::now();
+        match idx.update_collection(
+            id,
+            &before.name,
+            &before.extra_tags,
+            selected_color.as_deref(),
+            before.icon_name.as_deref(),
+        ) {
+            Ok(()) => {
+                crate::bench_event!(
+                    "collection.update",
+                    serde_json::json!({
+                        "collection_id": id,
+                        "duration_ms": crate::bench::duration_ms(started),
+                    }),
+                );
+                refresh_d();
+            }
+            Err(e) => {
+                toast_d.add_toast(libadwaita::Toast::new(&format!(
+                    "Could not change collection color: {e}"
+                )));
             }
         }
     });

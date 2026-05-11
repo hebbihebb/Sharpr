@@ -19,8 +19,9 @@ type LibraryCreateRequestedCallback = Box<dyn Fn() + 'static>;
 type LibrarySelectedCallback = Box<dyn Fn(String) + 'static>;
 type CollectionSelectedCallback = Box<dyn Fn(i64) + 'static>;
 type CollectionAddRequestedCallback = Box<dyn Fn() + 'static>;
-type CollectionChildAddRequestedCallback = Box<dyn Fn(i64) + 'static>;
-type CollectionEditRequestedCallback = Box<dyn Fn(i64) + 'static>;
+type CollectionRenameRequestedCallback = Box<dyn Fn(i64) + 'static>;
+type CollectionColorRequestedCallback = Box<dyn Fn(i64) + 'static>;
+type CollectionPromoteRequestedCallback = Box<dyn Fn(i64) + 'static>;
 type CollectionMoveRequestedCallback = Box<dyn Fn(i64) + 'static>;
 type CollectionReparentRequestedCallback = Box<dyn Fn(i64, i64) + 'static>;
 type CollectionDeleteRequestedCallback = Box<dyn Fn(i64) + 'static>;
@@ -61,8 +62,9 @@ mod imp {
         pub library_selected_cb: RefCell<Option<LibrarySelectedCallback>>,
         pub collection_selected_cb: RefCell<Option<CollectionSelectedCallback>>,
         pub collection_add_requested_cb: RefCell<Option<CollectionAddRequestedCallback>>,
-        pub collection_child_add_requested_cb: RefCell<Option<CollectionChildAddRequestedCallback>>,
-        pub collection_edit_requested_cb: RefCell<Option<CollectionEditRequestedCallback>>,
+        pub collection_rename_requested_cb: RefCell<Option<CollectionRenameRequestedCallback>>,
+        pub collection_color_requested_cb: RefCell<Option<CollectionColorRequestedCallback>>,
+        pub collection_promote_requested_cb: RefCell<Option<CollectionPromoteRequestedCallback>>,
         pub collection_move_requested_cb: RefCell<Option<CollectionMoveRequestedCallback>>,
         pub collection_reparent_requested_cb: RefCell<Option<CollectionReparentRequestedCallback>>,
         pub collection_delete_requested_cb: RefCell<Option<CollectionDeleteRequestedCallback>>,
@@ -93,8 +95,9 @@ mod imp {
                 library_selected_cb: RefCell::new(None),
                 collection_selected_cb: RefCell::new(None),
                 collection_add_requested_cb: RefCell::new(None),
-                collection_child_add_requested_cb: RefCell::new(None),
-                collection_edit_requested_cb: RefCell::new(None),
+                collection_rename_requested_cb: RefCell::new(None),
+                collection_color_requested_cb: RefCell::new(None),
+                collection_promote_requested_cb: RefCell::new(None),
                 collection_move_requested_cb: RefCell::new(None),
                 collection_reparent_requested_cb: RefCell::new(None),
                 collection_delete_requested_cb: RefCell::new(None),
@@ -611,12 +614,16 @@ impl SidebarPane {
         *self.imp().collection_add_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_collection_child_add_requested<F: Fn(i64) + 'static>(&self, f: F) {
-        *self.imp().collection_child_add_requested_cb.borrow_mut() = Some(Box::new(f));
+    pub fn connect_collection_rename_requested<F: Fn(i64) + 'static>(&self, f: F) {
+        *self.imp().collection_rename_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_collection_edit_requested<F: Fn(i64) + 'static>(&self, f: F) {
-        *self.imp().collection_edit_requested_cb.borrow_mut() = Some(Box::new(f));
+    pub fn connect_collection_color_requested<F: Fn(i64) + 'static>(&self, f: F) {
+        *self.imp().collection_color_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_collection_promote_requested<F: Fn(i64) + 'static>(&self, f: F) {
+        *self.imp().collection_promote_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn connect_collection_move_requested<F: Fn(i64) + 'static>(&self, f: F) {
@@ -798,65 +805,82 @@ impl SidebarPane {
         });
         row.add_controller(drop_target);
 
-        let popover = gtk4::Popover::new();
-        popover.set_autohide(true);
+        let menu = gio::Menu::new();
+        let edit_section = gio::Menu::new();
+        edit_section.append(Some("Rename\u{2026}"), Some("collection.rename"));
+        edit_section.append(
+            Some("Change Color\u{2026}"),
+            Some("collection.change-color"),
+        );
+        menu.append_section(None, &edit_section);
+
+        let move_section = gio::Menu::new();
+        if row.has_parent() {
+            move_section.append(Some("Promote to Top Level"), Some("collection.promote"));
+        }
+        move_section.append(
+            Some("Move into Collection\u{2026}"),
+            Some("collection.move-into"),
+        );
+        menu.append_section(None, &move_section);
+
+        let delete_section = gio::Menu::new();
+        delete_section.append(Some("Delete Collection"), Some("collection.delete"));
+        menu.append_section(None, &delete_section);
+
+        let popover = gtk4::PopoverMenu::from_model(Some(&menu));
         popover.set_has_arrow(true);
         popover.set_position(gtk4::PositionType::Right);
-
-        let btn_child = gtk4::Button::with_label("New Child Collection");
-        btn_child.add_css_class("flat");
-        let btn_edit = gtk4::Button::with_label("Edit Collection");
-        btn_edit.add_css_class("flat");
-        let btn_move = gtk4::Button::with_label("Assign As Child Of…");
-        btn_move.add_css_class("flat");
-        btn_move.set_visible(!row.has_children());
-        let btn_delete = gtk4::Button::with_label("Delete Collection");
-        btn_delete.add_css_class("flat");
-        btn_delete.add_css_class("destructive-action");
-
-        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-        vbox.set_margin_top(4);
-        vbox.set_margin_bottom(4);
-        vbox.append(&btn_child);
-        vbox.append(&btn_edit);
-        vbox.append(&btn_move);
-        vbox.append(&btn_delete);
-        popover.set_child(Some(&vbox));
         popover.set_parent(row);
 
+        let group = gio::SimpleActionGroup::new();
+
         let widget_weak = self.downgrade();
         let row_weak = row.downgrade();
-        let popover_clone = popover.clone();
-        btn_child.connect_clicked(move |_| {
-            popover_clone.popdown();
+        let rename = gio::SimpleAction::new("rename", None);
+        rename.connect_activate(move |_, _| {
             let Some(widget) = widget_weak.upgrade() else {
                 return;
             };
             let Some(row) = row_weak.upgrade() else {
                 return;
             };
-            widget.emit_collection_child_add_requested(row.collection_id());
+            widget.emit_collection_rename_requested(row.collection_id());
         });
+        group.add_action(&rename);
 
         let widget_weak = self.downgrade();
         let row_weak = row.downgrade();
-        let popover_clone = popover.clone();
-        btn_edit.connect_clicked(move |_| {
-            popover_clone.popdown();
+        let change_color = gio::SimpleAction::new("change-color", None);
+        change_color.connect_activate(move |_, _| {
             let Some(widget) = widget_weak.upgrade() else {
                 return;
             };
             let Some(row) = row_weak.upgrade() else {
                 return;
             };
-            widget.emit_collection_edit_requested(row.collection_id());
+            widget.emit_collection_color_requested(row.collection_id());
         });
+        group.add_action(&change_color);
 
         let widget_weak = self.downgrade();
         let row_weak = row.downgrade();
-        let popover_clone = popover.clone();
-        btn_move.connect_clicked(move |_| {
-            popover_clone.popdown();
+        let promote = gio::SimpleAction::new("promote", None);
+        promote.connect_activate(move |_, _| {
+            let Some(widget) = widget_weak.upgrade() else {
+                return;
+            };
+            let Some(row) = row_weak.upgrade() else {
+                return;
+            };
+            widget.emit_collection_promote_requested(row.collection_id());
+        });
+        group.add_action(&promote);
+
+        let widget_weak = self.downgrade();
+        let row_weak = row.downgrade();
+        let move_into = gio::SimpleAction::new("move-into", None);
+        move_into.connect_activate(move |_, _| {
             let Some(widget) = widget_weak.upgrade() else {
                 return;
             };
@@ -865,13 +889,12 @@ impl SidebarPane {
             };
             widget.emit_collection_move_requested(row.collection_id());
         });
+        group.add_action(&move_into);
 
-        // Delete button
         let widget_weak = self.downgrade();
         let row_weak = row.downgrade();
-        let popover_clone = popover.clone();
-        btn_delete.connect_clicked(move |_| {
-            popover_clone.popdown();
+        let delete = gio::SimpleAction::new("delete", None);
+        delete.connect_activate(move |_, _| {
             let Some(widget) = widget_weak.upgrade() else {
                 return;
             };
@@ -907,6 +930,9 @@ impl SidebarPane {
                 }
             }
         });
+        group.add_action(&delete);
+
+        row.insert_action_group("collection", Some(&group));
 
         // Right-click gesture to show popover
         let gesture = gtk4::GestureClick::new();
@@ -933,19 +959,20 @@ impl SidebarPane {
         }
     }
 
-    fn emit_collection_child_add_requested(&self, id: i64) {
-        if let Some(cb) = self
-            .imp()
-            .collection_child_add_requested_cb
-            .borrow()
-            .as_ref()
-        {
+    fn emit_collection_rename_requested(&self, id: i64) {
+        if let Some(cb) = self.imp().collection_rename_requested_cb.borrow().as_ref() {
             cb(id);
         }
     }
 
-    fn emit_collection_edit_requested(&self, id: i64) {
-        if let Some(cb) = self.imp().collection_edit_requested_cb.borrow().as_ref() {
+    fn emit_collection_color_requested(&self, id: i64) {
+        if let Some(cb) = self.imp().collection_color_requested_cb.borrow().as_ref() {
+            cb(id);
+        }
+    }
+
+    fn emit_collection_promote_requested(&self, id: i64) {
+        if let Some(cb) = self.imp().collection_promote_requested_cb.borrow().as_ref() {
             cb(id);
         }
     }
@@ -1696,6 +1723,10 @@ impl CollectionRow {
 
     pub fn has_children(&self) -> bool {
         self.imp().has_children.get()
+    }
+
+    pub fn has_parent(&self) -> bool {
+        self.imp().depth.get() > 0
     }
 }
 

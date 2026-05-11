@@ -15,17 +15,15 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{AppSettings, FolderMode};
 use crate::duplicates::phash;
-use crate::library_index::{
-    normalize_collection_tag, BasicImageInfo, Collection, IndexedImage, LibraryIndex,
-};
+use crate::library_index::{BasicImageInfo, Collection, IndexedImage, LibraryIndex};
 use crate::model::library::{CachedImageData, RawImageEntry, SortOrder};
 use crate::model::{ImageEntry, LibraryManager};
 use crate::tags::smart::SmartModel;
 use crate::thumbnails::worker::{ThumbnailWorkerResponse, WorkerRequest};
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::collection_dialogs::{
-    build_color_swatch_row, parse_collection_tags_input, show_new_collection_dialog,
-    show_new_library_dialog, switch_active_library,
+    parse_collection_tags_input, show_change_color_dialog, show_new_collection_dialog,
+    show_new_library_dialog, show_rename_collection_dialog, switch_active_library,
 };
 use crate::ui::compare_item::{build_compare_item_from_pipeline, CompareItem};
 use crate::ui::filmstrip::FilmstripPane;
@@ -123,7 +121,7 @@ fn search_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn collection_paths_from_services(
+pub(super) fn collection_paths_from_services(
     index: &LibraryIndex,
     tags: &crate::tags::TagDatabase,
     collection_id: i64,
@@ -1177,7 +1175,10 @@ impl SharprWindow {
                     win.clear_inline_search(true);
                 }
                 let current_page = content_stack.visible_child_name().unwrap_or_default();
-                if current_page == "viewer" || current_page == "compare" || current_page == "welcome" {
+                if current_page == "viewer"
+                    || current_page == "compare"
+                    || current_page == "welcome"
+                {
                     content_stack.set_visible_child_name("viewer");
                 }
                 let cache_max = AppSettings::load().thumbnail_cache_max as usize;
@@ -1987,9 +1988,7 @@ impl SharprWindow {
             let refresh_c = refresh_sidebar_collections.clone();
             let window_weak = self.downgrade();
             sidebar.connect_collection_add_requested(move || {
-                let Some(win) = window_weak.upgrade() else {
-                    return;
-                };
+                let Some(win) = window_weak.upgrade() else { return };
                 show_new_collection_dialog(
                     win.upcast(),
                     String::new(),
@@ -2112,91 +2111,7 @@ impl SharprWindow {
             });
         }
 
-        // Right-click → create child collection.
-        {
-            let state_c = state.clone();
-            let toast_overlay_c = toast_overlay.clone();
-            let refresh_c = refresh_sidebar_collections.clone();
-            let window_weak = self.downgrade();
-            sidebar.connect_collection_child_add_requested(move |parent_id| {
-                let Some(win) = window_weak.upgrade() else {
-                    return;
-                };
-                let dialog = libadwaita::AlertDialog::new(Some("New Child Collection"), None);
-                dialog.add_response("cancel", "Cancel");
-                dialog.add_response("create", "Create");
-                dialog.set_default_response(Some("create"));
-                dialog.set_close_response("cancel");
-                dialog.set_response_appearance("create", libadwaita::ResponseAppearance::Suggested);
-                let name_entry = gtk4::Entry::new();
-                name_entry.set_placeholder_text(Some("Collection name"));
-                let tags_entry = gtk4::Entry::new();
-                tags_entry.set_placeholder_text(Some("Extra tags, comma separated"));
-                let info = gtk4::Label::new(Some("The collection name is also used as a tag."));
-                info.add_css_class("dim-label");
-                info.set_wrap(true);
-                info.set_halign(gtk4::Align::Start);
-                let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-                box_.set_margin_top(6);
-                box_.append(&name_entry);
-                box_.append(&info);
-                box_.append(&tags_entry);
-                dialog.set_extra_child(Some(&box_));
-                let state_d = state_c.clone();
-                let toast_d = toast_overlay_c.clone();
-                let refresh_d = refresh_c.clone();
-                let name_clone = name_entry.clone();
-                let tags_clone = tags_entry.clone();
-                dialog.connect_response(None, move |_, response| {
-                    if response != "create" {
-                        return;
-                    }
-                    let idx = state_d.borrow().library_index.clone();
-                    if let Some(idx) = idx {
-                        let started = std::time::Instant::now();
-                        let library_id = state_d
-                            .borrow()
-                            .settings
-                            .active_library()
-                            .map(|l| l.id.clone())
-                            .unwrap_or_default();
-                        match idx.create_collection(
-                            &library_id,
-                            Some(parent_id),
-                            name_clone.text().as_str(),
-                            &parse_collection_tags_input(tags_clone.text().as_str()),
-                            None,
-                            None,
-                        ) {
-                            Ok(coll) => {
-                                crate::bench_event!(
-                                    "collection.create",
-                                    serde_json::json!({
-                                        "collection_id": coll.id,
-                                        "parent_id": parent_id,
-                                        "name": coll.name,
-                                        "duration_ms": crate::bench::duration_ms(started),
-                                    }),
-                                );
-                                refresh_d();
-                                toast_d.add_toast(libadwaita::Toast::new(&format!(
-                                    "Child collection \u{201c}{}\u{201d} created",
-                                    coll.name
-                                )));
-                            }
-                            Err(e) => {
-                                toast_d.add_toast(libadwaita::Toast::new(&format!(
-                                    "Could not create child collection: {e}"
-                                )));
-                            }
-                        }
-                    }
-                });
-                dialog.present(Some(&win));
-            });
-        }
-
-        // Right-click → rename/edit collection metadata and retag current scope.
+        // Collection row context actions.
         {
             let filmstrip_c = filmstrip.clone();
             let viewer_c = viewer.clone();
@@ -2205,130 +2120,39 @@ impl SharprWindow {
             let toast_overlay_c = toast_overlay.clone();
             let refresh_c = refresh_sidebar_collections.clone();
             let window_weak = self.downgrade();
-            sidebar.connect_collection_edit_requested(move |id| {
+            sidebar.connect_collection_rename_requested(move |id| {
                 let Some(win) = window_weak.upgrade() else {
                     return;
                 };
-                let Some(idx) = state_c.borrow().library_index.clone() else {
+                show_rename_collection_dialog(
+                    win.upcast(),
+                    id,
+                    state_c.clone(),
+                    toast_overlay_c.clone(),
+                    refresh_c.clone(),
+                    filmstrip_c.clone(),
+                    viewer_c.clone(),
+                    sidebar_c.clone(),
+                );
+            });
+        }
+
+        {
+            let state_c = state.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            let refresh_c = refresh_sidebar_collections.clone();
+            let window_weak = self.downgrade();
+            sidebar.connect_collection_color_requested(move |id| {
+                let Some(win) = window_weak.upgrade() else {
                     return;
                 };
-                let Some(collection) = idx.collection(id).ok().flatten() else {
-                    return;
-                };
-                let dialog = libadwaita::AlertDialog::new(Some("Edit Collection"), None);
-                dialog.add_response("cancel", "Cancel");
-                dialog.add_response("save", "Save");
-                dialog.set_default_response(Some("save"));
-                dialog.set_close_response("cancel");
-                dialog.set_response_appearance("save", libadwaita::ResponseAppearance::Suggested);
-                let name_entry = gtk4::Entry::new();
-                name_entry.set_text(&collection.name);
-                name_entry.select_region(0, -1);
-                let (color_swatch_row, selected_color) =
-                    build_color_swatch_row(collection.color.as_deref());
-                let tags_entry = gtk4::Entry::new();
-                tags_entry.set_text(&collection.extra_tags.join(", "));
-                let info = gtk4::Label::new(Some("The collection name is also used as a tag."));
-                info.add_css_class("dim-label");
-                info.set_wrap(true);
-                info.set_halign(gtk4::Align::Start);
-                let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-                box_.set_margin_top(6);
-                box_.append(&name_entry);
-                box_.append(&color_swatch_row);
-                box_.append(&info);
-                box_.append(&tags_entry);
-                dialog.set_extra_child(Some(&box_));
-                let state_d = state_c.clone();
-                let toast_d = toast_overlay_c.clone();
-                let refresh_d = refresh_c.clone();
-                let filmstrip_d = filmstrip_c.clone();
-                let viewer_d = viewer_c.clone();
-                let sidebar_d = sidebar_c.clone();
-                let name_clone = name_entry.clone();
-                let tags_clone = tags_entry.clone();
-                let selected_color_clone = selected_color.clone();
-                let icon_name = collection.icon_name.clone();
-                dialog.connect_response(None, move |_, response| {
-                    if response != "save" {
-                        return;
-                    }
-                    let services = {
-                        let state = state_d.borrow();
-                        (state.library_index.clone(), state.tags.clone())
-                    };
-                    let (Some(idx), Some(tags_db)) = services else {
-                        return;
-                    };
-                    let Some(before) = idx.collection(id).ok().flatten() else {
-                        return;
-                    };
-                    let new_name = name_clone.text().to_string();
-                    let new_extra_tags = parse_collection_tags_input(tags_clone.text().as_str());
-                    let selected_color = selected_color_clone.borrow().clone();
-                    let (active_root_buf, disabled) = {
-                        let s = state_d.borrow();
-                        (s.settings.active_library().map(|lib| lib.root.clone()), s.disabled_folders.clone())
-                    };
-                    let old_scope_paths = collection_paths_from_services(&idx, &tags_db, id, active_root_buf.as_deref(), &disabled);
-                    let old_primary = before.primary_tag.clone();
-                    let new_primary = normalize_collection_tag(&new_name);
-                    let added_extra_tags: Vec<String> = new_extra_tags
-                        .iter()
-                        .filter(|tag| !before.extra_tags.contains(*tag))
-                        .cloned()
-                        .collect();
-                    let started = std::time::Instant::now();
-                    match idx.update_collection(
-                        id,
-                        &new_name,
-                        &new_extra_tags,
-                        selected_color.as_deref(),
-                        icon_name.as_deref(),
-                    ) {
-                        Ok(()) => {
-                            if !added_extra_tags.is_empty() {
-                                tags_db.add_tags_to_paths(&old_scope_paths, &added_extra_tags);
-                            }
-                            if old_primary != new_primary {
-                                tags_db.replace_tag_in_paths(&old_scope_paths, &old_primary, &new_primary);
-                            }
-                            crate::bench_event!(
-                                "collection.update",
-                                serde_json::json!({
-                                    "collection_id": id,
-                                    "duration_ms": crate::bench::duration_ms(started),
-                                }),
-                            );
-                            refresh_d();
-                            if matches!(state_d.borrow().scope, ViewScope::Collection(active) if active == id) {
-                                let (active_root_buf, disabled) = {
-                                    let s = state_d.borrow();
-                                    (s.settings.active_library().map(|lib| lib.root.clone()), s.disabled_folders.clone())
-                                };
-                                let paths = collection_paths_from_services(&idx, &tags_db, id, active_root_buf.as_deref(), &disabled);
-                                state_d.borrow_mut().scope = ViewScope::Collection(id);
-                                load_virtual_async(&state_d, &paths);
-                                filmstrip_d.refresh_virtual();
-                                let scope = state_d.borrow().scope.clone();
-                                apply_scope_to_sidebar(&scope, &sidebar_d);
-                                let has_first = state_d.borrow().library.entry_at(0).is_some();
-                                if has_first {
-                                    state_d.borrow_mut().library.selected_index = Some(0);
-                                    filmstrip_d.navigate_to(0);
-                                } else {
-                                    viewer_d.clear();
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            toast_d.add_toast(libadwaita::Toast::new(&format!(
-                                "Could not update collection: {e}"
-                            )));
-                        }
-                    }
-                });
-                dialog.present(Some(&win));
+                show_change_color_dialog(
+                    win.upcast(),
+                    id,
+                    state_c.clone(),
+                    toast_overlay_c.clone(),
+                    refresh_c.clone(),
+                );
             });
         }
 
@@ -2393,126 +2217,163 @@ impl SharprWindow {
             let state_c = state.clone();
             let toast_overlay_c = toast_overlay.clone();
             let refresh_c = refresh_sidebar_collections.clone();
-            let reparent_collection = Rc::new(move |source_id: i64, target_parent_id: i64| {
-                let (Some(idx), Some(tags_db)) = (
-                    state_c.borrow().library_index.clone(),
-                    state_c.borrow().tags.clone(),
-                ) else {
-                    return;
-                };
-                let Some(before) = idx.collection(source_id).ok().flatten() else {
-                    return;
-                };
-                let old_effective_tags =
-                    idx.collection_effective_tags(source_id).unwrap_or_default();
-                let local_tags = collection_local_tags(&before);
-                let (active_root_buf, disabled) = {
-                    let s = state_c.borrow();
-                    (
-                        s.settings.active_library().map(|lib| lib.root.clone()),
-                        s.disabled_folders.clone(),
-                    )
-                };
-                let old_paths = collection_paths_from_services(
-                    &idx,
-                    &tags_db,
-                    source_id,
-                    active_root_buf.as_deref(),
-                    &disabled,
-                );
-                let started = std::time::Instant::now();
-                match idx.reparent_collection(source_id, target_parent_id) {
-                    Ok(()) => {
-                        let new_effective_tags =
-                            idx.collection_effective_tags(source_id).unwrap_or_default();
-                        let old_ancestor_tags: Vec<String> = old_effective_tags
+            let reparent_collection =
+                Rc::new(move |source_id: i64, target_parent_id: Option<i64>| {
+                    let (Some(idx), Some(tags_db)) = (
+                        state_c.borrow().library_index.clone(),
+                        state_c.borrow().tags.clone(),
+                    ) else {
+                        return;
+                    };
+                    let collections_before = idx.list_collections().unwrap_or_default();
+                    let mut affected_ids = vec![source_id];
+                    let mut cursor = 0;
+                    while cursor < affected_ids.len() {
+                        let parent_id = affected_ids[cursor];
+                        for child in collections_before
                             .iter()
-                            .filter(|tag| !local_tags.contains(*tag))
-                            .cloned()
-                            .collect();
-                        let new_ancestor_tags: Vec<String> = new_effective_tags
-                            .iter()
-                            .filter(|tag| !local_tags.contains(*tag))
-                            .cloned()
-                            .collect();
-                        let tags_to_remove: Vec<String> = old_ancestor_tags
-                            .iter()
-                            .filter(|tag| !new_ancestor_tags.contains(*tag))
-                            .cloned()
-                            .collect();
-                        let tags_to_add: Vec<String> = new_ancestor_tags
-                            .iter()
-                            .filter(|tag| !old_ancestor_tags.contains(*tag))
-                            .cloned()
-                            .collect();
-                        if !tags_to_remove.is_empty() {
-                            tags_db.remove_tags_from_paths(&old_paths, &tags_to_remove);
+                            .filter(|collection| collection.parent_id == Some(parent_id))
+                        {
+                            affected_ids.push(child.id);
                         }
-                        if !tags_to_add.is_empty() {
-                            tags_db.add_tags_to_paths(&old_paths, &tags_to_add);
-                        }
-                        crate::bench_event!(
-                            "collection.reparent",
-                            serde_json::json!({
-                                "collection_id": source_id,
-                                "target_parent_id": target_parent_id,
-                                "path_count": old_paths.len(),
-                                "duration_ms": crate::bench::duration_ms(started),
-                            }),
-                        );
-                        refresh_c();
-                        if let ViewScope::Collection(active_id) = state_c.borrow().scope.clone() {
-                            let (active_root_buf2, disabled2) = {
-                                let s = state_c.borrow();
-                                (
-                                    s.settings.active_library().map(|lib| lib.root.clone()),
-                                    s.disabled_folders.clone(),
-                                )
-                            };
+                        cursor += 1;
+                    }
+                    let (active_root_buf, disabled) = {
+                        let s = state_c.borrow();
+                        (
+                            s.settings.active_library().map(|lib| lib.root.clone()),
+                            s.disabled_folders.clone(),
+                        )
+                    };
+                    let affected_before: Vec<_> = affected_ids
+                        .iter()
+                        .filter_map(|id| {
+                            let collection = idx.collection(*id).ok().flatten()?;
+                            let effective_tags =
+                                idx.collection_effective_tags(*id).unwrap_or_default();
+                            let local_tags = collection_local_tags(&collection);
                             let paths = collection_paths_from_services(
                                 &idx,
                                 &tags_db,
-                                active_id,
-                                active_root_buf2.as_deref(),
-                                &disabled2,
+                                *id,
+                                active_root_buf.as_deref(),
+                                &disabled,
                             );
-                            state_c.borrow_mut().scope = ViewScope::Collection(active_id);
-                            load_virtual_async(&state_c, &paths);
-                            filmstrip_c.refresh_virtual();
-                            let scope = state_c.borrow().scope.clone();
-                            apply_scope_to_sidebar(&scope, &sidebar_c);
-                            let has_first = state_c.borrow().library.entry_at(0).is_some();
-                            if has_first {
-                                state_c.borrow_mut().library.selected_index = Some(0);
-                                filmstrip_c.navigate_to(0);
+                            Some((*id, effective_tags, local_tags, paths))
+                        })
+                        .collect();
+                    let started = std::time::Instant::now();
+                    match idx.reparent_collection(source_id, target_parent_id) {
+                        Ok(()) => {
+                            let mut retagged_path_count = 0;
+                            for (id, old_effective_tags, local_tags, old_paths) in affected_before {
+                                let new_effective_tags =
+                                    idx.collection_effective_tags(id).unwrap_or_default();
+                                let old_ancestor_tags: Vec<String> = old_effective_tags
+                                    .iter()
+                                    .filter(|tag| !local_tags.contains(*tag))
+                                    .cloned()
+                                    .collect();
+                                let new_ancestor_tags: Vec<String> = new_effective_tags
+                                    .iter()
+                                    .filter(|tag| !local_tags.contains(*tag))
+                                    .cloned()
+                                    .collect();
+                                let tags_to_remove: Vec<String> = old_ancestor_tags
+                                    .iter()
+                                    .filter(|tag| !new_ancestor_tags.contains(*tag))
+                                    .cloned()
+                                    .collect();
+                                let tags_to_add: Vec<String> = new_ancestor_tags
+                                    .iter()
+                                    .filter(|tag| !old_ancestor_tags.contains(*tag))
+                                    .cloned()
+                                    .collect();
+                                if !tags_to_remove.is_empty() {
+                                    tags_db.remove_tags_from_paths(&old_paths, &tags_to_remove);
+                                }
+                                if !tags_to_add.is_empty() {
+                                    tags_db.add_tags_to_paths(&old_paths, &tags_to_add);
+                                }
+                                retagged_path_count += old_paths.len();
+                            }
+                            crate::bench_event!(
+                                "collection.reparent",
+                                serde_json::json!({
+                                    "collection_id": source_id,
+                                    "target_parent_id": target_parent_id,
+                                    "path_count": retagged_path_count,
+                                    "duration_ms": crate::bench::duration_ms(started),
+                                }),
+                            );
+                            refresh_c();
+                            let active_collection_id = {
+                                let state = state_c.borrow();
+                                match state.scope {
+                                    ViewScope::Collection(active_id) => Some(active_id),
+                                    _ => None,
+                                }
+                            };
+                            if let Some(active_id) = active_collection_id {
+                                let (active_root_buf2, disabled2) = {
+                                    let s = state_c.borrow();
+                                    (
+                                        s.settings.active_library().map(|lib| lib.root.clone()),
+                                        s.disabled_folders.clone(),
+                                    )
+                                };
+                                let paths = collection_paths_from_services(
+                                    &idx,
+                                    &tags_db,
+                                    active_id,
+                                    active_root_buf2.as_deref(),
+                                    &disabled2,
+                                );
+                                state_c.borrow_mut().scope = ViewScope::Collection(active_id);
+                                load_virtual_async(&state_c, &paths);
+                                filmstrip_c.refresh_virtual();
+                                let scope = state_c.borrow().scope.clone();
+                                apply_scope_to_sidebar(&scope, &sidebar_c);
+                                let has_first = state_c.borrow().library.entry_at(0).is_some();
+                                if has_first {
+                                    state_c.borrow_mut().library.selected_index = Some(0);
+                                    filmstrip_c.navigate_to(0);
+                                } else {
+                                    viewer_c.clear();
+                                }
+                            }
+                            let moved_name = idx
+                                .collection(source_id)
+                                .ok()
+                                .flatten()
+                                .map(|c| c.name)
+                                .unwrap_or_else(|| "collection".to_string());
+                            if let Some(parent_id) = target_parent_id {
+                                let parent_name = idx
+                                    .collection(parent_id)
+                                    .ok()
+                                    .flatten()
+                                    .map(|c| c.name)
+                                    .unwrap_or_else(|| "collection".to_string());
+                                toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                                    "\u{201c}{}\u{201d} is now a child of \u{201c}{}\u{201d}",
+                                    moved_name, parent_name
+                                )));
                             } else {
-                                viewer_c.clear();
+                                sidebar_c.set_collection_selected(source_id);
+                                toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                                    "\u{201c}{}\u{201d} promoted to top level",
+                                    moved_name
+                                )));
                             }
                         }
-                        let moved_name = idx
-                            .collection(source_id)
-                            .ok()
-                            .flatten()
-                            .map(|c| c.name)
-                            .unwrap_or_else(|| "collection".to_string());
-                        let parent_name = idx
-                            .collection(target_parent_id)
-                            .ok()
-                            .flatten()
-                            .map(|c| c.name)
-                            .unwrap_or_else(|| "collection".to_string());
-                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                            "\u{201c}{}\u{201d} is now a child of \u{201c}{}\u{201d}",
-                            moved_name, parent_name
-                        )));
+                        Err(e) => {
+                            toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                                "Could not move collection: {e}"
+                            )));
+                        }
                     }
-                    Err(e) => {
-                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                            "Could not move collection: {e}"
-                        )));
-                    }
-                }
-            });
+                });
 
             let state_move = state.clone();
             let toast_move = toast_overlay.clone();
@@ -2526,9 +2387,21 @@ impl SharprWindow {
                     let state = state_move.borrow();
                     collections_for_sidebar(&state)
                 };
+                let mut excluded_ids = vec![source_id];
+                let mut cursor = 0;
+                while cursor < excluded_ids.len() {
+                    let parent_id = excluded_ids[cursor];
+                    for child in collections
+                        .iter()
+                        .filter(|collection| collection.parent_id == Some(parent_id))
+                    {
+                        excluded_ids.push(child.id);
+                    }
+                    cursor += 1;
+                }
                 let options: Vec<(i64, String)> = flatten_collection_paths(&collections)
                     .into_iter()
-                    .filter(|(id, _)| *id != source_id)
+                    .filter(|(id, _)| !excluded_ids.contains(id))
                     .collect();
                 if options.is_empty() {
                     toast_move.add_toast(libadwaita::Toast::new(
@@ -2537,7 +2410,7 @@ impl SharprWindow {
                     return;
                 }
 
-                let dialog = libadwaita::AlertDialog::new(Some("Assign As Child Of"), None);
+                let dialog = libadwaita::AlertDialog::new(Some("Move into Collection"), None);
                 dialog.add_response("cancel", "Cancel");
                 dialog.set_close_response("cancel");
                 let list_box = gtk4::ListBox::new();
@@ -2573,14 +2446,19 @@ impl SharprWindow {
                     else {
                         return;
                     };
-                    reparent(source_id, target_id);
+                    reparent(source_id, Some(target_id));
                 });
                 dialog.present(Some(&win));
             });
 
             let reparent_from_drop = reparent_collection.clone();
             sidebar.connect_collection_reparent_requested(move |source_id, target_parent_id| {
-                reparent_from_drop(source_id, target_parent_id);
+                reparent_from_drop(source_id, Some(target_parent_id));
+            });
+
+            let promote_to_root = reparent_collection.clone();
+            sidebar.connect_collection_promote_requested(move |source_id| {
+                promote_to_root(source_id, None);
             });
         }
 
@@ -2618,7 +2496,11 @@ impl SharprWindow {
                             })
                         );
                         refresh_c();
-                        if matches!(state_c.borrow().scope, ViewScope::Collection(a) if a == id) {
+                        let is_active_collection = {
+                            let state = state_c.borrow();
+                            matches!(state.scope, ViewScope::Collection(a) if a == id)
+                        };
+                        if is_active_collection {
                             let (active_root_buf, disabled) = {
                                 let s = state_c.borrow();
                                 (
@@ -4278,7 +4160,9 @@ impl SharprWindow {
         {
             let window_weak = self.downgrade();
             filmstrip.connect_copy_to_folder_requested(move |paths| {
-                let Some(win) = window_weak.upgrade() else { return };
+                let Some(win) = window_weak.upgrade() else {
+                    return;
+                };
                 let window_ptr = win.clone().upcast::<gtk4::Window>();
                 let win_weak = win.downgrade();
                 let dialog = gtk4::FileDialog::new();
