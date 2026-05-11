@@ -21,13 +21,93 @@ type ImageSelectedCallback = Box<dyn Fn(u32) + 'static>;
 type SearchChangedCallback = Box<dyn Fn(&str) + 'static>;
 type SearchActivateCallback = Box<dyn Fn(&str) + 'static>;
 type SearchDismissedCallback = Box<dyn Fn() + 'static>;
-type TrashRequestedCallback = Box<dyn Fn(std::path::PathBuf) + 'static>;
+type TrashRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type AddToCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type AddToQueueRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type RemoveFromCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
+type CopyToFolderRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
+type MoveToFolderRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
+type RenameRequestedCallback = Box<dyn Fn(PathBuf) + 'static>;
+type DuplicateRequestedCallback = Box<dyn Fn(PathBuf) + 'static>;
 type SortOrderChangedCallback = Box<dyn Fn(SortOrder) + 'static>;
 type QualityFilterChangedCallback = Box<dyn Fn(Option<QualityClass>) + 'static>;
 type SaveSearchAsCollectionCallback = Box<dyn Fn(&str) + 'static>;
+
+pub(crate) struct MenuContext {
+    pub(crate) clicked_path: PathBuf,
+    pub(crate) action_paths: Vec<PathBuf>,
+}
+
+fn menu_item(label: &str, action: &str, accel: Option<&str>) -> gio::MenuItem {
+    let item = gio::MenuItem::new(Some(label), Some(action));
+    if let Some(accel) = accel {
+        item.set_attribute_value("accel", Some(&accel.to_variant()));
+    }
+    item
+}
+
+fn build_context_menu_model(in_collection: bool, is_multi: bool) -> gio::Menu {
+    let menu = gio::Menu::new();
+
+    let sec1 = gio::Menu::new();
+    sec1.append_item(&menu_item("Open in Default Viewer", "filmstrip.open", Some("Return")));
+    sec1.append_item(&menu_item("Show in File Manager", "filmstrip.reveal", None));
+    sec1.append_item(&menu_item(
+        "Copy to Clipboard",
+        "filmstrip.copy-to-clipboard",
+        Some("<Control>c"),
+    ));
+    menu.append_section(None, &sec1);
+
+    let sec2 = gio::Menu::new();
+    sec2.append_item(&menu_item(
+        "Add to Collection\u{2026}",
+        "filmstrip.add-to-collection",
+        None,
+    ));
+    if in_collection {
+        sec2.append_item(&menu_item(
+            "Remove from Collection",
+            "filmstrip.remove-from-collection",
+            None,
+        ));
+    }
+    let file_actions = gio::Menu::new();
+    file_actions.append_item(&menu_item(
+        "Copy to Folder\u{2026}",
+        "filmstrip.copy-to-folder",
+        None,
+    ));
+    file_actions.append_item(&menu_item(
+        "Move to Folder\u{2026}",
+        "filmstrip.move-to-folder",
+        None,
+    ));
+    if !is_multi {
+        file_actions.append_item(&menu_item(
+            "Rename\u{2026}",
+            "filmstrip.rename",
+            Some("F2"),
+        ));
+        file_actions.append_item(&menu_item(
+            "Duplicate\u{2026}",
+            "filmstrip.duplicate",
+            Some("<Control>d"),
+        ));
+    }
+    sec2.append_submenu(Some("File Actions"), &file_actions);
+    menu.append_section(None, &sec2);
+
+    let sec3 = gio::Menu::new();
+    sec3.append_item(&menu_item("Add to Queue", "filmstrip.add-to-queue", None));
+    menu.append_section(None, &sec3);
+
+    let sec4 = gio::Menu::new();
+    sec4.append_item(&menu_item("Move to Trash", "filmstrip.trash", Some("Delete")));
+    menu.append_section(None, &sec4);
+
+    menu
+}
 
 const ESTIMATED_ROW_HEIGHT: f64 = 220.0;
 const BUFFER_ROWS: u32 = 100;
@@ -141,6 +221,12 @@ mod imp {
         pub add_to_queue_requested_cb: RefCell<Option<AddToQueueRequestedCallback>>,
         pub remove_from_collection_requested_cb:
             RefCell<Option<RemoveFromCollectionRequestedCallback>>,
+        pub copy_to_folder_requested_cb: RefCell<Option<CopyToFolderRequestedCallback>>,
+        pub move_to_folder_requested_cb: RefCell<Option<MoveToFolderRequestedCallback>>,
+        pub rename_requested_cb: RefCell<Option<RenameRequestedCallback>>,
+        pub duplicate_requested_cb: RefCell<Option<DuplicateRequestedCallback>>,
+        #[allow(private_interfaces)]
+        pub menu_ctx: RefCell<Option<MenuContext>>,
         pub sort_order_changed_cb: RefCell<Option<SortOrderChangedCallback>>,
         pub quality_filter_changed_cb: RefCell<Option<QualityFilterChangedCallback>>,
         pub save_search_as_collection_cb: RefCell<Option<SaveSearchAsCollectionCallback>>,
@@ -206,6 +292,11 @@ mod imp {
                 add_to_collection_requested_cb: RefCell::new(None),
                 add_to_queue_requested_cb: RefCell::new(None),
                 remove_from_collection_requested_cb: RefCell::new(None),
+                copy_to_folder_requested_cb: RefCell::new(None),
+                move_to_folder_requested_cb: RefCell::new(None),
+                rename_requested_cb: RefCell::new(None),
+                duplicate_requested_cb: RefCell::new(None),
+                menu_ctx: RefCell::new(None),
                 sort_order_changed_cb: RefCell::new(None),
                 quality_filter_changed_cb: RefCell::new(None),
                 save_search_as_collection_cb: RefCell::new(None),
@@ -512,7 +603,11 @@ impl FilmstripPane {
             item_box.append(&overlay);
             item_box.append(&filename_label);
 
-            let popover = gtk4::Popover::new();
+            // Context menu: a GtkPopoverMenu whose model is swapped before each popup.
+            // Actions are dispatched through the pane-level "filmstrip" action group
+            // (registered on FilmstripPane in setup_context_menu_actions, which walks
+            // the widget hierarchy and finds it from the popover's parent chain).
+            let popover = gtk4::PopoverMenu::from_model(None::<&gio::Menu>);
             popover.set_has_arrow(true);
             popover.set_autohide(true);
             popover.set_position(gtk4::PositionType::Bottom);
@@ -526,47 +621,6 @@ impl FilmstripPane {
                 list_item.set_data("fs-filename-label", filename_label.clone());
                 list_item.set_data("fs-item-box", item_box.clone());
             }
-
-            let popover_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-            popover_box.set_margin_top(6);
-            popover_box.set_margin_bottom(6);
-            popover_box.set_margin_start(6);
-            popover_box.set_margin_end(6);
-
-            let open_button = gtk4::Button::with_label("Open in Default Viewer");
-            let reveal_button = gtk4::Button::with_label("Show in File Manager");
-            let copy_button = gtk4::Button::with_label("Copy to Clipboard");
-            open_button.set_halign(gtk4::Align::Fill);
-            reveal_button.set_halign(gtk4::Align::Fill);
-            copy_button.set_halign(gtk4::Align::Fill);
-            popover_box.append(&open_button);
-            popover_box.append(&reveal_button);
-            popover_box.append(&copy_button);
-
-            let separator = gtk4::Separator::new(gtk4::Orientation::Horizontal);
-            popover_box.append(&separator);
-
-            let add_to_collection_button = gtk4::Button::with_label("Add to Collection\u{2026}");
-            add_to_collection_button.set_halign(gtk4::Align::Fill);
-            popover_box.append(&add_to_collection_button);
-
-            let add_to_queue_button = gtk4::Button::with_label("Add to Queue");
-            add_to_queue_button.set_halign(gtk4::Align::Fill);
-            popover_box.append(&add_to_queue_button);
-
-            let remove_from_collection_button = gtk4::Button::with_label("Remove from Collection");
-            remove_from_collection_button.set_halign(gtk4::Align::Fill);
-            popover_box.append(&remove_from_collection_button);
-
-            let separator = gtk4::Separator::new(gtk4::Orientation::Horizontal);
-            popover_box.append(&separator);
-
-            let trash_button = gtk4::Button::with_label("Move to Trash");
-            trash_button.set_halign(gtk4::Align::Fill);
-            trash_button.add_css_class("destructive-action");
-            popover_box.append(&trash_button);
-
-            popover.set_child(Some(&popover_box));
 
             let gesture_right = gtk4::GestureClick::new();
             gesture_right.set_button(3);
@@ -642,124 +696,7 @@ impl FilmstripPane {
 
             // Double-click is handled by ListView::activate at the pane level.
 
-            let list_item_weak = list_item.downgrade();
-            open_button.connect_clicked(move |_| {
-                let Some(list_item) = list_item_weak.upgrade() else {
-                    return;
-                };
-                if let Some(path) = list_item_path(&list_item) {
-                    launch_default_for_path(&path);
-                }
-            });
-
-            let list_item_weak = list_item.downgrade();
-            reveal_button.connect_clicked(move |_| {
-                let Some(list_item) = list_item_weak.upgrade() else {
-                    return;
-                };
-                if let Some(path) = list_item_path(&list_item) {
-                    reveal_in_file_manager(&path);
-                }
-            });
-
-            let list_item_weak = list_item.downgrade();
-            let item_box_weak = item_box.downgrade();
-            let popover_weak_copy = popover.downgrade();
-            copy_button.connect_clicked(move |_| {
-                let Some(list_item) = list_item_weak.upgrade() else {
-                    return;
-                };
-                let Some(item_box) = item_box_weak.upgrade() else {
-                    return;
-                };
-                if let Some(p) = popover_weak_copy.upgrade() {
-                    p.popdown();
-                }
-                if let Some(path) = list_item_path(&list_item) {
-                    copy_image_to_clipboard(&path, item_box.upcast_ref::<gtk4::Widget>());
-                }
-            });
-
-            let list_item_weak = list_item.downgrade();
-            let widget_weak_trash = widget_weak_setup.clone();
-            let popover_weak_trash = popover.downgrade();
-            trash_button.connect_clicked(move |_| {
-                let Some(list_item) = list_item_weak.upgrade() else {
-                    return;
-                };
-                let Some(widget) = widget_weak_trash.upgrade() else {
-                    return;
-                };
-                if let Some(p) = popover_weak_trash.upgrade() {
-                    p.popdown();
-                }
-                if let Some(path) = list_item_path(&list_item) {
-                    widget.emit_trash_requested(path);
-                }
-            });
-
-            let list_item_weak = list_item.downgrade();
-            let widget_weak_add = widget_weak_setup.clone();
-            let popover_weak_add = popover.downgrade();
-            add_to_collection_button.connect_clicked(move |_| {
-                let Some(list_item) = list_item_weak.upgrade() else {
-                    return;
-                };
-                let Some(widget) = widget_weak_add.upgrade() else {
-                    return;
-                };
-                let Some(clicked_path) = list_item_path(&list_item) else {
-                    return;
-                };
-                if let Some(p) = popover_weak_add.upgrade() {
-                    p.popdown();
-                }
-                let paths = collection_action_paths(&widget, &clicked_path);
-                widget.emit_add_to_collection_requested(paths);
-            });
-
-            let list_item_weak = list_item.downgrade();
-            let widget_weak_queue = widget_weak_setup.clone();
-            let popover_weak_queue = popover.downgrade();
-            add_to_queue_button.connect_clicked(move |_| {
-                let Some(list_item) = list_item_weak.upgrade() else {
-                    return;
-                };
-                let Some(widget) = widget_weak_queue.upgrade() else {
-                    return;
-                };
-                let Some(clicked_path) = list_item_path(&list_item) else {
-                    return;
-                };
-                if let Some(p) = popover_weak_queue.upgrade() {
-                    p.popdown();
-                }
-                let paths = collection_action_paths(&widget, &clicked_path);
-                widget.emit_add_to_queue_requested(paths);
-            });
-
-            let list_item_weak = list_item.downgrade();
-            let widget_weak_remove = widget_weak_setup.clone();
-            let popover_weak_remove = popover.downgrade();
-            remove_from_collection_button.connect_clicked(move |_| {
-                let Some(list_item) = list_item_weak.upgrade() else {
-                    return;
-                };
-                let Some(widget) = widget_weak_remove.upgrade() else {
-                    return;
-                };
-                let Some(clicked_path) = list_item_path(&list_item) else {
-                    return;
-                };
-                if let Some(p) = popover_weak_remove.upgrade() {
-                    p.popdown();
-                }
-                let paths = collection_action_paths(&widget, &clicked_path);
-                widget.emit_remove_from_collection_requested(paths);
-            });
-
-            let add_btn_weak = add_to_collection_button.downgrade();
-            let remove_btn_weak = remove_from_collection_button.downgrade();
+            // Right-click: capture context on the pane then swap the menu model and popup.
             let widget_weak_gesture = widget_weak_setup.clone();
             let list_item_weak = list_item.downgrade();
             let popover_weak = popover.downgrade();
@@ -770,31 +707,40 @@ impl FilmstripPane {
                 if list_item.item().is_none() {
                     return;
                 }
+                let Some(widget) = widget_weak_gesture.upgrade() else {
+                    return;
+                };
+                let Some(clicked_path) = list_item_path(&list_item) else {
+                    return;
+                };
 
-                if let Some(widget) = widget_weak_gesture.upgrade() {
-                    let (has_library_index, in_collection) = widget
-                        .imp()
-                        .state
-                        .borrow()
-                        .as_ref()
-                        .map(|s| {
-                            let s = s.borrow();
-                            (
-                                s.library_index.is_some(),
-                                matches!(s.scope, ViewScope::Collection(_)),
-                            )
-                        })
-                        .unwrap_or((false, false));
-                    if let Some(btn) = add_btn_weak.upgrade() {
-                        btn.set_sensitive(has_library_index);
-                    }
-                    if let Some(btn) = remove_btn_weak.upgrade() {
-                        btn.set_visible(in_collection);
-                        btn.set_sensitive(in_collection);
-                    }
-                }
+                let (in_collection, has_library_index) = widget
+                    .imp()
+                    .state
+                    .borrow()
+                    .as_ref()
+                    .map(|s| {
+                        let s = s.borrow();
+                        (
+                            matches!(s.scope, ViewScope::Collection(_)),
+                            s.library_index.is_some(),
+                        )
+                    })
+                    .unwrap_or((false, false));
+
+                let action_paths = collection_action_paths(&widget, &clicked_path);
+                let is_multi = action_paths.len() > 1;
+
+                *widget.imp().menu_ctx.borrow_mut() = Some(MenuContext {
+                    clicked_path,
+                    action_paths,
+                });
+
+                widget.action_set_enabled("filmstrip.add-to-collection", has_library_index);
 
                 if let Some(popover) = popover_weak.upgrade() {
+                    let model = build_context_menu_model(in_collection, is_multi);
+                    popover.set_menu_model(Some(&model));
                     popover.popup();
                 }
             });
@@ -1067,6 +1013,212 @@ impl FilmstripPane {
             search_entry.set_text(label.text().as_ref());
             search_entry.activate();
         });
+
+        self.setup_context_menu_actions();
+    }
+
+    fn setup_context_menu_actions(&self) {
+        let group = gio::SimpleActionGroup::new();
+
+        let open = gio::SimpleAction::new("open", None);
+        {
+            let w = self.downgrade();
+            open.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let path = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.clicked_path.clone());
+                if let Some(p) = path {
+                    launch_default_for_path(&p);
+                }
+            });
+        }
+        group.add_action(&open);
+
+        let reveal = gio::SimpleAction::new("reveal", None);
+        {
+            let w = self.downgrade();
+            reveal.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let path = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.clicked_path.clone());
+                if let Some(p) = path {
+                    reveal_in_file_manager(&p);
+                }
+            });
+        }
+        group.add_action(&reveal);
+
+        let copy_clipboard = gio::SimpleAction::new("copy-to-clipboard", None);
+        {
+            let w = self.downgrade();
+            copy_clipboard.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let path = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.clicked_path.clone());
+                if let Some(p) = path {
+                    copy_image_to_clipboard(&p, widget.upcast_ref::<gtk4::Widget>());
+                }
+            });
+        }
+        group.add_action(&copy_clipboard);
+
+        let add_collection = gio::SimpleAction::new("add-to-collection", None);
+        {
+            let w = self.downgrade();
+            add_collection.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let paths = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.action_paths.clone());
+                if let Some(paths) = paths {
+                    widget.emit_add_to_collection_requested(paths);
+                }
+            });
+        }
+        group.add_action(&add_collection);
+
+        let remove_collection = gio::SimpleAction::new("remove-from-collection", None);
+        {
+            let w = self.downgrade();
+            remove_collection.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let paths = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.action_paths.clone());
+                if let Some(paths) = paths {
+                    widget.emit_remove_from_collection_requested(paths);
+                }
+            });
+        }
+        group.add_action(&remove_collection);
+
+        let copy_folder = gio::SimpleAction::new("copy-to-folder", None);
+        {
+            let w = self.downgrade();
+            copy_folder.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let paths = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.action_paths.clone());
+                if let Some(paths) = paths {
+                    widget.emit_copy_to_folder_requested(paths);
+                }
+            });
+        }
+        group.add_action(&copy_folder);
+
+        let move_folder = gio::SimpleAction::new("move-to-folder", None);
+        {
+            let w = self.downgrade();
+            move_folder.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let paths = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.action_paths.clone());
+                if let Some(paths) = paths {
+                    widget.emit_move_to_folder_requested(paths);
+                }
+            });
+        }
+        group.add_action(&move_folder);
+
+        let rename = gio::SimpleAction::new("rename", None);
+        {
+            let w = self.downgrade();
+            rename.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let path = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.clicked_path.clone());
+                if let Some(p) = path {
+                    widget.emit_rename_requested(p);
+                }
+            });
+        }
+        group.add_action(&rename);
+
+        let duplicate = gio::SimpleAction::new("duplicate", None);
+        {
+            let w = self.downgrade();
+            duplicate.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let path = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.clicked_path.clone());
+                if let Some(p) = path {
+                    widget.emit_duplicate_requested(p);
+                }
+            });
+        }
+        group.add_action(&duplicate);
+
+        let add_queue = gio::SimpleAction::new("add-to-queue", None);
+        {
+            let w = self.downgrade();
+            add_queue.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let paths = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.action_paths.clone());
+                if let Some(paths) = paths {
+                    widget.emit_add_to_queue_requested(paths);
+                }
+            });
+        }
+        group.add_action(&add_queue);
+
+        let trash = gio::SimpleAction::new("trash", None);
+        {
+            let w = self.downgrade();
+            trash.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let paths = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.action_paths.clone());
+                if let Some(paths) = paths {
+                    widget.emit_trash_requested(paths);
+                }
+            });
+        }
+        group.add_action(&trash);
+
+        self.insert_action_group("filmstrip", Some(&group));
     }
 
     fn install_css(&self) {
@@ -1502,7 +1654,7 @@ impl FilmstripPane {
         *self.imp().search_dismissed_cb.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_trash_requested<F: Fn(std::path::PathBuf) + 'static>(&self, f: F) {
+    pub fn connect_trash_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {
         *self.imp().trash_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
@@ -1585,9 +1737,9 @@ impl FilmstripPane {
         }
     }
 
-    fn emit_trash_requested(&self, path: std::path::PathBuf) {
+    fn emit_trash_requested(&self, paths: Vec<PathBuf>) {
         if let Some(cb) = self.imp().trash_requested_cb.borrow().as_ref() {
-            cb(path);
+            cb(paths);
         }
     }
 
@@ -1624,6 +1776,73 @@ impl FilmstripPane {
         {
             cb(paths);
         }
+    }
+
+    pub fn connect_copy_to_folder_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {
+        *self.imp().copy_to_folder_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_move_to_folder_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {
+        *self.imp().move_to_folder_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_rename_requested<F: Fn(PathBuf) + 'static>(&self, f: F) {
+        *self.imp().rename_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_duplicate_requested<F: Fn(PathBuf) + 'static>(&self, f: F) {
+        *self.imp().duplicate_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    fn emit_copy_to_folder_requested(&self, paths: Vec<PathBuf>) {
+        if let Some(cb) = self.imp().copy_to_folder_requested_cb.borrow().as_ref() {
+            cb(paths);
+        }
+    }
+
+    fn emit_move_to_folder_requested(&self, paths: Vec<PathBuf>) {
+        if let Some(cb) = self.imp().move_to_folder_requested_cb.borrow().as_ref() {
+            cb(paths);
+        }
+    }
+
+    pub fn emit_rename_requested(&self, path: PathBuf) {
+        if let Some(cb) = self.imp().rename_requested_cb.borrow().as_ref() {
+            cb(path);
+        }
+    }
+
+    pub fn emit_duplicate_requested(&self, path: PathBuf) {
+        if let Some(cb) = self.imp().duplicate_requested_cb.borrow().as_ref() {
+            cb(path);
+        }
+    }
+
+    /// Returns the paths that should be acted on from a keyboard shortcut: the
+    /// full multi-selection if more than one item is selected, otherwise the
+    /// single currently focused image.
+    pub fn selected_paths_for_action(&self) -> Vec<PathBuf> {
+        self.imp()
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|s| {
+                let s = s.borrow();
+                if s.selected_paths.len() > 1 {
+                    Some(s.selected_paths.iter().cloned().collect())
+                } else {
+                    s.library.selected_entry().map(|e| vec![e.path()])
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn selected_single_path(&self) -> Option<PathBuf> {
+        self.imp()
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.borrow().library.selected_entry().map(|e| e.path()))
     }
 
     pub fn clear_multi_selection(&self) {

@@ -4145,7 +4145,7 @@ impl SharprWindow {
             })),
         ));
 
-        // Del — Move selected image to trash.
+        // Del — Move selected image(s) to trash (respects multi-selection).
         {
             let state_d = state.clone();
             let filmstrip_d = filmstrip.clone();
@@ -4153,48 +4153,40 @@ impl SharprWindow {
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("Delete").unwrap()),
                 Some(gtk4::CallbackAction::new(move |_, _| {
-                    let (path, index) = {
-                        let Ok(st) = state_d.try_borrow() else {
-                            return glib::Propagation::Proceed;
-                        };
-                        let index = match st.library.selected_index {
-                            Some(i) => i,
-                            None => return glib::Propagation::Proceed,
-                        };
-                        let path = match st.library.entry_at(index) {
-                            Some(e) => e.path(),
-                            None => return glib::Propagation::Proceed,
-                        };
-                        (path, index)
-                    };
-
-                    if gio::File::for_path(&path)
-                        .trash(None::<&gio::Cancellable>)
-                        .is_ok()
-                    {
-                        if let Some(tags) = state_d.borrow().tags.clone() {
-                            tags.remove_path(&path);
-                        }
+                    let paths = filmstrip_d.selected_paths_for_action();
+                    if paths.is_empty() {
+                        return glib::Propagation::Proceed;
+                    }
+                    for path in &paths {
+                        if gio::File::for_path(path)
+                            .trash(None::<&gio::Cancellable>)
+                            .is_ok()
                         {
-                            let mut state = state_d.borrow_mut();
-                            state.library.remove_path(&path);
-                            remove_path_from_action_selection(&mut state, &path);
-                        }
-                        let new_count = state_d.borrow().library.image_count();
-                        if new_count == 0 {
-                            viewer_d.clear();
-                            filmstrip_d.refresh_multi_selection_visuals();
-                        } else {
-                            let new_index = index.min(new_count - 1);
-                            filmstrip_d.navigate_to(new_index);
-                            let next_path = state_d
-                                .borrow()
-                                .library
-                                .entry_at(new_index)
-                                .map(|e: ImageEntry| e.path());
-                            if let Some(next_path) = next_path {
-                                filmstrip_d.set_action_selection_to_path(&next_path);
+                            if let Some(tags) = state_d.borrow().tags.clone() {
+                                tags.remove_path(path);
                             }
+                            {
+                                let mut state = state_d.borrow_mut();
+                                state.library.remove_path(path);
+                                remove_path_from_action_selection(&mut state, path);
+                            }
+                        }
+                    }
+                    let new_count = state_d.borrow().library.image_count();
+                    if new_count == 0 {
+                        viewer_d.clear();
+                        filmstrip_d.refresh_multi_selection_visuals();
+                    } else {
+                        let index = state_d.borrow().library.selected_index.unwrap_or(0);
+                        let new_index = index.min(new_count - 1);
+                        filmstrip_d.navigate_to(new_index);
+                        let next_path = state_d
+                            .borrow()
+                            .library
+                            .entry_at(new_index)
+                            .map(|e: ImageEntry| e.path());
+                        if let Some(next_path) = next_path {
+                            filmstrip_d.set_action_selection_to_path(&next_path);
                         }
                     }
                     glib::Propagation::Stop
@@ -4202,41 +4194,324 @@ impl SharprWindow {
             ));
         }
 
-        // Context-menu "Move to Trash" from filmstrip (duplicates mode).
+        // F2 — Rename selected image (single-select only; ignored when text entry has focus).
+        {
+            let filmstrip_f2 = filmstrip.clone();
+            shortcuts.add_shortcut(gtk4::Shortcut::new(
+                Some(gtk4::ShortcutTrigger::parse_string("F2").unwrap()),
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if let Some(window) = widget.downcast_ref::<gtk4::Window>() {
+                        if let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) {
+                            if focus.is::<gtk4::Text>() || focus.is::<gtk4::SearchEntry>() {
+                                return glib::Propagation::Proceed;
+                            }
+                        }
+                    }
+                    if let Some(path) = filmstrip_f2.selected_single_path() {
+                        filmstrip_f2.emit_rename_requested(path);
+                        glib::Propagation::Stop
+                    } else {
+                        glib::Propagation::Proceed
+                    }
+                })),
+            ));
+        }
+
+        // Ctrl+D — Duplicate selected image (single-select only).
+        {
+            let filmstrip_dup = filmstrip.clone();
+            shortcuts.add_shortcut(gtk4::Shortcut::new(
+                Some(gtk4::ShortcutTrigger::parse_string("<Control>d").unwrap()),
+                Some(gtk4::CallbackAction::new(move |_, _| {
+                    if let Some(path) = filmstrip_dup.selected_single_path() {
+                        filmstrip_dup.emit_duplicate_requested(path);
+                        glib::Propagation::Stop
+                    } else {
+                        glib::Propagation::Proceed
+                    }
+                })),
+            ));
+        }
+
+        // Context-menu "Move to Trash" from filmstrip.
         {
             let state_tr = state.clone();
             let filmstrip_tr = filmstrip.clone();
             let viewer_tr = viewer.clone();
-            filmstrip.connect_trash_requested(move |path| {
-                if gio::File::for_path(&path)
-                    .trash(None::<&gio::Cancellable>)
-                    .is_ok()
-                {
-                    if let Some(tags) = state_tr.borrow().tags.clone() {
-                        tags.remove_path(&path);
-                    }
+            filmstrip.connect_trash_requested(move |paths| {
+                for path in &paths {
+                    if gio::File::for_path(path)
+                        .trash(None::<&gio::Cancellable>)
+                        .is_ok()
                     {
-                        let mut state = state_tr.borrow_mut();
-                        state.library.remove_path(&path);
-                        remove_path_from_action_selection(&mut state, &path);
-                    }
-                    let new_count = state_tr.borrow().library.image_count();
-                    if new_count == 0 {
-                        viewer_tr.clear();
-                        filmstrip_tr.refresh_multi_selection_visuals();
-                    } else {
-                        let index = state_tr.borrow().library.selected_index.unwrap_or(0);
-                        let new_index = index.min(new_count - 1);
-                        filmstrip_tr.navigate_to(new_index);
-                        let next_path = state_tr
-                            .borrow()
-                            .library
-                            .entry_at(new_index)
-                            .map(|e: ImageEntry| e.path());
-                        if let Some(p) = next_path {
-                            filmstrip_tr.set_action_selection_to_path(&p);
+                        if let Some(tags) = state_tr.borrow().tags.clone() {
+                            tags.remove_path(path);
+                        }
+                        {
+                            let mut state = state_tr.borrow_mut();
+                            state.library.remove_path(path);
+                            remove_path_from_action_selection(&mut state, path);
                         }
                     }
+                }
+                let new_count = state_tr.borrow().library.image_count();
+                if new_count == 0 {
+                    viewer_tr.clear();
+                    filmstrip_tr.refresh_multi_selection_visuals();
+                } else {
+                    let index = state_tr.borrow().library.selected_index.unwrap_or(0);
+                    let new_index = index.min(new_count - 1);
+                    filmstrip_tr.navigate_to(new_index);
+                    let next_path = state_tr
+                        .borrow()
+                        .library
+                        .entry_at(new_index)
+                        .map(|e: ImageEntry| e.path());
+                    if let Some(p) = next_path {
+                        filmstrip_tr.set_action_selection_to_path(&p);
+                    }
+                }
+            });
+        }
+
+        // "Copy to Folder…" — pick a destination folder and copy selected files there.
+        {
+            let window_weak = self.downgrade();
+            filmstrip.connect_copy_to_folder_requested(move |paths| {
+                let Some(win) = window_weak.upgrade() else { return };
+                let window_ptr = win.clone().upcast::<gtk4::Window>();
+                let win_weak = win.downgrade();
+                let dialog = gtk4::FileDialog::new();
+                dialog.set_title("Copy to Folder");
+                dialog.select_folder(
+                    Some(&window_ptr),
+                    None::<&gio::Cancellable>,
+                    move |result| {
+                        let Ok(file) = result else { return };
+                        let Some(dest_dir) = file.path() else { return };
+                        let mut copied = 0usize;
+                        let mut errors = 0usize;
+                        for src in &paths {
+                            let stem = src
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
+                            let dest = crate::file_ops::next_available_path(
+                                &dest_dir,
+                                &stem,
+                                ext,
+                                |p| p.exists(),
+                            );
+                            match std::fs::copy(src, &dest) {
+                                Ok(_) => copied += 1,
+                                Err(_) => errors += 1,
+                            }
+                        }
+                        let msg = if errors == 0 {
+                            format!("Copied {} file{}", copied, if copied == 1 { "" } else { "s" })
+                        } else {
+                            format!(
+                                "Copied {} file{}, {} failed",
+                                copied,
+                                if copied == 1 { "" } else { "s" },
+                                errors
+                            )
+                        };
+                        if let Some(w) = win_weak.upgrade() {
+                            w.add_toast(libadwaita::Toast::new(&msg));
+                        }
+                    },
+                );
+            });
+        }
+
+        // "Move to Folder…" — pick a destination folder and move selected files there.
+        {
+            let state_mv = state.clone();
+            let window_weak = self.downgrade();
+            let filmstrip_mv = filmstrip.clone();
+            let viewer_mv = viewer.clone();
+            filmstrip.connect_move_to_folder_requested(move |paths| {
+                let Some(win) = window_weak.upgrade() else { return };
+                let window_ptr = win.clone().upcast::<gtk4::Window>();
+                let state_c = state_mv.clone();
+                let filmstrip_c = filmstrip_mv.clone();
+                let viewer_c = viewer_mv.clone();
+                let win_weak = win.downgrade();
+                let dialog = gtk4::FileDialog::new();
+                dialog.set_title("Move to Folder");
+                dialog.select_folder(
+                    Some(&window_ptr),
+                    None::<&gio::Cancellable>,
+                    move |result| {
+                        let Ok(file) = result else { return };
+                        let Some(dest_dir) = file.path() else { return };
+                        let mut moved = 0usize;
+                        let mut errors = 0usize;
+                        for src in &paths {
+                            let stem = src
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
+                            let dest = crate::file_ops::next_available_path(
+                                &dest_dir,
+                                &stem,
+                                ext,
+                                |p| p.exists(),
+                            );
+                            match std::fs::rename(src, &dest) {
+                                Ok(()) => {
+                                    if let Some(tags) = state_c.borrow().tags.clone() {
+                                        tags.rename_path(src, &dest);
+                                    }
+                                    {
+                                        let mut state = state_c.borrow_mut();
+                                        state.library.remove_path(src);
+                                        remove_path_from_action_selection(&mut state, src);
+                                    }
+                                    moved += 1;
+                                }
+                                Err(_) => errors += 1,
+                            }
+                        }
+                        if moved > 0 {
+                            let new_count = state_c.borrow().library.image_count();
+                            if new_count == 0 {
+                                viewer_c.clear();
+                                filmstrip_c.refresh_multi_selection_visuals();
+                            } else {
+                                let index =
+                                    state_c.borrow().library.selected_index.unwrap_or(0);
+                                let new_index = index.min(new_count - 1);
+                                filmstrip_c.navigate_to(new_index);
+                                let next_path = state_c
+                                    .borrow()
+                                    .library
+                                    .entry_at(new_index)
+                                    .map(|e: ImageEntry| e.path());
+                                if let Some(p) = next_path {
+                                    filmstrip_c.set_action_selection_to_path(&p);
+                                }
+                            }
+                        }
+                        let msg = if errors == 0 {
+                            format!("Moved {} file{}", moved, if moved == 1 { "" } else { "s" })
+                        } else {
+                            format!(
+                                "Moved {} file{}, {} failed",
+                                moved,
+                                if moved == 1 { "" } else { "s" },
+                                errors
+                            )
+                        };
+                        if let Some(w) = win_weak.upgrade() {
+                            w.add_toast(libadwaita::Toast::new(&msg));
+                        }
+                    },
+                );
+            });
+        }
+
+        // "Rename…" — show a dialog pre-filled with the current filename, then rename on confirm.
+        {
+            let state_rn = state.clone();
+            let window_weak = self.downgrade();
+            let filmstrip_rn = filmstrip.clone();
+            let viewer_rn = viewer.clone();
+            filmstrip.connect_rename_requested(move |path| {
+                let Some(win) = window_weak.upgrade() else { return };
+                let current_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let dialog = libadwaita::AlertDialog::new(Some("Rename"), None);
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("rename", "Rename");
+                dialog.set_default_response(Some("rename"));
+                dialog.set_close_response("cancel");
+                dialog.set_response_appearance("rename", libadwaita::ResponseAppearance::Suggested);
+                let entry = gtk4::Entry::new();
+                entry.set_text(&current_name);
+                entry.select_region(0, -1);
+                dialog.set_extra_child(Some(&entry));
+
+                let state_d = state_rn.clone();
+                let filmstrip_d = filmstrip_rn.clone();
+                let viewer_d = viewer_rn.clone();
+                let win_weak = win.downgrade();
+                let entry_clone = entry.clone();
+                dialog.connect_response(None, move |_, response| {
+                    if response != "rename" {
+                        return;
+                    }
+                    let new_name = entry_clone.text().to_string();
+                    if new_name.is_empty() || new_name == current_name {
+                        return;
+                    }
+                    let Some(parent) = path.parent() else { return };
+                    let new_path = parent.join(&new_name);
+                    let msg = match std::fs::rename(&path, &new_path) {
+                        Ok(()) => {
+                            if let Some(tags) = state_d.borrow().tags.clone() {
+                                tags.rename_path(&path, &new_path);
+                            }
+                            {
+                                let mut state = state_d.borrow_mut();
+                                state.library.remove_path(&path);
+                                remove_path_from_action_selection(&mut state, &path);
+                            }
+                            let new_count = state_d.borrow().library.image_count();
+                            if new_count == 0 {
+                                viewer_d.clear();
+                                filmstrip_d.refresh_multi_selection_visuals();
+                            } else {
+                                let index =
+                                    state_d.borrow().library.selected_index.unwrap_or(0);
+                                let new_index = index.min(new_count - 1);
+                                filmstrip_d.navigate_to(new_index);
+                                let next_path = state_d
+                                    .borrow()
+                                    .library
+                                    .entry_at(new_index)
+                                    .map(|e: ImageEntry| e.path());
+                                if let Some(p) = next_path {
+                                    filmstrip_d.set_action_selection_to_path(&p);
+                                }
+                            }
+                            "File renamed".to_string()
+                        }
+                        Err(e) => format!("Rename failed: {e}"),
+                    };
+                    if let Some(w) = win_weak.upgrade() {
+                        w.add_toast(libadwaita::Toast::new(&msg));
+                    }
+                });
+                dialog.present(Some(&win));
+            });
+        }
+
+        // "Duplicate…" — copy file in-place with a non-colliding name, no dialog.
+        {
+            let window_weak = self.downgrade();
+            filmstrip.connect_duplicate_requested(move |path| {
+                let msg = match crate::file_ops::duplicate_file(&path) {
+                    Ok(dest) => {
+                        let name = dest
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("copy")
+                            .to_string();
+                        format!("Duplicated as \"{name}\"")
+                    }
+                    Err(e) => format!("Duplicate failed: {e}"),
+                };
+                if let Some(win) = window_weak.upgrade() {
+                    win.add_toast(libadwaita::Toast::new(&msg));
                 }
             });
         }

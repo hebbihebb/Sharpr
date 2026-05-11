@@ -4,6 +4,7 @@ mod collection_export;
 mod config;
 mod duplicates;
 mod export;
+mod file_ops;
 pub mod focused_image_set;
 mod image_pipeline;
 mod jxl;
