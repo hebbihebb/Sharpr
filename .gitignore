@@ -12,3 +12,5 @@ sharpr/docs/
 .tmp/
 .gemini/
 conductor/
+GTK-MANUAL.md
+MASTER-PLAN.md
