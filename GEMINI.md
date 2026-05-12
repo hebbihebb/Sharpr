@@ -94,6 +94,10 @@ See `AGENTS.md` for the full rules. Summary:
 - Be careful with Rayon, ONNX Runtime, image decoders, parallel tile processing, and ComfyUI/API calls — avoid CPU oversubscription.
 - Measure or reason from the actual hot path before adding complexity.
 
+## Reference Documents
+
+- `GTK-MANUAL.md` (project root) — GNOME HIG, GTK4, Libadwaita, and gtk-rs field guide. Consult it for widget choice, Libadwaita component selection, action scopes, adaptive layout patterns, CSS variables, accessibility rules, and gtk-rs API conventions. Use it whenever adding or redesigning UI surfaces.
+
 ## Directory Structure (Inside `sharpr/`)
 
 - `src/main.rs`: Entry point and rexiv2 initialization.
