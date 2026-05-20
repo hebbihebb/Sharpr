@@ -991,7 +991,7 @@ impl SharprWindow {
 
                 if pending > 0 {
                     if op_handle.is_none() {
-                        let op = window.app_state().borrow().ops.add("Loading thumbnails...");
+                        let op = window.app_state().borrow().ops.add("Loading thumbnails…");
                         *op_handle = Some(op);
                     }
                 } else if let Some(op) = op_handle.take() {
@@ -4937,7 +4937,7 @@ impl SharprWindow {
         header.set_title_widget(Some(&nav_box));
 
         let preview_search_entry = gtk4::SearchEntry::new();
-        preview_search_entry.set_placeholder_text(Some("Search photos by tag..."));
+        preview_search_entry.set_placeholder_text(Some("Search photos by tag…"));
         preview_search_entry.set_hexpand(true);
         preview_search_entry.set_width_request(300);
 

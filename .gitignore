@@ -1,4 +1,5 @@
 /target/
+.antigravitycli/
 docs/
 .claude/
 .codex
@@ -15,3 +16,5 @@ conductor/
 GTK-MANUAL.md
 MASTER-PLAN.html
 MASTER-PLAN.md
+HISTORY.html
+COMPLETED.html

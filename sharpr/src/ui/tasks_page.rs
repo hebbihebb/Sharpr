@@ -167,6 +167,11 @@ mod imp {
         pub pending_configs: RefCell<HashMap<i64, PendingConfig>>,
         pub queue_checked_ids: RefCell<HashSet<i64>>,
         pub queue_chip_suffixes: RefCell<HashMap<i64, gtk4::Box>>,
+
+        // Snapshot of the last rendered pipeline list, used by refresh() to skip
+        // unconditional tear-down when the list contents have not changed.
+        pub last_rendered_queue: RefCell<Vec<(i64, PipelineStatus)>>,
+        pub last_rendered_history: RefCell<Vec<(i64, PipelineStatus)>>,
     }
 
     #[glib::object_subclass]
@@ -269,11 +274,13 @@ mod imp {
                 .label("Pause")
                 .icon_name("media-playback-pause-symbolic")
                 .build();
+            pause_btn.set_tooltip_text(Some("Pause the queue"));
             let clear_btn = gtk4::Button::builder()
                 .label("Clear")
                 .icon_name("edit-clear-all-symbolic")
                 .build();
             clear_btn.add_css_class("destructive-action");
+            clear_btn.set_tooltip_text(Some("Clear all queued tasks"));
             toolbar.append(&pause_btn);
             toolbar.append(&clear_btn);
 
@@ -291,6 +298,7 @@ mod imp {
                 .icon_name("media-playback-start-symbolic")
                 .build();
             start_btn.add_css_class("suggested-action");
+            start_btn.set_tooltip_text(Some("Start the queue"));
 
             queue_header.append(&queue_title);
             queue_header.append(&queue_count_label);
@@ -506,7 +514,7 @@ mod imp {
 
             let scale_row = libadwaita::ComboRow::new();
             scale_row.set_title("Scale");
-            scale_row.set_subtitle("Uses AI to determine the best output size.");
+            scale_row.set_subtitle("Uses AI to determine the best output size");
             scale_row.set_tooltip_text(Some(
                 "Output resolution multiplier. Smart scale uses AI to pick the best size.",
             ));
@@ -606,7 +614,7 @@ mod imp {
             let export_quality_row = libadwaita::ActionRow::new();
             export_quality_row.set_title("Quality");
             export_quality_row
-                .set_subtitle("Handles format conversion and compression in one step.");
+                .set_subtitle("Handles format conversion and compression in one step");
             let export_quality_adj = gtk4::Adjustment::new(90.0, 1.0, 100.0, 1.0, 10.0, 0.0);
             let export_quality_spin = gtk4::SpinButton::new(Some(&export_quality_adj), 1.0, 0);
             export_quality_spin.set_valign(gtk4::Align::Center);
@@ -1562,7 +1570,7 @@ impl TasksPage {
                 .borrow()
                 .get(&pipeline.id)
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or_else(|| self.read_config_from_widgets());
             if config.upscale_on {
                 let json = serde_json::to_string(&config.upscale).unwrap_or_default();
                 let _ = idx.append_pipeline_step(pipeline.id, StepType::Upscale, &json);
@@ -1642,6 +1650,13 @@ impl TasksPage {
                 };
                 onnx_dd.set_selected(idx);
             }
+            if let Some(row) = imp.comfyui_workflow_row.borrow().as_ref() {
+                let idx = match st.settings.comfyui_workflow.as_str() {
+                    "seedvr2" => 1,
+                    _ => 0,
+                };
+                row.set_selected(idx);
+            }
             if let Some(scale_dd) = imp.scale_dropdown.borrow().as_ref() {
                 scale_dd.set_selected(0);
             }
@@ -1705,6 +1720,19 @@ impl TasksPage {
                 };
                 if let Ok(mut st) = state_c.try_borrow_mut() {
                     st.settings.set_onnx_upscale_model(key);
+                }
+            });
+        }
+
+        if let Some(row) = imp.comfyui_workflow_row.borrow().as_ref() {
+            let state_c = state.clone();
+            row.connect_selected_item_notify(move |row| {
+                let key = match row.selected() {
+                    1 => "seedvr2",
+                    _ => "esrgan",
+                };
+                if let Ok(mut st) = state_c.try_borrow_mut() {
+                    st.settings.set_comfyui_workflow(key);
                 }
             });
         }
@@ -2002,6 +2030,11 @@ impl TasksPage {
             self.emit_user_activity(running_count > 0);
 
             if let Some(lbl) = imp.queue_count_label.borrow().as_ref() {
+                let pause_suffix = if imp.paused.get() && running_count > 0 {
+                    " — pausing after this job"
+                } else {
+                    ""
+                };
                 let status = match (running_count, queued_count) {
                     (0, 0) => "No user tasks".to_string(),
                     (0, queued) => {
@@ -2010,9 +2043,11 @@ impl TasksPage {
                     }
                     (running, 0) => {
                         let noun = if running == 1 { "task" } else { "tasks" };
-                        format!("{running} running {noun}")
+                        format!("{running} running {noun}{pause_suffix}")
                     }
-                    (running, queued) => format!("{running} running • {queued} queued"),
+                    (running, queued) => {
+                        format!("{running} running • {queued} queued{pause_suffix}")
+                    }
                 };
                 lbl.set_visible(true);
                 lbl.set_label(&status);
@@ -2090,6 +2125,46 @@ impl TasksPage {
         let Some(history_section) = imp.history_section.borrow().clone() else {
             return;
         };
+        // Skip the full tear-down and rebuild if neither the queue nor the
+        // history list has changed since the last render.  The 2-second
+        // polling timer fires refresh() constantly while the runner is
+        // active; without this guard every tick destroys and recreates every
+        // row, which is visible as a flicker.
+        if let Some(state_rc) = imp.state.borrow().clone() {
+            let state = state_rc.borrow();
+            if let Some(idx) = state.library_index.as_ref() {
+                let mut in_prog = idx
+                    .pipelines_by_status(PipelineStatus::InProgress)
+                    .unwrap_or_default();
+                in_prog.extend(
+                    idx.pipelines_by_status(PipelineStatus::Queued)
+                        .unwrap_or_default(),
+                );
+                let queue_snapshot: Vec<(i64, PipelineStatus)> =
+                    in_prog.iter().map(|p| (p.id, p.status.clone())).collect();
+
+                let mut hist = idx
+                    .pipelines_by_status(PipelineStatus::Completed)
+                    .unwrap_or_default();
+                hist.extend(
+                    idx.pipelines_by_status(PipelineStatus::Failed)
+                        .unwrap_or_default(),
+                );
+                hist.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                let history_snapshot: Vec<(i64, PipelineStatus)> =
+                    hist.iter().map(|p| (p.id, p.status.clone())).collect();
+
+                if queue_snapshot == *imp.last_rendered_queue.borrow()
+                    && history_snapshot == *imp.last_rendered_history.borrow()
+                {
+                    return;
+                }
+
+                *imp.last_rendered_queue.borrow_mut() = queue_snapshot;
+                *imp.last_rendered_history.borrow_mut() = history_snapshot;
+            }
+        }
+
         imp.queue_chip_suffixes.borrow_mut().clear();
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
@@ -2988,6 +3063,14 @@ impl TasksPage {
                     return;
                 }
             };
+
+            if idx
+                .pipelines_by_status(PipelineStatus::InProgress)
+                .map(|pipelines| !pipelines.is_empty())
+                .unwrap_or(false)
+            {
+                return;
+            }
 
             let pipeline = match idx.next_queued_pipeline().ok().flatten() {
                 Some(p) => p,
