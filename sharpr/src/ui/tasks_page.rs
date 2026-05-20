@@ -269,11 +269,13 @@ mod imp {
                 .label("Pause")
                 .icon_name("media-playback-pause-symbolic")
                 .build();
+            pause_btn.set_tooltip_text(Some("Pause the queue"));
             let clear_btn = gtk4::Button::builder()
                 .label("Clear")
                 .icon_name("edit-clear-all-symbolic")
                 .build();
             clear_btn.add_css_class("destructive-action");
+            clear_btn.set_tooltip_text(Some("Clear all queued tasks"));
             toolbar.append(&pause_btn);
             toolbar.append(&clear_btn);
 
@@ -291,6 +293,7 @@ mod imp {
                 .icon_name("media-playback-start-symbolic")
                 .build();
             start_btn.add_css_class("suggested-action");
+            start_btn.set_tooltip_text(Some("Start the queue"));
 
             queue_header.append(&queue_title);
             queue_header.append(&queue_count_label);
@@ -2988,6 +2991,14 @@ impl TasksPage {
                     return;
                 }
             };
+
+            if idx
+                .pipelines_by_status(PipelineStatus::InProgress)
+                .map(|pipelines| !pipelines.is_empty())
+                .unwrap_or(false)
+            {
+                return;
+            }
 
             let pipeline = match idx.next_queued_pipeline().ok().flatten() {
                 Some(p) => p,
