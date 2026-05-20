@@ -1,4 +1,5 @@
 /target/
+.antigravitycli/
 docs/
 .claude/
 .codex
