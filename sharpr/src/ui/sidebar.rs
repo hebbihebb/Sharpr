@@ -55,6 +55,7 @@ mod imp {
         pub collection_list: gtk4::ListBox,
         pub library_menu_btn: gtk4::MenuButton,
         pub library_menu: gio::Menu,
+        pub library_switch_action: gio::SimpleAction,
         pub library_header_label: libadwaita::WindowTitle,
         pub active_library_label: gtk4::Label,
         pub folder_selected_cb: RefCell<Option<FolderSelectedCallback>>,
@@ -89,6 +90,11 @@ mod imp {
                 collection_list: gtk4::ListBox::new(),
                 library_menu_btn: gtk4::MenuButton::new(),
                 library_menu: gio::Menu::new(),
+                library_switch_action: gio::SimpleAction::new_stateful(
+                    "switch-library",
+                    Some(glib::VariantTy::STRING),
+                    &"".to_variant(),
+                ),
                 library_header_label: libadwaita::WindowTitle::new("Library", ""),
                 active_library_label: gtk4::Label::new(None),
                 folder_selected_cb: RefCell::new(None),
@@ -278,12 +284,12 @@ impl SidebarPane {
         let group = gio::SimpleActionGroup::new();
 
         let widget_weak = self.downgrade();
-        let switch_library =
-            gio::SimpleAction::new("switch-library", Some(glib::VariantTy::STRING));
-        switch_library.connect_activate(move |_, param| {
+        let switch_library = imp.library_switch_action.clone();
+        switch_library.connect_activate(move |action, param| {
             let Some(library_id) = param.and_then(|p| p.get::<String>()) else {
                 return;
             };
+            action.set_state(&library_id.to_variant());
             if let Some(widget) = widget_weak.upgrade() {
                 widget.emit_library_selected(library_id);
             }
@@ -456,18 +462,18 @@ impl SidebarPane {
     }
 
     fn refresh_library_menu(&self, state: Rc<RefCell<AppState>>) {
-        let menu = self.imp().library_menu.clone();
+        let imp = self.imp();
+        let menu = imp.library_menu.clone();
         menu.remove_all();
 
         let settings = state.borrow().settings.clone();
+        let active_id = settings.active_library_id.as_deref().unwrap_or("");
+        imp.library_switch_action.set_state(&active_id.to_variant());
+
         if settings.libraries.len() > 1 {
             let library_section = gio::Menu::new();
             for library in &settings.libraries {
-                let label = if settings.active_library_id.as_deref() == Some(library.id.as_str()) {
-                    format!("Switch to {}  ", library.name)
-                } else {
-                    format!("Switch to {}", library.name)
-                };
+                let label = format!("Switch to {}", library.name);
                 let item = gio::MenuItem::new(Some(&label), None);
                 item.set_action_and_target_value(
                     Some("sidebar.switch-library"),
