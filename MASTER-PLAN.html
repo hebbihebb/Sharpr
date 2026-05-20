@@ -330,12 +330,6 @@ Plan orientation: owner-corrected, practical, opinionated product and engineerin
 </ul>
 </li>
 <li>
-<p><strong>14e.</strong> <strong>Fix Tasks queue runner: flicker.</strong> Bug 1 (concurrent dispatch), Bug 3 (missing toolbar tooltips), and two side bugs found during testing (backend selection reverting to ONNX; pause giving no visual feedback) were fixed in <code>3d1b49f</code> and <code>51c4350</code>. Remaining open item:</p>
-<p><strong>Bug 2 — queue and history lists flicker while the runner is active.</strong>
-<code>refresh()</code> (<code>src/ui/tasks_page.rs:2094</code>) tears the entire queue <code>ListBox</code> and the entire history <code>ListBox</code> down to nothing (<code>while first_child() { list_box.remove() }</code>) and rebuilds every row from scratch on every call. The 2-second polling timer → <code>run_next_pipeline()</code> → <code>self.refresh()</code> path causes both lists to be fully destroyed and re-created every tick, which is visible as a flicker.</p>
-<p>Fix: make <code>refresh()</code> diff the existing rows against the current DB state instead of tearing down unconditionally. The minimal approach — sufficient to eliminate flicker without a full rewrite — is to skip the tear-down and rebuild if the set of pipeline IDs and their statuses have not changed since the last render. Store the last-rendered <code>Vec&lt;(i64, PipelineStatus)&gt;</code> in the widget's private state; at the start of <code>refresh()</code>, compare against the current query result and return early if identical. Only rebuild when the list actually changes (item added, removed, or status transition). This is an extension of the same fix applied to settings-chip updates in step 10b.</p>
-</li>
-<li>
 <p><strong>14f.</strong> <strong>Tasks queue — batch selection and bulk edit.</strong>
     Currently, users can select multiple queue items by clicking their checkboxes and remove them in bulk, but every other setting (upscale backend, scale mode, model, convert format/quality) must be changed one item at a time through the right-hand "Selected Item Settings" panel, which always reflects only a single item. With 28+ queued tasks this is tedious. This step adds:</p>
 <ul>
