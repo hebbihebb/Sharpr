@@ -83,6 +83,11 @@ cargo build --release
 | Ctrl+T | Open Tag Editor |
 | ? | Show all shortcuts |
 
+## System Requirements
+
+- Minimum window size: 1024 × 600 logical pixels (standard GNOME desktop minimum).
+- Phone-narrow or tablet-small sizes (below ~360 × 294 px) are out of scope.
+
 ## License
 
 GPL-3.0-or-later

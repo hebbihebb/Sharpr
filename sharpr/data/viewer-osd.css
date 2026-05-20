@@ -1,3 +1,15 @@
+/*
+ * OSD overlay elements (.tag-osd, .zoom-osd, .compare-corner-label, .osd)
+ * float directly over arbitrary image content in the viewer and compare page.
+ * Their background colors are intentionally hardcoded dark rather than using
+ * Adwaita theme variables (@window_bg_color etc.) because Adwaita variables
+ * flip to a light surface in light mode — making text unreadable over pale
+ * images. The dark-always frosted-glass style is the correct GNOME pattern
+ * for controls overlaid on image content (cf. GNOME Videos, GNOME Photos).
+ * High-contrast mode: GTK may override rgba() backgrounds; test manually in
+ * GNOME Accessibility Settings → High Contrast.
+ */
+
 .tag-osd {
     padding: 8px 10px;
     border-radius: 16px;
@@ -23,10 +35,6 @@
 .tag-osd-add {
     min-width: 28px;
     padding: 0;
-}
-.tag-chip-neutral {
-    background-color: rgba(255, 255, 255, 0.15);
-    border-radius: 999px;
 }
 .tag-popover-chip {
     padding: 4px 8px;
