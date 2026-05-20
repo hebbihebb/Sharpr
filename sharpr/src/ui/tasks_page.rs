@@ -167,6 +167,11 @@ mod imp {
         pub pending_configs: RefCell<HashMap<i64, PendingConfig>>,
         pub queue_checked_ids: RefCell<HashSet<i64>>,
         pub queue_chip_suffixes: RefCell<HashMap<i64, gtk4::Box>>,
+
+        // Snapshot of the last rendered pipeline list, used by refresh() to skip
+        // unconditional tear-down when the list contents have not changed.
+        pub last_rendered_queue: RefCell<Vec<(i64, PipelineStatus)>>,
+        pub last_rendered_history: RefCell<Vec<(i64, PipelineStatus)>>,
     }
 
     #[glib::object_subclass]
@@ -2120,6 +2125,46 @@ impl TasksPage {
         let Some(history_section) = imp.history_section.borrow().clone() else {
             return;
         };
+        // Skip the full tear-down and rebuild if neither the queue nor the
+        // history list has changed since the last render.  The 2-second
+        // polling timer fires refresh() constantly while the runner is
+        // active; without this guard every tick destroys and recreates every
+        // row, which is visible as a flicker.
+        if let Some(state_rc) = imp.state.borrow().clone() {
+            let state = state_rc.borrow();
+            if let Some(idx) = state.library_index.as_ref() {
+                let mut in_prog = idx
+                    .pipelines_by_status(PipelineStatus::InProgress)
+                    .unwrap_or_default();
+                in_prog.extend(
+                    idx.pipelines_by_status(PipelineStatus::Queued)
+                        .unwrap_or_default(),
+                );
+                let queue_snapshot: Vec<(i64, PipelineStatus)> =
+                    in_prog.iter().map(|p| (p.id, p.status.clone())).collect();
+
+                let mut hist = idx
+                    .pipelines_by_status(PipelineStatus::Completed)
+                    .unwrap_or_default();
+                hist.extend(
+                    idx.pipelines_by_status(PipelineStatus::Failed)
+                        .unwrap_or_default(),
+                );
+                hist.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                let history_snapshot: Vec<(i64, PipelineStatus)> =
+                    hist.iter().map(|p| (p.id, p.status.clone())).collect();
+
+                if queue_snapshot == *imp.last_rendered_queue.borrow()
+                    && history_snapshot == *imp.last_rendered_history.borrow()
+                {
+                    return;
+                }
+
+                *imp.last_rendered_queue.borrow_mut() = queue_snapshot;
+                *imp.last_rendered_history.borrow_mut() = history_snapshot;
+            }
+        }
+
         imp.queue_chip_suffixes.borrow_mut().clear();
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
