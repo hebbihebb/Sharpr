@@ -25,7 +25,7 @@ flatpak-builder --force-clean --user --install build-dir io.github.hebbihebb.Sha
 
 ## Master Action Plan
 
-The master plan lives at [MASTER-PLAN.md](file:///home/hebbi/Projects/Sharpr/MASTER-PLAN.md) (project root). Always consult it when starting work, planning tasks, or updating documentation. This file tracks current implementation status, open issues, and the strategic roadmap.
+The master plan lives at [MASTER-PLAN.html](file:///home/hebbi/Projects/Sharpr/MASTER-PLAN.html) (project root). Always consult it when starting work, planning tasks, or updating documentation. This file tracks current implementation status, open issues, and the strategic roadmap.
 
 ## Session Continuity
 
@@ -57,7 +57,7 @@ Use `bench_event!`, `bench_warn!`, `bench_error!` macros in new code. Do not use
 ## Reference Documents
 
 - [GTK-MANUAL.md](file:///home/hebbi/Projects/Sharpr/GTK-MANUAL.md): GNOME HIG, accessibility (A11y), adaptive layout (1024x600), and interaction patterns (Undo vs. Dialogs). Consult this for all UI work.
-*   [MASTER-PLAN.md](file:///home/hebbi/Projects/Sharpr/MASTER-PLAN.md): Strategic roadmap and current implementation status.
+*   [MASTER-PLAN.html](file:///home/hebbi/Projects/Sharpr/MASTER-PLAN.html): Strategic roadmap and current implementation status.
 
 ## Architecture & Module Map
 
