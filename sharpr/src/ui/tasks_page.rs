@@ -106,6 +106,7 @@ mod imp {
         pub clear_btn: RefCell<Option<gtk4::Button>>,
         pub add_images_btn: RefCell<Option<gtk4::Button>>,
         pub remove_btn: RefCell<Option<gtk4::Button>>,
+        pub header_check_btn: RefCell<Option<gtk4::CheckButton>>,
         pub queue_count_label: RefCell<Option<gtk4::Label>>,
         pub background_status_label: RefCell<Option<gtk4::Label>>,
         pub background_empty_label: RefCell<Option<gtk4::Label>>,
@@ -136,6 +137,8 @@ mod imp {
         pub history_cap_spin: RefCell<Option<gtk4::SpinButton>>,
 
         // Right panel state
+        pub right_title: RefCell<Option<gtk4::Label>>,
+        pub right_subtitle: RefCell<Option<gtk4::Label>>,
         pub right_scroll: RefCell<Option<gtk4::ScrolledWindow>>,
         pub right_settings_box: RefCell<Option<gtk4::Box>>,
         pub no_selection_label: RefCell<Option<gtk4::Label>>,
@@ -167,6 +170,12 @@ mod imp {
         pub pending_configs: RefCell<HashMap<i64, PendingConfig>>,
         pub queue_checked_ids: RefCell<HashSet<i64>>,
         pub queue_chip_suffixes: RefCell<HashMap<i64, gtk4::Box>>,
+        pub queue_check_buttons: RefCell<HashMap<i64, gtk4::CheckButton>>,
+        pub populating_panel: Cell<bool>,
+        pub applying_batch_config: Cell<bool>,
+        pub batch_upscale_toggle_mixed: Cell<bool>,
+        pub batch_export_toggle_mixed: Cell<bool>,
+        pub batch_quality_mixed: Cell<bool>,
 
         // Snapshot of the last rendered pipeline list, used by refresh() to skip
         // unconditional tear-down when the list contents have not changed.
@@ -246,6 +255,9 @@ mod imp {
             let queue_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
             queue_header.set_hexpand(true);
 
+            let header_check_btn = gtk4::CheckButton::new();
+            header_check_btn.set_tooltip_text(Some("Select all queued tasks"));
+
             let queue_title = gtk4::Label::new(Some("Queue"));
             queue_title.add_css_class("heading");
             queue_title.set_halign(gtk4::Align::Start);
@@ -300,6 +312,7 @@ mod imp {
             start_btn.add_css_class("suggested-action");
             start_btn.set_tooltip_text(Some("Start the queue"));
 
+            queue_header.append(&header_check_btn);
             queue_header.append(&queue_title);
             queue_header.append(&queue_count_label);
             queue_header.append(&header_spacer);
@@ -669,6 +682,52 @@ mod imp {
             main_box.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
             main_box.append(&right_col);
 
+            let action_group = gio::SimpleActionGroup::new();
+            let select_all_action = gio::SimpleAction::new("queue-select-all", None);
+            {
+                let widget_weak = widget.downgrade();
+                select_all_action.connect_activate(move |_, _| {
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.set_all_queue_checked(true);
+                    }
+                });
+            }
+            action_group.add_action(&select_all_action);
+
+            let select_none_action = gio::SimpleAction::new("queue-select-none", None);
+            {
+                let widget_weak = widget.downgrade();
+                select_none_action.connect_activate(move |_, _| {
+                    if let Some(w) = widget_weak.upgrade() {
+                        w.set_all_queue_checked(false);
+                    }
+                });
+            }
+            action_group.add_action(&select_none_action);
+            widget.insert_action_group("win", Some(&action_group));
+
+            let shortcuts = gtk4::ShortcutController::new();
+            shortcuts.set_scope(gtk4::ShortcutScope::Managed);
+            if let Some(trigger) = gtk4::ShortcutTrigger::parse_string("<Control>a") {
+                shortcuts.add_shortcut(gtk4::Shortcut::new(
+                    Some(trigger),
+                    Some(gtk4::NamedAction::new("win.queue-select-all")),
+                ));
+            }
+            widget.add_controller(shortcuts);
+
+            {
+                let widget_weak = widget.downgrade();
+                header_check_btn.connect_toggled(move |btn| {
+                    if let Some(w) = widget_weak.upgrade() {
+                        if w.imp().populating_panel.get() {
+                            return;
+                        }
+                        w.set_all_queue_checked(btn.is_active());
+                    }
+                });
+            }
+
             // Wire backend switcher
             {
                 let comfy_btn = backend_comfyui_btn.clone();
@@ -677,6 +736,15 @@ mod imp {
                 let comfyui_wf_row = comfyui_workflow_row.clone();
                 let widget_weak = widget.downgrade();
                 backend_onnx_btn.connect_toggled(move |btn| {
+                    if widget_weak
+                        .upgrade()
+                        .map(|w| {
+                            w.imp().populating_panel.get() || w.imp().applying_batch_config.get()
+                        })
+                        .unwrap_or(false)
+                    {
+                        return;
+                    }
                     if btn.is_active() {
                         if comfy_btn.is_active() {
                             comfy_btn.set_active(false);
@@ -703,6 +771,15 @@ mod imp {
                 let comfyui_wf_row = comfyui_workflow_row.clone();
                 let widget_weak = widget.downgrade();
                 backend_comfyui_btn.connect_toggled(move |btn| {
+                    if widget_weak
+                        .upgrade()
+                        .map(|w| {
+                            w.imp().populating_panel.get() || w.imp().applying_batch_config.get()
+                        })
+                        .unwrap_or(false)
+                    {
+                        return;
+                    }
                     if btn.is_active() {
                         if onnx_btn.is_active() {
                             onnx_btn.set_active(false);
@@ -729,6 +806,15 @@ mod imp {
                 let comfyui_wf_row = comfyui_workflow_row.clone();
                 let widget_weak = widget.downgrade();
                 backend_cli_btn.connect_toggled(move |btn| {
+                    if widget_weak
+                        .upgrade()
+                        .map(|w| {
+                            w.imp().populating_panel.get() || w.imp().applying_batch_config.get()
+                        })
+                        .unwrap_or(false)
+                    {
+                        return;
+                    }
                     if btn.is_active() {
                         if onnx_btn.is_active() {
                             onnx_btn.set_active(false);
@@ -750,11 +836,16 @@ mod imp {
             {
                 let settings_box = upscale_settings_box.clone();
                 let widget_weak = widget.downgrade();
-                upscale_toggle.connect_state_set(move |_sw, active| {
-                    settings_box.set_visible(active);
-                    if let Some(w) = widget_weak.upgrade() {
-                        w.on_pending_config_changed();
-                    }
+                upscale_toggle.connect_state_set(move |_, active| {
+                    let settings_box = settings_box.clone();
+                    let widget_weak = widget_weak.clone();
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                        settings_box.set_visible(active);
+                        if let Some(w) = widget_weak.upgrade() {
+                            w.imp().batch_upscale_toggle_mixed.set(false);
+                            w.on_pending_config_changed();
+                        }
+                    }));
                     glib::Propagation::Proceed
                 });
             }
@@ -762,11 +853,16 @@ mod imp {
             {
                 let settings_box = export_settings_box.clone();
                 let widget_weak = widget.downgrade();
-                export_toggle.connect_state_set(move |_sw, active| {
-                    settings_box.set_visible(active);
-                    if let Some(w) = widget_weak.upgrade() {
-                        w.on_pending_config_changed();
-                    }
+                export_toggle.connect_state_set(move |_, active| {
+                    let settings_box = settings_box.clone();
+                    let widget_weak = widget_weak.clone();
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                        settings_box.set_visible(active);
+                        if let Some(w) = widget_weak.upgrade() {
+                            w.imp().batch_export_toggle_mixed.set(false);
+                            w.on_pending_config_changed();
+                        }
+                    }));
                     glib::Propagation::Proceed
                 });
             }
@@ -940,6 +1036,15 @@ mod imp {
                 let widget_weak = widget.downgrade();
                 export_quality_spin.connect_value_changed(move |_| {
                     if let Some(w) = widget_weak.upgrade() {
+                        w.imp().batch_quality_mixed.set(false);
+                        w.on_pending_config_changed();
+                    }
+                });
+            }
+            {
+                let widget_weak = widget.downgrade();
+                export_edge_dropdown.connect_selected_item_notify(move |_| {
+                    if let Some(w) = widget_weak.upgrade() {
                         w.on_pending_config_changed();
                     }
                 });
@@ -990,6 +1095,7 @@ mod imp {
             *self.clear_btn.borrow_mut() = Some(clear_btn);
             *self.add_images_btn.borrow_mut() = Some(add_images_btn);
             *self.remove_btn.borrow_mut() = Some(remove_btn);
+            *self.header_check_btn.borrow_mut() = Some(header_check_btn);
             *self.queue_count_label.borrow_mut() = Some(queue_count_label);
             *self.background_status_label.borrow_mut() = Some(background_status_label);
             *self.background_empty_label.borrow_mut() = Some(background_empty_label);
@@ -1017,6 +1123,8 @@ mod imp {
             *self.history_cap_spin.borrow_mut() = Some(history_cap_spin);
 
             *self.right_scroll.borrow_mut() = Some(right_scroll);
+            *self.right_title.borrow_mut() = Some(right_title);
+            *self.right_subtitle.borrow_mut() = Some(right_subtitle);
             *self.right_settings_box.borrow_mut() = Some(right_settings_box);
             *self.no_selection_label.borrow_mut() = Some(no_selection_label);
             *self.summary_action_list.borrow_mut() = Some(summary_action_list);
@@ -1111,6 +1219,265 @@ impl TasksPage {
         if let Some(lbl) = imp.summary_estimated_label.borrow().as_ref() {
             lbl.set_text("");
         }
+    }
+
+    fn queued_pipeline_ids(&self) -> Vec<i64> {
+        let Some(state_rc) = self.imp().state.borrow().clone() else {
+            return Vec::new();
+        };
+        let state = state_rc.borrow();
+        let Some(idx) = state.library_index.as_ref() else {
+            return Vec::new();
+        };
+        let mut pipelines = idx
+            .pipelines_by_status(PipelineStatus::InProgress)
+            .unwrap_or_default();
+        pipelines.extend(
+            idx.pipelines_by_status(PipelineStatus::Queued)
+                .unwrap_or_default(),
+        );
+        pipelines.into_iter().map(|pipeline| pipeline.id).collect()
+    }
+
+    fn set_all_queue_checked(&self, checked: bool) {
+        let ids = self.queued_pipeline_ids();
+        {
+            let mut checked_ids = self.imp().queue_checked_ids.borrow_mut();
+            checked_ids.clear();
+            if checked {
+                checked_ids.extend(ids);
+            }
+        }
+        self.refresh_queue_check_widgets();
+        self.on_queue_checked_ids_changed();
+    }
+
+    fn refresh_queue_check_widgets(&self) {
+        let checked_ids = self.imp().queue_checked_ids.borrow().clone();
+        self.imp().populating_panel.set(true);
+        for (pid, check) in self.imp().queue_check_buttons.borrow().iter() {
+            check.set_active(checked_ids.contains(pid));
+        }
+        self.imp().populating_panel.set(false);
+    }
+
+    fn on_queue_checked_ids_changed(&self) {
+        let imp = self.imp();
+        let total = self.queued_pipeline_ids().len();
+        let checked_count = imp.queue_checked_ids.borrow().len();
+        let selected_pid = imp.queue_checked_ids.borrow().iter().next().copied();
+        if let Some(btn) = imp.remove_btn.borrow().as_ref() {
+            btn.set_sensitive(checked_count > 0);
+        }
+        if let Some(btn) = imp.header_check_btn.borrow().as_ref() {
+            imp.populating_panel.set(true);
+            btn.set_inconsistent(checked_count > 0 && checked_count < total);
+            btn.set_active(total > 0 && checked_count == total);
+            btn.set_sensitive(total > 0);
+            imp.populating_panel.set(false);
+        }
+
+        match checked_count {
+            0 => {
+                *imp.selected_pipeline_id.borrow_mut() = None;
+                imp.selected_is_history.set(false);
+                self.clear_summary();
+                if let Some(title) = imp.right_title.borrow().as_ref() {
+                    title.set_text("Selected Item Settings");
+                }
+                if let Some(subtitle) = imp.right_subtitle.borrow().as_ref() {
+                    subtitle.set_text("Changes apply only to the selected queue item.");
+                }
+                if let Some(scroll) = imp.right_scroll.borrow().as_ref() {
+                    scroll.set_visible(false);
+                }
+                if let Some(label) = imp.no_selection_label.borrow().as_ref() {
+                    label.set_visible(true);
+                }
+            }
+            1 => {
+                if let Some(pid) = selected_pid {
+                    self.load_settings_for_pipeline(pid);
+                }
+            }
+            n => self.load_batch_settings(n),
+        }
+    }
+
+    fn shared_value<T: PartialEq + Clone>(
+        items: &[PendingConfig],
+        f: impl Fn(&PendingConfig) -> T,
+    ) -> Option<T> {
+        let first = items.first().map(&f)?;
+        items.iter().all(|item| f(item) == first).then_some(first)
+    }
+
+    fn set_combo_items(row: &libadwaita::ComboRow, labels: &[&str], selected: Option<u32>) {
+        let mut items: Vec<&str> = Vec::new();
+        if selected.is_none() {
+            items.push("—");
+        }
+        items.extend(labels);
+        row.set_model(Some(&gtk4::StringList::new(&items)));
+        row.set_selected(selected.unwrap_or(0));
+    }
+
+    fn combo_selected_index(row: &libadwaita::ComboRow) -> Option<u32> {
+        let selected = row.selected();
+        let has_sentinel = row
+            .model()
+            .and_then(|model| model.item(0))
+            .and_then(|item| item.downcast::<gtk4::StringObject>().ok())
+            .map(|item| item.string() == "—")
+            .unwrap_or(false);
+        if has_sentinel {
+            (selected > 0).then(|| selected - 1)
+        } else {
+            Some(selected)
+        }
+    }
+
+    fn load_batch_settings(&self, count: usize) {
+        let imp = self.imp();
+        let ids: Vec<i64> = imp.queue_checked_ids.borrow().iter().copied().collect();
+        let configs: Vec<PendingConfig> = ids
+            .iter()
+            .map(|pid| self.get_or_init_pending_config(*pid))
+            .collect();
+
+        imp.populating_panel.set(true);
+        if let Some(title) = imp.right_title.borrow().as_ref() {
+            title.set_text(&format!("Batch Edit ({count} Items)"));
+        }
+        if let Some(subtitle) = imp.right_subtitle.borrow().as_ref() {
+            subtitle.set_text("Choosing a value applies it to all selected items.");
+        }
+        if let Some(scroll) = imp.right_scroll.borrow().as_ref() {
+            scroll.set_visible(true);
+        }
+        if let Some(label) = imp.no_selection_label.borrow().as_ref() {
+            label.set_visible(false);
+        }
+
+        if let Some(sw) = imp.upscale_toggle.borrow().as_ref() {
+            let shared = Self::shared_value(&configs, |c| c.upscale_on);
+            imp.batch_upscale_toggle_mixed.set(shared.is_none());
+            sw.set_sensitive(true);
+            sw.set_active(shared.unwrap_or(false));
+        }
+        if let Some(box_) = imp.upscale_settings_box.borrow().as_ref() {
+            box_.set_visible(configs.iter().any(|c| c.upscale_on));
+        }
+        if let Some(backend) = Self::shared_value(&configs, |c| c.upscale.backend.clone()) {
+            self.set_backend(&backend);
+        } else {
+            if let Some(btn) = imp.backend_onnx_btn.borrow().as_ref() {
+                btn.set_active(false);
+            }
+            if let Some(btn) = imp.backend_comfyui_btn.borrow().as_ref() {
+                btn.set_active(false);
+            }
+            if let Some(btn) = imp.backend_cli_btn.borrow().as_ref() {
+                btn.set_active(false);
+            }
+            if let Some(row) = imp.onnx_model_row.borrow().as_ref() {
+                row.set_visible(false);
+            }
+            if let Some(row) = imp.comfyui_workflow_row.borrow().as_ref() {
+                row.set_visible(false);
+            }
+        }
+        if let Some(d) = imp.scale_dropdown.borrow().as_ref() {
+            let selected =
+                Self::shared_value(&configs, |c| c.upscale.scale).map(|scale| match scale {
+                    2 => 1,
+                    3 => 2,
+                    4 => 3,
+                    _ => 0,
+                });
+            Self::set_combo_items(d, &["Smart scale", "2×", "3×", "4×"], selected);
+        }
+        if let Some(d) = imp.onnx_model_dropdown.borrow().as_ref() {
+            let selected =
+                Self::shared_value(&configs, |c| c.upscale.onnx_model.clone()).map(|model| {
+                    match model.as_deref() {
+                        Some("swin2sr-compressed-x4") => 1,
+                        Some("swin2sr-real-x4") => 2,
+                        _ => 0,
+                    }
+                });
+            Self::set_combo_items(
+                d,
+                &[
+                    "Lightweight ×2 — 8 MB",
+                    "Compressed ×4 — 55 MB",
+                    "Realworld ×4 — 53 MB",
+                ],
+                selected,
+            );
+        }
+        if let Some(d) = imp.comfyui_workflow_row.borrow().as_ref() {
+            let selected = Self::shared_value(&configs, |c| c.upscale.comfyui_workflow.clone())
+                .map(|workflow| match workflow.as_deref() {
+                    Some("seedvr2") => 1,
+                    _ => 0,
+                });
+            Self::set_combo_items(d, &["ESRGAN", "SeedVR2"], selected);
+        }
+
+        if let Some(sw) = imp.export_toggle.borrow().as_ref() {
+            let shared = Self::shared_value(&configs, |c| c.export_on);
+            imp.batch_export_toggle_mixed.set(shared.is_none());
+            sw.set_sensitive(true);
+            sw.set_active(shared.unwrap_or(false));
+        }
+        if let Some(box_) = imp.export_settings_box.borrow().as_ref() {
+            box_.set_visible(configs.iter().any(|c| c.export_on));
+        }
+        if let Some(d) = imp.export_dest_dropdown.borrow().as_ref() {
+            let selected = Self::shared_value(&configs, |c| c.export.destination.clone()).map(
+                |dest| match dest.as_str() {
+                    "source" => 1,
+                    "custom" => 2,
+                    _ => 0,
+                },
+            );
+            Self::set_combo_items(d, &["Default", "Same as source", "Custom folder"], selected);
+        }
+        if let Some(d) = imp.export_format_dropdown.borrow().as_ref() {
+            let selected = Self::shared_value(&configs, |c| c.export.format.clone()).map(
+                |format| match format.as_str() {
+                    "webp" => 1,
+                    "png" => 2,
+                    "jpeg" => 3,
+                    _ => 0,
+                },
+            );
+            Self::set_combo_items(d, &["JXL", "WebP", "PNG", "JPEG"], selected);
+        }
+        if let Some(d) = imp.export_edge_dropdown.borrow().as_ref() {
+            let selected =
+                Self::shared_value(&configs, |c| c.export.max_edge).map(|edge| match edge {
+                    Some(1080) => 1,
+                    Some(2160) => 2,
+                    Some(4096) => 3,
+                    _ => 0,
+                });
+            Self::set_combo_items(d, &["Original", "1080px", "2160px", "4096px"], selected);
+        }
+        if let Some(s) = imp.export_quality_spin.borrow().as_ref() {
+            let shared = Self::shared_value(&configs, |c| c.export.quality);
+            imp.batch_quality_mixed.set(shared.is_none());
+            s.set_sensitive(true);
+            if let Some(quality) = Self::shared_value(&configs, |c| c.export.quality) {
+                s.set_value(quality as f64);
+            }
+        }
+        *imp.export_custom_path.borrow_mut() =
+            Self::shared_value(&configs, |c| c.export.custom_path.clone()).flatten();
+        self.update_custom_destination_labels();
+        self.clear_summary();
+        imp.populating_panel.set(false);
     }
 
     fn update_summary_for_config(&self, config: &PendingConfig) {
@@ -1244,6 +1611,37 @@ impl TasksPage {
         }
     }
 
+    fn selected_backend_for_batch(&self) -> Option<String> {
+        let imp = self.imp();
+        if imp
+            .backend_cli_btn
+            .borrow()
+            .as_ref()
+            .map(|btn| btn.is_active())
+            .unwrap_or(false)
+        {
+            Some("cli".to_string())
+        } else if imp
+            .backend_comfyui_btn
+            .borrow()
+            .as_ref()
+            .map(|btn| btn.is_active())
+            .unwrap_or(false)
+        {
+            Some("comfyui".to_string())
+        } else if imp
+            .backend_onnx_btn
+            .borrow()
+            .as_ref()
+            .map(|btn| btn.is_active())
+            .unwrap_or(false)
+        {
+            Some("onnx".to_string())
+        } else {
+            None
+        }
+    }
+
     fn set_backend(&self, backend: &str) {
         let imp = self.imp();
         if let Some(btn) = imp.backend_onnx_btn.borrow().as_ref() {
@@ -1266,6 +1664,12 @@ impl TasksPage {
     fn load_settings_for_pipeline(&self, pipeline_id: i64) {
         *self.imp().selected_pipeline_id.borrow_mut() = Some(pipeline_id);
         self.imp().selected_is_history.set(false);
+        if let Some(title) = self.imp().right_title.borrow().as_ref() {
+            title.set_text("Selected Item Settings");
+        }
+        if let Some(subtitle) = self.imp().right_subtitle.borrow().as_ref() {
+            subtitle.set_text("Changes apply only to the selected queue item.");
+        }
         if let Some(scroll) = self.imp().right_scroll.borrow().as_ref() {
             scroll.set_visible(true);
         }
@@ -1336,14 +1740,18 @@ impl TasksPage {
     fn populate_panel_from_config(&self, config: &PendingConfig) {
         let imp = self.imp();
 
+        imp.populating_panel.set(true);
         if let Some(sw) = imp.upscale_toggle.borrow().as_ref() {
+            sw.set_sensitive(true);
             sw.set_active(config.upscale_on);
         }
+        imp.batch_upscale_toggle_mixed.set(false);
         if let Some(box_) = imp.upscale_settings_box.borrow().as_ref() {
             box_.set_visible(config.upscale_on);
         }
         self.set_backend(&config.upscale.backend);
         if let Some(d) = imp.scale_dropdown.borrow().as_ref() {
+            Self::set_combo_items(d, &["Smart scale", "2×", "3×", "4×"], Some(0));
             let selected = match config.upscale.scale {
                 2 => 1,
                 3 => 2,
@@ -1358,6 +1766,15 @@ impl TasksPage {
             });
         }
         if let Some(d) = imp.onnx_model_dropdown.borrow().as_ref() {
+            Self::set_combo_items(
+                d,
+                &[
+                    "Lightweight ×2 — 8 MB",
+                    "Compressed ×4 — 55 MB",
+                    "Realworld ×4 — 53 MB",
+                ],
+                Some(0),
+            );
             d.set_selected(match config.upscale.onnx_model.as_deref() {
                 Some("swin2sr-compressed-x4") => 1,
                 Some("swin2sr-real-x4") => 2,
@@ -1365,6 +1782,7 @@ impl TasksPage {
             });
         }
         if let Some(row) = imp.comfyui_workflow_row.borrow().as_ref() {
+            Self::set_combo_items(row, &["ESRGAN", "SeedVR2"], Some(0));
             row.set_selected(match config.upscale.comfyui_workflow.as_deref() {
                 Some("seedvr2") => 1,
                 _ => 0,
@@ -1372,12 +1790,15 @@ impl TasksPage {
         }
 
         if let Some(sw) = imp.export_toggle.borrow().as_ref() {
+            sw.set_sensitive(true);
             sw.set_active(config.export_on);
         }
+        imp.batch_export_toggle_mixed.set(false);
         if let Some(box_) = imp.export_settings_box.borrow().as_ref() {
             box_.set_visible(config.export_on);
         }
         if let Some(d) = imp.export_format_dropdown.borrow().as_ref() {
+            Self::set_combo_items(d, &["JXL", "WebP", "PNG", "JPEG"], Some(0));
             d.set_selected(match config.export.format.as_str() {
                 "webp" => 1,
                 "png" => 2,
@@ -1386,6 +1807,7 @@ impl TasksPage {
             });
         }
         if let Some(d) = imp.export_edge_dropdown.borrow().as_ref() {
+            Self::set_combo_items(d, &["Original", "1080px", "2160px", "4096px"], Some(0));
             d.set_selected(match config.export.max_edge {
                 Some(1080) => 1,
                 Some(2160) => 2,
@@ -1394,9 +1816,12 @@ impl TasksPage {
             });
         }
         if let Some(s) = imp.export_quality_spin.borrow().as_ref() {
+            s.set_sensitive(true);
             s.set_value(config.export.quality as f64);
         }
+        imp.batch_quality_mixed.set(false);
         if let Some(d) = imp.export_dest_dropdown.borrow().as_ref() {
+            Self::set_combo_items(d, &["Default", "Same as source", "Custom folder"], Some(0));
             d.set_selected(match config.export.destination.as_str() {
                 "source" => 1,
                 "custom" => 2,
@@ -1405,22 +1830,233 @@ impl TasksPage {
         }
         *imp.export_custom_path.borrow_mut() = config.export.custom_path.clone();
         self.update_custom_destination_labels();
+        imp.populating_panel.set(false);
     }
 
     fn on_pending_config_changed(&self) {
+        if self.imp().populating_panel.get() || self.imp().applying_batch_config.get() {
+            return;
+        }
         let Some(pid) = *self.imp().selected_pipeline_id.borrow() else {
+            if self.imp().queue_checked_ids.borrow().len() >= 2 {
+                self.apply_config_to_checked();
+            }
             return;
         };
         if self.imp().selected_is_history.get() {
             return;
         }
         let config = self.read_config_from_widgets();
+        let checked: Vec<i64> = self
+            .imp()
+            .queue_checked_ids
+            .borrow()
+            .iter()
+            .copied()
+            .collect();
+        if checked.len() >= 2 {
+            drop(checked);
+            self.apply_config_to_checked();
+            return;
+        }
         self.imp()
             .pending_configs
             .borrow_mut()
             .insert(pid, config.clone());
         self.update_summary_for_config(&config);
         self.refresh_chips_for_pipeline(pid);
+    }
+
+    fn apply_config_to_checked(&self) {
+        if self.imp().applying_batch_config.get() {
+            return;
+        }
+        let checked: Vec<i64> = self
+            .imp()
+            .queue_checked_ids
+            .borrow()
+            .iter()
+            .copied()
+            .collect();
+        if checked.len() < 2 {
+            return;
+        }
+        let imp = self.imp();
+        imp.applying_batch_config.set(true);
+        let backend = self.selected_backend_for_batch();
+        let upscale_on = imp
+            .upscale_toggle
+            .borrow()
+            .as_ref()
+            .filter(|_| !imp.batch_upscale_toggle_mixed.get())
+            .map(|sw| sw.is_active());
+        let export_on = imp
+            .export_toggle
+            .borrow()
+            .as_ref()
+            .filter(|_| !imp.batch_export_toggle_mixed.get())
+            .map(|sw| sw.is_active());
+        let scale = imp
+            .scale_dropdown
+            .borrow()
+            .as_ref()
+            .and_then(Self::combo_selected_index)
+            .map(|selected| match selected {
+                1 => 2,
+                2 => 3,
+                3 => 4,
+                _ => 0,
+            });
+        let onnx_model = imp
+            .onnx_model_dropdown
+            .borrow()
+            .as_ref()
+            .and_then(Self::combo_selected_index)
+            .map(|selected| match selected {
+                1 => "swin2sr-compressed-x4",
+                2 => "swin2sr-real-x4",
+                _ => "swin2sr-lightweight-x2",
+            })
+            .map(str::to_string);
+        let comfyui_workflow = imp
+            .comfyui_workflow_row
+            .borrow()
+            .as_ref()
+            .and_then(Self::combo_selected_index)
+            .map(|selected| match selected {
+                1 => "seedvr2",
+                _ => "esrgan",
+            })
+            .map(str::to_string);
+        let export_format = imp
+            .export_format_dropdown
+            .borrow()
+            .as_ref()
+            .and_then(Self::combo_selected_index)
+            .map(|selected| match selected {
+                1 => "webp",
+                2 => "png",
+                3 => "jpeg",
+                _ => "jxl",
+            })
+            .map(str::to_string);
+        let max_edge = imp
+            .export_edge_dropdown
+            .borrow()
+            .as_ref()
+            .and_then(Self::combo_selected_index)
+            .map(|selected| match selected {
+                1 => Some(1080),
+                2 => Some(2160),
+                3 => Some(4096),
+                _ => None,
+            });
+        let export_quality = imp
+            .export_quality_spin
+            .borrow()
+            .as_ref()
+            .filter(|_| !imp.batch_quality_mixed.get())
+            .map(|spin| spin.value() as u8);
+        let export_dest = imp
+            .export_dest_dropdown
+            .borrow()
+            .as_ref()
+            .and_then(Self::combo_selected_index)
+            .map(|selected| match selected {
+                1 => "source",
+                2 => "custom",
+                _ => "default",
+            })
+            .map(str::to_string);
+        let custom_path = export_dest
+            .as_ref()
+            .filter(|dest| dest.as_str() == "custom")
+            .map(|_| imp.export_custom_path.borrow().clone());
+        let mut changed = 0usize;
+        {
+            let mut pending = self.imp().pending_configs.borrow_mut();
+            for pid in &checked {
+                let mut config = pending
+                    .get(pid)
+                    .cloned()
+                    .unwrap_or_else(|| self.build_pending_config_from_db(*pid));
+                let old = config.clone();
+                if let Some(value) = upscale_on {
+                    config.upscale_on = value;
+                }
+                if let Some(value) = export_on {
+                    config.export_on = value;
+                }
+                if let Some(value) = backend.as_ref() {
+                    config.upscale.backend = value.clone();
+                }
+                if let Some(value) = scale {
+                    config.upscale.scale = value;
+                }
+                if let Some(value) = onnx_model.as_ref() {
+                    config.upscale.onnx_model = Some(value.clone());
+                }
+                if let Some(value) = comfyui_workflow.as_ref() {
+                    config.upscale.comfyui_workflow = Some(value.clone());
+                }
+                if let Some(value) = export_format.as_ref() {
+                    config.export.format = value.clone();
+                }
+                if let Some(value) = max_edge {
+                    config.export.max_edge = value;
+                }
+                if let Some(value) = export_quality {
+                    config.export.quality = value;
+                }
+                if let Some(value) = export_dest.as_ref() {
+                    config.export.destination = value.clone();
+                }
+                if let Some(value) = custom_path.as_ref() {
+                    config.export.custom_path = value.clone();
+                }
+                let differs = old.upscale_on != config.upscale_on
+                    || old.export_on != config.export_on
+                    || old.upscale.backend != config.upscale.backend
+                    || old.upscale.onnx_model != config.upscale.onnx_model
+                    || old.upscale.scale != config.upscale.scale
+                    || old.upscale.comfyui_workflow != config.upscale.comfyui_workflow
+                    || old.export.format != config.export.format
+                    || old.export.max_edge != config.export.max_edge
+                    || old.export.quality != config.export.quality
+                    || old.export.destination != config.export.destination
+                    || old.export.custom_path != config.export.custom_path;
+                if differs {
+                    changed += 1;
+                }
+                pending.insert(*pid, config.clone());
+            }
+        }
+        for pid in &checked {
+            self.refresh_chips_for_pipeline(*pid);
+        }
+        self.load_batch_settings(checked.len());
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(this) = weak.upgrade() {
+                this.imp().applying_batch_config.set(false);
+            }
+        });
+        if changed > 0 {
+            self.show_batch_toast(checked.len());
+        }
+    }
+
+    fn show_batch_toast(&self, count: usize) {
+        let mut widget = self.clone().upcast::<gtk4::Widget>();
+        while let Some(parent) = widget.parent() {
+            if let Ok(overlay) = parent.clone().downcast::<libadwaita::ToastOverlay>() {
+                overlay.add_toast(libadwaita::Toast::new(&format!(
+                    "Settings applied to {count} items"
+                )));
+                return;
+            }
+            widget = parent;
+        }
     }
 
     fn read_config_from_widgets(&self) -> PendingConfig {
@@ -1443,7 +2079,8 @@ impl TasksPage {
             imp.onnx_model_dropdown
                 .borrow()
                 .as_ref()
-                .map(|d| match d.selected() {
+                .and_then(Self::combo_selected_index)
+                .map(|selected| match selected {
                     1 => "swin2sr-compressed-x4",
                     2 => "swin2sr-real-x4",
                     _ => "swin2sr-lightweight-x2",
@@ -1456,7 +2093,8 @@ impl TasksPage {
             imp.comfyui_workflow_row
                 .borrow()
                 .as_ref()
-                .map(|r| match r.selected() {
+                .and_then(Self::combo_selected_index)
+                .map(|selected| match selected {
                     1 => "seedvr2",
                     _ => "esrgan",
                 })
@@ -1468,7 +2106,8 @@ impl TasksPage {
             .scale_dropdown
             .borrow()
             .as_ref()
-            .map(|d| match d.selected() {
+            .and_then(Self::combo_selected_index)
+            .map(|selected| match selected {
                 1 => 2u32,
                 2 => 3,
                 3 => 4,
@@ -1486,7 +2125,8 @@ impl TasksPage {
             .export_format_dropdown
             .borrow()
             .as_ref()
-            .map(|d| match d.selected() {
+            .and_then(Self::combo_selected_index)
+            .map(|selected| match selected {
                 1 => "webp",
                 2 => "png",
                 3 => "jpeg",
@@ -1494,16 +2134,17 @@ impl TasksPage {
             })
             .unwrap_or("jxl")
             .to_string();
-        let max_edge =
-            imp.export_edge_dropdown
-                .borrow()
-                .as_ref()
-                .and_then(|d| match d.selected() {
-                    1 => Some(1080u32),
-                    2 => Some(2160),
-                    3 => Some(4096),
-                    _ => None,
-                });
+        let max_edge = imp
+            .export_edge_dropdown
+            .borrow()
+            .as_ref()
+            .and_then(Self::combo_selected_index)
+            .and_then(|selected| match selected {
+                1 => Some(1080u32),
+                2 => Some(2160),
+                3 => Some(4096),
+                _ => None,
+            });
         let export_quality = imp
             .export_quality_spin
             .borrow()
@@ -1514,7 +2155,8 @@ impl TasksPage {
             .export_dest_dropdown
             .borrow()
             .as_ref()
-            .map(|d| match d.selected() {
+            .and_then(Self::combo_selected_index)
+            .map(|selected| match selected {
                 1 => "source",
                 2 => "custom",
                 _ => "default",
@@ -1699,7 +2341,17 @@ impl TasksPage {
             };
             if let Some(btn) = button {
                 let state_c = state.clone();
+                let widget_weak = self.downgrade();
                 btn.connect_toggled(move |btn| {
+                    if widget_weak
+                        .upgrade()
+                        .map(|w| {
+                            w.imp().populating_panel.get() || w.imp().applying_batch_config.get()
+                        })
+                        .unwrap_or(false)
+                    {
+                        return;
+                    }
                     if !btn.is_active() {
                         return;
                     }
@@ -1712,7 +2364,15 @@ impl TasksPage {
 
         if let Some(onnx_dd) = imp.onnx_model_dropdown.borrow().as_ref() {
             let state_c = state.clone();
+            let widget_weak = self.downgrade();
             onnx_dd.connect_selected_item_notify(move |dd| {
+                if widget_weak
+                    .upgrade()
+                    .map(|w| w.imp().populating_panel.get() || w.imp().applying_batch_config.get())
+                    .unwrap_or(false)
+                {
+                    return;
+                }
                 let key = match dd.selected() {
                     1 => "swin2sr-compressed-x4",
                     2 => "swin2sr-real-x4",
@@ -1726,8 +2386,19 @@ impl TasksPage {
 
         if let Some(row) = imp.comfyui_workflow_row.borrow().as_ref() {
             let state_c = state.clone();
+            let widget_weak = self.downgrade();
             row.connect_selected_item_notify(move |row| {
-                let key = match row.selected() {
+                if widget_weak
+                    .upgrade()
+                    .map(|w| w.imp().populating_panel.get() || w.imp().applying_batch_config.get())
+                    .unwrap_or(false)
+                {
+                    return;
+                }
+                let Some(selected) = TasksPage::combo_selected_index(row) else {
+                    return;
+                };
+                let key = match selected {
                     1 => "seedvr2",
                     _ => "esrgan",
                 };
@@ -1987,6 +2658,7 @@ impl TasksPage {
             return;
         };
         imp.queue_chip_suffixes.borrow_mut().clear();
+        imp.queue_check_buttons.borrow_mut().clear();
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
         }
@@ -2074,6 +2746,8 @@ impl TasksPage {
                 list_box.append(&expander);
             }
         }
+
+        self.on_queue_checked_ids_changed();
 
         let queue_selected_id = *imp.selected_pipeline_id.borrow();
         if !imp.selected_is_history.get() {
@@ -2166,6 +2840,7 @@ impl TasksPage {
         }
 
         imp.queue_chip_suffixes.borrow_mut().clear();
+        imp.queue_check_buttons.borrow_mut().clear();
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
         }
@@ -2279,6 +2954,8 @@ impl TasksPage {
                 state_rc.borrow_mut().compare_queue = compare_queue;
             }
         } // state and idx dropped — row_selected signals are now safe to fire
+
+        self.on_queue_checked_ids_changed();
 
         // Sync compare view if active
         if let Some(root) = self.root() {
@@ -2407,6 +3084,9 @@ impl TasksPage {
                 let Some(w) = widget_weak.upgrade() else {
                     return;
                 };
+                if w.imp().populating_panel.get() {
+                    return;
+                }
                 if btn.is_active() {
                     w.imp().queue_checked_ids.borrow_mut().insert(pid);
                 } else {
@@ -2417,8 +3097,13 @@ impl TasksPage {
                 if let Some(remove_btn) = remove_btn {
                     remove_btn.set_sensitive(has_checked);
                 }
+                w.on_queue_checked_ids_changed();
             });
         }
+        self.imp()
+            .queue_check_buttons
+            .borrow_mut()
+            .insert(pipeline.id, check_btn.clone());
         expander.add_prefix(&check_btn);
 
         let drag_handle = gtk4::Label::new(Some("⠿"));
