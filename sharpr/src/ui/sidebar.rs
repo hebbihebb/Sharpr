@@ -269,23 +269,45 @@ impl SidebarPane {
         active_library_label.set_margin_start(12);
         active_library_label.set_margin_top(8);
         active_library_label.set_margin_bottom(4);
+
         let library_menu_btn = imp.library_menu_btn.clone();
         library_menu_btn.set_icon_name("pan-down-symbolic");
         library_menu_btn.add_css_class("flat");
         library_menu_btn.set_tooltip_text(Some("Switch Library"));
-        let library_popover = gtk4::Popover::new();
-        let library_menu_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        library_menu_box.add_css_class("menu");
-        library_popover.set_child(Some(&library_menu_box));
-        library_menu_btn.set_popover(Some(&library_popover));
+
+        let group = gio::SimpleActionGroup::new();
+        let widget_weak = self.downgrade();
+        let create_library = gio::SimpleAction::new("create-library", None);
+        create_library.connect_activate(move |_, _| {
+            if let Some(widget) = widget_weak.upgrade() {
+                widget.emit_library_create_requested();
+            }
+        });
+        group.add_action(&create_library);
+
+        let widget_weak = self.downgrade();
+        let switch_library =
+            gio::SimpleAction::new("switch-library", Some(glib::VariantTy::new("s").unwrap()));
+        switch_library.connect_activate(move |_, param| {
+            if let Some(id) = param.and_then(|p| p.get::<String>()) {
+                if let Some(widget) = widget_weak.upgrade() {
+                    widget.emit_library_selected(id);
+                }
+            }
+        });
+        group.add_action(&switch_library);
+        self.insert_action_group("sidebar", Some(&group));
+
         header.pack_end(&library_menu_btn);
 
         {
             let state_c = state.clone();
             let widget_weak = self.downgrade();
-            library_popover.connect_show(move |_| {
-                if let Some(widget) = widget_weak.upgrade() {
-                    widget.refresh_library_menu(state_c.clone());
+            imp.library_menu_btn.connect_notify_local(Some("active"), move |btn, _| {
+                if btn.is_active() {
+                    if let Some(widget) = widget_weak.upgrade() {
+                        widget.refresh_library_menu(state_c.clone());
+                    }
                 }
             });
         }
@@ -440,53 +462,33 @@ impl SidebarPane {
     }
 
     fn refresh_library_menu(&self, state: Rc<RefCell<AppState>>) {
-        let button = self.imp().library_menu_btn.clone();
-        let Some(popover) = button.popover() else {
-            return;
-        };
-        let Some(menu_box) = popover
-            .child()
-            .and_then(|child| child.downcast::<gtk4::Box>().ok())
-        else {
-            return;
-        };
-        while let Some(child) = menu_box.first_child() {
-            menu_box.remove(&child);
-        }
-
+        let menu = gio::Menu::new();
         let settings = state.borrow().settings.clone();
+
         if settings.libraries.len() > 1 {
+            let switch_section = gio::Menu::new();
             for library in &settings.libraries {
-                let label = if settings.active_library_id.as_deref() == Some(library.id.as_str()) {
-                    format!("Switch to {}  ", library.name)
+                let is_active = settings.active_library_id.as_deref() == Some(library.id.as_str());
+                let label = if is_active {
+                    format!("{} (Active)", library.name)
                 } else {
-                    format!("Switch to {}", library.name)
+                    library.name.clone()
                 };
-                let item = gtk4::Button::with_label(&label);
-                item.add_css_class("flat");
-                item.set_halign(gtk4::Align::Start);
-                let library_id = library.id.clone();
-                let widget_weak = self.downgrade();
-                item.connect_clicked(move |_| {
-                    if let Some(widget) = widget_weak.upgrade() {
-                        widget.emit_library_selected(library_id.clone());
-                    }
-                });
-                menu_box.append(&item);
+                let item = gio::MenuItem::new(Some(&label), Some("sidebar.switch-library"));
+                item.set_action_and_target_value(
+                    Some("sidebar.switch-library"),
+                    Some(&library.id.to_variant()),
+                );
+                switch_section.append_item(&item);
             }
-            menu_box.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+            menu.append_section(None, &switch_section);
         }
 
-        let create_btn = gtk4::Button::with_label("Create Library…");
-        create_btn.add_css_class("flat");
-        create_btn.set_halign(gtk4::Align::Start);
-        let widget_weak = self.downgrade();
-        create_btn.connect_clicked(move |_| {
-            if let Some(widget) = widget_weak.upgrade() {
-                widget.emit_library_create_requested();
-            }
-        });
-        menu_box.append(&create_btn);
+        menu.append(
+            Some("Create Library\u{2026}"),
+            Some("sidebar.create-library"),
+        );
+        self.imp().library_menu_btn.set_menu_model(Some(&menu));
     }
 
     pub fn connect_folder_selected<F: Fn(PathBuf) + 'static>(&self, f: F) {
@@ -1046,37 +1048,31 @@ impl SidebarPane {
             });
         }
 
-        let popover = gtk4::Popover::new();
-        popover.set_autohide(true);
+        let menu = gio::Menu::new();
+        menu.append(Some("Disable Folder"), Some("folder.toggle-ignore"));
+
+        let popover = gtk4::PopoverMenu::from_model(Some(&menu));
         popover.set_has_arrow(true);
         popover.set_position(gtk4::PositionType::Right);
-
-        let toggle_btn = gtk4::Button::new();
-        toggle_btn.add_css_class("flat");
-        let row_weak = row.downgrade();
-        toggle_btn.connect_clicked({
-            let widget_weak = self.downgrade();
-            let popover = popover.clone();
-            move |_| {
-                popover.popdown();
-                let Some(widget) = widget_weak.upgrade() else {
-                    return;
-                };
-                let Some(row) = row_weak.upgrade() else {
-                    return;
-                };
-                let ignored = !row.ignored();
-                row.set_ignored(ignored);
-                widget.emit_folder_ignored_changed(row.path(), ignored);
-            }
-        });
-
-        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-        vbox.set_margin_top(4);
-        vbox.set_margin_bottom(4);
-        vbox.append(&toggle_btn);
-        popover.set_child(Some(&vbox));
         popover.set_parent(row);
+
+        let group = gio::SimpleActionGroup::new();
+        let widget_weak = self.downgrade();
+        let row_weak = row.downgrade();
+        let toggle_ignore = gio::SimpleAction::new("toggle-ignore", None);
+        toggle_ignore.connect_activate(move |_, _| {
+            let Some(widget) = widget_weak.upgrade() else {
+                return;
+            };
+            let Some(row) = row_weak.upgrade() else {
+                return;
+            };
+            let ignored = !row.ignored();
+            row.set_ignored(ignored);
+            widget.emit_folder_ignored_changed(row.path(), ignored);
+        });
+        group.add_action(&toggle_ignore);
+        row.insert_action_group("folder", Some(&group));
 
         let gesture = gtk4::GestureClick::new();
         gesture.set_button(0);
@@ -1092,13 +1088,21 @@ impl SidebarPane {
                 return;
             }
             gesture.set_state(gtk4::EventSequenceState::Claimed);
+
             if let Some(row) = row_weak.upgrade() {
-                toggle_btn.set_label(if row.ignored() {
-                    "Enable Folder"
-                } else {
-                    "Disable Folder"
-                });
+                toggle_ignore.set_enabled(true);
+                // We update the menu item label dynamically
+                menu.remove(0);
+                menu.append(
+                    Some(if row.ignored() {
+                        "Enable Folder"
+                    } else {
+                        "Disable Folder"
+                    }),
+                    Some("folder.toggle-ignore"),
+                );
             }
+
             let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
             popover_clone.set_pointing_to(Some(&rect));
             popover_clone.popup();

@@ -154,10 +154,9 @@ pub(super) fn show_new_collection_dialog<F>(
     F: Fn() + Clone + 'static,
 {
     let dialog = libadwaita::AlertDialog::new(Some("New Collection"), None);
-    dialog.add_response("cancel", "Cancel");
     dialog.add_response("create", "Create");
     dialog.set_default_response(Some("create"));
-    dialog.set_close_response("cancel");
+    dialog.set_close_response("create");
     dialog.set_response_appearance("create", libadwaita::ResponseAppearance::Suggested);
     let name_entry = gtk4::Entry::new();
     name_entry.set_placeholder_text(Some("Collection name"));
@@ -253,10 +252,9 @@ pub(super) fn show_rename_collection_dialog<F>(
     };
 
     let dialog = libadwaita::AlertDialog::new(Some("Rename Collection"), None);
-    dialog.add_response("cancel", "Cancel");
     dialog.add_response("save", "Save");
     dialog.set_default_response(Some("save"));
-    dialog.set_close_response("cancel");
+    dialog.set_close_response("save");
     dialog.set_response_appearance("save", libadwaita::ResponseAppearance::Suggested);
 
     let name_entry = gtk4::Entry::new();
@@ -386,10 +384,9 @@ pub(super) fn show_change_color_dialog<F>(
     };
 
     let dialog = libadwaita::AlertDialog::new(Some("Change Collection Color"), None);
-    dialog.add_response("cancel", "Cancel");
     dialog.add_response("save", "Save");
     dialog.set_default_response(Some("save"));
-    dialog.set_close_response("cancel");
+    dialog.set_close_response("save");
     dialog.set_response_appearance("save", libadwaita::ResponseAppearance::Suggested);
 
     let (color_swatch_row, selected_color) = build_color_swatch_row(collection.color.as_deref());
@@ -448,10 +445,9 @@ pub(super) fn show_new_library_dialog(
     toast_overlay: libadwaita::ToastOverlay,
 ) {
     let dialog = libadwaita::AlertDialog::new(Some("Create Library"), None);
-    dialog.add_response("cancel", "Cancel");
     dialog.add_response("create", "Create");
     dialog.set_default_response(Some("create"));
-    dialog.set_close_response("cancel");
+    dialog.set_close_response("create");
     dialog.set_response_appearance("create", libadwaita::ResponseAppearance::Suggested);
 
     let name_entry = gtk4::Entry::new();

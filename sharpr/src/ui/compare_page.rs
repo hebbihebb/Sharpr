@@ -64,7 +64,7 @@ impl ComparePage {
             .set_subtitle(&folder_display(&item.output_asset.path));
 
         imp.image_details_expander.set_expanded(false);
-        imp.chip_revealer.set_reveal_child(false);
+        imp.chip_popover.popdown();
     }
 
     pub fn clear(&self) {
@@ -76,7 +76,7 @@ impl ComparePage {
             .set_text("No comparison selected");
         imp.date_label.set_text("");
         imp.image_details_expander.set_expanded(false);
-        imp.chip_revealer.set_reveal_child(false);
+        imp.chip_popover.popdown();
     }
 }
 
@@ -167,7 +167,7 @@ mod imp {
     pub struct ComparePage {
         pub overlay: gtk4::Overlay,
         pub viewer: BeforeAfterViewer,
-        pub chip_revealer: gtk4::Revealer,
+        pub chip_popover: gtk4::Popover,
 
         pub filename_label: gtk4::Label,
         pub collapsed_filename_label: gtk4::Label,
@@ -190,7 +190,7 @@ mod imp {
             Self {
                 overlay: gtk4::Overlay::new(),
                 viewer: BeforeAfterViewer::new(),
-                chip_revealer: gtk4::Revealer::new(),
+                chip_popover: gtk4::Popover::new(),
                 filename_label: gtk4::Label::new(None),
                 collapsed_filename_label: gtk4::Label::new(Some("No comparison selected")),
                 date_label: gtk4::Label::new(None),
@@ -337,44 +337,36 @@ mod imp {
             details_container.append(&details_page);
             details_scrolled.set_child(Some(&details_container));
 
-            self.chip_revealer
-                .set_transition_type(gtk4::RevealerTransitionType::SlideUp);
-            self.chip_revealer.set_reveal_child(false);
-            self.chip_revealer.set_child(Some(&details_scrolled));
+            self.chip_popover.set_child(Some(&details_scrolled));
+            self.chip_popover.set_autohide(true);
+            self.chip_popover.set_has_arrow(true);
+            self.chip_popover.set_position(gtk4::PositionType::Top);
 
-            let collapsed_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-            collapsed_box.set_margin_top(6);
-            collapsed_box.set_margin_bottom(6);
-            collapsed_box.set_margin_start(10);
-            collapsed_box.set_margin_end(10);
             let info_icon = gtk4::Image::from_icon_name("info-outline-symbolic");
-            collapsed_box.append(&info_icon);
-            collapsed_box.append(&self.collapsed_filename_label);
+            info_icon.set_pixel_size(20);
 
             let collapsed_button = gtk4::Button::new();
             collapsed_button.add_css_class("flat");
-            collapsed_button.set_child(Some(&collapsed_box));
+            collapsed_button.add_css_class("osd");
+            collapsed_button.set_child(Some(&info_icon));
+            collapsed_button.set_halign(gtk4::Align::End);
+            collapsed_button.set_valign(gtk4::Align::End);
+            collapsed_button.set_margin_bottom(20);
+            collapsed_button.set_margin_end(20);
+            collapsed_button.set_tooltip_text(Some("Show image details"));
 
-            let chip_content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-            chip_content.append(&collapsed_button);
-            chip_content.append(&self.chip_revealer);
-            chip_content.add_css_class("osd");
-            chip_content.set_halign(gtk4::Align::End);
-            chip_content.set_valign(gtk4::Align::End);
-            chip_content.set_margin_bottom(20);
-            chip_content.set_margin_end(20);
-            chip_content.set_tooltip_text(Some("Toggle image details"));
-            self.overlay.add_overlay(&chip_content);
+            self.chip_popover.set_parent(&collapsed_button);
+            self.overlay.add_overlay(&collapsed_button);
 
-            let revealer = self.chip_revealer.clone();
+            let popover = self.chip_popover.clone();
             collapsed_button.connect_clicked(move |_| {
-                revealer.set_reveal_child(!revealer.reveals_child());
+                popover.popup();
             });
 
-            let revealer = self.chip_revealer.clone();
+            let popover = self.chip_popover.clone();
             let background_click = gtk4::GestureClick::new();
             background_click.connect_pressed(move |_, _, _, _| {
-                revealer.set_reveal_child(false);
+                popover.popdown();
             });
             self.viewer.add_controller(background_click);
 

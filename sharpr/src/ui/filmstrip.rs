@@ -50,7 +50,11 @@ fn build_context_menu_model(in_collection: bool, is_multi: bool) -> gio::Menu {
     let menu = gio::Menu::new();
 
     let sec1 = gio::Menu::new();
-    sec1.append_item(&menu_item("Open in Default Viewer", "filmstrip.open", Some("Return")));
+    sec1.append_item(&menu_item(
+        "Open in Default Viewer",
+        "filmstrip.open",
+        Some("Return"),
+    ));
     sec1.append_item(&menu_item("Show in File Manager", "filmstrip.reveal", None));
     sec1.append_item(&menu_item(
         "Copy to Clipboard",
@@ -84,11 +88,7 @@ fn build_context_menu_model(in_collection: bool, is_multi: bool) -> gio::Menu {
         None,
     ));
     if !is_multi {
-        file_actions.append_item(&menu_item(
-            "Rename\u{2026}",
-            "filmstrip.rename",
-            Some("F2"),
-        ));
+        file_actions.append_item(&menu_item("Rename\u{2026}", "filmstrip.rename", Some("F2")));
         file_actions.append_item(&menu_item(
             "Duplicate\u{2026}",
             "filmstrip.duplicate",
@@ -103,7 +103,11 @@ fn build_context_menu_model(in_collection: bool, is_multi: bool) -> gio::Menu {
     menu.append_section(None, &sec3);
 
     let sec4 = gio::Menu::new();
-    sec4.append_item(&menu_item("Move to Trash", "filmstrip.trash", Some("Delete")));
+    sec4.append_item(&menu_item(
+        "Move to Trash",
+        "filmstrip.trash",
+        Some("Delete"),
+    ));
     menu.append_section(None, &sec4);
 
     menu
@@ -230,9 +234,6 @@ mod imp {
         pub sort_order_changed_cb: RefCell<Option<SortOrderChangedCallback>>,
         pub quality_filter_changed_cb: RefCell<Option<QualityFilterChangedCallback>>,
         pub save_search_as_collection_cb: RefCell<Option<SaveSearchAsCollectionCallback>>,
-        pub quality_radios: RefCell<Vec<(gtk4::CheckButton, Option<QualityClass>)>>,
-        pub sort_field_radios: RefCell<Vec<(gtk4::CheckButton, SortField)>>,
-        pub sort_direction_radios: RefCell<Vec<(gtk4::CheckButton, bool)>>,
         pub current_sort_order: Cell<SortOrder>,
         pub sort_btn: RefCell<Option<gtk4::MenuButton>>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
@@ -246,6 +247,7 @@ mod imp {
         pub cached_tags: RefCell<Option<std::sync::Arc<crate::tags::TagDatabase>>>,
         pub last_scroll_value: Cell<f64>,
         pub last_buffer_scan_time: Cell<Option<std::time::Instant>>,
+        pub action_group: RefCell<Option<gio::SimpleActionGroup>>,
     }
 
     impl Default for FilmstripPane {
@@ -300,9 +302,6 @@ mod imp {
                 sort_order_changed_cb: RefCell::new(None),
                 quality_filter_changed_cb: RefCell::new(None),
                 save_search_as_collection_cb: RefCell::new(None),
-                quality_radios: RefCell::new(Vec::new()),
-                sort_field_radios: RefCell::new(Vec::new()),
-                sort_direction_radios: RefCell::new(Vec::new()),
                 current_sort_order: Cell::new(SortOrder::default()),
                 sort_btn: RefCell::new(None),
                 state: RefCell::new(None),
@@ -316,6 +315,7 @@ mod imp {
                 cached_tags: RefCell::new(None),
                 last_scroll_value: Cell::new(0.0),
                 last_buffer_scan_time: Cell::new(None),
+                action_group: RefCell::new(None),
             }
         }
     }
@@ -360,136 +360,34 @@ impl FilmstripPane {
         let header = libadwaita::HeaderBar::new();
         header.set_show_end_title_buttons(false);
 
-        let sort_popover = gtk4::Popover::new();
-        let sort_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        sort_box.add_css_class("menu");
-        let default_sort = SortOrder::default();
-
-        // Sort section.
-        let name_row = gtk4::CheckButton::with_label("Name");
-        let date_row = gtk4::CheckButton::with_label("Date Modified");
-        date_row.set_group(Some(&name_row));
-        let type_row = gtk4::CheckButton::with_label("Type");
-        type_row.set_group(Some(&name_row));
-        match default_sort.field() {
-            SortField::Name => name_row.set_active(true),
-            SortField::DateModified => date_row.set_active(true),
-            SortField::FileType => type_row.set_active(true),
-        }
-        *imp.sort_field_radios.borrow_mut() = vec![
-            (name_row.clone(), SortField::Name),
-            (date_row.clone(), SortField::DateModified),
-            (type_row.clone(), SortField::FileType),
-        ];
-
-        sort_box.append(&name_row);
-        sort_box.append(&date_row);
-        sort_box.append(&type_row);
-
-        let direction_sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
-        direction_sep.set_margin_top(4);
-        direction_sep.set_margin_bottom(4);
-        sort_box.append(&direction_sep);
-
-        let ascending_row = gtk4::CheckButton::with_label("Ascending");
-        let descending_row = gtk4::CheckButton::with_label("Descending");
-        descending_row.set_group(Some(&ascending_row));
-        if default_sort.descending() {
-            descending_row.set_active(true);
-        } else {
-            ascending_row.set_active(true);
-        }
-        *imp.sort_direction_radios.borrow_mut() = vec![
-            (ascending_row.clone(), false),
-            (descending_row.clone(), true),
-        ];
-        sort_box.append(&ascending_row);
-        sort_box.append(&descending_row);
-
-        // Quality filter section.
-        let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
-        sep.set_margin_top(4);
-        sep.set_margin_bottom(4);
-        sort_box.append(&sep);
-
-        let all_quality = gtk4::CheckButton::with_label("All Quality");
-        all_quality.set_active(true);
-        sort_box.append(&all_quality);
-
-        let mut quality_radios: Vec<(gtk4::CheckButton, Option<QualityClass>)> = Vec::new();
-        quality_radios.push((all_quality.clone(), None));
-        for &class in QualityClass::ALL.iter() {
-            let radio = gtk4::CheckButton::with_label(class.label());
-            radio.set_group(Some(&all_quality));
-            sort_box.append(&radio);
-            quality_radios.push((radio, Some(class)));
-        }
-        *imp.quality_radios.borrow_mut() = quality_radios;
-
-        sort_popover.set_child(Some(&sort_box));
-
         let sort_btn = gtk4::MenuButton::new();
         sort_btn.set_icon_name("pan-down-symbolic");
         sort_btn.set_tooltip_text(Some("Sort and filter"));
-        sort_btn.set_popover(Some(&sort_popover));
         header.pack_end(&sort_btn);
         *imp.sort_btn.borrow_mut() = Some(sort_btn.clone());
         imp.toolbar_view.add_top_bar(&header);
 
-        let w = self.downgrade();
-        name_row.connect_toggled(move |btn| {
-            if btn.is_active() {
-                if let Some(f) = w.upgrade() {
-                    let sort_order = SortOrder::from_parts(
-                        SortField::Name,
-                        f.imp().current_sort_order.get().descending(),
-                    );
-                    f.imp().current_sort_order.set(sort_order);
-                    if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
-                        cb(sort_order);
-                    }
-                }
-            }
-        });
+        let group = gio::SimpleActionGroup::new();
 
-        let w = self.downgrade();
-        date_row.connect_toggled(move |btn| {
-            if btn.is_active() {
-                if let Some(f) = w.upgrade() {
-                    let sort_order = SortOrder::from_parts(
-                        SortField::DateModified,
-                        f.imp().current_sort_order.get().descending(),
-                    );
-                    f.imp().current_sort_order.set(sort_order);
-                    if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
-                        cb(sort_order);
-                    }
-                }
-            }
-        });
-
-        let w = self.downgrade();
-        type_row.connect_toggled(move |btn| {
-            if btn.is_active() {
-                if let Some(f) = w.upgrade() {
-                    let sort_order = SortOrder::from_parts(
-                        SortField::FileType,
-                        f.imp().current_sort_order.get().descending(),
-                    );
-                    f.imp().current_sort_order.set(sort_order);
-                    if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
-                        cb(sort_order);
-                    }
-                }
-            }
-        });
-
-        let w = self.downgrade();
-        ascending_row.connect_toggled(move |btn| {
-            if btn.is_active() {
-                if let Some(f) = w.upgrade() {
+        // Sort Field Action
+        let widget_weak = self.downgrade();
+        let sort_field = gio::SimpleAction::new_stateful(
+            "sort-field",
+            Some(glib::VariantTy::new("s").unwrap()),
+            &"name".to_variant(),
+        );
+        sort_field.connect_activate(move |action, param| {
+            if let Some(field_str) = param.and_then(|p| p.get::<String>()) {
+                action.set_state(&param.expect("Action should have a parameter"));
+                if let Some(f) = widget_weak.upgrade() {
+                    let field = match field_str.as_str() {
+                        "name" => SortField::Name,
+                        "date" => SortField::DateModified,
+                        "type" => SortField::FileType,
+                        _ => SortField::Name,
+                    };
                     let sort_order =
-                        SortOrder::from_parts(f.imp().current_sort_order.get().field(), false);
+                        SortOrder::from_parts(field, f.imp().current_sort_order.get().descending());
                     f.imp().current_sort_order.set(sort_order);
                     if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
                         cb(sort_order);
@@ -497,13 +395,21 @@ impl FilmstripPane {
                 }
             }
         });
+        group.add_action(&sort_field);
 
-        let w = self.downgrade();
-        descending_row.connect_toggled(move |btn| {
-            if btn.is_active() {
-                if let Some(f) = w.upgrade() {
+        // Sort Direction Action
+        let widget_weak = self.downgrade();
+        let sort_direction = gio::SimpleAction::new_stateful(
+            "sort-direction",
+            Some(glib::VariantTy::new("b").unwrap()),
+            &false.to_variant(),
+        );
+        sort_direction.connect_activate(move |action, param| {
+            if let Some(descending) = param.and_then(|p| p.get::<bool>()) {
+                action.set_state(&param.expect("Action should have a parameter"));
+                if let Some(f) = widget_weak.upgrade() {
                     let sort_order =
-                        SortOrder::from_parts(f.imp().current_sort_order.get().field(), true);
+                        SortOrder::from_parts(f.imp().current_sort_order.get().field(), descending);
                     f.imp().current_sort_order.set(sort_order);
                     if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
                         cb(sort_order);
@@ -511,19 +417,84 @@ impl FilmstripPane {
                 }
             }
         });
+        group.add_action(&sort_direction);
 
-        for (radio, class) in imp.quality_radios.borrow().clone() {
-            let w = self.downgrade();
-            radio.connect_toggled(move |btn| {
-                if btn.is_active() {
-                    if let Some(f) = w.upgrade() {
-                        if let Some(cb) = f.imp().quality_filter_changed_cb.borrow().as_ref() {
-                            cb(class);
-                        }
+        // Quality Filter Action
+        let widget_weak = self.downgrade();
+        let quality_filter = gio::SimpleAction::new_stateful(
+            "quality-filter",
+            Some(glib::VariantTy::new("s").unwrap()),
+            &"all".to_variant(),
+        );
+        quality_filter.connect_activate(move |action, param| {
+            if let Some(class_str) = param.and_then(|p| p.get::<String>()) {
+                action.set_state(&param.expect("Action should have a parameter"));
+                if let Some(f) = widget_weak.upgrade() {
+                    let class = match class_str.as_str() {
+                        "excellent" => Some(QualityClass::Excellent),
+                        "good" => Some(QualityClass::Good),
+                        "fair" => Some(QualityClass::Fair),
+                        "poor" => Some(QualityClass::Poor),
+                        "needs-upscale" => Some(QualityClass::NeedsUpscale),
+                        _ => None,
+                    };
+                    if let Some(cb) = f.imp().quality_filter_changed_cb.borrow().as_ref() {
+                        cb(class);
                     }
                 }
-            });
+            }
+        });
+        group.add_action(&quality_filter);
+        self.insert_action_group("filmstrip-sort", Some(&group));
+        *imp.action_group.borrow_mut() = Some(group);
+
+        let menu = gio::Menu::new();
+        let sort_section = gio::Menu::new();
+        sort_section.append_item(&gio::MenuItem::new(
+            Some("Name"),
+            Some("filmstrip-sort.sort-field::name"),
+        ));
+        sort_section.append_item(&gio::MenuItem::new(
+            Some("Date Modified"),
+            Some("filmstrip-sort.sort-field::date"),
+        ));
+        sort_section.append_item(&gio::MenuItem::new(
+            Some("Type"),
+            Some("filmstrip-sort.sort-field::type"),
+        ));
+        menu.append_section(Some("Sort By"), &sort_section);
+
+        let direction_section = gio::Menu::new();
+        direction_section.append_item(&gio::MenuItem::new(
+            Some("Ascending"),
+            Some("filmstrip-sort.sort-direction::false"),
+        ));
+        direction_section.append_item(&gio::MenuItem::new(
+            Some("Descending"),
+            Some("filmstrip-sort.sort-direction::true"),
+        ));
+        menu.append_section(None, &direction_section);
+
+        let quality_section = gio::Menu::new();
+        quality_section.append_item(&gio::MenuItem::new(
+            Some("All Quality"),
+            Some("filmstrip-sort.quality-filter::all"),
+        ));
+        for &class in QualityClass::ALL.iter() {
+            let id = match class {
+                QualityClass::Excellent => "excellent",
+                QualityClass::Good => "good",
+                QualityClass::Fair => "fair",
+                QualityClass::Poor => "poor",
+                QualityClass::NeedsUpscale => "needs-upscale",
+            };
+            quality_section.append_item(&gio::MenuItem::new(
+                Some(class.label()),
+                Some(&format!("filmstrip-sort.quality-filter::{id}")),
+            ));
         }
+        menu.append_section(Some("Quality Filter"), &quality_section);
+        sort_btn.set_menu_model(Some(&menu));
 
         self.install_css();
 
@@ -908,7 +879,8 @@ impl FilmstripPane {
         imp.scroll.set_child(Some(&imp.list_view));
 
         imp.content_stack.add_named(&imp.scroll, Some("list"));
-        imp.content_stack.add_named(&imp.empty_status, Some("empty"));
+        imp.content_stack
+            .add_named(&imp.empty_status, Some("empty"));
 
         imp.root_box.append(&imp.content_stack);
         imp.toolbar_view.set_content(Some(&imp.root_box));
@@ -1672,8 +1644,12 @@ impl FilmstripPane {
 
     /// Resets the quality filter radio to "All Quality" without emitting the callback.
     pub fn reset_quality_filter(&self) {
-        if let Some((all_radio, _)) = self.imp().quality_radios.borrow().first() {
-            all_radio.set_active(true);
+        if let Some(group) = self.imp().action_group.borrow().as_ref() {
+            if let Some(action) = group.lookup_action("quality-filter") {
+                if let Some(simple) = action.downcast_ref::<gio::SimpleAction>() {
+                    simple.set_state(&"all".to_variant());
+                }
+            }
         }
     }
 

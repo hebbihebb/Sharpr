@@ -942,6 +942,7 @@ impl SharprWindow {
             (st.settings.window_width, st.settings.window_height)
         };
         self.set_default_size(ww, wh);
+        self.set_size_request(1024, 600);
 
         // -----------------------------------------------------------------------
         // Thumbnail worker pool
@@ -1988,7 +1989,9 @@ impl SharprWindow {
             let refresh_c = refresh_sidebar_collections.clone();
             let window_weak = self.downgrade();
             sidebar.connect_collection_add_requested(move || {
-                let Some(win) = window_weak.upgrade() else { return };
+                let Some(win) = window_weak.upgrade() else {
+                    return;
+                };
                 show_new_collection_dialog(
                     win.upcast(),
                     String::new(),
@@ -4182,19 +4185,21 @@ impl SharprWindow {
                                 .unwrap_or_default()
                                 .to_string();
                             let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
-                            let dest = crate::file_ops::next_available_path(
-                                &dest_dir,
-                                &stem,
-                                ext,
-                                |p| p.exists(),
-                            );
+                            let dest =
+                                crate::file_ops::next_available_path(&dest_dir, &stem, ext, |p| {
+                                    p.exists()
+                                });
                             match std::fs::copy(src, &dest) {
                                 Ok(_) => copied += 1,
                                 Err(_) => errors += 1,
                             }
                         }
                         let msg = if errors == 0 {
-                            format!("Copied {} file{}", copied, if copied == 1 { "" } else { "s" })
+                            format!(
+                                "Copied {} file{}",
+                                copied,
+                                if copied == 1 { "" } else { "s" }
+                            )
                         } else {
                             format!(
                                 "Copied {} file{}, {} failed",
@@ -4218,7 +4223,9 @@ impl SharprWindow {
             let filmstrip_mv = filmstrip.clone();
             let viewer_mv = viewer.clone();
             filmstrip.connect_move_to_folder_requested(move |paths| {
-                let Some(win) = window_weak.upgrade() else { return };
+                let Some(win) = window_weak.upgrade() else {
+                    return;
+                };
                 let window_ptr = win.clone().upcast::<gtk4::Window>();
                 let state_c = state_mv.clone();
                 let filmstrip_c = filmstrip_mv.clone();
@@ -4241,12 +4248,10 @@ impl SharprWindow {
                                 .unwrap_or_default()
                                 .to_string();
                             let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
-                            let dest = crate::file_ops::next_available_path(
-                                &dest_dir,
-                                &stem,
-                                ext,
-                                |p| p.exists(),
-                            );
+                            let dest =
+                                crate::file_ops::next_available_path(&dest_dir, &stem, ext, |p| {
+                                    p.exists()
+                                });
                             match std::fs::rename(src, &dest) {
                                 Ok(()) => {
                                     if let Some(tags) = state_c.borrow().tags.clone() {
@@ -4268,8 +4273,7 @@ impl SharprWindow {
                                 viewer_c.clear();
                                 filmstrip_c.refresh_multi_selection_visuals();
                             } else {
-                                let index =
-                                    state_c.borrow().library.selected_index.unwrap_or(0);
+                                let index = state_c.borrow().library.selected_index.unwrap_or(0);
                                 let new_index = index.min(new_count - 1);
                                 filmstrip_c.navigate_to(new_index);
                                 let next_path = state_c
@@ -4307,7 +4311,9 @@ impl SharprWindow {
             let filmstrip_rn = filmstrip.clone();
             let viewer_rn = viewer.clone();
             filmstrip.connect_rename_requested(move |path| {
-                let Some(win) = window_weak.upgrade() else { return };
+                let Some(win) = window_weak.upgrade() else {
+                    return;
+                };
                 let current_name = path
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -4354,8 +4360,7 @@ impl SharprWindow {
                                 viewer_d.clear();
                                 filmstrip_d.refresh_multi_selection_visuals();
                             } else {
-                                let index =
-                                    state_d.borrow().library.selected_index.unwrap_or(0);
+                                let index = state_d.borrow().library.selected_index.unwrap_or(0);
                                 let new_index = index.min(new_count - 1);
                                 filmstrip_d.navigate_to(new_index);
                                 let next_path = state_d

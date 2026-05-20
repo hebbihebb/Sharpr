@@ -146,27 +146,21 @@ pub fn build_preferences_window(
     let upscaler_group = libadwaita::PreferencesGroup::new();
     upscaler_group.set_title("AI Upscale (Vulkan backend)");
 
-    let binary_row = libadwaita::ActionRow::new();
+    let binary_row = libadwaita::EntryRow::new();
     binary_row.set_title("Binary path");
-    binary_row.set_subtitle("Leave blank to auto-detect upscayl-bin or realesrgan-ncnn-vulkan");
-
-    let binary_entry = gtk4::Entry::new();
-    binary_entry.set_hexpand(true);
-    binary_entry.set_width_chars(28);
-    binary_entry.set_text(
+    // EntryRow does not support set_subtitle in this version.
+    binary_row.set_text(
         &settings
             .upscaler_binary_path
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default(),
     );
-    binary_row.add_suffix(&binary_entry);
-    binary_row.set_activatable_widget(Some(&binary_entry));
 
     {
         let parent_c = parent.clone();
-        binary_entry.connect_changed(move |entry| {
-            let text = entry.text().trim().to_string();
+        binary_row.connect_changed(move |row| {
+            let text = row.text().trim().to_string();
             parent_c
                 .app_state()
                 .borrow_mut()
@@ -179,23 +173,19 @@ pub fn build_preferences_window(
         });
     }
 
-    let gpu_row = libadwaita::ActionRow::new();
+    let gpu_row = libadwaita::SpinRow::with_range(-1.0, 16.0, 1.0);
     gpu_row.set_title("GPU ID");
     gpu_row.set_subtitle("-1 means auto");
-    let gpu_adj = gtk4::Adjustment::new(settings.upscaler_gpu_id as f64, -1.0, 16.0, 1.0, 1.0, 0.0);
-    let gpu_spin = gtk4::SpinButton::new(Some(&gpu_adj), 1.0, 0);
-    gpu_spin.set_numeric(true);
-    gpu_row.add_suffix(&gpu_spin);
-    gpu_row.set_activatable_widget(Some(&gpu_spin));
+    gpu_row.set_value(settings.upscaler_gpu_id as f64);
 
     {
         let parent_c = parent.clone();
-        gpu_spin.connect_value_changed(move |spin| {
+        gpu_row.connect_notify_local(Some("value"), move |row, _| {
             parent_c
                 .app_state()
                 .borrow_mut()
                 .settings
-                .set_upscaler_gpu_id(spin.value() as i32);
+                .set_upscaler_gpu_id(row.value() as i32);
         });
     }
 
@@ -349,23 +339,19 @@ pub fn build_preferences_window(
         });
     }
 
-    let cache_row = libadwaita::ActionRow::new();
+    let cache_row = libadwaita::SpinRow::with_range(100.0, 2000.0, 100.0);
     cache_row.set_title("Thumbnail cache size");
     cache_row.set_subtitle("Maximum images held in memory");
-
-    let cache_spin = gtk4::SpinButton::with_range(100.0, 2000.0, 100.0);
-    cache_spin.set_value(settings.thumbnail_cache_max as f64);
-    cache_row.add_suffix(&cache_spin);
-    cache_row.set_activatable_widget(Some(&cache_spin));
+    cache_row.set_value(settings.thumbnail_cache_max as f64);
 
     {
         let parent_c = parent.clone();
-        cache_spin.connect_value_changed(move |spin| {
+        cache_row.connect_notify_local(Some("value"), move |row, _| {
             parent_c
                 .app_state()
                 .borrow_mut()
                 .settings
-                .set_thumbnail_cache_max(spin.value_as_int());
+                .set_thumbnail_cache_max(row.value() as i32);
         });
     }
 
@@ -428,10 +414,9 @@ fn present_library_editor(
         }),
         None,
     );
-    dialog.add_response("cancel", "Cancel");
     dialog.add_response("save", if existing.is_some() { "Save" } else { "Create" });
     dialog.set_default_response(Some("save"));
-    dialog.set_close_response("cancel");
+    dialog.set_close_response("save");
     dialog.set_response_appearance("save", libadwaita::ResponseAppearance::Suggested);
 
     let name_entry = gtk4::Entry::new();

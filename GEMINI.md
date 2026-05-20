@@ -1,14 +1,35 @@
 # Sharpr Project — Gemini Agent Instructions
 
-Shared agent rules (workflow, product constraints, engineering rules, Rust guidance, performance) live in `AGENTS.md`. This file adds Gemini-specific workflow notes and a directory reference for navigation.
+Shared agent rules (workflow, product constraints, engineering rules, Rust guidance, performance) live in `AGENTS.md`. This file adds architecture depth, module details, current implementation state, and Gemini-specific workflow notes.
 
-## Project Overview
+## Build & Run
 
-Sharpr is a local-first image curation tool and viewer for GNOME/Linux.
+Dependencies (Fedora): `sudo dnf install gtk4-devel libadwaita-devel gexiv2-devel pkg-config gcc`
 
-- **Technologies**: Rust (stable), GTK4 (4.12+), Libadwaita (1.5+), GExiv2 (`rexiv2`), SQLite.
-- **Architecture**: Three-pane adaptive layout (sidebar / filmstrip / viewer). Background workers for thumbnail decoding, quality scoring, and optional AI features. Local caching; no monolithic database.
-- **Project Structure**: Core Rust application in `sharpr/`.
+```bash
+cd sharpr
+
+# Native run (requires compiled GSettings schema)
+glib-compile-schemas data/
+GSETTINGS_SCHEMA_DIR=data cargo run
+
+# Release build
+cargo build --release
+
+# Flatpak (recommended for distribution testing)
+cd packaging
+flatpak-builder --force-clean --user --install build-dir io.github.hebbihebb.Sharpr.yml
+```
+
+`build.rs` compiles `data/io.github.hebbihebb.Sharpr.gschema.xml` into GSettings and bundles assets via GResource — the schema file must exist for a clean build.
+
+## Master Action Plan
+
+The master plan lives at [MASTER-PLAN.md](file:///home/hebbi/Projects/Sharpr/MASTER-PLAN.md) (project root). Always consult it when starting work, planning tasks, or updating documentation. This file tracks current implementation status, open issues, and the strategic roadmap.
+
+## Session Continuity
+
+On long tasks (any session involving merge resolution, large rewrites, or multi-step plan work): append a checkpoint to `.gemini/RESUME.md` (create it if missing) before any large operation and whenever context usage is high. This ensures state can be recovered if the session context is lost.
 
 ## Development Workflow
 
@@ -17,112 +38,64 @@ Sharpr is a local-first image curation tool and viewer for GNOME/Linux.
 - **Quality Checks**: Before handing work back for manual testing, run from the `sharpr/` directory:
   1. Build: `cargo build`
   2. Lints: `cargo clippy -- -D warnings`
-  3. Formatting: `cargo fmt --check` (use `cargo fmt` only when actively editing code)
+  3. Formatting: `cargo fmt`
   4. Tests: `cargo nextest run` (preferred; fallback: `cargo test`)
   5. Supply Chain: `cargo deny check` and `cargo machete`
   6. Full sweep (preferred pre-commit): `./check.sh`
 - **Handoff**: After implementation, tell the user exactly what to test manually and how the app should behave.
 
-## Building and Running
-
-**Native Development Path** — GSettings schemas must be compiled before running natively:
-
-```bash
-cd sharpr
-glib-compile-schemas data/
-GSETTINGS_SCHEMA_DIR=data cargo run
-```
-
-`GSETTINGS_SCHEMA_DIR=data` is only required for `cargo run`. Do not prepend it to `cargo build`, `cargo test`, `cargo nextest run`, or `cargo clippy`.
-
-## Product Constraints
-
-**Non-destructive rule (strict):** Sharpr never modifies original image files. Export, upscale, and format conversion create new output files. The Delete key sends files to the system trash (explicit and intentional). Never add any feature that writes back to source files.
-
-**Do not re-add removed scope:**
-- Rotate/flip pixel editing (actions, menu items, and `image_ops.rs` save logic are gone)
-- Sharpness backfill worker (`quality/backfill.rs` removed; quality scoring is resolution-only)
-- ONNX model downloader (`upscale/downloader.rs` removed; ONNX expects local model files)
-- Splash screen (removed; `build.rs` no longer requires it)
-- Import workflow, saved searches, batch rename, embedded metadata writing, full image editor features, color management (ICM/lcms2)
-
-**Optional/privacy-sensitive features:** AI tagging (ONNX ResNet, local), ComfyUI upscaling (local server), and any future API-based features must remain opt-in and clearly indicate when an image may leave the machine.
-
 ## Structured Logging (`bench.rs`)
 
-Sharpr has a built-in structured logging system in `src/bench.rs`. It is **enabled by default** and writes JSONL to `~/.cache/sharpr/logs/run-<timestamp>-<pid>.jsonl` on every launch. Old files are auto-trimmed (default: 20 kept).
+Sharpr has a built-in structured logging system in `src/bench.rs`. It is **enabled by default** and writes JSONL to `~/.cache/sharpr/logs/run-<timestamp>-<pid>.jsonl`. 
 
 Key env vars:
 - `SHARPR_BENCH=0` — disable logging
 - `SHARPR_BENCH_LOG=<path>` — override output file path
-- `SHARPR_BENCH_LOG_LIMIT=<n>` — override how many old log files to keep
 
 Use `bench_event!`, `bench_warn!`, `bench_error!` macros in new code. Do not use `println!`/`eprintln!` for structured output.
 
-## Architectural & Engineering Rules
-
-See `AGENTS.md` for the full rules. Summary:
-
-1. **Threading:** Keep GTK objects on the main thread. Do NOT use `Arc`/`Mutex` on GTK objects. Use `std::thread::spawn` + `async_channel` for background work. Dispatch UI updates via `glib::MainContext::spawn_local`.
-
-2. **State:** Use `Rc<RefCell<AppState>>` for main-thread shared state. Keep `LibraryManager` store state, path indexes, selected index, and caches in sync.
-
-3. **Stale-result protection:** viewer, thumbnail worker, virtual-folder loads, compare mode, and task results all use generation counters (`Arc<AtomicU64>`). Preserve this pattern when touching those flows.
-
-4. **UI:** Keep UI work in `src/ui/` modules. Do not add new behavior directly to `src/ui/window/` (~5,270-line module directory); extract the relevant chunk first when touching compare mode, collection dialogs, or viewer layout wiring. Prefer existing GNOME/Libadwaita patterns. Use `AdwNavigationSplitView`/`AdwOverlaySplitView` and `AdwBreakpoint` for adaptive layouts.
-
-5. **GTK Widget Subclassing:** Use `mod imp { ... }` + `glib::wrapper!` + `#[glib::object_subclass]`. Keep boilerplate clean and idiomatic to `gtk-rs` conventions.
-
-6. **Application Logic:** Respect disabled folders everywhere: direct folder opens, indexing, smart folders, virtual views, duplicate detection, quality views, collections, metadata, hashes, and tags.
-
-## Rust Guidance
-
-- Prefer simple, idiomatic Rust. Avoid cleverness that requires a comment to justify it.
-- Use structs, enums, and traits to clarify boundaries and make invalid states harder to represent.
-- Prefer clear control flow: iterator chains when they improve clarity, `for` loops when they avoid awkward error handling or unnecessary allocation. Avoid unnecessary `collect()` when the result is only immediately iterated again.
-- Prefer exhaustive `match`/`if let` for stateful logic.
-- For large new subsystems: propose data types, state transitions, and ownership boundaries before implementation. For small bug fixes: keep the change minimal and well-tested.
-- Avoid unnecessary `.clone()`, but allow it when it improves correctness, ownership clarity, or GTK/GObject/UI state handling.
-- **Error handling:** The repo uses `Result<T, String>` for simple ops and `Box<dyn std::error::Error>` for serialization/export paths. Neither `anyhow` nor `thiserror` is in `Cargo.toml`; justify adding a dependency before doing so. Avoid `unwrap()`/`expect()` in production paths.
-- No async runtime (Tokio not used). Use `std::thread::spawn` + `async_channel`. Do not default to Rayon without evaluating oversubscription against existing internal thread pools.
-
-## Performance Guidance
-
-- Protect filmstrip and thumbnail responsiveness above theoretical micro-optimizations.
-- Never block the GTK main thread with decoding, filesystem scans, hashing, model loading, exports, upscaling, or network calls.
-- Preserve visible-thumbnail priority over preload work (two-queue system in `thumbnails/worker.rs`).
-- Be careful with Rayon, ONNX Runtime, image decoders, parallel tile processing, and ComfyUI/API calls — avoid CPU oversubscription.
-- Measure or reason from the actual hot path before adding complexity.
-
 ## Reference Documents
 
-- `GTK-MANUAL.md` (project root) — GNOME HIG, GTK4, Libadwaita, and gtk-rs field guide. Consult it for widget choice, Libadwaita component selection, action scopes, adaptive layout patterns, CSS variables, accessibility rules, and gtk-rs API conventions. Use it whenever adding or redesigning UI surfaces.
+- [GTK-MANUAL.md](file:///home/hebbi/Projects/Sharpr/GTK-MANUAL.md): GNOME HIG, accessibility (A11y), adaptive layout (1024x600), and interaction patterns (Undo vs. Dialogs). Consult this for all UI work.
+*   [MASTER-PLAN.md](file:///home/hebbi/Projects/Sharpr/MASTER-PLAN.md): Strategic roadmap and current implementation status.
 
-## Directory Structure (Inside `sharpr/`)
+## Architecture & Module Map
 
-- `src/main.rs`: Entry point and rexiv2 initialization.
-- `src/app.rs`: `AdwApplication` subclass.
-- `src/ui/window/`: Main window module; `AppState`, three-pane layout, action setup (~5,270 lines — do not add new behavior here directly).
-- `src/ui/sidebar.rs`: Folder tree explorer (`SidebarPane`).
-- `src/ui/filmstrip.rs`: `GtkListView` thumbnail strip (`FilmstripPane`).
-- `src/ui/viewer.rs`: Full-resolution image preview, zoom, and panning (`ViewerPane`).
-- `src/ui/metadata_chip.rs`: Floating EXIF overlay (`MetadataChip`).
-- `src/ui/filter_bar.rs`: Quality-class and tag filter bar.
-- `src/ui/ops_indicator.rs`: Floating pill showing background-op progress.
-- `src/ui/compare_controller.rs`: Compare mode state — enter/exit/refresh, selection, queue management.
-- `src/ui/compare_page.rs`: Before/after comparison page with OSD chip.
-- `src/ui/tasks_page.rs`: Tasks dashboard — pipeline/export progress and failures.
-- `src/ui/tag_browser.rs`: Tag browser grid/list with `TagCard` tiles.
-- `src/ui/tag_card.rs`: Individual tag card widget.
-- `src/ui/help_window.rs`: Help window loaded from GResource.
-- `src/model/`: Core GObject models (`ImageEntry`, `FolderNode`, `LibraryManager`).
-- `src/thumbnails/`: Background thumbnail decoding worker (two-queue: visible priority + preload).
-- `src/image_pipeline/`: Shared decode pipeline and preview workers.
-- `src/metadata/`: `rexiv2` EXIF/XMP wrapper.
-- `src/upscale/`: Multiple upscale backends — CLI/ncnn-vulkan (`backends/cli.rs`), ComfyUI (`backends/comfyui.rs`), ONNX (`backends/onnx.rs`); also comparison viewer (`comparison.rs`) and backend detector (`detector.rs`).
-- `src/library_index/`: SQLite-backed persistent index (r2d2 + rusqlite).
-- `src/tags/`: Tag database, auto-tagger, ONNX smart tagger.
-- `src/quality/`: Quality scoring (resolution-based) and blur detection.
-- `src/export/`: Export pipeline (JPEG/JXL/PNG/WebP).
-- `src/ops/`: Background op progress (`OpHandle`/`OpEvent`).
-- `src/config/`: JSON settings/GSettings.
+Sharpr is a GTK4 + Libadwaita image library viewer (~28,500 lines of Rust).
+
+| Module | Role |
+|---|---|
+| `app.rs` | `SharprApplication` — AdwApplication subclass, about dialog |
+| `ui/window/` | Main window module; `AppState`, three-pane layout wiring (~5,270 lines — extract chunks first!) |
+| `ui/window/compare_controller.rs` | Compare mode state and queue management |
+| `ui/filmstrip.rs` | `GtkListView` thumbnail strip with factory/model binding |
+| `ui/viewer.rs` | Full-res display, zoom/pan; uses `glycin::Loader` for async decode |
+| `ui/sidebar.rs` | Folder tree navigator using `GtkTreeListModel` |
+| `ui/metadata_chip.rs` | Floating EXIF OSD overlay (collapsed = chip, expanded = panel) |
+| `ui/filter_bar.rs` | Quality-class and tag filter bar; emits `ActiveFilters` |
+| `ui/ops_indicator.rs` | Floating pill button showing background-op progress |
+| `ui/tasks_page.rs` | Tasks dashboard — central hub for background work progress |
+| `model/library.rs` | `LibraryManager` — O(1) path lookup, LRU thumbnail cache (500 cap) |
+| `thumbnails/worker.rs` | Background thumbnail decode; two-queue system (visible + preload) |
+| `thumbnails/cache.rs` | Private `~/.cache/sharpr/thumbnails-r1/` LRU cache (non-freedesktop spec) |
+| `library_index/` | SQLite-backed persistent index (r2d2 pool) |
+| `quality/scorer.rs` | Resolution-based scoring (`Excellent` to `NeedsUpscale`) |
+| `quality/blur.rs` | Laplacian-variance sharpness measure on thumbnail buffers |
+| `duplicates/phash.rs` | dHash-based duplicate detection with Hamming distance grouping |
+
+## Data Flow
+
+1. **Folder Open**: User selects folder → `LibraryManager` scans paths → `library_index` persists metadata → `GListModel` populates.
+2. **Thumbnail Generation**: `FilmstripPane` requests thumb → `ThumbnailWorker` dispatches (visible priority) → `quality/blur.rs` scores sharpness → `Texture` sent back to UI.
+3. **Image View**: Select image → `ViewerPane` loads via `glycin` → `MetadataWorker` reads EXIF concurrently.
+4. **Curation**: User tags/rates → `TagDatabase` (SQLite) updates → UI reflects changes via GObject property bindings.
+5. **Background Ops**: Exports/Upscales emit `OpEvent` → `ops_indicator` and `tasks_page` reflect progress.
+
+## Engineering Rules (Summary)
+
+1. **Threading**: GTK objects stay on the main thread. No `Arc`/`Mutex` on widgets.
+2. **Concurrency**: `std::thread::spawn` + `async_channel` + `glib::MainContext::spawn_local`.
+3. **Stale Protection**: Use generation counters (`Arc<AtomicU64>`) for all async result flows.
+4. **UI**: Prefer GNOME HIG and standard widgets. Every control must have an accessible name.
+5. **Non-destructive**: Never modify source images. Exports/upscales create new files.
+N settings/GSettings.
