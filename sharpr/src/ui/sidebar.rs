@@ -54,6 +54,7 @@ mod imp {
         pub list_box: gtk4::ListBox,
         pub collection_list: gtk4::ListBox,
         pub library_menu_btn: gtk4::MenuButton,
+        pub library_menu: gio::Menu,
         pub library_header_label: libadwaita::WindowTitle,
         pub active_library_label: gtk4::Label,
         pub folder_selected_cb: RefCell<Option<FolderSelectedCallback>>,
@@ -87,6 +88,7 @@ mod imp {
                 list_box: gtk4::ListBox::new(),
                 collection_list: gtk4::ListBox::new(),
                 library_menu_btn: gtk4::MenuButton::new(),
+                library_menu: gio::Menu::new(),
                 library_header_label: libadwaita::WindowTitle::new("Library", ""),
                 active_library_label: gtk4::Label::new(None),
                 folder_selected_cb: RefCell::new(None),
@@ -197,8 +199,6 @@ impl SidebarPane {
         imp.list_box.add_css_class("navigation-sidebar");
         imp.list_box.set_activate_on_single_click(true);
         imp.list_box.set_selection_mode(gtk4::SelectionMode::Single);
-        self.refresh_library_menu(state.clone());
-        self.populate_default_folders(state.clone());
 
         let widget_weak = self.downgrade();
         imp.list_box.connect_selected_rows_changed(move |list_box| {
@@ -274,22 +274,37 @@ impl SidebarPane {
         library_menu_btn.set_icon_name("pan-down-symbolic");
         library_menu_btn.add_css_class("flat");
         library_menu_btn.set_tooltip_text(Some("Switch Library"));
-        let library_popover = gtk4::Popover::new();
-        let library_menu_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        library_menu_box.add_css_class("menu");
-        library_popover.set_child(Some(&library_menu_box));
-        library_menu_btn.set_popover(Some(&library_popover));
+
+        let group = gio::SimpleActionGroup::new();
+
+        let widget_weak = self.downgrade();
+        let switch_library =
+            gio::SimpleAction::new("switch-library", Some(glib::VariantTy::STRING));
+        switch_library.connect_activate(move |_, param| {
+            let Some(library_id) = param.and_then(|p| p.get::<String>()) else {
+                return;
+            };
+            if let Some(widget) = widget_weak.upgrade() {
+                widget.emit_library_selected(library_id);
+            }
+        });
+        group.add_action(&switch_library);
+
+        let widget_weak = self.downgrade();
+        let create_library = gio::SimpleAction::new("create-library", None);
+        create_library.connect_activate(move |_, _| {
+            if let Some(widget) = widget_weak.upgrade() {
+                widget.emit_library_create_requested();
+            }
+        });
+        group.add_action(&create_library);
+
+        self.insert_action_group("sidebar", Some(&group));
+        self.refresh_library_menu(state.clone());
+        library_menu_btn.set_menu_model(Some(&imp.library_menu));
         header.pack_end(&library_menu_btn);
 
-        {
-            let state_c = state.clone();
-            let widget_weak = self.downgrade();
-            library_popover.connect_show(move |_| {
-                if let Some(widget) = widget_weak.upgrade() {
-                    widget.refresh_library_menu(state_c.clone());
-                }
-            });
-        }
+        self.populate_default_folders(state.clone());
 
         // Collections section header: label + "New Collection" + button
         let collections_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
@@ -441,53 +456,34 @@ impl SidebarPane {
     }
 
     fn refresh_library_menu(&self, state: Rc<RefCell<AppState>>) {
-        let button = self.imp().library_menu_btn.clone();
-        let Some(popover) = button.popover() else {
-            return;
-        };
-        let Some(menu_box) = popover
-            .child()
-            .and_then(|child| child.downcast::<gtk4::Box>().ok())
-        else {
-            return;
-        };
-        while let Some(child) = menu_box.first_child() {
-            menu_box.remove(&child);
-        }
+        let menu = self.imp().library_menu.clone();
+        menu.remove_all();
 
         let settings = state.borrow().settings.clone();
         if settings.libraries.len() > 1 {
+            let library_section = gio::Menu::new();
             for library in &settings.libraries {
                 let label = if settings.active_library_id.as_deref() == Some(library.id.as_str()) {
                     format!("Switch to {}  ", library.name)
                 } else {
                     format!("Switch to {}", library.name)
                 };
-                let item = gtk4::Button::with_label(&label);
-                item.add_css_class("flat");
-                item.set_halign(gtk4::Align::Start);
-                let library_id = library.id.clone();
-                let widget_weak = self.downgrade();
-                item.connect_clicked(move |_| {
-                    if let Some(widget) = widget_weak.upgrade() {
-                        widget.emit_library_selected(library_id.clone());
-                    }
-                });
-                menu_box.append(&item);
+                let item = gio::MenuItem::new(Some(&label), None);
+                item.set_action_and_target_value(
+                    Some("sidebar.switch-library"),
+                    Some(&library.id.to_variant()),
+                );
+                library_section.append_item(&item);
             }
-            menu_box.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+            menu.append_section(None, &library_section);
         }
 
-        let create_btn = gtk4::Button::with_label("Create Library\u{2026}");
-        create_btn.add_css_class("flat");
-        create_btn.set_halign(gtk4::Align::Start);
-        let widget_weak = self.downgrade();
-        create_btn.connect_clicked(move |_| {
-            if let Some(widget) = widget_weak.upgrade() {
-                widget.emit_library_create_requested();
-            }
-        });
-        menu_box.append(&create_btn);
+        let create_section = gio::Menu::new();
+        create_section.append(
+            Some("Create Library\u{2026}"),
+            Some("sidebar.create-library"),
+        );
+        menu.append_section(None, &create_section);
     }
 
     pub fn connect_folder_selected<F: Fn(PathBuf) + 'static>(&self, f: F) {
