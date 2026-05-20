@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sharpr Master Action Plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #fbfaf8;
+      --fg: #1f1f1f;
+      --muted: #66625c;
+      --border: #d8d3ca;
+      --soft: #f0ece6;
+      --code-bg: #ebe6dd;
+      --accent: #2457a6;
+      --quote-bg: #f4f1ec;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1f1f1f;
+        --fg: #eeeeec;
+        --muted: #babdb6;
+        --border: #4a4845;
+        --soft: #2a2927;
+        --code-bg: #30302d;
+        --accent: #8ab4f8;
+        --quote-bg: #282725;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 17px;
+      line-height: 1.65;
+    }
+
+    body {
+      margin: 0;
+      padding: 3rem 1.25rem 4rem;
+    }
+
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+    }
+
+    h1, h2, h3, h4 {
+      line-height: 1.25;
+      margin: 2.2rem 0 0.75rem;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 2.25rem;
+      margin-top: 0;
+      padding-bottom: 0.7rem;
+      border-bottom: 2px solid var(--border);
+    }
+
+    h2 {
+      font-size: 1.45rem;
+      padding-top: 0.65rem;
+      border-top: 1px solid var(--border);
+    }
+
+    h3 { font-size: 1.12rem; }
+    h4 { font-size: 1rem; color: var(--muted); }
+
+    p, ul, ol, blockquote, pre { margin: 0.85rem 0; }
+    ul, ol { padding-left: 1.55rem; }
+    li { margin: 0.4rem 0; }
+    li > p { margin: 0.45rem 0; }
+
+    a { color: var(--accent); }
+
+    code {
+      padding: 0.12rem 0.3rem;
+      border-radius: 4px;
+      background: var(--code-bg);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow-x: auto;
+      padding: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--code-bg);
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      font-size: 0.9rem;
+    }
+
+    blockquote {
+      margin-left: 0;
+      padding: 0.8rem 1rem;
+      border-left: 4px solid var(--border);
+      background: var(--quote-bg);
+      color: var(--muted);
+    }
+
+    strong { font-weight: 700; }
+    em { color: var(--muted); }
+
+    del {
+      color: var(--muted);
+      text-decoration-thickness: 0.08em;
+    }
+
+    .toc {
+      margin: 1.5rem 0 2.5rem;
+      padding: 1rem 1.1rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--soft);
+    }
+
+    .toctitle {
+      display: block;
+      margin-bottom: 0.35rem;
+      font-weight: 700;
+    }
+
+    .toc > ul { margin-bottom: 0; }
+    .toc ul { padding-left: 1.2rem; }
+    .toc li { margin: 0.22rem 0; }
+    .toc a { text-decoration: none; }
+    .toc a:hover { text-decoration: underline; }
+
+    hr {
+      border: 0;
+      border-top: 1px solid var(--border);
+      margin: 2rem 0;
+    }
+
+    @media print {
+      html { font-size: 12pt; background: white; color: black; }
+      body { padding: 0; }
+      main { max-width: none; }
+      a { color: black; text-decoration: none; }
+      .toc, pre, blockquote { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+<div class="toc"><span class="toctitle">Contents</span><ul>
+<li><a href="#corrected-product-identity">Corrected Product Identity</a></li>
+<li><a href="#app-capabilities-as-of-may-11-2026">App Capabilities (as of May 11, 2026)</a></li>
+<li><a href="#top-10-priorities">Top 10 Priorities</a></li>
+<li><a href="#deferred-or-out-of-scope">Deferred Or Out Of Scope</a></li>
+<li><a href="#default-workflow-decisions">Default Workflow Decisions</a></li>
+<li><a href="#focused-image-sets">Focused Image Sets</a></li>
+<li><a href="#testing-priorities">Testing Priorities</a></li>
+<li><a href="#gnome-polish-priorities">GNOME Polish Priorities</a></li>
+<li><a href="#structured-logging">Structured Logging</a></li>
+<li><a href="#risk-list">Risk List</a></li>
+<li><a href="#suggested-implementation-order">Suggested Implementation Order</a></li>
+<li><a href="#development-history">Development History</a><ul>
+<li><a href="#april-4-2026-initial-app-1-commit-91840">April 4, 2026 — Initial App (1 commit, +9,184/−0)</a></li>
+<li><a href="#april-5-2026-core-viewer-features-26-commits-4274599">April 5, 2026 — Core Viewer Features (26 commits, +4,274/−599)</a></li>
+<li><a href="#april-6-2026-thumbnail-and-loading-improvements-9-commits-519246">April 6, 2026 — Thumbnail and Loading Improvements (9 commits, +519/−246)</a></li>
+<li><a href="#april-7-2026-stability-and-basic-workflow-polish-3-commits-1147289">April 7, 2026 — Stability and Basic Workflow Polish (3 commits, +1,147/−289)</a></li>
+<li><a href="#april-8-2026-system-integration-tags-preferences-and-quality-views-23-commits-4075650">April 8, 2026 — System Integration, Tags, Preferences, and Quality Views (23 commits, +4,075/−650)</a></li>
+<li><a href="#april-11-2026-background-work-and-large-folder-performance-11-commits-19151027">April 11, 2026 — Background Work and Large Folder Performance (11 commits, +1,915/−1,027)</a></li>
+<li><a href="#april-12-2026-repository-cleanup-5-commits-184403">April 12, 2026 — Repository Cleanup (5 commits, +18/−4,403)</a></li>
+<li><a href="#april-13-2026-layout-manual-and-local-tag-suggestions-20-commits-3446344">April 13, 2026 — Layout, Manual, and Local Tag Suggestions (20 commits, +3,446/−344)</a></li>
+<li><a href="#april-18-2026-performance-sorting-zoom-and-session-polish-9-commits-637232">April 18, 2026 — Performance, Sorting, Zoom, and Session Polish (9 commits, +637/−232)</a></li>
+<li><a href="#april-21-2026-persistent-library-index-and-collections-11-commits-5173649">April 21, 2026 — Persistent Library Index and Collections (11 commits, +5,173/−649)</a></li>
+<li><a href="#april-22-2026-upscale-backends-16-commits-2983506">April 22, 2026 — Upscale Backends (16 commits, +2,983/−506)</a></li>
+<li><a href="#april-23-2026-ux-review-2-commits-14442">April 23, 2026 — UX Review (2 commits, +144/−42)</a></li>
+<li><a href="#april-24-2026-preview-pipeline-and-architecture-work-6-commits-1500330">April 24, 2026 — Preview Pipeline and Architecture Work (6 commits, +1,500/−330)</a></li>
+<li><a href="#april-25-2026-export-metadata-and-image-pipeline-cleanup-15-commits-1171235">April 25, 2026 — Export, Metadata, and Image Pipeline Cleanup (15 commits, +1,171/−235)</a></li>
+<li><a href="#april-27-2026-scope-filters-and-tag-backed-collections-20-commits-37402345">April 27, 2026 — Scope, Filters, and Tag-Backed Collections (20 commits, +3,740/−2,345)</a></li>
+<li><a href="#april-28-2026-collection-and-tag-visual-polish-14-commits-2923658">April 28, 2026 — Collection and Tag Visual Polish (14 commits, +2,923/−658)</a></li>
+<li><a href="#april-29-2026-tags-quality-multi-library-and-save-flow-31-commits-53781751">April 29, 2026 — Tags, Quality, Multi-Library, and Save Flow (31 commits, +5,378/−1,751)</a></li>
+<li><a href="#april-30-2026-export-upscale-and-format-work-6-commits-2996552">April 30, 2026 — Export, Upscale, and Format Work (6 commits, +2,996/−552)</a></li>
+<li><a href="#may-1-2026-loading-feedback-and-indexing-speed-21-commits-1757449">May 1, 2026 — Loading Feedback and Indexing Speed (21 commits, +1,757/−449)</a></li>
+<li><a href="#may-2-2026-glycin-and-jxl-loading-experiments-14-commits-16682463">May 2, 2026 — Glycin and JXL Loading Experiments (14 commits, +1,668/−2,463)</a></li>
+<li><a href="#may-3-2026-performance-presentation-and-collections-17-commits-59821926">May 3, 2026 — Performance, Presentation, and Collections (17 commits, +5,982/−1,926)</a></li>
+<li><a href="#may-4-2026-tasks-page-upscale-queue-and-compare-mode-14-commits-2438210">May 4, 2026 — Tasks Page, Upscale Queue, and Compare Mode (14 commits, +2,438/−210)</a></li>
+<li><a href="#may-5-2026-advanced-queue-and-compare-polish-22-commits-46254823">May 5, 2026 — Advanced Queue and Compare Polish (22 commits, +4,625/−4,823)</a></li>
+<li><a href="#may-7-2026-tasks-page-regression-fixes-2-commits-12651000">May 7, 2026 — Tasks Page Regression Fixes (2 commits, +1,265/−1,000)</a></li>
+<li><a href="#may-8-2026-metadata-icons-and-splash-removal-6-commits-331159">May 8, 2026 — Metadata, Icons, and Splash Removal (6 commits, +331/−159)</a></li>
+<li><a href="#may-9-2026-product-cleanup-exports-and-compare-work-29-commits-34492397">May 9, 2026 — Product Cleanup, Exports, and Compare Work (29 commits, +3,449/−2,397)</a></li>
+<li><a href="#may-10-2026-rename-empty-states-and-focus-guards-14-commits-8751698">May 10, 2026 — Rename, Empty States, and Focus Guards (14 commits, +875/−1,698)</a></li>
+<li><a href="#may-11-2026-context-menu-redesigns-and-manual-updates-2-commits-868262-plan-updates">May 11, 2026 — Context Menu Redesigns and Manual Updates (2 commits, +868/−262 + plan updates)</a></li>
+<li><a href="#may-19-2026-gnome-hig-ui-polish-pass-2-commits-423489">May 19, 2026 — GNOME HIG UI Polish Pass (2 commits, +423/−489)</a></li>
+</ul>
+</li>
+</ul>
+</div>
+
+<h1 id="sharpr-master-action-plan">Sharpr Master Action Plan</h1>
+<p>Date: 2026-05-09<br>
+Sharpr checkout: <code>/home/hebbi/Projects/Sharpr</code><br>
+Plan orientation: owner-corrected, practical, opinionated product and engineering priorities</p>
+<h2 id="corrected-product-identity">Corrected Product Identity</h2>
+<p>Sharpr is for fast Keep/Trash quality review. Folders are the truth; SQLite exists for speed, stability, cache, task history, and curation state. The app should feel like a fast GNOME-native review desk: open a folder, move through the defining filmstrip, decide what to keep or trash, compare similar images, tag and collect the keepers, review quality and duplicates, and send export/upscale/format work through Tasks.</p>
+<p>The non-destructive rule is strict: Sharpr does not modify original image files. Export, upscale, and format conversion create controlled outputs. The user may explicitly trash files. Sharpr does not write embedded metadata, does not export Sharpr tags to IPTC/XMP, and does not add arbitrary scripts. Rotate/flip editing is intentionally out of scope — GNOME Image Viewer (also Glycin-based) handles in-place pixel adjustments and is a natural companion app.</p>
+<p>Tasks is a central dashboard, not a hidden log. It should show progress, failures, generated files, accept/discard decisions, and output review. Generated files inherit source tags/collections by default and are also auto-grouped into output collections such as Upscaled, Exports, and Converted.</p>
+<h2 id="app-capabilities-as-of-may-11-2026">App Capabilities (as of May 11, 2026)</h2>
+<p>355 commits, +74,481/−30,245 lines changed (net +44,236).</p>
+<ul>
+<li>Folder browsing with a collapsible Library panel.</li>
+<li>A live filmstrip with thumbnails, sort controls, multi-select, and context menus.</li>
+<li>Full-resolution viewing with zoom, pan, fullscreen, fit-to-window, and 1:1 pixel view.</li>
+<li>Support for modern formats like JPEG XL with optimized loading.</li>
+<li>Reliable image decoding powered by Glycin v3.</li>
+<li>Metadata and quality overlays.</li>
+<li>Tag editing, tag search, tag browsing, automatic format/resolution tags, and local AI tag suggestions.</li>
+<li>Smart folders for duplicates, tags, search results, and quality bands.</li>
+<li>User collections with drag-and-drop support and export/import capability.</li>
+<li>Persistent SQLite indexing for faster library startup and global smart-folder results.</li>
+<li>Duplicate detection using perceptual image fingerprints.</li>
+<li>A background "Tasks" page for managing and reviewing long-running jobs.</li>
+<li>AI upscaling (Real-ESRGAN CLI, local ONNX models, or ComfyUI) with batch queue support.</li>
+<li>Side-by-side "Compare" mode for evaluating multiple images at once.</li>
+<li>Presentation mode for distraction-free viewing.</li>
+<li>Background progress reporting and loading placeholders for better responsiveness.</li>
+<li>Memory, disk, and private thumbnail caching.</li>
+<li>A Preferences window, keyboard shortcuts window, built-in manual, app icon, and Flatpak packaging.</li>
+</ul>
+<h2 id="top-10-priorities">Top 10 Priorities</h2>
+<ol>
+<li>Protect thumbnail loading and filmstrip reliability.</li>
+<li>Make keyboard-only navigation a core acceptance requirement.</li>
+<li>Make Tasks the central dashboard for queued work, background work, generated outputs, failures, accept/discard choices, and user decisions.</li>
+<li>Strengthen collections as a central workflow, including default inheritance behavior for generated outputs. <em>(Current state: collections work with tags and sub-collection tag inheritance. Auto output collections and generated-output lineage are not yet implemented.)</em></li>
+<li>Track generated/upscaled/exported outputs with source lineage and auto-add them to relevant output collections.</li>
+<li>Keep folders as truth while using SQLite as cache, stability, task history, and curation infrastructure.</li>
+<li>Harden compare and task-result virtual-folder behavior because both should switch the filmstrip into focused result sets.</li>
+<li>Keep AI features and allow remote ComfyUI/API backends, but clearly label when an image will leave the machine.</li>
+<li>Improve GNOME polish: app naming, metadata, screenshots, empty states, accessible labels, shortcuts, and manual QA.</li>
+<li>Add regression tests even if slower when they protect thumbnail loading, folder switching, task/compare views, generated outputs, collections, or keyboard paths.</li>
+</ol>
+<h2 id="deferred-or-out-of-scope">Deferred Or Out Of Scope</h2>
+<ul>
+<li>Saved searches.</li>
+<li>Import workflow.</li>
+<li>Batch rename.</li>
+<li>Embedded metadata writing.</li>
+<li>Metadata sidecar systems, except optional user-controlled PNG output sidecars.</li>
+<li>Exporting Sharpr tags to IPTC/XMP.</li>
+<li>Arbitrary scripts/user-defined shell actions.</li>
+<li>Full image editor features.</li>
+<li>Rotate/orientation editing (intentionally out of scope; use GNOME Image Viewer or another app for pixel-level adjustments — Sharpr does not modify originals). The rotate/flip menu items, actions, and save logic have been removed (<code>a8bc908</code>).</li>
+<li>Sharpness backfill (background thread that computed Laplacian sharpness scores) — removed. Quality is now purely resolution-based and sharpness data was not used for classification; the quality scorer now exposes only resolution-based scoring.</li>
+<li>ONNX model downloader — removed as orphaned dead code (<code>a8bc908</code>). ONNX upscale support now expects local model files without an unused downloader path.</li>
+<li>Splash screen — removed (commit <code>0ecb923</code>).</li>
+<li>Flathub as a real release target.</li>
+<li>Translations as a near-term priority.</li>
+<li>gThumb-style multi-page property sidebar (EXIF/IPTC/XMP pages in a separate slide-in panel). The <code>MetadataChip</code> OSD is the right direction; see expandable chip decision in Default Workflow Decisions.</li>
+<li>Color management (lcms2/colord, ICC-aware save paths) — nice-to-have, not a blocker. Glycin likely handles ICC on decode; thumbnail and export paths are undocumented but not a current correctness concern. Revisit when export quality becomes critical.</li>
+<li>Complete <code>window.rs</code> refactor — <code>src/ui/window/</code> is ~5,270 lines and owns AppState, collection dialogs, compare mode, presentation mode, thumbnail/hash polling, action setup, and layout wiring. A full refactor is a long-term goal to be done when it makes the most engineering sense, not tied to any specific feature or master plan milestone. Until then, targeted extractions happen as prerequisites to features that touch those areas (see Implementation Order).</li>
+</ul>
+<p>Format conversion belongs only in export/task workflows. A future lite mode may be useful, but AI features stay for now.</p>
+<h2 id="default-workflow-decisions">Default Workflow Decisions</h2>
+<ul>
+<li>Optimize the day-to-day flow for fast curation: browse, compare, decide, collect, and send to Tasks.</li>
+<li><strong>Trash</strong> is an explicit destructive action: Delete key (or right-click) triggers a confirmation dialog and sends the image to the system trash. This is already functional. Trash stays as a file-system operation — it is not a collection or a tag.</li>
+<li><strong>Keep</strong> is not a button or flag. The default state of an image is kept. A preconfigured "Keepers" collection is a future option that users could also create themselves; it should not be hardcoded as a required review concept.</li>
+<li>The right-click context menu was redesigned (<code>efb79d1</code>) with a GtkPopoverMenu + GMenu + GAction pattern, adding a "File Actions" submenu (Copy to Folder…, Move to Folder…, Rename…, Duplicate…). Trash remains in the menu alongside the Delete-key path. The earlier direction of removing Trash from the menu to reduce clutter is superseded by this design.</li>
+<li>Generated outputs inherit source tags/collections by default (planned; not yet implemented).</li>
+<li>Generated outputs are auto-added to output collections such as Upscaled, Exports, and Converted (planned; not yet implemented).</li>
+<li>Task and compare results should switch the filmstrip into a focused result set, like a temporary virtual folder.</li>
+<li>Compare view filmstrip should be driven by a smart collection populated from the Tasks history queue, showing only the items relevant to the current comparison — not the previous folder's contents. Currently the filmstrip bleeds previous folder content below the compared item; this is a known rough edge that needs a design decision and fix.</li>
+<li>Remote ComfyUI/API backends are allowed when Sharpr clearly says the image will leave the machine.</li>
+<li><strong>MetadataChip — Expandable OSD, No Separate Panel:</strong> The <code>MetadataChip</code> OSD in the viewer is expandable on click/tap. Collapsed: compact chip (current behavior). Expanded: taller inline panel showing quality tier, duplicates count if any, tags, and collection membership. Dismissible by clicking outside or a second tap. Both states stay anchored bottom-right of the viewer. No separate property sidebar will be added.</li>
+<li><strong>Compare Page — Remove Right-Side Panel, Use Expandable OSD Chip:</strong> The compare page's existing slide-out right-side info panel is removed. An expandable OSD chip in the same info-icon position replaces it, with the same expand/collapse behavior as the viewer chip. Panel content (file info, quality, dimensions, tags) migrates to the chip's expanded state. This unifies the interaction model across viewer and compare pages.</li>
+</ul>
+<h2 id="focused-image-sets">Focused Image Sets</h2>
+<p>A Focused Image Set is any non-folder source that temporarily drives the filmstrip: compare queues, task results, generated outputs, duplicate groups, quality views, collection views, or tag-filtered views.</p>
+<p>Focused Image Sets must:
+- have a stable identity/name,
+- carry a generation token,
+- replace the filmstrip contents atomically,
+- drop stale async results,
+- keep selection and path indexes consistent,
+- never bleed entries from the previous folder or previous focused view.</p>
+<p>Folder browsing remains the default source of truth. Focused Image Sets are temporary views over known image paths, not replacement libraries.</p>
+<p><strong>Performance invariant (non-negotiable):</strong> Any refactor of the filmstrip to support Focused Image Sets must not degrade the current filmstrip performance. The filmstrip's visible/preload scheduling, two-queue thumbnail dispatch, generation-aware stale-drop, and LRU cache behavior are high-performance by design. Filmstrip changes must be verified against rapid scrolling, rapid folder switching, and large folder load before being considered done. If a proposed implementation requires touching the thumbnail scheduling or factory binding paths, treat that as a red flag and find an approach that wraps or extends rather than rewrites those paths.</p>
+<p>This concept subsumes the earlier "virtual-folder audit" goal (see step 11 of the Implementation Order) and is the design target for all non-folder filmstrip sources. Every focused view — compare queue, task results, collections, quality, duplicates, generated outputs — should be a conforming <code>FocusedImageSet</code>.</p>
+<h2 id="testing-priorities">Testing Priorities</h2>
+<ul>
+<li>Thumbnail loading: visible/preload scheduling, cache hits/misses, corrupt files, huge files, and rapid scrolling.</li>
+<li>Rapid folder switching while thumbnails, metadata, hashes, quality scoring, and Tasks are active.</li>
+<li>Filmstrip population for folders, collections, quality, duplicates, compare, and task-generated results.</li>
+<li>Compare/task virtual-folder stale result handling.</li>
+<li>Generated-output tracking after export/upscale/format conversion, including source lineage.</li>
+<li>Tag and collection inheritance for generated outputs, plus auto output collections.</li>
+<li>Explicit trash behavior, confirmation or undo, and non-modification of originals.</li>
+<li>Keyboard-only navigation through sidebar, filmstrip, viewer, collections, Tasks, compare, dialogs, and preferences.</li>
+<li>ComfyUI/API backend consent, timeout, error, and non-loopback URL handling.</li>
+<li>SQLite migration/reconciliation tests for user-authored curation state and task history.</li>
+</ul>
+<p>Slower tests are acceptable when they catch important regressions in these areas. Manual QA should focus on daily workflows rather than a full app tour: folder review, filmstrip navigation, rapid switching, Tasks, compare, collections, generated outputs, keyboard-only navigation, and trash.</p>
+<h2 id="gnome-polish-priorities">GNOME Polish Priorities</h2>
+<ul>
+<li>Keep the public name Sharpr consistently across metadata, README, about dialog, screenshots, and desktop/appdata files. ⚠️ Commit <code>a527a13</code> renamed the display name to "Skerpa" — this needs to be reverted. Sharpr is the correct public name.</li>
+<li>Treat Flatpak/AppStream checks as quality signals, not a release target.</li>
+<li>Keep app metadata honest about local-first behavior and configurable network backends.</li>
+<li>Add accessible names for icon-only controls and keep shortcut help, manual, and README aligned.</li>
+<li>Improve empty/error states for no folder, no images, no tasks, no generated outputs, no duplicates, and hidden AI features.</li>
+<li>Make destructive and privacy-sensitive actions explicit: trash, remote ComfyUI/API upload, and future export metadata behavior.</li>
+<li>Trash confirmation dialog is not yet implemented — Delete key currently sends the file to trash immediately without any prompt. A confirmation dialog is planned.</li>
+<li>ComfyUI non-loopback warning is not yet implemented — no warning is shown in preferences when the ComfyUI URL points outside localhost. This is a planned security polish item.</li>
+<li>Thumbnail cache: Sharpr uses a private <code>~/.cache/sharpr/thumbnails-r1/</code> cache with fingerprint-in-filename (<code>{path_hash}-{size}-{mtime_secs}-{mtime_nanos}.png</code>) for O(1) validity checking without reading cached files. This is intentionally better for Sharpr's use case than the freedesktop <code>~/.cache/thumbnails/</code> spec, which requires reading PNG text chunks per entry and computing URI MD5s. Add a short code comment in <code>sharpr/src/thumbnails/cache.rs</code> documenting this choice so the design intent is clear to future contributors.</li>
+<li>OSD chip design polish (compare page and future viewer chip): the current chip implementation is functional but needs visual refinement. Specifically: (1) the pill/button has no rounded corners — should use GNOME HIG-appropriate corner radius; (2) the expanded panel background is too transparent, making text hard to read — consider a semi-opaque solid background or a popover-style widget with its own surface. A <code>gtk4::Popover</code> may be the right GNOME HIG answer for the expanded state: it provides rounded corners, a proper surface with solid background, and standard dismiss behavior (click outside to close). Research the HIG recommendation for floating info panels before implementing. This applies equally to the viewer MetadataChip expansion (step 6 of the implementation order).</li>
+<li>OSD chip unification (follow-up after step 6): once the viewer MetadataChip is rebuilt with a <code>gtk4::Popover</code> for its expanded state, give the compare page OSD chip (<code>compare_page.rs</code>) the same design pass so both chips use the same visual pattern. The two chips could then potentially share a common implementation — either by extracting a shared base widget or by reusing <code>MetadataChip</code> directly in <code>ComparePage</code>. Worth evaluating once step 6 is done and the shape of the popover API is clear.</li>
+</ul>
+<h2 id="structured-logging">Structured Logging</h2>
+<p>Sharpr has a built-in structured logging system in <code>src/bench.rs</code>. It is <strong>enabled by default</strong> on every launch and writes JSONL to <code>~/.cache/sharpr/logs/run-&lt;timestamp&gt;-&lt;pid&gt;.jsonl</code>. Up to 20 log files are kept automatically.</p>
+<p>Control via env vars:
+- <code>SHARPR_BENCH=0</code> — disable entirely
+- <code>SHARPR_BENCH_LOG=&lt;path&gt;</code> — override file path
+- <code>SHARPR_BENCH_LOG_LIMIT=&lt;n&gt;</code> — override retention count</p>
+<p>Use <code>bench_event!</code>, <code>bench_warn!</code>, <code>bench_error!</code> macros when adding new observable events. Do not use <code>println!</code>/<code>eprintln!</code> for structured output.</p>
+<h2 id="risk-list">Risk List</h2>
+<ul>
+<li>Thumbnail loading regression would damage the core experience fastest.</li>
+<li>Treating SQLite as truth could make folder hot swap, removable drives, and reconciliation fragile.</li>
+<li>Task-generated outputs can become disconnected from source images, tags, collections, or user decisions.</li>
+<li>Compare/task virtual-folder bugs can show stale or wrong images in the filmstrip.</li>
+<li>Tasks can become too quiet and fail to act as the user's dashboard for generated-output decisions.</li>
+<li>Metadata/export privacy can be misunderstood if output behavior is not explicit.</li>
+<li>AI backends can violate local-first expectations if remote ComfyUI/API URLs are not clearly labeled.</li>
+<li>Keep/Trash language can become dangerous if the actual trash action is too easy or lacks undo/confirmation.</li>
+<li>Scope creep toward import, batch rename, scripts, metadata writing, or editor tools would dilute the app.</li>
+<li>Keyboard/accessibility gaps would undermine daily usability and GNOME polish.</li>
+<li><code>window.rs</code> complexity: at ~5,270 lines, <code>window.rs</code> is a maintainability risk. New feature work that adds to it without targeted extraction will make future refactoring harder. The full refactor is deferred, but extractions should be done as prerequisites to each feature that touches compare mode, collection dialogs, or viewer layout wiring (see Implementation Order, steps 4 and 7).</li>
+<li>The May 2026 Codex bloat audit identified the dead-code surfaces, stub progress path, and stale settings enumerated in step 17. Future cleanup passes should consult that step rather than re-running the full audit.</li>
+</ul>
+<h2 id="suggested-implementation-order">Suggested Implementation Order</h2>
+<blockquote>
+<p><strong>Note:</strong> This is a living draft. The order below is a starting point, not a committed sequence. It should be revisited once the QA checklist and initial regression tests (steps 1–2) are in place and give a clearer picture of what unblocks what.</p>
+</blockquote>
+<ul>
+<li>
+<p><strong>1.</strong> <del>Add a daily-workflow manual QA checklist covering thumbnail loading, rapid folder switching, keyboard-only navigation, collections, Tasks, compare, generated outputs, and explicit trash.</del> Completed: <code>cc623b4</code></p>
+</li>
+<li>
+<p><strong>2.</strong> <del>Add or strengthen regression tests for thumbnail scheduling, stale generation handling, and rapid folder/view switching.</del> Completed: <code>831afd9</code> (3 new tests: rapid 50-generation bumps, multi-stale drop, burst-then-fresh).</p>
+</li>
+<li>
+<p><strong>3.</strong> <del>Add a short code comment in <code>sharpr/src/thumbnails/cache.rs</code> documenting the private cache design choice (fingerprint-in-filename, O(1) validity, why not freedesktop spec).</del> Completed: <code>94daef6</code></p>
+</li>
+<li>
+<p><strong>4.</strong> <del>Extract compare controller from <code>window.rs</code> (<code>enter_compare_mode</code>, <code>exit_compare_mode</code>, <code>exit_compare_mode_internal</code>, <code>refresh_compare_view</code>, <code>handle_compare_selection_change</code>, <code>remove_from_compare_queue</code>) → <code>src/ui/compare_controller.rs</code>. <em>Prerequisite for step 5; first targeted <code>window.rs</code> extraction.</em></del> Completed: <code>83c978d</code></p>
+</li>
+<li>
+<p><strong>5.</strong> <del>Compare page: remove right-side info panel, add expandable OSD chip with the same content (file info, quality, dimensions, tags).</del> Completed: <code>a1abb6f</code>. Visual polish (rounded corners, popover approach, readability) noted in GNOME Polish Priorities for a follow-up pass alongside step 6.</p>
+</li>
+<li>
+<p><strong>6.</strong> <del>Viewer MetadataChip: make expandable on click, showing quality tier, duplicates count if any, tags, and collection membership in the expanded state.</del> Completed: <code>c2f1306</code>. Follow-up OSD chip unification pass (compare page + viewer sharing the same popover design) noted in GNOME Polish Priorities.</p>
+</li>
+<li>
+<p><strong>7.</strong> <del>Extract collection dialogs from <code>window.rs</code> (<code>show_new_collection_dialog</code>, <code>show_new_library_dialog</code>, <code>switch_active_library</code>, and related helpers) → <code>src/ui/collection_dialogs.rs</code>. <em>Second targeted <code>window.rs</code> extraction.</em></del> Completed: <code>54fb01a</code>. Also fixed two pre-existing bugs found during extraction: a borrow-conflict that could panic at runtime, and child collection color display always falling back to the root color.</p>
+</li>
+<li>
+<p><strong>8.</strong> <del>Action map audit: add a comment-block table at the top of <code>setup_actions</code> in <code>window.rs</code> listing every registered <code>win.*</code>/<code>app.*</code> action, its label, default shortcut, and sensitivity rule. Keep menus, <code>ShortcutController</code> bindings, and shortcut help aligned going forward.</del> Completed: <code>8713c14</code>.</p>
+</li>
+<li>
+<p><strong>9.</strong> <del>Define generated-output lineage, default tag/collection inheritance, and auto output collections, then route export/upscale/format results through Tasks.</del> Completed: <code>5991809</code>. Tags and collection memberships are copied from source to output on step completion; "Upscaled" and "Exports" auto-collections are created on first use. A pre-existing delete bug in collections was also found, fixed, and tested during this pass.</p>
+</li>
+<li>
+<p><strong>10.</strong> <del>Make Tasks a visible dashboard for progress, failures, generated files, accept/discard decisions, and output review.</del> <strong>Substantially complete</strong> (commits <code>44234f2</code>, <code>e02b9fb</code>, <code>0d6c61a</code>). Final polish still needed: empty states, failure visibility, and generated-output decision flow.</p>
+</li>
+<li>
+<p><strong>10b.</strong> <del>Fix Tasks page settings-change reload bug: editing any setting on the Tasks page currently triggers a full reload of all images in both the queue and history lists. The fix should narrow the signal/update binding so that a settings change only updates the affected row or widget, not the entire queue/history population.</del> Completed: <code>31a7953</code>, <code>f14bb55</code>. Settings changes now update only the affected queue row's chips in place; history list no longer reloads on queue-only events.</p>
+</li>
+<li>
+<p><strong>11.</strong> Implement Focused Image Sets as the common reliability layer for all non-folder filmstrip sources (see Focused Image Sets section). <em>Known bug: after a generated output is added to a collection (e.g. via step 9 auto-collection), clicking that collection in the browser immediately shows "collection empty" and the filmstrip does not populate — clicking the collection a second time correctly shows the contents. Suspected cause: the collection view does not wait for the underlying model update to settle before querying, or the model change notification is not flushing before the first render. This bug should be fixed as part of sub-step 11d (collection view as FocusedImageSet).</em> Sub-steps:</p>
+<ul>
+<li><strong>a.</strong> <del>Define a <code>FocusedImageSet</code> type (identity/name, generation token, image paths) in a new module.</del> Completed: <code>3a78c87</code>. <code>FocusedImageSet</code> added in <code>src/focused_image_set.rs</code>; <code>LibraryManager.virtual_generation</code> bumped on every <code>load_virtual</code>; metadata backfill receiver guards against stale generations.</li>
+<li><strong>b.</strong> <del>Refactor the filmstrip to accept a <code>FocusedImageSet</code> and replace contents atomically, dropping async results that carry a stale generation token.</del> Completed: <code>3a78c87</code>. Generation guard threads through <code>load_virtual_async</code> without touching thumbnail scheduling, factory binding, or two-queue dispatch paths.</li>
+<li><strong>c.</strong> <del>Implement compare queue as a <code>FocusedImageSet</code> — this fixes the known first-open race: stale filmstrip entries from the previous folder appear when entering compare mode (via arrows or clicking compare in the history queue).</del> Completed: <code>770ed4b</code>. Compare mode now bumps thumbnail generation on entry, drops stale folder thumbnail requests, and stores the queue as a <code>FocusedImageSet</code>. First-open stale-entries race is fixed.</li>
+<li><strong>d.</strong> <del>Implement collection, quality-class, duplicate-group, and tag-filtered views as <code>FocusedImageSet</code>.</del> Known crashes verified fixed by manual testing (no dedicated commit — fixed as side effects of earlier work): (1) collection drag-onto-parent crash resolved by <code>reparent_collection</code> leaf-only guard in <code>library_index/mod.rs</code> + <code>Err</code> toast path in <code>window.rs</code> (<code>54fb01a</code>); (2) tag OSD plus-button crash resolved by popover being parented at construction time and early-return guards in <code>open_tag_popover</code> (<code>c2f1306</code>). Full FocusedImageSet wiring for these views remains as a future reliability improvement but is not blocking.</li>
+<li><strong>e.</strong> Implement task-generated output results as a <code>FocusedImageSet</code> (pairs with step 9 lineage work). <em>Deferred — step 9 auto-collections (Upscaled, Exports) already cover the main use case via the sidebar. Revisit if a task-run-specific filmstrip entry point from the Tasks page becomes a priority.</em></li>
+</ul>
+</li>
+<li>
+<p><strong>12.</strong> <del>Add privacy wording and UI affordances for ComfyUI/API backends, non-loopback URLs, and future export metadata preference behavior.</del> Completed: <code>7b3f89f</code>, <code>89e4bf0</code>. <code>adw::Banner</code> appears in Upscaler preferences when the ComfyUI URL is non-local; updates live as the user types.</p>
+</li>
+<li>
+<p><strong>13.</strong> <del>Polish GNOME-facing metadata, naming, empty states, accessible names, and shortcut/manual consistency.</del> Naming fix completed: <code>4f98098</code>. Empty states completed: <code>901fd50</code> — AdwStatusPage welcome page (no folder open), filmstrip empty state (no images), Tasks queue empty state. Shortcut/manual consistency completed: <code>e139cf9</code> — stale rotate/flip editing section removed from manual, ONNX auto-download claim corrected, missing shortcuts (F9, Ctrl+F, [/], Ctrl+1–4, Delete) added to manual and help-overlay.ui. Accessible names completed: <code>89cfbb8</code> — tooltips added to compare page action buttons (show original, show output, back to tasks, remove), sidebar folder/collection disclosure chevrons, and tag card menu button. Step 13 fully done.</p>
+</li>
+<li>
+<p><strong>14.</strong> <del>Add migration/reconciliation tests before schema changes that affect collections, task history, generated outputs, or curation data.</del> Completed: <code>1b9f89a</code>. Four tests added: <code>ensure_collection_schema_adds_missing_columns</code>, <code>ensure_collection_schema_preserves_existing_rows</code>, <code>ensure_collection_schema_is_idempotent</code>, <code>recover_interrupted_pipelines_resets_in_progress</code>.</p>
+</li>
+<li>
+<p><strong>14b.</strong> <del>Redesign filmstrip right-click context menu: migrate from hand-built Popover+buttons to GtkPopoverMenu + GMenu + GAction, add a "File Actions" submenu with Copy to Folder…, Move to Folder…, Rename…, and Duplicate…; support multi-select for Trash/Copy/Move/Queue; Rename and Duplicate hidden when multi-select active; accelerators (F2, Ctrl+D, Delete, Return, Ctrl+C) wired; help overlay updated.</del> Completed: <code>efb79d1</code>.</p>
+</li>
+<li>
+<p><strong>14c.</strong> <del>Redesign the collections right-click context menu (on <code>TagCard</code> / collection browser) using the same GtkPopoverMenu + GMenu + GAction pattern as the filmstrip menu redesign (step 14b). The current menu is a hand-built Popover+buttons implementation. Target menu layout (to be confirmed before implementation):</del> Completed: <code>6ce4000</code>. Also fixed <code>reparent_collection</code> signature to <code>Option&lt;i64&gt;</code>, lifted the leaf-only restriction (replaced with cycle detection), and excluded entire subtrees from the "Move into Collection" target picker. Both the sidebar collection row menu and the tag browser tag card menu were migrated.</p>
+<p><code>Open Collection
+Rename…
+Change Color…
+─────────────────────────────
+Promote to Top Level          (only shown for child collections)
+Move into Collection…         (move this collection under a different parent)
+─────────────────────────────
+Delete Collection</code></p>
+<p>Key new action: <strong>Promote to Top Level</strong> — moves a child collection out of its parent and into the root level of the collection tree. This is the inverse of the existing drag-onto-parent reparent gesture. Implementation notes:
+- Backend: <code>library_index</code> already has <code>reparent_collection</code> — a promote is a <code>reparent_collection(id, parent_id: None)</code> call (or equivalent root-level move).
+- Only shown when the right-clicked collection has a parent (i.e. is not already at root level).
+- No confirmation dialog needed — the operation is reversible by dragging back.
+- After promote, refresh the sidebar collection tree and keep the promoted collection selected/visible.
+- Tag card context menu lives in <code>src/ui/tag_card.rs</code>; collection tree context menu lives in <code>src/ui/sidebar.rs</code>. Both should be updated in the same pass for consistency.</p>
+</li>
+<li>
+<p><strong>14d.</strong> <em>(Multi-part)</em> UI consistency cleanup — polish preferences, modal dialogs, and OSD chips to match GNOME HIG. Inspired by GNOME Files (Nautilus) as a reference for dialog and preferences design. Three independent sub-steps; each can be done separately:</p>
+<p><strong>14d-i. Preferences window — migrate to AdwPreferencesGroup rows.</strong>
+The current <code>AdwPreferencesWindow</code> (<code>src/ui/preferences.rs</code>) correctly uses <code>PreferencesPage</code> and <code>PreferencesGroup</code> as containers, but the row content is raw <code>gtk4::Button</code> widgets ("Edit…", "Create…", "Export…", "Import…") floated inside the groups — there are no <code>AdwActionRow</code>, <code>AdwComboRow</code>, or <code>AdwSwitchRow</code> row types in the file at all. <em>(Note: a 2026-05-11 audit report incorrectly characterised this as "excellent" — code inspection confirms the inconsistency.)</em> Migrate all preference rows to use Libadwaita-native row types: buttons become <code>AdwActionRow</code> with a <code>gtk4::Button</code> as a suffix widget (styled as <code>suggested-action</code> or plain, not freestanding); dropdowns become <code>AdwComboRow</code>; toggles become <code>AdwSwitchRow</code>. The goal is every row having the same visual weight and alignment as GNOME Files preferences — label left-aligned, control right-aligned, rounded group border. Files to touch: <code>src/ui/preferences.rs</code>. <em>Partially done (<code>b4e95b0</code>): binary-path row → <code>AdwEntryRow</code>, GPU ID and thumbnail cache size → <code>AdwSpinRow</code>. Remaining: freestanding buttons (Edit…, Create…, Export…, Import…) → <code>AdwActionRow</code> with suffix; dropdowns → <code>AdwComboRow</code>; toggles → <code>AdwSwitchRow</code>.</em></p>
+<p><del><strong>14d-ii. Modal dialogs — remove unnecessary Cancel buttons.</strong>
+Several <code>AlertDialog</code> / custom <code>Popover</code> dialogs present a Cancel button when the window's X close button already dismisses the dialog without action. GNOME HIG: non-destructive modals with a single action (e.g. "Move into Collection" — only action is selecting a target) should expose only the action button; the header X covers cancel. Audit all <code>AlertDialog</code> and <code>Popover</code>-as-dialog usages in <code>src/ui/window.rs</code>, <code>src/ui/collection_dialogs.rs</code>, <code>src/ui/sidebar.rs</code>, and <code>src/ui/tag_browser.rs</code>. Remove the explicit Cancel response from dialogs where: (a) the dialog is non-destructive, (b) there is only one affirmative action, and (c) pressing X already dismisses safely. Keep Cancel wherever it is paired with a destructive action or where both "save" and "cancel" paths have distinct consequences the user needs to choose between explicitly (e.g. Delete confirmation).</del> Completed: <code>b4e95b0</code>.</p>
+<p><del><strong>14d-iii. Compare OSD chip — align with viewer MetadataChip design.</strong>
+The compare page OSD chip (<code>src/ui/compare_page.rs</code>) is visually inconsistent with the viewer <code>MetadataChip</code> (<code>src/ui/metadata_chip.rs</code>): the collapsed state shows a text label rather than just an info icon, and the expanded popover has no rounded corners and is too compact and small to read comfortably. Fix:
+- Collapsed state: show only an info icon (<code>info-symbolic</code> or equivalent), matching the viewer chip's collapsed appearance. No text visible when collapsed.
+- Expanded state: use a <code>gtk4::Popover</code> (same approach as the viewer MetadataChip), which provides rounded corners, a proper surface background, and standard click-outside-to-dismiss behavior. Make the expanded popover larger — generous padding, readable font size, not squeezed to the minimum.
+- The two chips should feel like they came from the same design. If the viewer MetadataChip already uses a <code>Popover</code> for expansion, reuse the same pattern or the same widget directly in <code>ComparePage</code>.</del> Completed: <code>b4e95b0</code>. Collapsed state is now a flat icon-only button (<code>info-outline-symbolic</code>); expanded state is a <code>GtkPopover</code> parented to the button.</p>
+<p><strong>14d-iv. Remaining legacy popovers — sidebar and sort menu. <em>(Lower priority than i–iii.)</em></strong>
+Three hand-built <code>GtkPopover + GtkBox</code> menus remain after the filmstrip and collection menu migrations: (1) the <strong>Library Switcher</strong> in <code>sidebar.rs</code> (appends <code>GtkButton</code> widgets to a <code>GtkBox</code> inside a <code>GtkPopover</code>); (2) the <strong>Folder Context Menu</strong> in <code>sidebar.rs</code> (<code>attach_folder_row_menu</code> — a <code>GtkPopover</code> with a single plain button); (3) the <strong>Sort Menu</strong> in <code>filmstrip.rs</code> (a <code>GtkPopover</code> containing <code>GtkCheckButton</code> radio groups for field and direction). These should each be migrated to <code>GtkPopoverMenu + GMenu + GAction</code> for keyboard navigation, accessibility, and visual consistency with the rest of the app. The sort menu in particular uses <code>GtkCheckButton</code> as radio items, which should become <code>GMenu</code> items with the <code>"s"</code> GVariant state pattern (<code>gio::MenuItem::set_attribute_value("target", ...)</code> + a stateful <code>GSimpleAction</code>). Do all three in one pass. Files to touch: <code>src/ui/sidebar.rs</code>, <code>src/ui/filmstrip.rs</code>. <em>Partially done (<code>b4e95b0</code>): folder context menu and sort menu migrated to <code>GtkPopoverMenu + GMenu + GAction</code>. Library Switcher migration was attempted but reverted — <code>MenuButton.set_menu_model()</code> didn't open on first click and the fix was unstable; library switcher remains a <code>GtkPopover + GtkBox</code> approach. Remaining work: library switcher only.</em></p>
+<p><em>Not recommended for the plan: (a) Action Bus Refactor — replacing all <code>connect_.*_requested</code> callbacks with GAction throughout the window wiring would be a high-risk architectural overhaul with no clear user-facing benefit and real risk of destabilising filmstrip performance; (b) XML/Blueprint templates — the procedural Rust approach is intentional and readable; migrating to GtkBuilder XML would require new tooling without improving correctness or maintainability for this codebase.</em></p>
+<p><strong>14d-v. CSS theme-awareness audit.</strong>
+Audit <code>data/collection.css</code> and <code>data/viewer-osd.css</code> for hardcoded colors and replace them with Adwaita CSS variables (<code>@accent_bg_color</code>, <code>@card_bg_color</code>, <code>@window_fg_color</code>, etc.). Verify rendering in light, dark, and high-contrast mode. Pairs naturally with the OSD chip popover redesign already noted in GNOME Polish Priorities — both involve the OSD surface appearance. Reference: GNOME dev manual §12.</p>
+<p><strong>14d-vi. Writing-style audit (HIG §14).</strong>
+Audit user-facing strings (preferences rows, dialogs, status pages, toasts, banners, menu items, accessible names/tooltips) for compliance with GNOME HIG writing style: "your" not "my"; no trailing periods on single-sentence labels; ellipsis (<code>…</code>) only on actions that require more input before completion; header capitalization on buttons and menu items; sentence capitalization on descriptions and longer labels. Low-effort polish, high perceived-quality impact.</p>
+<p><strong>14d-vii. Document supported minimum window size.</strong>
+Verify Sharpr is usable at 1024×600 logical pixels (the HIG minimum for desktop GNOME apps). Document the supported minimum in <code>README.md</code> and the Flatpak manifest. Explicitly state that phone-narrow size (~360×294) is out of scope for this application. No code change expected unless the 1024×600 check reveals a layout regression.</p>
+<p><strong>14d-viii. Pin <code>rust-version</code> in <code>Cargo.toml</code>.</strong>
+Add <code>rust-version = "&lt;oldest-tested&gt;"</code> to the <code>[package]</code> section of <code>sharpr/Cargo.toml</code> to make the minimum supported Rust version explicit and prevent silent toolchain drift. Pick the version the project currently builds against on Fedora and the Flatpak runtime. Reference: GNOME dev manual §1.</p>
+<p><strong>14d-ix. Fix close-to-save regression in collection and library dialogs.</strong>
+Step 14d-ii (commit <code>b4e95b0</code>) removed Cancel buttons from non-destructive dialogs but introduced a regression: the affected dialogs call <code>set_close_response("create")</code> or <code>set_close_response("save")</code>, which means pressing Escape or clicking the window X button fires the affirmative response (creating or saving with whatever partial text is in the field) rather than safely dismissing. Affected locations — all in <code>src/ui/collection_dialogs.rs</code> and <code>src/ui/preferences.rs</code>:
+- <code>show_new_collection_dialog</code> (<code>collection_dialogs.rs:159</code>): <code>set_close_response("create")</code>
+- <code>show_rename_collection_dialog</code> (<code>collection_dialogs.rs:257</code>): <code>set_close_response("save")</code>
+- <code>show_change_collection_color_dialog</code> (<code>collection_dialogs.rs:389</code>): <code>set_close_response("save")</code>
+- <code>show_new_library_dialog</code> (<code>collection_dialogs.rs:450</code>): <code>set_close_response("create")</code>
+- Library edit dialog (<code>preferences.rs:419</code>): <code>set_close_response("save")</code></p>
+<p>Fix: change all five <code>set_close_response</code> calls from <code>"create"</code>/<code>"save"</code> to <code>"cancel"</code>. The <code>connect_response</code> callbacks already guard with <code>if response != "create" { return; }</code> (or equivalent), so they will safely no-op on <code>"cancel"</code>. No button layout changes needed. Note: the <code>window.rs</code> "Add to Collection" dialog (<code>set_close_response("done")</code>) is <strong>not</strong> affected — collection assignment there happens on <code>row_activated</code>, and the "done" response performs no write operations.</p>
+</li>
+<li>
+<p><strong>14e.</strong> <strong>Fix Tasks queue runner: sequential execution and flicker.</strong> Two distinct bugs affecting the queue when it is started with multiple items:</p>
+<p><strong>Bug 1 — all items dispatched concurrently instead of one-at-a-time.</strong>
+<code>try_start_runner()</code> installs a <code>glib::timeout_add_local</code> polling timer that fires every 2 seconds and calls <code>run_next_pipeline()</code>. That function has no guard for "is a pipeline already InProgress?" — it only checks <code>runner_active</code> and <code>paused</code>. So every 2 seconds the timer picks the <em>next queued</em> pipeline and starts it regardless of whether the previous one is still running. With 28 queued items and an upscale step that takes longer than 2 seconds, the timer dispatches all 28 items' step 1 (Upscale) concurrently — so the queue shows "24 running" with all of them stuck at "Step 1 of 2: Upscale" while the remaining items stay queued. None reach step 2 (Convert) until all step 1s finish, because multi-step pipelines complete step-by-step within a pipeline but the timer keeps starting new pipelines in parallel.</p>
+<p><strong>Desired behaviour:</strong> pipeline-level sequential execution — complete <em>all steps</em> of pipeline N (e.g. Upscale → Convert) before starting pipeline N+1. The user described it as: "upscale one image, convert it, then send the next image."</p>
+<p><strong>Observed consequence:</strong> when 24 ComfyUI upscale jobs were dispatched concurrently, ComfyUI queued all 24 internally and processed them sequentially. ComfyUI itself was healthy and completing each job in ~33 seconds (confirmed via ComfyUI's own queue UI). However, Sharpr's polling loop waits at most 300 seconds (5-minute timeout, <code>src/upscale/backends/comfyui.rs:296</code>) per job. A job at queue position 24 must wait ~23 × 33s ≈ 13 minutes in ComfyUI before its GPU slot — far exceeding the 5-minute limit. Sharpr reported "Timeout waiting for ComfyUI" for all but the first few jobs even though ComfyUI was completing them successfully. The timeout failure is entirely a consequence of concurrent dispatch, not a ComfyUI issue.</p>
+<p>Fix: add an early-return guard at the top of <code>run_next_pipeline()</code> (<code>src/ui/tasks_page.rs</code>) that queries <code>idx.pipelines_by_status(PipelineStatus::InProgress)</code> and returns immediately if any pipeline is already running. The sequential chain is already correct — step-completion handlers call <code>run_next_pipeline()</code> to advance to the next step or pipeline — so the fix is purely a guard, not a structural change. The polling timer can remain as a dead-man's switch for stalled jobs; it just must not start a new pipeline while one is active.</p>
+<p>This same guard also fixes a related bug: <strong>after step 1 of a multi-step pipeline completes, step 2 never auto-starts</strong>. The polling timer fires during step 1, finds no <em>queued</em> pipelines (the only pipeline is <code>InProgress</code>), and sets <code>runner_active = false</code> (line 2978). When step 1 completes and calls <code>run_next_pipeline()</code>, the <code>runner_active</code> guard causes an immediate return — the user must press play again to start step 2. With the InProgress guard in place, the timer returns early without clearing <code>runner_active</code>, so the step-completion call to <code>run_next_pipeline()</code> proceeds correctly.</p>
+<p><strong>Bug 3 — missing tooltips on queue toolbar buttons.</strong>
+Three of the five queue toolbar buttons have no tooltip: <code>pause_btn</code>, <code>clear_btn</code> (the destructive "clear queue" button), and <code>start_btn</code> (the play/run button) — lines 268, 272, and 289 of <code>src/ui/tasks_page.rs</code>. <code>add_images_btn</code> (line 262) and <code>remove_btn</code> (line 286) already have tooltips. Fix: add <code>set_tooltip_text(Some("…"))</code> to the three missing buttons. Suggested text: "Pause the queue" / "Clear all queued tasks" / "Start the queue".</p>
+<p><strong>Bug 2 — queue and history lists flicker while the runner is active.</strong>
+<code>refresh()</code> (<code>src/ui/tasks_page.rs:2094</code>) tears the entire queue <code>ListBox</code> and the entire history <code>ListBox</code> down to nothing (<code>while first_child() { list_box.remove() }</code>) and rebuilds every row from scratch on every call. The 2-second polling timer → <code>run_next_pipeline()</code> → <code>self.refresh()</code> path causes both lists to be fully destroyed and re-created every tick, which is visible as a flicker.</p>
+<p>Fix: make <code>refresh()</code> diff the existing rows against the current DB state instead of tearing down unconditionally. The minimal approach — sufficient to eliminate flicker without a full rewrite — is to skip the tear-down and rebuild if the set of pipeline IDs and their statuses have not changed since the last render. Store the last-rendered <code>Vec&lt;(i64, PipelineStatus)&gt;</code> in the widget's private state; at the start of <code>refresh()</code>, compare against the current query result and return early if identical. Only rebuild when the list actually changes (item added, removed, or status transition). This is an extension of the same fix applied to settings-chip updates in step 10b.</p>
+</li>
+<li>
+<p><strong>14f.</strong> <strong>Tasks queue — batch selection and bulk edit.</strong>
+    Currently, users can select multiple queue items by clicking their checkboxes and remove them in bulk, but every other setting (upscale backend, scale mode, model, convert format/quality) must be changed one item at a time through the right-hand "Selected Item Settings" panel, which always reflects only a single item. With 28+ queued tasks this is tedious. This step adds:</p>
+<ul>
+<li>
+<p><strong>Tristate select-all checkbox in the queue header row.</strong> A <code>GtkCheckButton</code> placed at the left end of the existing toolbar row (next to "28 queued tasks"). Three states: active = all selected, inactive = none selected, inconsistent = mixed. Clicking cycles active → inactive → active. <code>Ctrl+A</code> on the Tasks page (page-scoped, not focus-dependent) also triggers select-all via a <code>win.queue-select-all</code> GAction. Both controls update in sync.</p>
+</li>
+<li>
+<p><strong>Batch-edit panel when multiple items are selected.</strong> When two or more queue items are checked, the right-hand panel header changes from "Selected Item Settings" to "Batch Edit (N Items)" and each control (Upscale toggle + backend + scale + model, Convert toggle + format + quality) shows a <code>—</code> placeholder for any setting that differs across the selection. Choosing a value applies it to every checked item simultaneously; leaving a control at <code>—</code> leaves each item's current value unchanged. This avoids silent overwrites of minority values.</p>
+</li>
+<li>
+<p><strong>Single-item path preserved.</strong> When exactly one item is selected, the panel header stays "Selected Item Settings" and behaviour is unchanged.</p>
+</li>
+<li>
+<p><strong>Toast feedback.</strong> After a batch-apply, a brief <code>AdwToast</code> ("Settings applied to N items") confirms the action. No confirmation dialog — the change is reversible by editing again.</p>
+</li>
+</ul>
+<p>Implementation notes:
+- The queue is backed by a <code>GListStore</code> / <code>GtkListView</code> in <code>src/ui/tasks_page.rs</code>. Verify the selection model type first: if it is <code>GtkNoSelection</code> + manual checkbox tracking, the checkbox state lives on the <code>QueueEntry</code> GObject (likely a <code>selected: Cell&lt;bool&gt;</code> property). The tristate header checkbox must then be computed from the model, not from widget state — rows are reused during scroll (factory <code>unbind</code> must clear checkbox state), so deriving selection from widget state is incorrect.
+- The right-hand settings panel reads/writes a single <code>QueueEntry</code> today. Extend the apply path to iterate all selected entries (those with <code>selected == true</code>) and fan the change out to each, then persist the updated queue.
+- <code>win.queue-select-all</code> is a <code>gio::SimpleAction</code> (stateless, activates on <code>Ctrl+A</code>); it sets <code>selected = true</code> on every entry in the <code>GListStore</code> and triggers a UI refresh. A <code>win.queue-select-none</code> action (no default shortcut) clears all.
+- The <code>—</code> placeholder for mixed-state dropdowns: use an extra sentinel item at index 0 of the combo model (e.g. <code>"—"</code>) that is only inserted when the selection is mixed and removed once the user makes a choice. For toggle switches with mixed state, show them in an indeterminate visual state (disabled with no on/off) until the user explicitly toggles.
+- No new dialogs needed — the batch edit panel is the same right-hand panel, just wired to multiple entries.</p>
+</li>
+<li>
+<p><strong>15.</strong> <em>(Long-term, timing TBD)</em> Complete <code>window.rs</code> refactor: once targeted extractions from steps 4 and 7 are in place and the feature surface has stabilised, do a holistic split of the remaining content into focused page/scope controllers. The trigger is when further feature work in <code>window.rs</code> becomes noticeably painful, not a fixed milestone.</p>
+</li>
+<li>
+<p><strong>16.</strong> <em>(Needs workshopping before implementation)</em> Model and workflow discoverability and documentation across all AI/upscale backends. Currently users have no in-app guidance on what external assets are required or how to obtain them, and no way to use custom workflows or models without code changes. High-level ideas to workshop:</p>
+<ul>
+<li><strong>ComfyUI</strong>: generate a default workflow JSON file in a user-accessible folder (<code>~/.local/share/sharpr/workflows/</code>) so users can inspect and edit the prompt sent to the server. Advanced users could add further workflow files; Sharpr would scan the folder and surface them in a dropdown selector in Preferences.</li>
+<li><strong>ONNX (upscale)</strong>: scan a user-accessible folder (<code>~/.local/share/sharpr/models/</code>) for compatible ONNX model files and offer them in a selector, rather than requiring a hardcoded path. Clearly document which model formats/architectures are supported.</li>
+<li><strong>CLI backend (realesrgan-ncnn-vulkan)</strong>: clarify in the manual and/or a Preferences tooltip that the models are not bundled with the application — the binary and its <code>models/</code> subfolder must be downloaded and placed together by the user.</li>
+<li>All of the above should respect the local-first principle: no automatic downloads without user consent; remote workflows (ComfyUI) should surface the non-loopback privacy warning already implemented in step 12.</li>
+<li><strong>Smart tagger — see step 16a below for the WD tagger direction.</strong></li>
+</ul>
+</li>
+<li>
+<p><strong>16a.</strong> <em>(Evaluate before implementing)</em> <strong>WaifuDiffusion / SmilingWolf tagger as next-generation local smart tagger.</strong> WaifuDiffusion / SmilingWolf taggers should be evaluated as the likely replacement for the current ResNet-style Fast/Balanced/Best smart tagger. They are local ONNX taggers that output rich tag probabilities and work entirely on-device with no ComfyUI requirement. If testing confirms better practical tag quality, they should replace the current tagger entirely rather than being added alongside it.</p>
+<p><strong>Asset layout.</strong> The drop-in unit is a model bundle (not a bare <code>.onnx</code>), because the label CSV is required to map model outputs to tag names. Expected location: <code>$XDG_DATA_HOME/sharpr/models/tagger/wd/&lt;model-name&gt;/</code> containing:
+- <code>model.onnx</code>
+- <code>selected_tags.csv</code> (or <code>&lt;model-name&gt;.csv</code>) — maps output indices to tag strings
+- <code>&lt;model-name&gt;.sharpr-tagger.json</code> — optional manifest for clean discovery and validation (thresholds, model family, description)</p>
+<p><strong>Discovery and Preferences UI.</strong> Sharpr scans the tagger folder on startup and in Preferences. Preferences shows per-bundle status: ready, missing labels, missing manifest, or failed validation. General and character tag thresholds are advanced settings, not default UI clutter.</p>
+<p><strong>Tagging flow.</strong> Smart tagging runs locally. Suggested tags are shown for review before being applied to Sharpr's tag system — no tags are applied silently. No writing to image file metadata.</p>
+<p><strong>Evaluation criteria (do this before committing to implementation):</strong>
+- Tag quality and false-positive rate on a small local image set, including non-anime/general photos
+- Vocabulary fit: WD taggers use booru-style tags that may need normalization before entering Sharpr's tag system
+- Speed, memory usage, and startup impact (models are typically 100–400 MB)
+- Threshold behaviour: verify that default thresholds do not produce tag spam
+- Compare directly against the current ResNet tagger on the same images</p>
+<p><strong>Risks:</strong>
+- Booru/anime-style vocabulary may not suit general photo libraries without a normalization layer
+- Large model size means cold-start latency and significant disk use
+- Label CSV compatibility must be validated per model version
+- Output tag volume can be noisy without careful threshold tuning</p>
+<p><strong>Hard constraints for this step:</strong> no automatic model downloads; no cloud tagging; no ComfyUI dependency for basic smart tagging; no arbitrary scripting; no writing tags to image file metadata.</p>
+</li>
+<li>
+<p><strong>16b.</strong> <em>(Research before implementing)</em> <strong>Visual similarity grouping in the filmstrip.</strong> Automatically cluster visually similar images together in the filmstrip — grouped by color, shape, or content similarity — to help users find and review related images quickly. This is not burst-shot grouping (Sharpr is not a photography app); the target is general-purpose perceptual similarity across any image library.</p>
+<p><strong>Why this matters.</strong> A flat filmstrip sorted by name or date buries visually related images across the list. A similarity-grouped view would surface clusters (same subject, same color palette, similar composition) and let users review or collect them together without manually searching.</p>
+<p><strong>Research questions (answer before committing to implementation):</strong>
+- <strong>Algorithm options:</strong> dHash (already used for duplicate detection in <code>duplicates/phash.rs</code>) gives coarse perceptual similarity; color histogram comparison is cheap and good for palette clusters; embedding-based similarity (CLIP-style or a lightweight CNN) gives richer semantic grouping but requires a local model. Evaluate which gives useful groupings without excessive false positives.
+- <strong>Complexity and performance:</strong> clustering must run off the main thread and not degrade filmstrip scheduling. How expensive is it on a 1,000+ image folder? Is incremental clustering feasible (cluster what's indexed, add new images as they are scanned)?
+- <strong>UI model:</strong> is this a sort mode (sort filmstrip by similarity clusters), a smart folder (a "Similar Images" view), or a FocusedImageSet triggered by right-clicking one image? Each implies different implementation scope.
+- <strong>Interaction with FocusedImageSet:</strong> a similarity-grouped view must conform to the FocusedImageSet contract (generation token, atomic replace, no bleed from previous view).
+- <strong>Threshold tuning:</strong> what Hamming distance or cosine similarity threshold produces useful clusters without over-merging dissimilar images?</p>
+<p><strong>Risks:</strong>
+- Embedding-based approaches require a local model (~50–400 MB) and inference time; dHash clusters may be too coarse for non-duplicate similarity.
+- Clustering a large library on first open could cause a noticeable delay; needs progressive/background computation.
+- The filmstrip performance invariant applies: any implementation that touches thumbnail scheduling or factory binding paths is a red flag.</p>
+<p><strong>Hard constraints:</strong> clustering runs entirely on-device; no cloud similarity APIs; no writing to image files; no degradation of filmstrip performance.</p>
+</li>
+<li>
+<p><strong>17.</strong> <strong>Code-bloat survey follow-ups (May 2026 Codex audit).</strong> In May 2026, Codex ran a full code-bloat and simplification survey of the tree. All quantified findings were verified against the working tree before adoption. Sub-steps follow Codex's four-stage structure; Stage 1–3 sub-items are independently shippable with their own commits; Stage 4 items are deferred architectural candidates only.</p>
+<h4 id="stage-1-confirmed-dead-code-and-tooling-baseline-low-risk-mostly-mechanical">Stage 1 — Confirmed dead-code and tooling baseline (low risk, mostly mechanical)</h4>
+<p><strong>17a. Remove confirmed unused <code>FilterBar</code>.</strong>
+Delete <code>src/ui/filter_bar.rs</code> and the <code>pub mod filter_bar;</code> line in <code>src/ui/mod.rs</code>. Re-verify with <code>rg FilterBar src/ data/</code> immediately before deletion in case it was wired up in the interim. Verification: <code>cargo build</code>, tag/quality filter smoke test (the real filter UI lives elsewhere).</p>
+<p><strong>17b. Remove unused <code>upscale_banner</code> placeholder.</strong>
+Drop the <code>libadwaita::Banner</code> construction at <code>src/ui/window.rs:2765–2768</code> and the <code>_upscale_banner: &amp;libadwaita::Banner</code> parameter at <code>:4761</code>. Re-verify still unused before removal. Verification: <code>cargo build</code>.</p>
+<p><strong>17c. Restore <code>cargo fmt --check</code>.</strong>
+Run <code>cargo fmt</code> to clear existing formatting drift in <code>filmstrip.rs</code> and <code>window.rs</code>. Land as its own whitespace-only commit. Verification: <code>cargo fmt --check</code> clean.</p>
+<p><strong>17d. Fix clippy <code>too_many_arguments</code> in <code>show_rename_collection_dialog</code>.</strong>
+Introduce a <code>RenameCollectionDialogContext</code> struct (or equivalent named bag) at <code>src/ui/collection_dialogs.rs:236</code> to collapse the 8 args below the threshold. Behaviour-preserving. Verification: <code>cargo clippy --all-targets --all-features -- -D warnings</code> clean; rename-collection dialog still functional.</p>
+<p><strong>17e. Remove unused ops progress/dismissal stubs.</strong>
+Delete <code>OpEvent::Dismissed</code> (<code>src/ops/queue.rs:23</code>) and the match arm in <code>src/ui/window.rs:3070</code>. Delete production <code>OpHandle::progress</code> (keep the test reference only if a test still requires it, otherwise delete the test too). Delete the empty <code>OpsIndicator::update_op</code> body and the call at <code>src/ui/window.rs:3059</code>. The ops indicator stays binary active/inactive, matching current behaviour. Verification: <code>cargo build</code>, thumbnail/duplicate scan still shows activity in the indicator.</p>
+<p><strong>17f. Resolve stale settings — <code>comfyui-enabled</code> and <code>show-upscale-ui</code>.</strong>
+Two distinct decisions, bundled because they share the same dead-as-shipped diagnosis:
+- <strong><code>comfyui-enabled</code> — wire up.</strong> The Preferences toggle persists the value but no consumer reads it. Make <code>settings.comfyui_enabled == false</code> actually hide ComfyUI from the upscale-backend selectors in Tasks and Preferences, and short-circuit <code>ComfyUiBackend</code> selection so a stale persisted backend choice falls back to a safe default (CLI or ONNX). Pairs with the existing non-loopback warning (step 12) to form a coherent "ComfyUI is opt-in and labelled" story. Verification: toggle off → ComfyUI vanishes from backend dropdowns; toggle on → reappears; no panics on a previously-saved ComfyUI-active library.
+- <strong><code>show-upscale-ui</code> — remove.</strong> No reader, no clear feature intent (upscale UI is currently always visible). Remove the Rust field, getter, setter, and load/save round-trip from <code>src/config/settings.rs</code>. The schema key in <code>data/io.github.hebbihebb.Sharpr.gschema.xml:99</code> stays (removing schema keys requires an explicit migration policy) but is left undocumented and unused. Verification: <code>cargo build</code>, <code>cargo nextest run</code> (settings tests at <code>settings.rs:943/975/1032/1091</code> reference this key and must be updated).</p>
+<h4 id="stage-2-extract-small-behaviour-preserving-helpers-low-medium-risk">Stage 2 — Extract small, behaviour-preserving helpers (low-medium risk)</h4>
+<p><strong>17g. Shared collection/tag colour presentation helpers.</strong>
+The same <code>fallback_collection_color</code>, <code>root_collection_id</code>, and <code>collection_tag_color_map</code> patterns are duplicated across <code>ui/filmstrip.rs</code>, <code>ui/viewer.rs</code>, <code>ui/tag_browser.rs</code>, and <code>ui/sidebar.rs</code>. Extract to a single <code>src/ui/collection_presentation.rs</code> module. Keep widget-specific CSS class prefixes local. Verification: tags page, sidebar collections, viewer chips, filmstrip pills all still render with correct colours.</p>
+<p><strong>17h. Extract small repeated GAction/action-wiring helpers where simple.</strong>
+The same <code>SimpleAction::new</code> → <code>connect_activate</code> → weak-widget upgrade → emit-callback shape repeats in <code>filmstrip.rs:1020</code>, <code>sidebar.rs:742</code>, <code>tag_browser.rs:485</code>, and <code>window.rs:4755</code>. Add a small <code>add_simple_action</code> helper, local to each module or shared if the signature converges. <strong>Do not generalise stateful actions.</strong> Verification: filmstrip/sidebar/tag-browser context menu actions still fire.</p>
+<p><strong>17i. Extract file-operation selection-restore and toast helpers in <code>window.rs</code>.</strong>
+Trash / move / rename in <code>src/ui/window.rs:4120–4405</code> repeat the same path-removal + count/index recompute + selection restore + filmstrip refresh + toast block. Extract <code>restore_selection_after_removed_paths</code> plus a small pluralized-toast helper. Behaviour-preserving. Verification: copy / move / rename / duplicate / trash on single and multi-select; non-destructive invariant intact (originals only change for explicit move/rename/trash).</p>
+<p><strong>17j. Extract small Tasks-page helpers without splitting the file.</strong>
+Inside <code>src/ui/tasks_page.rs</code> (3,551 lines — do <strong>not</strong> split): extract the exclusive-toggle group helper (<code>:671–733</code>, <code>:2780–2860</code>), the action-chip builder, and route the row thumbnail loader at <code>:3439</code> through the shared <code>thumbnails/worker.rs</code> decode path so PNG/JPEG/WebP/JXL row thumbnails benefit from the same cache as the filmstrip. Verification: queue add/start/pause/remove, backend chip changes, history requeue, JXL row thumbnails.</p>
+<h4 id="stage-3-continue-uimenudialog-unification-medium-risk-scoped">Stage 3 — Continue UI/menu/dialog unification (medium risk, scoped)</h4>
+<p><strong>17k. Continue the GMenu+GAction unification already underway.</strong>
+Steps 14b (filmstrip) and 14c (collections) migrated two surfaces. Step 14d-iv owns the remaining legacy popovers (library switcher, folder context menu, sort menu); step 14d-i/ii owns the Preferences row migration and dialog Cancel-button audit. Cross-reference those steps from here rather than re-listing. <strong>Hard line:</strong> do not start a broad "action bus" refactor replacing all <code>connect_.*_requested</code> callbacks with GAction — Codex section 6 and step 14d-iv's "Not recommended" note both record this decision.</p>
+<p><strong>17l. Logging hygiene.</strong>
+Replace production <code>eprintln!</code>/<code>println!</code> paths in <code>src/tags/smart.rs</code> and <code>src/ui/window.rs</code> with existing <code>bench_event!</code> / <code>bench_warn!</code> / <code>bench_error!</code> macros and/or <code>AdwToast</code>s, per the Structured Logging policy in this plan. Targeted replacement only — do not sweep test code or benches. Verification: smart tagger model failure path surfaces through the proper channel.</p>
+<h4 id="stage-4-deferred-architectural-candidates-record-only-do-not-schedule">Stage 4 — Deferred architectural candidates (record only, do not schedule)</h4>
+<p>These follow the same "extract on demand" policy as <code>window.rs</code> (step 15). No pre-emptive splits.</p>
+<p><strong>17m. Deferred — <code>library_index/mod.rs</code> split.</strong>
+Possible future shape: <code>images</code>, <code>collections</code>, <code>pipelines</code>, <code>schema/migrations</code> submodules behind the existing <code>LibraryIndex</code> façade. Guardrails when eventually done as a side effect of feature work: preserve the public façade; do not change SQL behaviour or schema semantics during a cleanup-only pass; do not split migrations unless migration tests already protect the change; extract one domain at a time paired with feature work that touches that domain (collections with collection/tag work, pipelines with Tasks queue work, schema with migration-touching changes, image indexing with folder/indexing work).</p>
+<p><strong>17n. Deferred — Tasks queue runner controller.</strong>
+<code>tasks_page.rs</code> (3,551 lines) is the next-largest split candidate after <code>window.rs</code>. Extract a <code>pipeline_runner</code> controller only when a Tasks-touching feature (e.g. step 14e bug-2 flicker fix or step 14f batch-edit) makes the in-place change uncomfortable. Until then use Stage-2 helpers in 17j.</p>
+<p><strong>17o. Deferred — metadata hydration helpers.</strong>
+<code>start_metadata_indexer</code>, <code>start_raw_dimension_hydrator</code>, and <code>load_virtual_async</code> share a "background hydration → apply on main thread → respect generation" shape. Do not unify pre-emptively — the generation-counter discipline is fragile and explicit code is easier to audit. Revisit only if a fourth hydration source appears.</p>
+<p><strong>17p. Deferred — remaining <code>window.rs</code> decomposition.</strong>
+Step 15 already owns the holistic split. Targeted extractions (17h, 17i) are the right shape until step 15's trigger condition fires.</p>
+<h4 id="step-17-do-not-touch-under-cleanup">Step 17 — do-not-touch under "cleanup"</h4>
+<p>Carried over from Codex section 10:
+- <strong>Filmstrip / thumbnail scheduling</strong> — two-queue dispatch, pending-set dedupe, generation counters. The performance invariant in the Focused Image Sets section applies here too.
+- <strong>Original-image safety</strong> — do not change copy/move/rename/trash/export/upscale semantics under cleanup.
+- <strong>Viewer <code>glycin::Loader</code></strong> full-image path — do not replace casually.
+- <strong>ONNX <code>OnnxModelInfo</code> fields</strong> (<code>download_url</code>, <code>download_size_mb</code>, <code>display_name</code>) — appear unused but their fate belongs to step 16 (model discoverability). Do not delete during a cleanup pass.
+- <strong>Disabled-folder filter consistency</strong> across folder open / virtual views / tags / metadata / duplicates / quality / collections.
+- <strong>Collection ↔ tag coupling</strong> — cleanup can desync <code>LibraryIndex</code> collections and <code>TagDatabase</code>; touch with care.
+- <strong>Parallel dependencies</strong> — <code>tract-onnx</code> vs <code>ort</code>, <code>jpegxl-rs</code> vs <code>jpegxl-sys</code>, <code>webp</code> vs <code>libwebp-sys</code> are intentionally distinct paths, not duplication.
+- <strong>GTK signal/action names</strong>, GActions, shortcuts, menus, and resource-loaded help overlay may be indirectly referenced — grep before renaming.</p>
+</li>
+</ul>
+<h2 id="development-history">Development History</h2>
+<p>A plain-language log of Sharpr's development based on the git history.</p>
+<h3 id="april-4-2026-initial-app-1-commit-91840">April 4, 2026 — Initial App (1 commit, +9,184/−0)</h3>
+<p>Sharpr started as a complete GNOME image viewer prototype with a library sidebar, filmstrip, main image viewer, folder browsing, thumbnail loading, and a basic metadata view.</p>
+<h3 id="april-5-2026-core-viewer-features-26-commits-4274599">April 5, 2026 — Core Viewer Features (26 commits, +4,274/−599)</h3>
+<p>Application settings moved to GSettings. App ID finalized as <code>io.github.hebbihebb.Sharpr</code>. Duplicate detection added. Viewer controls added for fit-to-window, 1:1 pixel view, fullscreen, rotate, flip, and move-to-trash (rotate/flip editing was later removed as out of scope). Upscaling with Real-ESRGAN added with a before/after comparison slider. Adjacent images preloaded in the background. Splash screen, app icon, hamburger menu, and About dialog added. Thumbnail loading gained a disk cache. Flatpak packaging added.</p>
+<h3 id="april-6-2026-thumbnail-and-loading-improvements-9-commits-519246">April 6, 2026 — Thumbnail and Loading Improvements (9 commits, +519/−246)</h3>
+<p>Filmstrip separates visible thumbnails from preload thumbnails. Duplicate thumbnail requests joined. Small memory cache added. Embedded camera previews shown before the full image finishes loading. Color corruption on rotated saves fixed. Codebase formatted consistently.</p>
+<h3 id="april-7-2026-stability-and-basic-workflow-polish-3-commits-1147289">April 7, 2026 — Stability and Basic Workflow Polish (3 commits, +1,147/−289)</h3>
+<p>Startup crash from overlapping internal reads fixed. App remembers last folder. Thumbnail position badges and right-click menus added. Tag search added.</p>
+<h3 id="april-8-2026-system-integration-tags-preferences-and-quality-views-23-commits-4075650">April 8, 2026 — System Integration, Tags, Preferences, and Quality Views (23 commits, +4,075/−650)</h3>
+<p>Standard Linux thumbnail cache adopted. Search improved to match filenames and tags without Enter. Tag editor popover and keyboard shortcuts window added. Preferences added. Image quality scoring added (resolution, size, format). Smart folders for quality bands (Excellent, Good, Needs Upscale). Metadata overlay redesigned as compact viewer chip.</p>
+<h3 id="april-11-2026-background-work-and-large-folder-performance-11-commits-19151027">April 11, 2026 — Background Work and Large Folder Performance (11 commits, +1,915/−1,027)</h3>
+<p>GNOME Files-style background operations indicator added. Folder scanning moved off the main thread — large folders now load without freezing. Duplicate scan results report through the shared operations indicator. Metadata reading serialized for safety. Temporary upscale files cleaned up after failures. App icon registered correctly.</p>
+<h3 id="april-12-2026-repository-cleanup-5-commits-184403">April 12, 2026 — Repository Cleanup (5 commits, +18/−4,403)</h3>
+<p>README updated. Internal assistant settings, prototype files, and development-only documents removed from version control.</p>
+<h3 id="april-13-2026-layout-manual-and-local-tag-suggestions-20-commits-3446344">April 13, 2026 — Layout, Manual, and Local Tag Suggestions (20 commits, +3,446/−344)</h3>
+<p>Main layout rebuilt around an overlay-style Library panel (collapsible, pinnable, F9 toggle). Automatic tags limited to file format and resolution. Local AI tag suggestions added (on-device ONNX, ResNet-18). Built-in manual added.</p>
+<h3 id="april-18-2026-performance-sorting-zoom-and-session-polish-9-commits-637232">April 18, 2026 — Performance, Sorting, Zoom, and Session Polish (9 commits, +637/−232)</h3>
+<p>Memory and loading improved across library, thumbnail worker, viewer, and preferences. Compare-mode zoom corrected. Window size saved and restored. Filmstrip gained sort controls (name, modified date, file type). Zoom label added on screen.</p>
+<h3 id="april-21-2026-persistent-library-index-and-collections-11-commits-5173649">April 21, 2026 — Persistent Library Index and Collections (11 commits, +5,173/−649)</h3>
+<p>Persistent SQLite library index completed. Quality scores and duplicate fingerprints stored. User collections added with multi-select and drag-and-drop. A crash when opening a collection was fixed. Smart tagger models made selectable.</p>
+<h3 id="april-22-2026-upscale-backends-16-commits-2983506">April 22, 2026 — Upscale Backends (16 commits, +2,983/−506)</h3>
+<p>ONNX upscaling backend added (Swin2SR, with tiling for large images). ComfyUI backend added. Disabled-folder handling added. Filmstrip context menu unified.</p>
+<h3 id="april-23-2026-ux-review-2-commits-14442">April 23, 2026 — UX Review (2 commits, +144/−42)</h3>
+<p>UI/UX review added to capture main polish issues grounded in the actual implementation.</p>
+<h3 id="april-24-2026-preview-pipeline-and-architecture-work-6-commits-1500330">April 24, 2026 — Preview Pipeline and Architecture Work (6 commits, +1,500/−330)</h3>
+<p>Architecture audit revised into a concrete task list. Image preview decoding pulled into a shared pipeline with a bounded worker pool. Preview and prefetch caches made byte-budgeted.</p>
+<h3 id="april-25-2026-export-metadata-and-image-pipeline-cleanup-15-commits-1171235">April 25, 2026 — Export, Metadata, and Image Pipeline Cleanup (15 commits, +1,171/−235)</h3>
+<p>Minimal export and resize backend added. Export UI added for current image and selected images. Viewer metadata loading made stale-aware. AI upscaling hidden behind a preference toggle.</p>
+<h3 id="april-27-2026-scope-filters-and-tag-backed-collections-20-commits-37402345">April 27, 2026 — Scope, Filters, and Tag-Backed Collections (20 commits, +3,740/−2,345)</h3>
+<p><code>DesignDocs</code> renamed to <code>docs</code>. <code>ViewScope</code> enum made explicit. Collections became tag-backed and hierarchical. Tags and searches can be promoted into collections.</p>
+<h3 id="april-28-2026-collection-and-tag-visual-polish-14-commits-2923658">April 28, 2026 — Collection and Tag Visual Polish (14 commits, +2,923/−658)</h3>
+<p>Collections gained color and icon metadata. Sidebar icons styled with clearer visual distinction. Collection badges added to filmstrip thumbnails. Visual tag explorer expanded.</p>
+<h3 id="april-29-2026-tags-quality-multi-library-and-save-flow-31-commits-53781751">April 29, 2026 — Tags, Quality, Multi-Library, and Save Flow (31 commits, +5,378/−1,751)</h3>
+<p>Viewer tag popover redesigned. Quality sorting recalibrated. Static OSD and collection CSS moved to bundled resources. Sidebar gained multi-library support. Convert save destinations simplified.</p>
+<h3 id="april-30-2026-export-upscale-and-format-work-6-commits-2996552">April 30, 2026 — Export, Upscale, and Format Work (6 commits, +2,996/−552)</h3>
+<p>Export, upscale, and filmstrip selection flows improved. SeedVR2 added as a ComfyUI workflow mode. ComfyUI output finishes through Sharpr's own encoder. JPEG XL output and upscale compression settings added.</p>
+<h3 id="may-1-2026-loading-feedback-and-indexing-speed-21-commits-1757449">May 1, 2026 — Loading Feedback and Indexing Speed (21 commits, +1,757/−449)</h3>
+<p>Thumbnail placeholders for large images added. Structured run logs added. Filmstrip thumbnail scheduling throttled. Database operations optimized for faster indexing.</p>
+<h3 id="may-2-2026-glycin-and-jxl-loading-experiments-14-commits-16682463">May 2, 2026 — Glycin and JXL Loading Experiments (14 commits, +1,668/−2,463)</h3>
+<p>JXL preview path optimized. Image preview stack refactored around Glycin v3. Viewer fit behavior fixed for cold starts and small images.</p>
+<h3 id="may-3-2026-performance-presentation-and-collections-17-commits-59821926">May 3, 2026 — Performance, Presentation, and Collections (17 commits, +5,982/−1,926)</h3>
+<p>Folder switching majorly optimized with chunked loading (eliminates UI hangs on large folders). Presentation mode added. Collections gained export and import. Flatpak updated to latest GNOME runtime with tightened permissions.</p>
+<h3 id="may-4-2026-tasks-page-upscale-queue-and-compare-mode-14-commits-2438210">May 4, 2026 — Tasks Page, Upscale Queue, and Compare Mode (14 commits, +2,438/−210)</h3>
+<p>Operations indicator moved to header bar. Tasks page implemented with persistent history and batch upscale queue. Compare page added with virtual filmstrip for side-by-side evaluation.</p>
+<h3 id="may-5-2026-advanced-queue-and-compare-polish-22-commits-46254823">May 5, 2026 — Advanced Queue and Compare Polish (22 commits, +4,625/−4,823)</h3>
+<p>Tasks page expanded into multi-step generation queue. ComfyUI wired into queue runner. Older viewer-based upscale and compare flow retired. Background activity split from generated task history.</p>
+<h3 id="may-7-2026-tasks-page-regression-fixes-2-commits-12651000">May 7, 2026 — Tasks Page Regression Fixes (2 commits, +1,265/−1,000)</h3>
+<p>Tasks page regression-fix pass after queue changes. Queue rows gained drag-and-drop reordering.</p>
+<h3 id="may-8-2026-metadata-icons-and-splash-removal-6-commits-331159">May 8, 2026 — Metadata, Icons, and Splash Removal (6 commits, +331/−159)</h3>
+<p>Compatibility with newer <code>gexiv2</code>/<code>rexiv2</code> bindings fixed. ComfyUI error reporting improved. App icon updated. Splash screen removed.</p>
+<h3 id="may-9-2026-product-cleanup-exports-and-compare-work-29-commits-34492397">May 9, 2026 — Product Cleanup, Exports, and Compare Work (29 commits, +3,449/−2,397)</h3>
+<p>Old rotate/flip editing code and ONNX model downloader removed. Quality filters simplified to resolution tiers. Manual QA checklist and thumbnail scheduling regression tests added. Compare mode split further out of the main window with OSD chip. Collection dialogs extracted.</p>
+<h3 id="may-10-2026-rename-empty-states-and-focus-guards-14-commits-8751698">May 10, 2026 — Rename, Empty States, and Focus Guards (14 commits, +875/−1,698)</h3>
+<p>Display name restored to Sharpr throughout. Task rows now update in place. Focused image set generation guards added. ComfyUI non-loopback warning added. Empty states added (main window, filmstrip, task queue). Shortcut documentation cleaned up. SQLite migration and reconciliation tests added.</p>
+<h3 id="may-11-2026-context-menu-redesigns-and-manual-updates-2-commits-868262-plan-updates">May 11, 2026 — Context Menu Redesigns and Manual Updates (2 commits, +868/−262 + plan updates)</h3>
+<p>Filmstrip right-click menu rebuilt with <code>GMenu</code>/<code>GAction</code>, adding file actions (reveal, copy path, open externally, trash). Collection browser and sidebar collection menus migrated to the same pattern. Accessible names added to icon-only controls. GNOME dev manual cross-check run; four new polish sub-steps added to the plan (CSS theme-awareness, writing-style audit, minimum window size documentation, <code>rust-version</code> pin).</p>
+<h3 id="may-19-2026-gnome-hig-ui-polish-pass-2-commits-423489">May 19, 2026 — GNOME HIG UI Polish Pass (2 commits, +423/−489)</h3>
+<p>Preferences upscale rows migrated to <code>AdwEntryRow</code> and <code>AdwSpinRow</code>. Cancel buttons removed from non-destructive dialogs (collection create/rename, library create/edit). Compare page OSD chip rebuilt: collapsed state is now an icon-only flat button (<code>info-outline-symbolic</code>), expanded state is a <code>GtkPopover</code>. Folder context menu and filmstrip sort menu migrated to <code>GtkPopoverMenu + GMenu + GAction</code>. Minimum window size enforced at 1024×600. "My " prefix strings removed from UI labels. Rust toolchain pinned to stable via <code>rust-toolchain.toml</code>.</p>
+  </main>
+</body>
+</html>
