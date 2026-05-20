@@ -416,7 +416,7 @@ fn present_library_editor(
     );
     dialog.add_response("save", if existing.is_some() { "Save" } else { "Create" });
     dialog.set_default_response(Some("save"));
-    dialog.set_close_response("save");
+    dialog.set_close_response("cancel");
     dialog.set_response_appearance("save", libadwaita::ResponseAppearance::Suggested);
 
     let name_entry = gtk4::Entry::new();
