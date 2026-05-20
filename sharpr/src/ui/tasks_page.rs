@@ -1565,7 +1565,7 @@ impl TasksPage {
                 .borrow()
                 .get(&pipeline.id)
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or_else(|| self.read_config_from_widgets());
             if config.upscale_on {
                 let json = serde_json::to_string(&config.upscale).unwrap_or_default();
                 let _ = idx.append_pipeline_step(pipeline.id, StepType::Upscale, &json);
@@ -1645,6 +1645,13 @@ impl TasksPage {
                 };
                 onnx_dd.set_selected(idx);
             }
+            if let Some(row) = imp.comfyui_workflow_row.borrow().as_ref() {
+                let idx = match st.settings.comfyui_workflow.as_str() {
+                    "seedvr2" => 1,
+                    _ => 0,
+                };
+                row.set_selected(idx);
+            }
             if let Some(scale_dd) = imp.scale_dropdown.borrow().as_ref() {
                 scale_dd.set_selected(0);
             }
@@ -1708,6 +1715,19 @@ impl TasksPage {
                 };
                 if let Ok(mut st) = state_c.try_borrow_mut() {
                     st.settings.set_onnx_upscale_model(key);
+                }
+            });
+        }
+
+        if let Some(row) = imp.comfyui_workflow_row.borrow().as_ref() {
+            let state_c = state.clone();
+            row.connect_selected_item_notify(move |row| {
+                let key = match row.selected() {
+                    1 => "seedvr2",
+                    _ => "esrgan",
+                };
+                if let Ok(mut st) = state_c.try_borrow_mut() {
+                    st.settings.set_comfyui_workflow(key);
                 }
             });
         }
@@ -2005,6 +2025,11 @@ impl TasksPage {
             self.emit_user_activity(running_count > 0);
 
             if let Some(lbl) = imp.queue_count_label.borrow().as_ref() {
+                let pause_suffix = if imp.paused.get() && running_count > 0 {
+                    " — pausing after this job"
+                } else {
+                    ""
+                };
                 let status = match (running_count, queued_count) {
                     (0, 0) => "No user tasks".to_string(),
                     (0, queued) => {
@@ -2013,9 +2038,11 @@ impl TasksPage {
                     }
                     (running, 0) => {
                         let noun = if running == 1 { "task" } else { "tasks" };
-                        format!("{running} running {noun}")
+                        format!("{running} running {noun}{pause_suffix}")
                     }
-                    (running, queued) => format!("{running} running • {queued} queued"),
+                    (running, queued) => {
+                        format!("{running} running • {queued} queued{pause_suffix}")
+                    }
                 };
                 lbl.set_visible(true);
                 lbl.set_label(&status);
