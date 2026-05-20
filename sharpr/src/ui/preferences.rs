@@ -46,7 +46,7 @@ pub fn build_preferences_window(
 
     let add_library_row = libadwaita::ActionRow::new();
     add_library_row.set_title("Add Library");
-    add_library_row.set_subtitle("Create another library root and folder mode.");
+    add_library_row.set_subtitle("Create another library root and folder mode");
     let add_button = gtk4::Button::with_label("Create…");
     add_library_row.add_suffix(&add_button);
     add_library_row.set_activatable_widget(Some(&add_button));
@@ -286,7 +286,7 @@ pub fn build_preferences_window(
             glib::MainContext::default().spawn_local(async move {
                 if let Ok(result) = rx.recv().await {
                     let body = match result {
-                        Ok(_) => "ComfyUI is reachable!".to_string(),
+                        Ok(_) => "ComfyUI is reachable".to_string(),
                         Err(e) => e,
                     };
 

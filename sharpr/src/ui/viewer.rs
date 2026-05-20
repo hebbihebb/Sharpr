@@ -304,7 +304,7 @@ mod imp {
             popover_vbox.set_width_request(260);
 
             let tag_entry = gtk4::SearchEntry::new();
-            tag_entry.set_placeholder_text(Some("Search tags..."));
+            tag_entry.set_placeholder_text(Some("Search tags…"));
             tag_entry.set_hexpand(true);
             popover_vbox.append(&tag_entry);
 

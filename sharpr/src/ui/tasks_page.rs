@@ -506,7 +506,7 @@ mod imp {
 
             let scale_row = libadwaita::ComboRow::new();
             scale_row.set_title("Scale");
-            scale_row.set_subtitle("Uses AI to determine the best output size.");
+            scale_row.set_subtitle("Uses AI to determine the best output size");
             scale_row.set_tooltip_text(Some(
                 "Output resolution multiplier. Smart scale uses AI to pick the best size.",
             ));
@@ -606,7 +606,7 @@ mod imp {
             let export_quality_row = libadwaita::ActionRow::new();
             export_quality_row.set_title("Quality");
             export_quality_row
-                .set_subtitle("Handles format conversion and compression in one step.");
+                .set_subtitle("Handles format conversion and compression in one step");
             let export_quality_adj = gtk4::Adjustment::new(90.0, 1.0, 100.0, 1.0, 10.0, 0.0);
             let export_quality_spin = gtk4::SpinButton::new(Some(&export_quality_adj), 1.0, 0);
             export_quality_spin.set_valign(gtk4::Align::Center);
