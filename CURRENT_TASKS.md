@@ -7,12 +7,11 @@ This file is the first handoff point after `AGENTS.md`. Keep it short and curren
 - Local `main` is ahead of `origin/main` with recent Tasks queue and planning commits.
 - Last completed feature work: Tasks queue batch selection and bulk edit.
 - Last completed planning work: reset project documentation to a tracked Codex-first Markdown base.
-- Local Codex skills were updated to follow the new docs, including a new Sharpr agenda-loop skill.
+- Local Codex skills were updated to follow the new docs, including agenda, handoff, TDD-fix, and plan-sync workflows.
 
 ## Next Recommended Work
 
-1. Commit this task-state update if it is part of the skill-sync task.
-2. Start roadmap step 18a: migrate tags and collections toward id-backed keys before image-family promotion work.
+1. Start roadmap step 18a: migrate tags and collections toward id-backed keys before image-family promotion work.
 
 ## Active Roadmap Focus
 
