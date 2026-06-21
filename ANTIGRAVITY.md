@@ -1,4 +1,4 @@
-# Gemini Agent Entry Point
+# Antigravity Agent Entry Point
 
 Sharpr is Codex-orchestrated now. Shared project rules, workflow, architecture pointers, and current task state live in:
 
@@ -8,4 +8,4 @@ Sharpr is Codex-orchestrated now. Shared project rules, workflow, architecture p
 - `docs/reference/architecture.md`
 - `docs/reference/ui-gtk.md`
 
-Do not duplicate or override those files here. If Gemini-specific behavior is needed, keep it limited to tool mechanics and never contradict `AGENTS.md`.
+Do not duplicate or override those files here. If Antigravity-specific behavior is needed, keep it limited to tool mechanics and never contradict `AGENTS.md`.
