@@ -1,592 +1,405 @@
-#![allow(dead_code)]
-//! Export pipeline for writing user-visible copies without overwriting sources.
-//! `export_image` decodes the source with EXIF orientation applied, optionally
-//! downscales with Lanczos3, then writes into the destination directory.
-//! Supported output formats are JPEG, JPEG XL, PNG, and WebP.
-//! `unique_output_path` guarantees that exports never overwrite an existing
-//! file in the destination folder.
-
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use image::imageops::FilterType;
 
-use crate::metadata::orientation::apply_exif_orientation;
-
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
+use crate::metadata::orientation::{apply_exif_orientation, exif_orientation};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportFormat {
+pub enum ResizeFormat {
     Jpeg,
-    Jxl,
     Png,
     Webp,
+    Jxl,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputFolderKind {
-    Upscaled,
-    Export,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConvertDestinationMode {
-    Export,
-    Replace,
-}
-
-impl OutputFolderKind {
-    pub fn folder_name(self) -> &'static str {
+impl ResizeFormat {
+    pub fn extension(self) -> &'static str {
         match self {
-            Self::Upscaled => "Upscaled",
-            Self::Export => "Export",
+            Self::Jpeg => "jpg",
+            Self::Png => "png",
+            Self::Webp => "webp",
+            Self::Jxl => "jxl",
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ExportConfig {
-    pub destination: PathBuf,
-    /// Longest edge of the output image; `None` means no resize.
-    pub max_edge: Option<u32>,
-    pub format: ExportFormat,
-    /// Lossy output quality, 1-100. Used for JPEG and WebP; ignored for PNG.
+pub struct ResizeConfig {
+    pub source: PathBuf,
+    pub destination_dir: PathBuf,
+    pub target_width: u32,
+    pub target_height: u32,
+    pub format: ResizeFormat,
     pub quality: u8,
-    pub filename_suffix: Option<String>,
 }
 
-#[derive(Debug)]
-pub struct ExportResult {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResizeResult {
     pub output: PathBuf,
+    pub width: u32,
+    pub height: u32,
 }
 
-#[derive(Debug)]
-pub enum ExportError {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResizeError {
     Decode(String),
+    InvalidDimensions,
     Encode(String),
     Io(String),
 }
 
-impl std::fmt::Display for ExportError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for ResizeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Decode(s) => write!(f, "decode error: {s}"),
-            Self::Encode(s) => write!(f, "encode error: {s}"),
-            Self::Io(s) => write!(f, "I/O error: {s}"),
+            Self::Decode(message) => write!(formatter, "decode failed: {message}"),
+            Self::InvalidDimensions => {
+                write!(formatter, "width and height must be greater than zero")
+            }
+            Self::Encode(message) => write!(formatter, "encoding failed: {message}"),
+            Self::Io(message) => write!(formatter, "file operation failed: {message}"),
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
+impl std::error::Error for ResizeError {}
 
-/// Decode `source`, resize when needed, and write to `config.destination`.
-///
-/// Generates a unique output file name so existing files are never overwritten.
-pub fn export_image(source: &Path, config: &ExportConfig) -> Result<ExportResult, ExportError> {
-    let started = Instant::now();
-    crate::bench_event!(
-        "export.image.start",
-        serde_json::json!({
-            "source": source.display().to_string(),
-            "destination": config.destination.display().to_string(),
-            "format": format_extension(config.format),
-            "max_edge": config.max_edge,
-            "quality": config.quality,
-        }),
-    );
-
-    let decode_started = Instant::now();
-    let img = { apply_exif_orientation(decode_source_image(source)?, source) };
-    let decode_ms = crate::bench::duration_ms(decode_started);
-
-    let resize_started = Instant::now();
-    let img = resize_if_needed(img, config.max_edge);
-    let resize_ms = crate::bench::duration_ms(resize_started);
-
-    let output = match config.filename_suffix.as_deref() {
-        Some(suffix) => unique_output_path_with_suffix(
-            &config.destination,
-            source,
-            suffix,
-            format_extension(config.format),
-        ),
-        None => unique_output_path(&config.destination, source, config.format),
-    };
-
-    let save_started = Instant::now();
-    save_image(&img, &output, config.format, config.quality)?;
-    crate::bench_event!(
-        "export.image.done",
-        serde_json::json!({
-            "source": source.display().to_string(),
-            "output": output.display().to_string(),
-            "decode_ms": decode_ms,
-            "resize_ms": resize_ms,
-            "save_ms": crate::bench::duration_ms(save_started),
-            "duration_ms": crate::bench::duration_ms(started),
-        }),
-    );
-
-    Ok(ExportResult { output })
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Return a path in `dest_dir` that does not yet exist.
-///
-/// Tries `<stem>.<ext>`, then `<stem>-1.<ext>`, `<stem>-2.<ext>`, … up to 999.
-pub(crate) fn unique_output_path(dest_dir: &Path, source: &Path, format: ExportFormat) -> PathBuf {
-    unique_output_path_for_extension(dest_dir, source, format_extension(format))
-}
-
-/// Return the preferred root for user-facing exported images.
-pub fn pictures_root_dir() -> PathBuf {
+pub fn default_resize_output_dir() -> PathBuf {
     dirs::picture_dir()
         .or_else(|| dirs::home_dir().map(|home| home.join("Pictures")))
         .unwrap_or_else(|| PathBuf::from("./Pictures"))
+        .join("Resized")
 }
 
-/// Return the built-in output folder for the given conversion kind.
-pub fn default_output_dir(kind: OutputFolderKind) -> PathBuf {
-    pictures_root_dir().join(kind.folder_name())
+pub fn oriented_source_dimensions(source: &Path) -> Result<(u32, u32), ResizeError> {
+    let dimensions = if crate::jxl::is_jxl_path(source) {
+        let image = crate::jxl::decode_path(source).map_err(ResizeError::Decode)?;
+        (image.width(), image.height())
+    } else {
+        image::image_dimensions(source).map_err(|error| ResizeError::Decode(error.to_string()))?
+    };
+    Ok(oriented_dimensions(dimensions, exif_orientation(source)))
 }
 
-/// Resolve a configured output folder or fall back to the built-in one.
-pub fn resolve_output_dir(custom: Option<&PathBuf>, kind: OutputFolderKind) -> PathBuf {
-    custom.cloned().unwrap_or_else(|| default_output_dir(kind))
-}
-
-/// Build the suffix used for downscale/export output names.
-pub fn export_filename_suffix(max_edge: Option<u32>, format: ExportFormat) -> String {
-    let size = max_edge
-        .map(|edge| format!("{edge}px"))
-        .unwrap_or_else(|| "original".to_string());
-    format!("export-{size}-{}", format_extension(format))
-}
-
-/// Return a unique output path in `dest_dir` with an explicit file extension.
-pub fn unique_output_path_for_extension(dest_dir: &Path, source: &Path, ext: &str) -> PathBuf {
-    let stem = source
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
-    unique_output_path_for_stem(dest_dir, &stem, ext)
-}
-
-/// Return a unique output path in `dest_dir` using a human-readable suffix.
-pub fn unique_output_path_with_suffix(
-    dest_dir: &Path,
-    source: &Path,
-    suffix: &str,
-    ext: &str,
-) -> PathBuf {
-    let stem = source
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
-    let stem = format!("{stem}-{}", sanitize_suffix(suffix));
-    unique_output_path_for_stem(dest_dir, &stem, ext)
-}
-
-/// Return the in-place replacement path for `source` using the requested extension.
-pub fn replacement_output_path_for_extension(source: &Path, ext: &str) -> PathBuf {
-    let parent = source
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let stem = source
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
-    path_for_stem_and_ext(&parent, &stem, ext)
-}
-
-fn unique_output_path_for_stem(dest_dir: &Path, stem: &str, ext: &str) -> PathBuf {
-    let first = path_for_stem_and_ext(dest_dir, stem, ext);
-    if !first.exists() {
-        return first;
+pub fn oriented_dimensions((width, height): (u32, u32), orientation: u32) -> (u32, u32) {
+    if matches!(orientation, 5..=8) {
+        (height, width)
+    } else {
+        (width, height)
     }
-    for n in 1..=999u32 {
-        let candidate = path_for_stem_and_ext(dest_dir, &format!("{stem}-{n}"), ext);
+}
+
+pub fn height_for_locked_width(source: (u32, u32), width: u32) -> u32 {
+    scale_dimension(source.1, source.0, width)
+}
+
+pub fn width_for_locked_height(source: (u32, u32), height: u32) -> u32 {
+    scale_dimension(source.0, source.1, height)
+}
+
+fn scale_dimension(other: u32, changed_source: u32, changed_target: u32) -> u32 {
+    if changed_source == 0 {
+        return 1;
+    }
+    ((other as f64 * changed_target as f64 / changed_source as f64).round() as u32).max(1)
+}
+
+pub fn resize_copy(config: &ResizeConfig) -> Result<ResizeResult, ResizeError> {
+    resize_copy_with_encoder(config, |image, path, format, quality| {
+        encode_image(image, path, format, quality)
+    })
+}
+
+fn resize_copy_with_encoder<F>(
+    config: &ResizeConfig,
+    encoder: F,
+) -> Result<ResizeResult, ResizeError>
+where
+    F: FnOnce(&image::DynamicImage, &Path, ResizeFormat, u8) -> Result<(), ResizeError>,
+{
+    if config.target_width == 0 || config.target_height == 0 {
+        return Err(ResizeError::InvalidDimensions);
+    }
+
+    let started = Instant::now();
+    crate::bench_event!(
+        "resize.copy.start",
+        serde_json::json!({
+            "source": config.source.display().to_string(),
+            "destination": config.destination_dir.display().to_string(),
+            "width": config.target_width,
+            "height": config.target_height,
+            "format": config.format.extension(),
+        }),
+    );
+
+    std::fs::create_dir_all(&config.destination_dir).map_err(|error| {
+        ResizeError::Io(format!(
+            "create {}: {error}",
+            config.destination_dir.display()
+        ))
+    })?;
+
+    let source = decode_source(&config.source)?;
+    let source = apply_exif_orientation(source, &config.source);
+    let resized = source.resize_exact(
+        config.target_width,
+        config.target_height,
+        FilterType::Lanczos3,
+    );
+    let output = unique_resize_path(config);
+    let partial = partial_path(&output);
+
+    let result = encoder(
+        &resized,
+        &partial,
+        config.format,
+        config.quality.clamp(1, 100),
+    )
+    .and_then(|()| {
+        std::fs::rename(&partial, &output).map_err(|error| {
+            ResizeError::Io(format!(
+                "move {} to {}: {error}",
+                partial.display(),
+                output.display()
+            ))
+        })
+    });
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&partial);
+        crate::bench_error!(
+            "resize.copy.fail",
+            serde_json::json!({
+                "source": config.source.display().to_string(),
+                "error": error.to_string(),
+            }),
+        );
+        return Err(error);
+    }
+
+    crate::bench_event!(
+        "resize.copy.done",
+        serde_json::json!({
+            "source": config.source.display().to_string(),
+            "output": output.display().to_string(),
+            "duration_ms": crate::bench::duration_ms(started),
+        }),
+    );
+    Ok(ResizeResult {
+        output,
+        width: config.target_width,
+        height: config.target_height,
+    })
+}
+
+fn decode_source(source: &Path) -> Result<image::DynamicImage, ResizeError> {
+    if crate::jxl::is_jxl_path(source) {
+        return crate::jxl::decode_path(source).map_err(ResizeError::Decode);
+    }
+    image::open(source).map_err(|error| ResizeError::Decode(error.to_string()))
+}
+
+fn unique_resize_path(config: &ResizeConfig) -> PathBuf {
+    let stem = config
+        .source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("image");
+    let base = format!(
+        "{stem}-resized-{}x{}",
+        config.target_width, config.target_height
+    );
+    let extension = config.format.extension();
+    for suffix in 0..10_000 {
+        let filename = if suffix == 0 {
+            format!("{base}.{extension}")
+        } else {
+            format!("{base}-{suffix}.{extension}")
+        };
+        let candidate = config.destination_dir.join(filename);
         if !candidate.exists() {
             return candidate;
         }
     }
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    path_for_stem_and_ext(dest_dir, &format!("{stem}-{ts}"), ext)
+    config
+        .destination_dir
+        .join(format!("{base}-{}.{}", std::process::id(), extension))
 }
 
-fn path_for_stem_and_ext(dest_dir: &Path, stem: &str, ext: &str) -> PathBuf {
-    if ext.is_empty() {
-        dest_dir.join(stem)
-    } else {
-        dest_dir.join(format!("{stem}.{ext}"))
-    }
+fn partial_path(output: &Path) -> PathBuf {
+    let stem = output
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("image");
+    let extension = output
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("tmp");
+    output.with_file_name(format!(
+        ".{stem}.partial-{}.{extension}",
+        std::process::id()
+    ))
 }
 
-fn sanitize_suffix(suffix: &str) -> String {
-    let mut out = String::new();
-    let mut last_dash = false;
-    for ch in suffix.chars() {
-        let normalized = match ch {
-            'A'..='Z' => ch.to_ascii_lowercase(),
-            'a'..='z' | '0'..='9' => ch,
-            _ => '-',
-        };
-        if normalized == '-' {
-            if !out.is_empty() && !last_dash {
-                out.push('-');
-            }
-            last_dash = true;
-        } else {
-            out.push(normalized);
-            last_dash = false;
-        }
-    }
-    out.trim_matches('-').to_string()
-}
-
-/// Decode `source`, resize when needed, and write to the explicit `output` path.
-///
-/// Unlike `export_image`, the caller controls the output file name; no
-/// uniqueness suffix is added.
-pub fn export_to_path(
-    source: &Path,
+fn encode_image(
+    image: &image::DynamicImage,
     output: &Path,
-    max_edge: Option<u32>,
-    format: ExportFormat,
+    format: ResizeFormat,
     quality: u8,
-) -> Result<(), ExportError> {
-    let started = Instant::now();
-    crate::bench_event!(
-        "export.to_path.start",
-        serde_json::json!({
-            "source": source.display().to_string(),
-            "output": output.display().to_string(),
-            "format": format_extension(format),
-            "max_edge": max_edge,
-            "quality": quality,
-        }),
-    );
-    let decode_started = Instant::now();
-    let img = { apply_exif_orientation(decode_source_image(source)?, source) };
-    let decode_ms = crate::bench::duration_ms(decode_started);
-    let resize_started = Instant::now();
-    let img = resize_if_needed(img, max_edge);
-    let resize_ms = crate::bench::duration_ms(resize_started);
-    let save_started = Instant::now();
-    save_image(&img, output, format, quality)?;
-    crate::bench_event!(
-        "export.to_path.done",
-        serde_json::json!({
-            "source": source.display().to_string(),
-            "output": output.display().to_string(),
-            "decode_ms": decode_ms,
-            "resize_ms": resize_ms,
-            "save_ms": crate::bench::duration_ms(save_started),
-            "duration_ms": crate::bench::duration_ms(started),
-        }),
-    );
-    Ok(())
-}
-
-/// Downscale `img` so its longest edge is at most `max_edge`. No-op when the
-/// image already fits, or when `max_edge` is `None`.
-pub(crate) fn resize_if_needed(
-    img: image::DynamicImage,
-    max_edge: Option<u32>,
-) -> image::DynamicImage {
-    let Some(limit) = max_edge else {
-        return img;
-    };
-    let long = img.width().max(img.height());
-    if long <= limit {
-        return img;
-    }
-    let (nw, nh) = if img.width() >= img.height() {
-        let nh = (img.height() as f64 * limit as f64 / img.width() as f64).round() as u32;
-        (limit, nh.max(1))
-    } else {
-        let nw = (img.width() as f64 * limit as f64 / img.height() as f64).round() as u32;
-        (nw.max(1), limit)
-    };
-    img.resize_exact(nw, nh, FilterType::Lanczos3)
-}
-
-pub fn format_extension(format: ExportFormat) -> &'static str {
-    match format {
-        ExportFormat::Jpeg => "jpg",
-        ExportFormat::Jxl => "jxl",
-        ExportFormat::Png => "png",
-        ExportFormat::Webp => "webp",
-    }
-}
-
-fn decode_source_image(source: &Path) -> Result<image::DynamicImage, ExportError> {
-    if crate::jxl::is_jxl_path(source) {
-        return crate::jxl::decode_path(source).map_err(ExportError::Decode);
-    }
-
-    let file = std::fs::File::open(source)
-        .map_err(|e| ExportError::Io(format!("open {}: {e}", source.display())))?;
-    let reader = image::ImageReader::new(std::io::BufReader::new(file))
-        .with_guessed_format()
-        .map_err(|e| ExportError::Decode(e.to_string()))?;
-    reader
-        .decode()
-        .map_err(|e| ExportError::Decode(e.to_string()))
-}
-
-fn save_image(
-    img: &image::DynamicImage,
-    output: &Path,
-    format: ExportFormat,
-    quality: u8,
-) -> Result<(), ExportError> {
+) -> Result<(), ResizeError> {
     use image::codecs::jpeg::JpegEncoder;
     use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
     use image::{ExtendedColorType, ImageEncoder};
     use std::io::{BufWriter, Write};
 
     match format {
-        ExportFormat::Jpeg => {
+        ResizeFormat::Jpeg => {
             let file = std::fs::File::create(output)
-                .map_err(|e| ExportError::Io(format!("create {}: {e}", output.display())))?;
-            let writer = BufWriter::new(file);
-            let rgb = img.to_rgb8();
-            JpegEncoder::new_with_quality(writer, quality.clamp(1, 100))
+                .map_err(|error| ResizeError::Io(error.to_string()))?;
+            let rgb = image.to_rgb8();
+            JpegEncoder::new_with_quality(BufWriter::new(file), quality)
                 .write_image(
                     rgb.as_raw(),
                     rgb.width(),
                     rgb.height(),
                     ExtendedColorType::Rgb8,
                 )
-                .map_err(|e| ExportError::Encode(e.to_string()))
+                .map_err(|error| ResizeError::Encode(error.to_string()))
         }
-        ExportFormat::Jxl => match crate::jxl::encode_via_cjxl(img, output, quality, 7) {
-            Ok(()) => Ok(()),
-            Err(err) if err.contains("not found") => {
-                crate::jxl::encode_path(img, output, quality, false, 7).map_err(ExportError::Encode)
-            }
-            Err(err) => Err(ExportError::Encode(err)),
-        },
-        ExportFormat::Png => {
+        ResizeFormat::Png => {
             let file = std::fs::File::create(output)
-                .map_err(|e| ExportError::Io(format!("create {}: {e}", output.display())))?;
-            let writer = BufWriter::new(file);
-            let rgba = img.to_rgba8();
-            PngEncoder::new_with_quality(writer, CompressionType::Default, PngFilter::Adaptive)
-                .write_image(
-                    rgba.as_raw(),
-                    rgba.width(),
-                    rgba.height(),
-                    ExtendedColorType::Rgba8,
-                )
-                .map_err(|e| ExportError::Encode(e.to_string()))
+                .map_err(|error| ResizeError::Io(error.to_string()))?;
+            let rgba = image.to_rgba8();
+            PngEncoder::new_with_quality(
+                BufWriter::new(file),
+                CompressionType::Default,
+                PngFilter::Adaptive,
+            )
+            .write_image(
+                rgba.as_raw(),
+                rgba.width(),
+                rgba.height(),
+                ExtendedColorType::Rgba8,
+            )
+            .map_err(|error| ResizeError::Encode(error.to_string()))
         }
-        ExportFormat::Webp => {
+        ResizeFormat::Webp => {
             let file = std::fs::File::create(output)
-                .map_err(|e| ExportError::Io(format!("create {}: {e}", output.display())))?;
+                .map_err(|error| ResizeError::Io(error.to_string()))?;
             let mut writer = BufWriter::new(file);
-            if img.color().has_alpha() {
-                let rgba = img.to_rgba8();
-                let encoded = webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
-                    .encode(quality.clamp(1, 100) as f32);
-                writer
-                    .write_all(encoded.as_ref())
-                    .map_err(|e| ExportError::Io(format!("write {}: {e}", output.display())))
-            } else {
-                let rgb = img.to_rgb8();
-                let encoded = webp::Encoder::from_rgb(rgb.as_raw(), rgb.width(), rgb.height())
-                    .encode(quality.clamp(1, 100) as f32);
-                writer
-                    .write_all(encoded.as_ref())
-                    .map_err(|e| ExportError::Io(format!("write {}: {e}", output.display())))
-            }
+            let rgba = image.to_rgba8();
+            let encoded = webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
+                .encode(quality as f32);
+            writer
+                .write_all(encoded.as_ref())
+                .map_err(|error| ResizeError::Io(error.to_string()))
+        }
+        ResizeFormat::Jxl => {
+            crate::jxl::encode_path(image, output, quality, false, 7).map_err(ResizeError::Encode)
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("sharpr-export-test-{tag}"));
-        std::fs::create_dir_all(&p).unwrap();
-        p
+    static NEXT_TEST: AtomicU64 = AtomicU64::new(1);
+
+    fn test_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "sharpr-resize-{name}-{}-{}",
+            std::process::id(),
+            NEXT_TEST.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
     }
 
-    #[test]
-    fn unique_path_returns_stem_ext_when_free() {
-        let dir = temp_dir("free");
-        let src = PathBuf::from("/photos/vacation.jpg");
-        let out = unique_output_path(&dir, &src, ExportFormat::Jpeg);
-        assert_eq!(out, dir.join("vacation.jpg"));
-        std::fs::remove_dir_all(dir).unwrap();
+    fn source_image(dir: &Path, dimensions: (u32, u32)) -> PathBuf {
+        let source = dir.join("source.png");
+        image::DynamicImage::new_rgb8(dimensions.0, dimensions.1)
+            .save(&source)
+            .unwrap();
+        source
     }
 
-    #[test]
-    fn unique_path_increments_when_taken() {
-        let dir = temp_dir("taken");
-        let src = PathBuf::from("/photos/shot.jpg");
-        std::fs::write(dir.join("shot.jpg"), b"").unwrap();
-        let out = unique_output_path(&dir, &src, ExportFormat::Jpeg);
-        assert_eq!(out, dir.join("shot-1.jpg"));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn unique_path_uses_format_extension() {
-        let dir = temp_dir("ext");
-        let src = PathBuf::from("/photos/shot.jpg");
-        let out = unique_output_path(&dir, &src, ExportFormat::Png);
-        assert_eq!(out, dir.join("shot.png"));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn unique_path_uses_jxl_extension() {
-        let dir = temp_dir("jxl-ext");
-        let src = PathBuf::from("/photos/shot.jpg");
-        let out = unique_output_path(&dir, &src, ExportFormat::Jxl);
-        assert_eq!(out, dir.join("shot.jxl"));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn unique_path_with_suffix_appends_human_label() {
-        let dir = temp_dir("suffix");
-        let src = PathBuf::from("/photos/shot.jpg");
-        let out = unique_output_path_with_suffix(&dir, &src, "upscaled-comfyui-standard", "png");
-        assert_eq!(out, dir.join("shot-upscaled-comfyui-standard.png"));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn unique_path_with_suffix_still_increments() {
-        let dir = temp_dir("suffix-taken");
-        let src = PathBuf::from("/photos/shot.jpg");
-        std::fs::write(dir.join("shot-export-1920px-jpg.jpg"), b"").unwrap();
-        let out = unique_output_path_with_suffix(&dir, &src, "export-1920px-jpg", "jpg");
-        assert_eq!(out, dir.join("shot-export-1920px-jpg-1.jpg"));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn replacement_output_path_uses_source_folder_and_new_extension() {
-        let src = PathBuf::from("/photos/shot.jpeg");
-        let out = replacement_output_path_for_extension(&src, "jxl");
-        assert_eq!(out, PathBuf::from("/photos/shot.jxl"));
-    }
-
-    #[test]
-    fn export_suffix_includes_size_and_format() {
-        assert_eq!(
-            export_filename_suffix(Some(1920), ExportFormat::Jpeg),
-            "export-1920px-jpg"
-        );
-        assert_eq!(
-            export_filename_suffix(None, ExportFormat::Png),
-            "export-original-png"
-        );
-    }
-
-    #[test]
-    fn webp_quality_affects_lossy_output_size() {
-        let dir = temp_dir("webp-quality");
-        let low_path = dir.join("low.webp");
-        let high_path = dir.join("high.webp");
-        let mut rgba = image::RgbaImage::new(256, 256);
-        for (x, y, pixel) in rgba.enumerate_pixels_mut() {
-            *pixel = image::Rgba([
-                (x % 256) as u8,
-                (y % 256) as u8,
-                ((x * 13 + y * 7) % 256) as u8,
-                255,
-            ]);
+    fn config(dir: &Path, format: ResizeFormat) -> ResizeConfig {
+        ResizeConfig {
+            source: source_image(dir, (12, 8)),
+            destination_dir: dir.join("out"),
+            target_width: 6,
+            target_height: 4,
+            format,
+            quality: 85,
         }
-        let img = image::DynamicImage::ImageRgba8(rgba);
-
-        save_image(&img, &low_path, ExportFormat::Webp, 20).unwrap();
-        save_image(&img, &high_path, ExportFormat::Webp, 95).unwrap();
-
-        let low_size = std::fs::metadata(&low_path).unwrap().len();
-        let high_size = std::fs::metadata(&high_path).unwrap().len();
-        assert_ne!(low_size, high_size);
-        assert!(low_size < high_size);
-
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn resolve_output_dir_prefers_custom_path() {
-        let custom = PathBuf::from("/tmp/custom-export");
-        let resolved = resolve_output_dir(Some(&custom), OutputFolderKind::Export);
-        assert_eq!(resolved, custom);
+    fn locked_dimensions_support_reduction_and_enlargement() {
+        assert_eq!(height_for_locked_width((4000, 3000), 2000), 1500);
+        assert_eq!(height_for_locked_width((4000, 3000), 8000), 6000);
+        assert_eq!(width_for_locked_height((4000, 3000), 1500), 2000);
     }
 
     #[test]
-    fn default_output_dir_uses_expected_folder_names() {
-        assert_eq!(
-            default_output_dir(OutputFolderKind::Upscaled)
-                .file_name()
-                .and_then(|name| name.to_str()),
-            Some("Upscaled")
-        );
-        assert_eq!(
-            default_output_dir(OutputFolderKind::Export)
-                .file_name()
-                .and_then(|name| name.to_str()),
-            Some("Export")
-        );
+    fn unlocked_dimensions_remain_independent() {
+        let config = ResizeConfig {
+            target_width: 7,
+            target_height: 3,
+            ..config(&test_dir("unlocked"), ResizeFormat::Png)
+        };
+        let result = resize_copy(&config).unwrap();
+        assert_eq!(image::image_dimensions(result.output).unwrap(), (7, 3));
     }
 
     #[test]
-    fn resize_if_needed_no_op_when_fits() {
-        let img = image::DynamicImage::new_rgb8(800, 600);
-        let out = resize_if_needed(img, Some(1024));
-        assert_eq!(out.width(), 800);
-        assert_eq!(out.height(), 600);
+    fn oriented_dimensions_swap_for_quarter_turns() {
+        assert_eq!(oriented_dimensions((12, 8), 1), (12, 8));
+        assert_eq!(oriented_dimensions((12, 8), 6), (8, 12));
+        assert_eq!(oriented_dimensions((12, 8), 8), (8, 12));
     }
 
     #[test]
-    fn resize_if_needed_no_op_when_none() {
-        let img = image::DynamicImage::new_rgb8(4000, 3000);
-        let out = resize_if_needed(img, None);
-        assert_eq!(out.width(), 4000);
+    fn unique_names_do_not_overwrite() {
+        let dir = test_dir("unique");
+        let config = config(&dir, ResizeFormat::Png);
+        let first = resize_copy(&config).unwrap();
+        let second = resize_copy(&config).unwrap();
+        assert_ne!(first.output, second.output);
+        assert!(second.output.ends_with("source-resized-6x4-1.png"));
     }
 
     #[test]
-    fn resize_if_needed_scales_landscape() {
-        let img = image::DynamicImage::new_rgb8(4000, 2000);
-        let out = resize_if_needed(img, Some(2000));
-        assert_eq!(out.width(), 2000);
-        assert_eq!(out.height(), 1000);
+    fn writes_all_supported_formats() {
+        for format in [
+            ResizeFormat::Jpeg,
+            ResizeFormat::Png,
+            ResizeFormat::Webp,
+            ResizeFormat::Jxl,
+        ] {
+            let dir = test_dir(format.extension());
+            let result = resize_copy(&config(&dir, format)).unwrap();
+            assert!(result.output.exists());
+            assert_eq!(
+                result.output.extension().and_then(|ext| ext.to_str()),
+                Some(format.extension())
+            );
+        }
     }
 
     #[test]
-    fn resize_if_needed_scales_portrait() {
-        let img = image::DynamicImage::new_rgb8(2000, 4000);
-        let out = resize_if_needed(img, Some(2000));
-        assert_eq!(out.width(), 1000);
-        assert_eq!(out.height(), 2000);
+    fn removes_partial_output_when_encoding_fails() {
+        let dir = test_dir("partial");
+        let config = config(&dir, ResizeFormat::Png);
+        let expected = partial_path(&unique_resize_path(&config));
+        let result = resize_copy_with_encoder(&config, |_, path, _, _| {
+            std::fs::write(path, b"partial").unwrap();
+            Err(ResizeError::Encode("forced failure".into()))
+        });
+        assert!(result.is_err());
+        assert!(!expected.exists());
     }
 }

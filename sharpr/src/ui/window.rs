@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -9,29 +9,26 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
-use sha2::{Digest, Sha256};
-
 use std::path::{Path, PathBuf};
 
 use crate::config::{AppSettings, FolderMode};
 use crate::duplicates::phash;
 use crate::library_index::{BasicImageInfo, Collection, IndexedImage, LibraryIndex};
-use crate::model::library::{CachedImageData, RawImageEntry, SortOrder};
+use crate::model::library::{CachedImageData, RawImageEntry};
 use crate::model::{ImageEntry, LibraryManager};
-use crate::tags::smart::SmartModel;
 use crate::thumbnails::worker::{ThumbnailWorkerResponse, WorkerRequest};
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::collection_dialogs::{
     parse_collection_tags_input, show_change_color_dialog, show_new_collection_dialog,
     show_new_library_dialog, show_rename_collection_dialog, switch_active_library,
 };
-use crate::ui::compare_item::{build_compare_item_from_pipeline, CompareItem};
+use crate::ui::compare_item::{ordered_selected_paths, CompareItem};
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::ops_indicator::OpsIndicator;
 use crate::ui::preferences::build_preferences_window;
 use crate::ui::sidebar::SidebarPane;
+use crate::ui::state::{AppState, ViewScope};
 use crate::ui::tag_browser::TagBrowser;
-use crate::ui::tasks_page::TasksPage;
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 
 mod compare_controller;
@@ -42,50 +39,6 @@ mod compare_controller;
 
 pub type OpenFolderCallback = Rc<dyn Fn(PathBuf)>;
 pub type RefreshCollectionsCallback = Rc<dyn Fn()>;
-
-pub struct AppState {
-    pub library: LibraryManager,
-    pub settings: AppSettings,
-    pub sort_order: SortOrder,
-    pub library_index: Option<Arc<LibraryIndex>>,
-    pub library_index_interrupted_count: usize,
-    pub library_index_error: Option<String>,
-    pub tags: Option<Arc<crate::tags::TagDatabase>>,
-    pub smart_tagger: Option<Arc<crate::tags::smart::LocalTagger>>,
-    /// Cached path to the active Vulkan upscaler binary after successful detection.
-    pub upscale_binary: Option<PathBuf>,
-    pub ops: crate::ops::queue::OpQueue,
-    /// Paths additionally highlighted by Ctrl/Shift-click for bulk collection actions.
-    pub selected_paths: HashSet<PathBuf>,
-    /// The single content scope currently loaded into the filmstrip.
-    pub scope: ViewScope,
-    /// Identity of the current focused image set used to reject stale async work.
-    pub current_focused_set: Option<crate::focused_image_set::FocusedImageSet>,
-    /// The scope to restore when leaving a temporary view like Compare.
-    pub previous_scope: Option<ViewScope>,
-    /// The page to restore when compare mode exits itself.
-    pub previous_content_page: Option<String>,
-    /// Items currently in the comparison queue.
-    pub compare_queue: Vec<CompareItem>,
-    /// Currently selected comparison output.
-    pub selected_compare_output: Option<PathBuf>,
-    /// Folders disabled by the user. Images under these paths must not be indexed or shown.
-    pub disabled_folders: Vec<PathBuf>,
-}
-
-/// The single content scope currently loaded into the filmstrip.
-/// Replaces the implicit encoding previously spread across
-/// `library.current_folder` and `AppState::active_collection`.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub enum ViewScope {
-    Folder(PathBuf),
-    Collection(i64),
-    Duplicates,
-    #[default]
-    Search,
-    Quality(crate::quality::QualityClass),
-    Compare,
-}
 
 pub(super) fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
     match scope {
@@ -493,121 +446,6 @@ pub(super) fn load_virtual_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf
     });
 }
 
-fn install_smart_tagger_model(
-    model: SmartModel,
-    model_path: &Path,
-) -> Result<Arc<crate::tags::smart::LocalTagger>, String> {
-    if model_path.exists() {
-        return Ok(Arc::new(crate::tags::smart::LocalTagger::new(
-            model_path.to_path_buf(),
-        )));
-    }
-
-    let Some(dir) = model_path.parent() else {
-        return Err("model path has no parent directory".into());
-    };
-    std::fs::create_dir_all(dir).map_err(|err| format!("create model directory failed: {err}"))?;
-    let tmp = model_path.with_extension("onnx.tmp");
-
-    let result = (|| -> Result<(), String> {
-        let response = ureq::get(model.url())
-            .call()
-            .map_err(|err| format!("download failed: {err}"))?;
-        let mut reader = response.into_reader();
-        let mut file = std::fs::File::create(&tmp)
-            .map_err(|err| format!("create temp model failed: {err}"))?;
-        std::io::copy(&mut reader, &mut file)
-            .map_err(|err| format!("write temp model failed: {err}"))?;
-        drop(file);
-
-        let downloaded =
-            std::fs::read(&tmp).map_err(|err| format!("read downloaded model failed: {err}"))?;
-        let actual_hash = format!("{:x}", Sha256::digest(&downloaded));
-        let expected_hash = model.sha256();
-        if actual_hash != expected_hash {
-            return Err(format!(
-                "downloaded model hash mismatch: expected {expected_hash}, got {actual_hash}"
-            ));
-        }
-
-        std::fs::rename(&tmp, model_path)
-            .map_err(|err| format!("install downloaded model failed: {err}"))?;
-        Ok(())
-    })();
-
-    if let Err(err) = result {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(err);
-    }
-
-    Ok(Arc::new(crate::tags::smart::LocalTagger::new(
-        model_path.to_path_buf(),
-    )))
-}
-
-impl AppState {
-    fn new(ops: crate::ops::queue::OpQueue) -> Self {
-        let settings = AppSettings::load();
-        let mut library = LibraryManager::new();
-        library.set_thumbnail_cache_max(settings.thumbnail_cache_max as usize);
-        let upscale_binary = settings.upscaler_binary_path.clone();
-        let smart_model = SmartModel::from_id(&settings.smart_tagger_model);
-        let model_path = dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(format!("sharpr/models/{}", smart_model.filename()));
-        let smart_tagger = if model_path.exists() {
-            Some(Arc::new(crate::tags::smart::LocalTagger::new(model_path)))
-        } else {
-            None
-        };
-        let (library_index, library_index_interrupted_count, library_index_error) =
-            match LibraryIndex::open() {
-                Ok((index, count)) => (Some(Arc::new(index)), count, None),
-                Err(err) => {
-                    let message = err.to_string();
-                    crate::bench_event!(
-                        "index.open.fail",
-                        serde_json::json!({
-                            "error": message,
-                        }),
-                    );
-                    (None, 0, Some(message))
-                }
-            };
-        let disabled_folders = settings
-            .active_library()
-            .map(|library| library.ignored_folders.clone())
-            .unwrap_or_default();
-        let tags = crate::tags::TagDatabase::open().ok().map(Arc::new);
-        if let (Some(index), Some(tags)) = (&library_index, &tags) {
-            let _ = index.migrate_legacy_collections_to_tags(tags);
-        }
-        if let (Some(index), Some(lib)) = (&library_index, settings.active_library()) {
-            let _ = index.assign_orphan_collections(&lib.id);
-        }
-        Self {
-            library,
-            settings,
-            sort_order: SortOrder::default(),
-            library_index,
-            library_index_interrupted_count,
-            library_index_error,
-            tags,
-            smart_tagger,
-            upscale_binary,
-            ops,
-            selected_paths: HashSet::new(),
-            scope: ViewScope::default(),
-            current_focused_set: None,
-            previous_scope: None,
-            previous_content_page: None,
-            compare_queue: Vec::new(),
-            selected_compare_output: None,
-            disabled_folders,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // GObject subclass
 // ---------------------------------------------------------------------------
@@ -711,18 +549,13 @@ glib::wrapper! {
 }
 
 impl SharprWindow {
-    const PAGE_ORDER: &[(&str, &str)] = &[
-        ("viewer", "View"),
-        ("tags", "Tags"),
-        ("tasks", "Tasks"),
-        ("compare", "Compare"),
-    ];
+    const PAGE_ORDER: &[(&str, &str)] = &[("viewer", "View"), ("tags", "Tags")];
 
     pub fn new(app: &libadwaita::Application) -> Self {
         glib::Object::builder().property("application", app).build()
     }
 
-    pub fn app_state(&self) -> std::rc::Rc<std::cell::RefCell<crate::ui::window::AppState>> {
+    pub fn app_state(&self) -> std::rc::Rc<std::cell::RefCell<AppState>> {
         self.imp().state.clone()
     }
 
@@ -730,54 +563,6 @@ impl SharprWindow {
         if let Some(overlay) = self.imp().toast_overlay.borrow().as_ref() {
             overlay.add_toast(toast);
         }
-    }
-
-    pub fn reload_smart_tagger_model(&self, model: SmartModel) {
-        let model_path = dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(format!("sharpr/models/{}", model.filename()));
-
-        if model_path.exists() {
-            let tagger = Arc::new(crate::tags::smart::LocalTagger::new(model_path));
-            self.app_state().borrow_mut().smart_tagger = Some(tagger);
-            if let Some(viewer) = self.imp().viewer.borrow().as_ref() {
-                viewer.show_smart_tag_btn();
-            }
-            return;
-        }
-
-        let (tx, rx) = async_channel::unbounded::<Arc<crate::tags::smart::LocalTagger>>();
-        let window_weak = self.downgrade();
-
-        rayon::spawn(
-            move || match install_smart_tagger_model(model, &model_path) {
-                Ok(tagger) => {
-                    let _ = tx.send_blocking(tagger);
-                }
-                Err(err) => {
-                    eprintln!("Smart tagger model download aborted: {err}");
-                }
-            },
-        );
-
-        glib::MainContext::default().spawn_local(async move {
-            if let Ok(tagger) = rx.recv().await {
-                if let Some(window) = window_weak.upgrade() {
-                    let configured_model = {
-                        let state = window.app_state();
-                        let state = state.borrow();
-                        SmartModel::from_id(&state.settings.smart_tagger_model)
-                    };
-                    if configured_model != model {
-                        return;
-                    }
-                    window.app_state().borrow_mut().smart_tagger = Some(tagger);
-                    if let Some(viewer) = window.imp().viewer.borrow().as_ref() {
-                        viewer.show_smart_tag_btn();
-                    }
-                }
-            }
-        });
     }
 
     pub fn handle_collection_export_requested(&self) {
@@ -1012,24 +797,6 @@ impl SharprWindow {
             glib::Propagation::Proceed
         });
 
-        // Clean up any upscale artifacts left behind by a previous crash.
-        {
-            let last_folder = self.imp().state.borrow().settings.last_folder.clone();
-            if let Some(folder) = last_folder {
-                for dir_name in ["exported", "upscaled"] {
-                    let output_dir = folder.join(dir_name);
-                    if let Ok(entries) = std::fs::read_dir(&output_dir) {
-                        for entry in entries.flatten() {
-                            let name = entry.file_name().to_string_lossy().into_owned();
-                            if name.contains(".pending-") || name.contains(".ncnn-intermediate") {
-                                let _ = std::fs::remove_file(entry.path());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         // -----------------------------------------------------------------------
         // Build panes
         // -----------------------------------------------------------------------
@@ -1041,13 +808,6 @@ impl SharprWindow {
         *self.imp().filmstrip.borrow_mut() = Some(filmstrip.clone());
         *self.imp().viewer.borrow_mut() = Some(viewer.clone());
         viewer.set_metadata_visible(state.borrow().settings.metadata_visible);
-        if state.borrow().smart_tagger.is_some() {
-            viewer.show_smart_tag_btn();
-        } else {
-            let model = SmartModel::from_id(&state.borrow().settings.smart_tagger_model);
-            self.reload_smart_tagger_model(model);
-        }
-
         if let Some(worker) = self.imp().thumbnail_worker.borrow().as_ref() {
             filmstrip.set_thumbnail_sender(
                 worker.visible_sender(),
@@ -2563,47 +2323,24 @@ impl SharprWindow {
         {
             let viewer_c = viewer.clone();
             let state_c = state.clone();
-            let window_weak = self.downgrade();
             let content_stack_c = content_stack.clone();
             filmstrip.connect_image_selected(move |index| {
-                let (path, scope) = {
+                let path = {
                     let Ok(mut state) = state_c.try_borrow_mut() else {
                         return;
                     };
                     state.library.selected_index = Some(index);
-                    (
-                        state
-                            .library
-                            .entry_at(index)
-                            .map(|entry: ImageEntry| entry.path()),
-                        state.scope.clone(),
-                    )
+                    state
+                        .library
+                        .entry_at(index)
+                        .map(|entry: ImageEntry| entry.path())
                 };
                 if let Some(path) = path {
-                    let compare_visible = content_stack_c
-                        .visible_child_name()
-                        .as_deref()
-                        .map(|name| name == "compare")
-                        .unwrap_or(false);
-                    if compare_visible {
-                        crate::bench_event!(
-                            "compare.selection",
-                            serde_json::json!({
-                                "path": path.display().to_string(),
-                                "scope": format!("{scope:?}"),
-                                "compare_visible": compare_visible,
-                            }),
-                        );
-                        if let Some(window) = window_weak.upgrade() {
-                            window.handle_compare_selection_change(path);
-                        }
-                    } else {
-                        let current_page = content_stack_c.visible_child_name().unwrap_or_default();
-                        if current_page == "welcome" {
-                            content_stack_c.set_visible_child_name("viewer");
-                        }
-                        viewer_c.load_image(path);
+                    let current_page = content_stack_c.visible_child_name().unwrap_or_default();
+                    if current_page == "welcome" {
+                        content_stack_c.set_visible_child_name("viewer");
                     }
+                    viewer_c.load_image(path);
                 }
             });
         }
@@ -2755,62 +2492,13 @@ impl SharprWindow {
         *self.imp().inline_search_entry.borrow_mut() = Some(preview_search_entry.clone());
         *self.imp().inline_search_revealer.borrow_mut() = Some(preview_search_revealer.clone());
 
-        {
-            let content_stack_c = content_stack.clone();
-            ops_indicator.set_go_to_tasks_cb(move || {
-                content_stack_c.set_visible_child_name("tasks");
-            });
-        }
-
         *self.imp().presentation_inner_split.borrow_mut() = Some(inner_split.clone());
         *self.imp().presentation_header.borrow_mut() = Some(viewer_header.clone());
 
-        let upscale_banner = libadwaita::Banner::new("");
-        upscale_banner.set_button_label(Some("Dismiss"));
-        upscale_banner.set_revealed(false);
-        upscale_banner.connect_button_clicked(|banner| {
-            banner.set_revealed(false);
-        });
-
-        let tasks_page = TasksPage::new();
-        {
-            let indicator = ops_indicator.clone();
-            tasks_page.set_user_activity_changed_cb(move |active| {
-                indicator.set_pipeline_active(active);
-            });
-        }
-        tasks_page.set_state(state.clone());
-        tasks_page.set_parent_window(self.upcast_ref());
-        content_stack.add_named(&tasks_page, Some("tasks"));
-
-        self.setup_actions(
-            &viewer,
-            &tasks_page,
-            &content_stack,
-            state.clone(),
-            &upscale_banner,
-        );
+        self.setup_actions(&viewer, state.clone());
 
         let viewer_toolbar = libadwaita::ToolbarView::new();
         viewer_toolbar.add_top_bar(&viewer_header);
-
-        {
-            let state_c = state.clone();
-            let tasks_page_c = tasks_page.clone();
-            let content_stack_c = content_stack.clone();
-            filmstrip.connect_add_to_queue_requested(move |paths| {
-                let state = state_c.borrow();
-                let Some(idx) = state.library_index.as_ref() else {
-                    return;
-                };
-                for path in paths {
-                    let _ = idx.create_pipeline(&path);
-                }
-                drop(state);
-                content_stack_c.set_visible_child_name("tasks");
-                tasks_page_c.on_pipelines_added();
-            });
-        }
 
         use crate::ui::compare_page::ComparePage;
         let compare_page = ComparePage::new();
@@ -2823,55 +2511,41 @@ impl SharprWindow {
 
         {
             let window_weak = self.downgrade();
-            let content_stack_c = content_stack.clone();
-            tasks_page.set_compare_requested_cb(move |item| {
+            compare_page.set_close_cb(move || {
                 if let Some(window) = window_weak.upgrade() {
-                    window.enter_compare_mode(item);
-                    content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideLeft);
-                    content_stack_c.set_visible_child_name("compare");
+                    window.exit_compare_mode();
                 }
             });
         }
 
+        let compare_action = gio::SimpleAction::new("compare", None);
+        compare_action.set_enabled(false);
         {
             let window_weak = self.downgrade();
-            compare_page.set_compare_remove_cb(move |output_path| {
-                if let Some(window) = window_weak.upgrade() {
-                    window.remove_from_compare_queue(&output_path);
+            let state_c = state.clone();
+            compare_action.connect_activate(move |_, _| {
+                let item = {
+                    let state = state_c.borrow();
+                    let paths = (0..state.library.image_count())
+                        .filter_map(|index| state.library.entry_at(index))
+                        .map(|entry: ImageEntry| entry.path());
+                    ordered_selected_paths(paths, &state.selected_paths)
+                        .map(|(left, right)| CompareItem::from_paths(left, right))
+                };
+                if let (Some(window), Some(item)) = (window_weak.upgrade(), item) {
+                    window.enter_compare_mode(item);
                 }
+            });
+        }
+        self.add_action(&compare_action);
+        {
+            let compare_action = compare_action.clone();
+            filmstrip.connect_action_selection_changed(move |count| {
+                compare_action.set_enabled(count == 2);
             });
         }
 
         content_stack.set_visible_child_name("welcome");
-
-        {
-            let window_weak = self.downgrade();
-            content_stack.connect_visible_child_name_notify(move |stack| {
-                if let Some(window) = window_weak.upgrade() {
-                    let name = stack.visible_child_name().unwrap_or_default();
-                    if name == "compare" {
-                        if window.app_state().borrow().scope != ViewScope::Compare {
-                            window.refresh_compare_view();
-                        }
-                    } else if name.as_str() == "viewer" {
-                        let compare_output = {
-                            let st = window.app_state();
-                            let st = st.borrow();
-                            (st.scope == ViewScope::Compare)
-                                .then(|| st.selected_compare_output.clone())
-                                .flatten()
-                        };
-                        if let Some(path) = compare_output {
-                            if let Some(viewer) = window.imp().viewer.borrow().as_ref() {
-                                viewer.load_image(path);
-                            }
-                        }
-                    } else {
-                        window.exit_compare_mode();
-                    }
-                }
-            });
-        }
 
         viewer_toolbar.set_content(Some(&content_stack));
         viewer_toolbar.set_top_bar_style(libadwaita::ToolbarStyle::Raised);
@@ -2879,15 +2553,9 @@ impl SharprWindow {
         for (page_name, _page_label) in Self::PAGE_ORDER {
             let action_name = format!("go-to-{}", page_name);
             let content_stack_c = content_stack.clone();
-            let window_weak = self.downgrade();
             let name = *page_name;
             let action = gio::SimpleAction::new(&action_name, None);
             action.connect_activate(move |_, _| {
-                if name == "compare" {
-                    if let Some(window) = window_weak.upgrade() {
-                        window.refresh_compare_view();
-                    }
-                }
                 content_stack_c.set_visible_child_name(name);
             });
             self.add_action(&action);
@@ -2902,7 +2570,6 @@ impl SharprWindow {
         let cycle_prev_action = gio::SimpleAction::new("cycle-page-prev", None);
         {
             let content_stack_c = content_stack.clone();
-            let window_weak = self.downgrade();
             cycle_prev_action.connect_activate(move |_, _| {
                 let current = content_stack_c
                     .visible_child_name()
@@ -2919,11 +2586,6 @@ impl SharprWindow {
                 };
                 content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideRight);
                 let name = Self::PAGE_ORDER[prev_idx].0;
-                if name == "compare" {
-                    if let Some(window) = window_weak.upgrade() {
-                        window.refresh_compare_view();
-                    }
-                }
                 content_stack_c.set_visible_child_name(name);
             });
         }
@@ -2932,7 +2594,6 @@ impl SharprWindow {
         let cycle_next_action = gio::SimpleAction::new("cycle-page-next", None);
         {
             let content_stack_c = content_stack.clone();
-            let window_weak = self.downgrade();
             cycle_next_action.connect_activate(move |_, _| {
                 let current = content_stack_c
                     .visible_child_name()
@@ -2945,11 +2606,6 @@ impl SharprWindow {
                 let next_idx = (idx + 1) % Self::PAGE_ORDER.len();
                 content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideLeft);
                 let name = Self::PAGE_ORDER[next_idx].0;
-                if name == "compare" {
-                    if let Some(window) = window_weak.upgrade() {
-                        window.refresh_compare_view();
-                    }
-                }
                 content_stack_c.set_visible_child_name(name);
             });
         }
@@ -3049,30 +2705,24 @@ impl SharprWindow {
         // Drive the indicator from the ops event channel.
         {
             let indicator = ops_indicator.clone();
-            let tasks_page = tasks_page.clone();
             glib::MainContext::default().spawn_local(async move {
                 use crate::ops::queue::OpEvent;
                 while let Ok(event) = ops_rx.recv().await {
                     match event {
                         OpEvent::Added { id, title } => {
                             indicator.push_op(id, &title);
-                            tasks_page.push_background_op(id, &title);
                         }
                         OpEvent::Progress { id, fraction } => {
                             indicator.update_op(id, fraction);
-                            tasks_page.update_background_op(id, fraction);
                         }
                         OpEvent::Completed(id) => {
                             indicator.complete_op(id);
-                            tasks_page.complete_background_op(id);
                         }
                         OpEvent::Failed { id, msg } => {
                             indicator.fail_op(id, &msg);
-                            tasks_page.fail_background_op(id, &msg);
                         }
                         OpEvent::Dismissed(id) => {
                             indicator.remove_op(id);
-                            tasks_page.remove_background_op(id);
                         }
                     }
                 }
@@ -3721,31 +3371,6 @@ impl SharprWindow {
                     return;
                 }
                 open_folder(folder);
-            });
-        }
-
-        // --- Populate Compare Queue from History ---
-        {
-            let state_rc = state.clone();
-            glib::idle_add_local_once(move || {
-                let mut state = state_rc.borrow_mut();
-                if let Some(idx) = state.library_index.clone() {
-                    use crate::library_index::PipelineStatus;
-                    let mut history = idx
-                        .pipelines_by_status(PipelineStatus::Completed)
-                        .unwrap_or_default();
-                    history.extend(
-                        idx.pipelines_by_status(PipelineStatus::Failed)
-                            .unwrap_or_default(),
-                    );
-                    history.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
-                    for pipeline in history {
-                        if let Some(item) = build_compare_item_from_pipeline(&pipeline, &idx) {
-                            state.compare_queue.push(item);
-                        }
-                    }
-                }
             });
         }
     }
@@ -4435,7 +4060,7 @@ impl SharprWindow {
             ));
         }
 
-        // [ / ] cycle through View → Tags → Tasks → Compare → View
+        // [ / ] cycle through View → Tags → View
         {
             let win_weak = self.downgrade();
             let sc_prev = gtk4::Shortcut::new(
@@ -4728,9 +4353,10 @@ impl SharprWindow {
         view_section.append(Some("Show Overlay"), Some("win.show-metadata"));
         menu.append_section(Some("View"), &view_section);
 
-        let convert_section = gio::Menu::new();
-        convert_section.append(Some("Convert…"), Some("win.convert"));
-        menu.append_section(Some("Convert"), &convert_section);
+        let image_section = gio::Menu::new();
+        image_section.append(Some("Resize Copy…"), Some("win.resize-copy"));
+        image_section.append(Some("Compare Selected Images"), Some("win.compare"));
+        menu.append_section(Some("Image"), &image_section);
 
         let library_section = gio::Menu::new();
         library_section.append(Some("Find Duplicates"), Some("win.find-duplicates"));
@@ -4757,14 +4383,7 @@ impl SharprWindow {
         btn
     }
 
-    fn setup_actions(
-        &self,
-        viewer: &ViewerPane,
-        tasks_page: &TasksPage,
-        _content_stack: &gtk4::Stack,
-        state: Rc<RefCell<AppState>>,
-        _upscale_banner: &libadwaita::Banner,
-    ) {
+    fn setup_actions(&self, viewer: &ViewerPane, state: Rc<RefCell<AppState>>) {
         // Action map — win.* and app.* actions registered by this window
         //
         // Name                     Label                         Shortcut                         Sensitivity
@@ -4774,8 +4393,6 @@ impl SharprWindow {
         // win.scan-quality         Scan Quality                  —                                always
         // win.go-to-viewer         Go to View Page               <Ctrl>1 (ShortcutController)     always
         // win.go-to-tags           Go to Tags Page               <Ctrl>2 (ShortcutController)     always
-        // win.go-to-tasks          Go to Tasks Page              <Ctrl>3 (ShortcutController)     always
-        // win.go-to-compare        Go to Compare Page            <Ctrl>4 (ShortcutController)     always
         // win.cycle-page-prev      Previous Page                 [ (ShortcutController)           always
         // win.cycle-page-next      Next Page                     ] (ShortcutController)           always
         // win.show-help-overlay    Keyboard Shortcuts            —                                always (built-in)
@@ -4784,7 +4401,6 @@ impl SharprWindow {
         // win.show-metadata        Show Metadata Overlay         <Alt>Return (ShortcutController) always
         // win.show-manual          Open Manual                   —                                always
         // win.show-preferences     Open Preferences              —                                always
-        // win.convert              Convert Format                —                                always; requires current image
         // app.about                About                         —                                always
         let w = self.downgrade();
         let toggle_presentation_action = gio::SimpleAction::new("toggle-presentation", None);
@@ -4866,27 +4482,43 @@ impl SharprWindow {
         }
         self.add_action(&pref_action);
 
-        let convert_action = gio::SimpleAction::new("convert", None);
+        let resize_action = gio::SimpleAction::new("resize-copy", None);
         {
             let viewer_weak = viewer.downgrade();
             let window_weak = self.downgrade();
-            let tasks_page_c = tasks_page.clone();
-
-            convert_action.connect_activate(move |_, _| {
-                let Some(win) = window_weak.upgrade() else {
+            let state_c = state.clone();
+            resize_action.connect_activate(move |_, _| {
+                let (Some(viewer), Some(window)) = (viewer_weak.upgrade(), window_weak.upgrade())
+                else {
                     return;
                 };
-                let Some(viewer) = viewer_weak.upgrade() else {
+                let Some(source) = viewer.current_path() else {
+                    window.add_toast(libadwaita::Toast::new("Select an image to resize"));
                     return;
                 };
-
-                if let Some(path) = viewer.current_path() {
-                    tasks_page_c.pre_fill_from_path(path);
-                    gio::prelude::ActionGroupExt::activate_action(&win, "go-to-tasks", None);
-                }
+                let window_for_refresh = window.downgrade();
+                let state_for_refresh = state_c.clone();
+                let refresh = Rc::new(move |output: PathBuf| {
+                    let folder = output.parent().map(Path::to_path_buf);
+                    let current = state_for_refresh.borrow().library.current_folder.clone();
+                    if folder == current {
+                        if let (Some(window), Some(folder)) = (window_for_refresh.upgrade(), folder)
+                        {
+                            if let Some(callback) = window.imp().open_folder_cb.borrow().as_ref() {
+                                callback(folder);
+                            }
+                        }
+                    }
+                });
+                crate::ui::resize_dialog::present_resize_dialog(
+                    &window,
+                    source,
+                    state_c.clone(),
+                    refresh,
+                );
             });
         }
-        self.add_action(&convert_action);
+        self.add_action(&resize_action);
     }
 
     /// Build the viewer header bar.

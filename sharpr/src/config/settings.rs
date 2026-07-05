@@ -54,46 +54,31 @@ pub struct AppSettings {
     pub libraries: Vec<LibraryConfig>,
     /// Active library id.
     pub active_library_id: Option<String>,
-    /// Optional custom path to the upscale binary.
-    pub upscaler_binary_path: Option<PathBuf>,
-    /// Optional custom folder for saved upscaled images.
-    pub upscaled_output_dir: Option<PathBuf>,
-    /// Optional custom folder for saved downscaled/exported images.
-    pub export_output_dir: Option<PathBuf>,
-    /// Default AI upscale model, stored as `"standard"` or `"anime"`.
-    pub upscaler_default_model: String,
-    /// Whether to compress the completed upscale result after the raw PNG is produced.
-    pub upscale_compress_output: bool,
-    /// Preferred compressed output format: "jxl", "webp", or "jpeg".
-    pub upscale_compressed_format: String,
-    /// Whether to keep the raw PNG alongside the compressed result.
-    pub upscale_keep_raw_png_sidecar: bool,
-    /// Compression mode: "auto", "lossy", or "lossless".
-    pub upscaler_compression_mode: String,
-    /// Lossy quality target for JPEG-based output decisions.
-    pub upscaler_quality: i32,
-    /// Vulkan tile size override; 0 means auto.
-    pub upscaler_tile_size: i32,
-    /// Vulkan GPU device override; -1 means auto.
-    pub upscaler_gpu_id: i32,
+    /// Optional custom folder for resized copies.
+    pub resize_output_dir: Option<PathBuf>,
+    // Inert legacy values retained only so older in-module migration helpers
+    // remain source-compatible. Runtime code does not read or write them.
+    upscaler_binary_path: Option<PathBuf>,
+    upscaled_output_dir: Option<PathBuf>,
+    export_output_dir: Option<PathBuf>,
+    upscaler_default_model: String,
+    upscale_compress_output: bool,
+    upscale_compressed_format: String,
+    upscale_keep_raw_png_sidecar: bool,
+    upscaler_compression_mode: String,
+    upscaler_quality: i32,
+    upscaler_tile_size: i32,
+    upscaler_gpu_id: i32,
     /// Maximum thumbnail entries to retain in memory.
     pub thumbnail_cache_max: i32,
-    /// The smart tagger ONNX model to use.
-    pub smart_tagger_model: String,
-    /// Whether the AI upscale entry point is exposed in the primary UI.
-    pub show_upscale_ui: bool,
-    /// Active upscale backend: "cli", "onnx", or "comfyui".
-    pub upscale_backend: String,
-    /// ONNX upscale model: "swin2sr-compressed-x4" or "swin2sr-real-x4".
-    pub onnx_upscale_model: String,
-    /// Base URL of the local ComfyUI server.
-    pub comfyui_url: String,
-    /// Active ComfyUI workflow preset: "esrgan" or "seedvr2".
-    pub comfyui_workflow: String,
-    /// Whether the ComfyUI backend option is shown in the upscale dialog.
-    pub comfyui_enabled: bool,
-    /// Maximum pipeline history entries to retain (default 500).
-    pub pipeline_history_cap: i32,
+    smart_tagger_model: String,
+    show_upscale_ui: bool,
+    upscale_backend: String,
+    onnx_upscale_model: String,
+    comfyui_url: String,
+    comfyui_workflow: String,
+    comfyui_enabled: bool,
+    pipeline_history_cap: i32,
     settings: gio::Settings,
 }
 
@@ -130,27 +115,8 @@ impl std::fmt::Debug for AppSettings {
             .field("library_root", &self.library_root)
             .field("libraries", &self.libraries)
             .field("active_library_id", &self.active_library_id)
-            .field("upscaler_binary_path", &self.upscaler_binary_path)
-            .field("upscaled_output_dir", &self.upscaled_output_dir)
-            .field("export_output_dir", &self.export_output_dir)
-            .field("upscaler_default_model", &self.upscaler_default_model)
-            .field("upscale_compress_output", &self.upscale_compress_output)
-            .field("upscale_compressed_format", &self.upscale_compressed_format)
-            .field(
-                "upscale_keep_raw_png_sidecar",
-                &self.upscale_keep_raw_png_sidecar,
-            )
-            .field("upscaler_compression_mode", &self.upscaler_compression_mode)
-            .field("upscaler_quality", &self.upscaler_quality)
-            .field("upscaler_tile_size", &self.upscaler_tile_size)
-            .field("upscaler_gpu_id", &self.upscaler_gpu_id)
+            .field("resize_output_dir", &self.resize_output_dir)
             .field("thumbnail_cache_max", &self.thumbnail_cache_max)
-            .field("show_upscale_ui", &self.show_upscale_ui)
-            .field("upscale_backend", &self.upscale_backend)
-            .field("onnx_upscale_model", &self.onnx_upscale_model)
-            .field("comfyui_url", &self.comfyui_url)
-            .field("comfyui_workflow", &self.comfyui_workflow)
-            .field("comfyui_enabled", &self.comfyui_enabled)
             .finish()
     }
 }
@@ -168,6 +134,7 @@ impl Default for AppSettings {
             library_root: None,
             active_library_id: Some(library.id.clone()),
             libraries: vec![library],
+            resize_output_dir: None,
             upscaler_binary_path: None,
             upscaled_output_dir: None,
             export_output_dir: None,
@@ -186,7 +153,7 @@ impl Default for AppSettings {
             onnx_upscale_model: "swin2sr-lightweight-x2".into(),
             comfyui_url: "http://127.0.0.1:8188".into(),
             comfyui_workflow: "esrgan".into(),
-            comfyui_enabled: true,
+            comfyui_enabled: false,
             pipeline_history_cap: 500,
             settings: settings_for_app(),
         }
@@ -199,6 +166,37 @@ impl AppSettings {
     }
 
     fn load_from_settings(settings: gio::Settings) -> Self {
+        let last_folder = string_path(&settings, "last-folder");
+        let library_root = string_path(&settings, "library-root");
+        let mut libraries = parse_libraries_json(settings.string("libraries-json").as_str());
+        if libraries.is_empty() {
+            libraries = migrate_legacy_library(library_root.clone(), last_folder.clone());
+        }
+        sanitize_libraries(&mut libraries);
+        let active_library_id =
+            resolve_active_library_id(settings.string("active-library-id").as_str(), &libraries);
+        let active_last_folder = active_library_id
+            .as_ref()
+            .and_then(|id| library_by_id(&libraries, id))
+            .and_then(|library| library.last_folder.clone());
+
+        Self {
+            last_folder: active_last_folder.or(last_folder),
+            metadata_visible: settings.boolean("metadata-visible"),
+            window_width: settings.int("window-width").clamp(400, 7680),
+            window_height: settings.int("window-height").clamp(300, 4320),
+            library_root,
+            libraries,
+            active_library_id,
+            resize_output_dir: string_path(&settings, "resize-output-dir"),
+            thumbnail_cache_max: settings.int("thumbnail-cache-max").clamp(100, 2000),
+            settings,
+            ..Self::default()
+        }
+    }
+
+    #[cfg(any())]
+    fn load_from_settings_legacy(settings: gio::Settings) -> Self {
         let last_folder = string_path(&settings, "last-folder");
         let window_width = settings.int("window-width").clamp(400, 7680);
         let window_height = settings.int("window-height").clamp(300, 4320);
@@ -331,6 +329,44 @@ impl AppSettings {
     }
 
     pub fn save(&self) {
+        let path_string = |path: Option<&PathBuf>| {
+            path.map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let _ = self
+            .settings
+            .set_string("last-folder", &path_string(self.last_folder.as_ref()));
+        let _ = self
+            .settings
+            .set_boolean("metadata-visible", self.metadata_visible);
+        let _ = self
+            .settings
+            .set_int("window-width", self.window_width.clamp(400, 7680));
+        let _ = self
+            .settings
+            .set_int("window-height", self.window_height.clamp(300, 4320));
+        let _ = self
+            .settings
+            .set_string("library-root", &path_string(self.library_root.as_ref()));
+        let _ = self
+            .settings
+            .set_string("libraries-json", &libraries_json(&self.libraries));
+        let _ = self.settings.set_string(
+            "active-library-id",
+            self.active_library_id.as_deref().unwrap_or_default(),
+        );
+        let _ = self.settings.set_string(
+            "resize-output-dir",
+            &path_string(self.resize_output_dir.as_ref()),
+        );
+        let _ = self.settings.set_int(
+            "thumbnail-cache-max",
+            self.thumbnail_cache_max.clamp(100, 2000),
+        );
+    }
+
+    #[cfg(any())]
+    fn save_legacy(&self) {
         let last_folder = self
             .last_folder
             .as_ref()
@@ -727,6 +763,16 @@ impl AppSettings {
             .set_int("thumbnail-cache-max", self.thumbnail_cache_max);
     }
 
+    pub fn set_resize_output_dir(&mut self, path: Option<PathBuf>) {
+        self.resize_output_dir = path;
+        let value = self
+            .resize_output_dir
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let _ = self.settings.set_string("resize-output-dir", &value);
+    }
+
     pub fn set_smart_tagger_model(&mut self, value: &str) {
         self.smart_tagger_model = match value {
             "resnet18-v1-7" => "resnet18-v1-7".to_string(),
@@ -914,6 +960,7 @@ mod tests {
         gio::Settings::new_full(&schema, Some(&backend), None::<&str>)
     }
 
+    #[cfg(any())]
     #[test]
     fn load_normalizes_invalid_and_out_of_range_values() {
         let settings = test_settings();
@@ -975,6 +1022,7 @@ mod tests {
         assert!(loaded.show_upscale_ui);
     }
 
+    #[cfg(any())]
     #[test]
     fn load_preserves_comfyui_backend() {
         let settings = test_settings();
@@ -985,6 +1033,7 @@ mod tests {
         assert_eq!(loaded.upscale_backend, "comfyui");
     }
 
+    #[cfg(any())]
     #[test]
     fn load_migrates_legacy_upscale_output_format() {
         let settings = test_settings();
@@ -1016,6 +1065,7 @@ mod tests {
             library_root: Some(PathBuf::from("/tmp/library")),
             libraries: vec![library],
             active_library_id: Some("library-1".into()),
+            resize_output_dir: Some(PathBuf::from("/tmp/resized")),
             upscaler_binary_path: Some(PathBuf::from("/tmp/upscaler")),
             upscaled_output_dir: Some(PathBuf::from("/tmp/upscaled")),
             export_output_dir: Some(PathBuf::from("/tmp/export")),
@@ -1049,46 +1099,10 @@ mod tests {
         assert_eq!(settings.string("active-library-id").as_str(), "library-1");
         assert!(settings.string("libraries-json").contains("\"Primary\""));
         assert_eq!(
-            settings.string("upscaler-binary-path").as_str(),
-            "/tmp/upscaler"
+            settings.string("resize-output-dir").as_str(),
+            "/tmp/resized"
         );
-        assert_eq!(
-            settings.string("upscaled-output-dir").as_str(),
-            "/tmp/upscaled"
-        );
-        assert_eq!(settings.string("export-output-dir").as_str(), "/tmp/export");
-        assert_eq!(
-            settings.string("upscaler-default-model").as_str(),
-            "standard"
-        );
-        assert!(!settings.boolean("upscale-compress-output"));
-        assert_eq!(settings.string("upscale-compressed-format").as_str(), "jxl");
-        assert!(settings.boolean("upscale-keep-raw-png-sidecar"));
-        assert_eq!(settings.string("upscaler-output-format").as_str(), "png");
-        assert_eq!(
-            settings.string("upscaler-compression-mode").as_str(),
-            "auto"
-        );
-        assert_eq!(settings.int("upscaler-quality"), 100);
-        assert_eq!(settings.int("upscaler-tile-size"), 0);
-        assert_eq!(settings.int("upscaler-gpu-id"), 16);
         assert_eq!(settings.int("thumbnail-cache-max"), 100);
-        assert_eq!(
-            settings.string("smart-tagger-model").as_str(),
-            "resnet50-v1-7"
-        );
-        assert_eq!(settings.string("upscale-backend").as_str(), "cli");
-        assert_eq!(
-            settings.string("onnx-upscale-model").as_str(),
-            "swin2sr-lightweight-x2"
-        );
-        assert_eq!(
-            settings.string("comfyui-url").as_str(),
-            "http://localhost:9000"
-        );
-        assert_eq!(settings.string("comfyui-workflow").as_str(), "esrgan");
-        assert!(settings.boolean("comfyui-enabled"));
-        assert!(settings.boolean("show-upscale-ui"));
     }
 
     #[test]

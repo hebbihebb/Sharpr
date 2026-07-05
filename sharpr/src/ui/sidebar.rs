@@ -11,7 +11,7 @@ use libadwaita::prelude::*;
 
 use crate::config::{FolderMode, LibraryConfig};
 use crate::library_index::Collection;
-use crate::ui::window::AppState;
+use crate::ui::state::AppState;
 
 type FolderSelectedCallback = Box<dyn Fn(PathBuf) + 'static>;
 type FolderIgnoredChangedCallback = Box<dyn Fn(PathBuf, bool) + 'static>;
@@ -404,7 +404,7 @@ impl SidebarPane {
             let ignored_folders = state.borrow().disabled_folders.clone();
             widget.set_folder_tree(&tree, &ignored_folders);
 
-            if let crate::ui::window::ViewScope::Folder(path) = state.borrow().scope.clone() {
+            if let crate::ui::state::ViewScope::Folder(path) = state.borrow().scope.clone() {
                 widget.select_folder(&path);
             } else if let Some(path) = widget.preferred_initial_folder_path() {
                 widget.select_folder(&path);

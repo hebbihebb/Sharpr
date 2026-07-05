@@ -11,11 +11,6 @@ name = "sharpr"
 path = "src/main.rs"
 
 [dependencies]
-tract-onnx = "0.21"
-ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
-ndarray = "0.17"
-ureq = { version = "2", features = ["tls", "json"] }
-urlencoding = "2"
 # GTK4 + Libadwaita UI stack
 glycin = { version = "3", features = ["gdk4"] }
 gtk4 = { version = "0.11", features = ["v4_12"] }
@@ -42,7 +37,6 @@ async-channel = "2"
 # Serialisation (config, cache)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
 
 dirs = "5"
 rustc-hash = "1.1"

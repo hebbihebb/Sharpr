@@ -10,6 +10,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::model::library::SortOrder;
 use crate::quality::QualityClass;
 
+mod schema;
+use schema::initialize_schema;
+
 const SCHEMA_VERSION: &str = "3";
 
 #[derive(Clone, Debug)]
@@ -144,8 +147,7 @@ impl LibraryIndex {
             initialize_schema(&conn)?;
             invalidate_legacy_quality_labels(&conn)?;
             ensure_collection_schema(&conn)?;
-            ensure_pipeline_schema(&conn)?;
-            recover_interrupted_pipelines(&conn)?
+            0
         };
         crate::bench_event!(
             "index.open",
@@ -1470,7 +1472,8 @@ fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
+#[cfg(any())]
+fn initialize_schema_legacy(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS folders (
@@ -1625,12 +1628,14 @@ fn ensure_collection_schema(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+#[cfg(any())]
 fn ensure_pipeline_schema(_conn: &Connection) -> rusqlite::Result<()> {
     // Tables were created via initialize_schema; nothing to migrate yet.
     // This function exists as the extension point for future column additions.
     Ok(())
 }
 
+#[cfg(any())]
 fn recover_interrupted_pipelines(conn: &Connection) -> rusqlite::Result<usize> {
     // Any step that was in_progress when the app last quit had its output
     // potentially truncated — reset it and its parent pipeline to queued.
@@ -1694,7 +1699,7 @@ impl LibraryIndex {
             initialize_schema(conn)?;
             invalidate_legacy_quality_labels(conn)?;
             ensure_collection_schema(conn)?;
-            ensure_pipeline_schema(conn)?;
+            // Legacy task tables are intentionally left untouched.
             Ok(())
         });
         let pool = Pool::builder()
@@ -2317,6 +2322,7 @@ mod tests {
         std::fs::remove_dir_all(temp_dir).unwrap();
     }
 
+    #[cfg(any())]
     #[test]
     fn pipeline_create_and_fetch() {
         let idx = LibraryIndex::open_in_memory().unwrap();
@@ -2335,6 +2341,7 @@ mod tests {
         assert_eq!(steps[0].step_type, StepType::Upscale);
     }
 
+    #[cfg(any())]
     #[test]
     fn pipeline_status_transitions() {
         let idx = LibraryIndex::open_in_memory().unwrap();
@@ -2362,6 +2369,7 @@ mod tests {
         assert!(steps[0].output_path.is_some());
     }
 
+    #[cfg(any())]
     #[test]
     fn crash_recovery_resets_in_progress() {
         let idx = LibraryIndex::open_in_memory().unwrap();
@@ -2386,6 +2394,7 @@ mod tests {
         assert_eq!(steps[0].status, PipelineStatus::Queued);
     }
 
+    #[cfg(any())]
     #[test]
     fn step_input_path_roundtrip() {
         let idx = LibraryIndex::open_in_memory().unwrap();
@@ -2418,6 +2427,7 @@ mod tests {
         );
     }
 
+    #[cfg(any())]
     #[test]
     fn multi_step_chaining_db() {
         let idx = LibraryIndex::open_in_memory().unwrap();
@@ -2472,6 +2482,7 @@ mod tests {
         );
     }
 
+    #[cfg(any())]
     #[test]
     fn enqueue_followup_creates_queued_pipeline() {
         let idx = LibraryIndex::open_in_memory().unwrap();
@@ -2564,6 +2575,7 @@ mod tests {
         ensure_collection_schema(&conn).unwrap();
     }
 
+    #[cfg(any())]
     #[test]
     fn recover_interrupted_pipelines_resets_in_progress() {
         let idx = LibraryIndex::open_in_memory().unwrap();
@@ -2627,5 +2639,47 @@ mod tests {
             })
             .unwrap();
         assert_eq!(p3_status, "completed");
+    }
+
+    #[test]
+    fn fresh_schema_does_not_create_task_tables() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let conn = idx.conn().unwrap();
+        let task_table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name IN ('pipelines', 'pipeline_steps')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(task_table_count, 0);
+    }
+
+    #[test]
+    fn schema_initialization_leaves_legacy_task_data_unchanged() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pipelines (id INTEGER PRIMARY KEY, status TEXT NOT NULL);
+             CREATE TABLE pipeline_steps (id INTEGER PRIMARY KEY, pipeline_id INTEGER NOT NULL, status TEXT NOT NULL);
+             INSERT INTO pipelines VALUES (7, 'in_progress');
+             INSERT INTO pipeline_steps VALUES (9, 7, 'in_progress');",
+        )
+        .unwrap();
+        initialize_schema(&conn).unwrap();
+        let pipeline: (i64, String) = conn
+            .query_row("SELECT id, status FROM pipelines", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        let step: (i64, i64, String) = conn
+            .query_row(
+                "SELECT id, pipeline_id, status FROM pipeline_steps",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(pipeline, (7, "in_progress".to_string()));
+        assert_eq!(step, (9, 7, "in_progress".to_string()));
     }
 }

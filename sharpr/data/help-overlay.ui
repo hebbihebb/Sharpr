@@ -65,8 +65,8 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
-                <property name="title">Go to Viewer / Tags / Tasks / Compare</property>
-                <property name="accelerator">&lt;Control&gt;1 &lt;Control&gt;2 &lt;Control&gt;3 &lt;Control&gt;4</property>
+                <property name="title">Go to Viewer / Tags</property>
+                <property name="accelerator">&lt;Control&gt;1 &lt;Control&gt;2</property>
               </object>
             </child>
             <child>

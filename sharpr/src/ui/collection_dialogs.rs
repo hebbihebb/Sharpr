@@ -11,9 +11,10 @@ use crate::config::FolderMode;
 use crate::library_index::normalize_collection_tag;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::sidebar::SidebarPane;
+use crate::ui::state::{AppState, ViewScope};
 use crate::ui::viewer::ViewerPane;
 use crate::ui::window::{
-    apply_scope_to_sidebar, collection_paths_from_services, load_virtual_async, AppState, ViewScope,
+    apply_scope_to_sidebar, collection_paths_from_services, load_virtual_async,
 };
 
 pub(super) fn parse_collection_tags_input(input: &str) -> Vec<String> {
@@ -232,6 +233,7 @@ pub(super) fn show_new_collection_dialog<F>(
     dialog.present(Some(&window));
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn show_rename_collection_dialog<F>(
     window: gtk4::Window,
     id: i64,

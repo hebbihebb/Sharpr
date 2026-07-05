@@ -92,14 +92,6 @@ mod imp {
                             "rexiv2 / GExiv2 — EXIF metadata",
                         ],
                     );
-                    dialog.add_credit_section(
-                        Some("AI Tag Suggestions"),
-                        &[
-                            "ResNet-18 — ONNX Model Zoo",
-                            "tract-onnx — Pure-Rust ONNX inference",
-                        ],
-                    );
-                    dialog.add_credit_section(Some("AI Upscaling"), &["RealESRGAN-NCNN-Vulkan"]);
                     if let Some(win) = app.active_window() {
                         dialog.present(Some(&win));
                     }

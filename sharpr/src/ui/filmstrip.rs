@@ -15,7 +15,7 @@ use crate::model::library::{SortField, SortOrder};
 use crate::model::ImageEntry;
 use crate::quality::QualityClass;
 use crate::thumbnails::worker::WorkerRequest;
-use crate::ui::window::{AppState, ViewScope};
+use crate::ui::state::{AppState, ViewScope};
 
 type ImageSelectedCallback = Box<dyn Fn(u32) + 'static>;
 type SearchChangedCallback = Box<dyn Fn(&str) + 'static>;
@@ -23,7 +23,7 @@ type SearchActivateCallback = Box<dyn Fn(&str) + 'static>;
 type SearchDismissedCallback = Box<dyn Fn() + 'static>;
 type TrashRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type AddToCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
-type AddToQueueRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
+type ActionSelectionChangedCallback = Box<dyn Fn(usize) + 'static>;
 type RemoveFromCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type CopyToFolderRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type MoveToFolderRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
@@ -97,10 +97,6 @@ fn build_context_menu_model(in_collection: bool, is_multi: bool) -> gio::Menu {
     }
     sec2.append_submenu(Some("File Actions"), &file_actions);
     menu.append_section(None, &sec2);
-
-    let sec3 = gio::Menu::new();
-    sec3.append_item(&menu_item("Add to Queue", "filmstrip.add-to-queue", None));
-    menu.append_section(None, &sec3);
 
     let sec4 = gio::Menu::new();
     sec4.append_item(&menu_item(
@@ -222,7 +218,7 @@ mod imp {
         pub search_dismissed_cb: RefCell<Option<SearchDismissedCallback>>,
         pub trash_requested_cb: RefCell<Option<TrashRequestedCallback>>,
         pub add_to_collection_requested_cb: RefCell<Option<AddToCollectionRequestedCallback>>,
-        pub add_to_queue_requested_cb: RefCell<Option<AddToQueueRequestedCallback>>,
+        pub action_selection_changed_cb: RefCell<Option<ActionSelectionChangedCallback>>,
         pub remove_from_collection_requested_cb:
             RefCell<Option<RemoveFromCollectionRequestedCallback>>,
         pub copy_to_folder_requested_cb: RefCell<Option<CopyToFolderRequestedCallback>>,
@@ -292,7 +288,7 @@ mod imp {
                 search_dismissed_cb: RefCell::new(None),
                 trash_requested_cb: RefCell::new(None),
                 add_to_collection_requested_cb: RefCell::new(None),
-                add_to_queue_requested_cb: RefCell::new(None),
+                action_selection_changed_cb: RefCell::new(None),
                 remove_from_collection_requested_cb: RefCell::new(None),
                 copy_to_folder_requested_cb: RefCell::new(None),
                 move_to_folder_requested_cb: RefCell::new(None),
@@ -378,7 +374,7 @@ impl FilmstripPane {
         );
         sort_field.connect_activate(move |action, param| {
             if let Some(field_str) = param.and_then(|p| p.get::<String>()) {
-                action.set_state(&param.expect("Action should have a parameter"));
+                action.set_state(param.expect("Action should have a parameter"));
                 if let Some(f) = widget_weak.upgrade() {
                     let field = match field_str.as_str() {
                         "name" => SortField::Name,
@@ -406,7 +402,7 @@ impl FilmstripPane {
         );
         sort_direction.connect_activate(move |action, param| {
             if let Some(descending) = param.and_then(|p| p.get::<bool>()) {
-                action.set_state(&param.expect("Action should have a parameter"));
+                action.set_state(param.expect("Action should have a parameter"));
                 if let Some(f) = widget_weak.upgrade() {
                     let sort_order =
                         SortOrder::from_parts(f.imp().current_sort_order.get().field(), descending);
@@ -428,7 +424,7 @@ impl FilmstripPane {
         );
         quality_filter.connect_activate(move |action, param| {
             if let Some(class_str) = param.and_then(|p| p.get::<String>()) {
-                action.set_state(&param.expect("Action should have a parameter"));
+                action.set_state(param.expect("Action should have a parameter"));
                 if let Some(f) = widget_weak.upgrade() {
                     let class = match class_str.as_str() {
                         "excellent" => Some(QualityClass::Excellent),
@@ -1154,24 +1150,6 @@ impl FilmstripPane {
         }
         group.add_action(&duplicate);
 
-        let add_queue = gio::SimpleAction::new("add-to-queue", None);
-        {
-            let w = self.downgrade();
-            add_queue.connect_activate(move |_, _| {
-                let Some(widget) = w.upgrade() else { return };
-                let paths = widget
-                    .imp()
-                    .menu_ctx
-                    .borrow()
-                    .as_ref()
-                    .map(|c| c.action_paths.clone());
-                if let Some(paths) = paths {
-                    widget.emit_add_to_queue_requested(paths);
-                }
-            });
-        }
-        group.add_action(&add_queue);
-
         let trash = gio::SimpleAction::new("trash", None);
         {
             let w = self.downgrade();
@@ -1723,8 +1701,8 @@ impl FilmstripPane {
         *self.imp().add_to_collection_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_add_to_queue_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {
-        *self.imp().add_to_queue_requested_cb.borrow_mut() = Some(Box::new(f));
+    pub fn connect_action_selection_changed<F: Fn(usize) + 'static>(&self, f: F) {
+        *self.imp().action_selection_changed_cb.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn connect_remove_from_collection_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {
@@ -1733,12 +1711,6 @@ impl FilmstripPane {
 
     fn emit_add_to_collection_requested(&self, paths: Vec<PathBuf>) {
         if let Some(cb) = self.imp().add_to_collection_requested_cb.borrow().as_ref() {
-            cb(paths);
-        }
-    }
-
-    fn emit_add_to_queue_requested(&self, paths: Vec<PathBuf>) {
-        if let Some(cb) = self.imp().add_to_queue_requested_cb.borrow().as_ref() {
             cb(paths);
         }
     }
@@ -1866,6 +1838,9 @@ impl FilmstripPane {
             .map(|state| state.selected_paths.clone())
             .unwrap_or_default();
         let show_multi = selected_paths.len() > 1;
+        if let Some(callback) = self.imp().action_selection_changed_cb.borrow().as_ref() {
+            callback(selected_paths.len());
+        }
         sync_visible_selection_classes(
             self.imp().list_view.upcast_ref::<gtk4::Widget>(),
             &selected_paths,

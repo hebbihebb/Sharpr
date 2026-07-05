@@ -1,84 +1,52 @@
-use crate::library_index::{LibraryIndex, Pipeline, StepType};
-use crate::upscale::runner::preserved_png_temp_path;
-use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompareAssetInfo {
     pub title: String,
     pub path: PathBuf,
     pub format: String,
-    pub dimensions: (u32, u32),
-    pub file_size: u64,
+    pub dimensions: Option<(u32, u32)>,
+    pub file_size: Option<u64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompareItem {
-    pub pipeline_id: i64,
-    pub source_path: PathBuf,
-    pub output_path: PathBuf,
-    pub original_asset: CompareAssetInfo,
-    pub output_asset: CompareAssetInfo,
-    pub preserved_png_asset: Option<CompareAssetInfo>,
-    pub model: String,
-    pub scale: String,
-    pub date_added: glib::DateTime,
+    pub left: CompareAssetInfo,
+    pub right: CompareAssetInfo,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct UpscaleStepSettings {
-    pub backend: String, // "cli" | "onnx" | "comfyui"
-    pub model: String,   // "standard" | "anime"
-    #[serde(default)]
-    pub onnx_model: Option<String>,
-    pub scale: u32, // 0 = smart/auto, 2, 3, 4
-    pub compress: bool,
-    pub format: String, // "jxl" | "webp" | "jpeg" | "png"
-    pub quality: u8,
-    #[serde(default)]
-    pub keep_png: bool,
-    #[serde(default = "default_destination")]
-    pub destination: String, // "default" | "source" | "custom"
-    #[serde(default)]
-    pub custom_path: Option<PathBuf>,
-    #[serde(default)]
-    pub comfyui_workflow: Option<String>, // "esrgan" | "seedvr2"
-}
-
-fn default_destination() -> String {
-    "default".to_string()
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ExportStepSettings {
-    pub format: String,        // "jxl" | "webp" | "png" | "jpeg"
-    pub max_edge: Option<u32>, // None = original size
-    pub quality: u8,
-    #[serde(default = "default_destination")]
-    pub destination: String, // "default" | "source" | "custom"
-    #[serde(default)]
-    pub custom_path: Option<PathBuf>,
-}
-
-pub fn build_compare_asset_info(title: &str, path: &Path) -> CompareAssetInfo {
-    CompareAssetInfo {
-        title: title.to_string(),
-        path: path.to_path_buf(),
-        format: compare_asset_format(path),
-        dimensions: image::image_dimensions(path).unwrap_or((0, 0)),
-        file_size: std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0),
+impl CompareItem {
+    pub fn from_paths(left: PathBuf, right: PathBuf) -> Self {
+        Self {
+            left: build_compare_asset_info("Left", left),
+            right: build_compare_asset_info("Right", right),
+        }
     }
 }
 
-pub fn compare_output_title(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("png") => "Output",
-        _ => "Compressed Output",
+pub fn ordered_selected_paths(
+    filmstrip_paths: impl IntoIterator<Item = PathBuf>,
+    selected: &HashSet<PathBuf>,
+) -> Option<(PathBuf, PathBuf)> {
+    if selected.len() != 2 {
+        return None;
+    }
+    let mut ordered = filmstrip_paths
+        .into_iter()
+        .filter(|path| selected.contains(path));
+    let left = ordered.next()?;
+    let right = ordered.next()?;
+    ordered.next().is_none().then_some((left, right))
+}
+
+fn build_compare_asset_info(title: &str, path: PathBuf) -> CompareAssetInfo {
+    CompareAssetInfo {
+        title: title.to_string(),
+        format: compare_asset_format(&path),
+        dimensions: image::image_dimensions(&path).ok(),
+        file_size: std::fs::metadata(&path).ok().map(|meta| meta.len()),
+        path,
     }
 }
 
@@ -102,90 +70,28 @@ pub fn compare_asset_format(path: &Path) -> String {
     }
 }
 
-pub fn build_compare_item_from_pipeline(
-    pipeline: &Pipeline,
-    idx: &LibraryIndex,
-) -> Option<CompareItem> {
-    let steps = idx.steps_for_pipeline(pipeline.id).unwrap_or_default();
-
-    // We want the latest completed/failed step that has an output
-    let display_step = steps
-        .iter()
-        .rev()
-        .find(|s| s.output_path.as_ref().map(|p| p.exists()).unwrap_or(false))?;
-
-    let mut model = "Unknown".to_string();
-    let mut scale = "-".to_string();
-
-    match display_step.step_type {
-        StepType::Upscale => {
-            if let Ok(settings) =
-                serde_json::from_str::<UpscaleStepSettings>(&display_step.settings_json)
-            {
-                model = settings.model.clone();
-                scale = match settings.scale {
-                    0 => "Smart scale".to_string(),
-                    value => format!("{value}×"),
-                };
-            }
-        }
-        StepType::Export => {
-            if let Ok(settings) =
-                serde_json::from_str::<ExportStepSettings>(&display_step.settings_json)
-            {
-                model = "None (Export)".to_string();
-                scale = settings
-                    .max_edge
-                    .map(|e| format!("Max {}px", e))
-                    .unwrap_or_else(|| "Original".to_string());
-            }
-        }
-    }
-
-    let date_added = glib::DateTime::from_unix_local(pipeline.created_at)
-        .unwrap_or_else(|_| glib::DateTime::now_local().unwrap());
-
-    let output = display_step.output_path.as_ref().unwrap();
-    let preserved_png = preserved_png_temp_path(output);
-
-    Some(CompareItem {
-        pipeline_id: pipeline.id,
-        source_path: pipeline.source_path.clone(),
-        output_path: output.clone(),
-        original_asset: build_compare_asset_info("Original", &pipeline.source_path),
-        output_asset: build_compare_asset_info(compare_output_title(output), output),
-        preserved_png_asset: preserved_png
-            .exists()
-            .then(|| build_compare_asset_info("PNG Sidecar", &preserved_png)),
-        model,
-        scale,
-        date_added,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn compare_output_title_uses_plain_output_for_png() {
-        assert_eq!(
-            compare_output_title(Path::new("/tmp/example.png")),
-            "Output"
-        );
-        assert_eq!(
-            compare_output_title(Path::new("/tmp/example.jxl")),
-            "Compressed Output"
-        );
+    fn compare_requires_exactly_two_selected_paths() {
+        let paths = vec![PathBuf::from("a.jpg"), PathBuf::from("b.jpg")];
+        assert!(ordered_selected_paths(paths.clone(), &HashSet::new()).is_none());
+        assert!(ordered_selected_paths(paths, &HashSet::from([PathBuf::from("a.jpg")])).is_none());
     }
 
     #[test]
-    fn compare_asset_format_normalizes_common_extensions() {
-        assert_eq!(compare_asset_format(Path::new("/tmp/example.jpg")), "JPEG");
+    fn compare_uses_filmstrip_order() {
+        let paths = vec![
+            PathBuf::from("c.jpg"),
+            PathBuf::from("a.jpg"),
+            PathBuf::from("b.jpg"),
+        ];
+        let selected = HashSet::from([PathBuf::from("b.jpg"), PathBuf::from("c.jpg")]);
         assert_eq!(
-            compare_asset_format(Path::new("/tmp/example.jxl")),
-            "JPEG XL"
+            ordered_selected_paths(paths, &selected),
+            Some((PathBuf::from("c.jpg"), PathBuf::from("b.jpg")))
         );
-        assert_eq!(compare_asset_format(Path::new("/tmp/example.webp")), "WebP");
     }
 }

@@ -10,7 +10,7 @@ use std::sync::{Arc, Once};
 use crate::quality::{scorer, QualityScore};
 use crate::tags::TagDatabase;
 use crate::ui::metadata_chip::MetadataChip;
-use crate::ui::window::AppState;
+use crate::ui::state::AppState;
 
 const TAG_CHIP_COLOR_PALETTE: &[&str] = &[
     "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
@@ -159,8 +159,6 @@ mod imp {
         pub spinner: gtk4::Spinner,
         /// Shown briefly when a decode error prevents the image from loading.
         pub error_label: gtk4::Label,
-        /// OSD progress bar — shown during an upscale job, hidden otherwise.
-        pub progress_bar: gtk4::ProgressBar,
         pub zoom_label: gtk4::Label,
         pub zoom_hide_source: RefCell<Option<glib::SourceId>>,
         pub tag_popover: gtk4::Popover,
@@ -172,11 +170,6 @@ mod imp {
         pub new_tag_create_btn: gtk4::Button,
         pub new_tag_cancel_btn: gtk4::Button,
         pub manage_tags_btn: gtk4::Button,
-        pub smart_tag_btn: gtk4::Button,
-        pub smart_tag_spinner: gtk4::Spinner,
-        pub suggestions_box: gtk4::Box,
-        pub suggestions_flow: gtk4::FlowBox,
-        pub suggestions_add_all: gtk4::Button,
         pub(super) tag_state: Rc<RefCell<TagPopoverState>>,
         /// Path of the image currently displayed — set by load_image(), cleared by clear().
         pub current_path: RefCell<Option<PathBuf>>,
@@ -271,12 +264,6 @@ mod imp {
             tag_osd.append(&tag_chips_box);
             tag_osd.append(&tag_add_button);
 
-            let progress_bar = gtk4::ProgressBar::new();
-            progress_bar.add_css_class("osd");
-            progress_bar.set_halign(gtk4::Align::Fill);
-            progress_bar.set_valign(gtk4::Align::End);
-            progress_bar.set_visible(false);
-
             let zoom_label = gtk4::Label::new(None);
             zoom_label.add_css_class("osd");
             zoom_label.add_css_class("title-2");
@@ -329,22 +316,6 @@ mod imp {
             selected_box.append(&selected_list);
             lists_vbox.append(&selected_box);
 
-            let suggestions_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-            suggestions_box.set_visible(false);
-            let suggested_header = gtk4::Label::new(Some("SUGGESTED"));
-            suggested_header.set_halign(gtk4::Align::Start);
-            suggested_header.add_css_class("dim-label");
-            suggested_header.add_css_class("caption-heading");
-            let suggestions_flow = gtk4::FlowBox::new();
-            suggestions_flow.set_selection_mode(gtk4::SelectionMode::None);
-            suggestions_flow.set_row_spacing(4);
-            suggestions_flow.set_column_spacing(4);
-            suggestions_flow.set_homogeneous(false);
-            suggestions_flow.set_valign(gtk4::Align::Start);
-            suggestions_box.append(&suggested_header);
-            suggestions_box.append(&suggestions_flow);
-            lists_vbox.append(&suggestions_box);
-
             let all_tags_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
             let all_tags_header = gtk4::Label::new(Some("ALL TAGS"));
             all_tags_header.set_halign(gtk4::Align::Start);
@@ -382,31 +353,14 @@ mod imp {
             new_tag_cancel_btn.add_css_class("flat");
             new_tag_cancel_btn.set_visible(false);
 
-            let smart_tag_btn = gtk4::Button::from_icon_name("starred-symbolic");
-            smart_tag_btn.add_css_class("flat");
-            smart_tag_btn.set_tooltip_text(Some("Suggest tags with AI"));
-            smart_tag_btn.set_visible(false);
-
-            let smart_tag_spinner = gtk4::Spinner::new();
-            smart_tag_spinner.set_visible(false);
-            smart_tag_spinner.set_size_request(16, 16);
-
             action_bar.append(&new_tag_btn);
             action_bar.append(&new_tag_entry);
             action_bar.append(&new_tag_cancel_btn);
             action_bar.append(&new_tag_create_btn);
-            action_bar.append(&smart_tag_spinner);
-            action_bar.append(&smart_tag_btn);
             action_bar.append(&manage_tags_btn);
 
             popover_vbox.append(&action_bar);
             tag_popover.set_child(Some(&popover_vbox));
-
-            let suggestions_add_all = gtk4::Button::with_label("Add All");
-            suggestions_add_all.add_css_class("suggested-action");
-            suggestions_add_all.set_halign(gtk4::Align::End);
-            suggestions_add_all.set_visible(false);
-            suggestions_box.append(&suggestions_add_all);
 
             let tag_state = Rc::new(RefCell::new(TagPopoverState::default()));
 
@@ -416,7 +370,6 @@ mod imp {
             overlay.add_overlay(&metadata_chip);
             overlay.add_overlay(&spinner);
             overlay.add_overlay(&error_label);
-            overlay.add_overlay(&progress_bar);
             overlay.add_overlay(&zoom_label);
 
             content_box.append(&overlay);
@@ -434,7 +387,6 @@ mod imp {
                 tag_add_button,
                 spinner,
                 error_label,
-                progress_bar,
                 zoom_label,
                 zoom_hide_source: RefCell::new(None),
                 tag_popover,
@@ -446,11 +398,6 @@ mod imp {
                 new_tag_create_btn,
                 new_tag_cancel_btn,
                 manage_tags_btn,
-                smart_tag_btn,
-                smart_tag_spinner,
-                suggestions_box,
-                suggestions_flow,
-                suggestions_add_all,
                 tag_state,
                 current_path: RefCell::new(None),
                 zoom_btn: std::cell::RefCell::new(None),
@@ -1066,22 +1013,6 @@ impl ViewerPane {
         self.imp().zoom_mode.get()
     }
 
-    /// Returns RGBA bytes for the currently displayed texture.
-    fn displayed_rgba(&self) -> Option<(Vec<u8>, u32, u32)> {
-        let texture = self
-            .imp()
-            .picture
-            .paintable()?
-            .downcast::<gdk4::Texture>()
-            .ok()?;
-        let width = texture.width() as u32;
-        let height = texture.height() as u32;
-        let mut bytes = vec![0u8; (width * height * 4) as usize];
-
-        texture.download(&mut bytes, (width * 4) as usize);
-        Some((bytes, width, height))
-    }
-
     // -----------------------------------------------------------------------
     // Metadata overlay
     // -----------------------------------------------------------------------
@@ -1123,27 +1054,12 @@ impl ViewerPane {
         imp.tag_popover.popup();
     }
 
-    pub fn show_smart_tag_btn(&self) {
-        self.imp().smart_tag_btn.set_visible(true);
-    }
-
     fn build_tag_popover(&self) {
         let imp = self.imp();
 
         let entry = imp.tag_entry.clone();
         imp.tag_popover.connect_show(move |_| {
             entry.grab_focus();
-        });
-
-        let sugg_box = imp.suggestions_box.clone();
-        let sugg_flow = imp.suggestions_flow.clone();
-        let sugg_add_all = imp.suggestions_add_all.clone();
-        imp.tag_popover.connect_closed(move |_| {
-            while let Some(child) = sugg_flow.first_child() {
-                sugg_flow.remove(&child);
-            }
-            sugg_add_all.set_visible(false);
-            sugg_box.set_visible(false);
         });
 
         let key = gtk4::EventControllerKey::new();
@@ -1248,133 +1164,6 @@ impl ViewerPane {
                 handle_create_tag(&viewer, entry.text().as_str());
                 hide_clone2();
             }
-        });
-
-        let viewer_weak = self.downgrade();
-        imp.smart_tag_btn.connect_clicked(move |btn| {
-            let Some(viewer) = viewer_weak.upgrade() else {
-                return;
-            };
-            let imp = viewer.imp();
-            let Some((rgba, w, h)) = viewer.displayed_rgba() else {
-                return;
-            };
-            let tagger = imp
-                .state
-                .borrow()
-                .as_ref()
-                .and_then(|s| s.borrow().smart_tagger.clone());
-            let Some(tagger) = tagger else {
-                return;
-            };
-            let db_path = {
-                let state = imp.tag_state.borrow();
-                state.db.clone().zip(state.path.clone())
-            };
-            let Some((db, path)) = db_path else {
-                return;
-            };
-
-            btn.set_visible(false);
-            imp.smart_tag_spinner.set_spinning(true);
-            imp.smart_tag_spinner.set_visible(true);
-            while let Some(child) = imp.suggestions_flow.first_child() {
-                imp.suggestions_flow.remove(&child);
-            }
-            imp.suggestions_add_all.set_visible(false);
-            imp.suggestions_box.set_visible(false);
-
-            let (tx, rx) = async_channel::bounded::<Vec<String>>(1);
-            std::thread::spawn(move || {
-                let tags = tagger.suggest_tags(&rgba, w, h);
-                tx.send_blocking(tags).ok();
-            });
-
-            let viewer_weak2 = viewer.downgrade();
-            let db2 = db.clone();
-            let path2 = path.clone();
-            glib::MainContext::default().spawn_local(async move {
-                let Ok(tags) = rx.recv().await else {
-                    return;
-                };
-                let Some(viewer) = viewer_weak2.upgrade() else {
-                    return;
-                };
-                let imp = viewer.imp();
-
-                imp.smart_tag_spinner.set_spinning(false);
-                imp.smart_tag_spinner.set_visible(false);
-                imp.smart_tag_btn.set_visible(true);
-                if tags.is_empty() {
-                    return;
-                }
-
-                for tag in &tags {
-                    let chip = gtk4::Button::with_label(tag);
-                    chip.add_css_class("flat");
-                    chip.add_css_class("pill");
-                    chip.add_css_class("suggested-tag-chip");
-
-                    let db3 = db2.clone();
-                    let path3 = path2.clone();
-                    let tag3 = tag.clone();
-                    let viewer_weak3 = viewer.downgrade();
-                    chip.connect_clicked(move |chip| {
-                        db3.add_tag(&path3, &tag3);
-                        if let Some(parent) = chip.parent() {
-                            if let Some(flow_child) = parent.parent() {
-                                if let Ok(fc) = flow_child.downcast::<gtk4::FlowBoxChild>() {
-                                    if let Some(flow) = fc.parent() {
-                                        if let Ok(fb) = flow.downcast::<gtk4::FlowBox>() {
-                                            fb.remove(&fc);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if let Some(viewer) = viewer_weak3.upgrade() {
-                            viewer.refresh_tag_chips();
-                            viewer.refresh_tag_summary();
-                        }
-                    });
-
-                    let child = gtk4::FlowBoxChild::new();
-                    child.set_child(Some(&chip));
-                    imp.suggestions_flow.insert(&child, -1);
-                }
-
-                imp.suggestions_add_all.set_visible(true);
-                imp.suggestions_box.set_visible(true);
-            });
-        });
-
-        let viewer_weak = self.downgrade();
-        imp.suggestions_add_all.connect_clicked(move |_| {
-            let Some(viewer) = viewer_weak.upgrade() else {
-                return;
-            };
-            let imp = viewer.imp();
-            let state = imp.tag_state.borrow();
-            let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) else {
-                return;
-            };
-            drop(state);
-
-            let mut child = imp.suggestions_flow.first_child();
-            while let Some(flow_child) = child {
-                child = flow_child.next_sibling();
-                if let Ok(fc) = flow_child.downcast::<gtk4::FlowBoxChild>() {
-                    if let Some(btn) = fc.child().and_then(|w| w.downcast::<gtk4::Button>().ok()) {
-                        db.add_tag(&path, &btn.label().unwrap_or_default());
-                    }
-                    imp.suggestions_flow.remove(&fc);
-                }
-            }
-
-            imp.suggestions_add_all.set_visible(false);
-            imp.suggestions_box.set_visible(false);
-            viewer.refresh_tag_chips();
-            viewer.refresh_tag_summary();
         });
     }
 
