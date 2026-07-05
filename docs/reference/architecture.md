@@ -1,75 +1,47 @@
 # Sharpr Architecture Reference
 
-Sharpr is a GTK4 + Libadwaita image curation app written in Rust. It uses code-first UI construction, GObject widgets, GSettings, SQLite-backed local indexes, background workers, and optional local/remote AI backends.
+Sharpr is a GTK4 + Libadwaita image curation viewer written in Rust. It uses code-first UI construction, GObject widgets, GSettings, SQLite-backed local indexes, background workers, and no runtime networking.
 
 ## Runtime Shape
 
-- GTK widgets and `AppState` live on the main thread.
-- UI state uses `Rc<RefCell<AppState>>`.
-- Background work uses `std::thread::spawn` plus `async_channel`.
-- UI application of background results happens through `glib::MainContext::spawn_local`.
-- Stale async results are prevented with generation counters, especially for viewer loads, thumbnails, virtual views, compare mode, and task results.
-- Long-running visible work should use `ops::queue` instead of one-off progress UI.
+- GTK widgets and `AppState` stay on the main thread in `ui/state.rs` using `Rc<RefCell<_>>`.
+- Heavy decoding, scanning, hashing, metadata work, and resizing use worker threads plus `async_channel`.
+- UI results return through `glib::MainContext::spawn_local`.
+- Generation counters reject stale viewer, thumbnail, virtual-view, and Compare work.
+- `ops::queue` tracks transient work only; there is no persistent task queue.
 
 ## Module Map
 
 | Area | Responsibility |
 | --- | --- |
-| `src/main.rs` | Startup, `rexiv2` init, GResource registration |
-| `src/app.rs` | `adw::Application` subclass, app actions, about dialog |
-| `src/ui/` | Main window, panes, dialogs, Tasks, compare, preferences, help |
-| `src/ui/window/` | Main shell wiring and `AppState`; avoid adding new behavior directly here |
-| `src/model/` | `ImageEntry`, folder nodes, `LibraryManager` |
-| `src/library_index/` | Persistent SQLite library index and migration logic |
-| `src/tags/` | SQLite-backed tags, tag indexing, local smart tagging |
-| `src/thumbnails/` | Background thumbnail decode, two-queue scheduling, cache |
-| `src/image_pipeline/` | Shared preview decode and metadata workers |
-| `src/quality/` | Resolution-based quality scoring and thumbnail sharpness helper |
+| `src/ui/window.rs` | Main shell and cross-pane wiring; avoid adding feature controllers here |
+| `src/ui/state.rs` | Shared `AppState` and `ViewScope` definitions |
+| `src/ui/compare_*` | Generic two-path comparison model, page, and controller |
+| `src/ui/resize_dialog.rs` | Resize Copy dialog and worker orchestration |
+| `src/export/` | Focused Resize Copy service and encoders |
+| `src/library_index/` | SQLite curation/index persistence |
+| `src/library_index/schema.rs` | Fresh-database schema initialization |
+| `src/model/` | `ImageEntry`, folder nodes, and `LibraryManager` |
+| `src/thumbnails/` | Visible-first background thumbnail scheduling and cache |
+| `src/image_pipeline/` | Viewer preview and metadata workers |
+| `src/tags/` | Manual tags plus automatic format/resolution tags |
 | `src/duplicates/` | Perceptual duplicate detection |
-| `src/export/` | Export pipeline for JPEG, JXL, PNG, WebP |
-| `src/upscale/` | CLI, ONNX, and ComfyUI upscale backends |
-| `src/ops/` | Background operation progress model |
-| `src/config/` | GSettings-backed app settings |
-| `src/bench.rs` | Structured JSONL logging macros and writer |
-| `data/` | GSettings schema, desktop metadata, GResource manifest, help assets, icons |
-| `packaging/` | Flatpak manifest and vendored source metadata |
+| `src/quality/` | Resolution-based quality views |
+| `src/ops/` | Transient background-operation events |
 
-## Data Flow
+## Data Rules
 
-1. User opens a folder.
-2. `LibraryManager` scans image paths without blocking the UI and keeps the `gio::ListStore<ImageEntry>` plus path indexes in sync.
-3. `library_index` persists metadata and curation state for speed and reconciliation.
-4. Filmstrip requests thumbnails through the two-queue thumbnail worker: visible thumbnails first, preload work second.
-5. Viewer loads full-resolution images asynchronously through Glycin.
-6. Metadata, tags, duplicate hashes, quality views, exports, and upscales run in background paths and apply results only if their generation is current.
-7. Tasks records long-running export/upscale/format work and should be the visible dashboard for generated outputs.
+- Folders remain authoritative. SQLite accelerates and remembers curation state.
+- `LibraryManager` store state, path indexes, selected index, and caches must stay synchronized.
+- Disabled folders apply to every direct, indexed, virtual, duplicate, quality, collection, metadata, hash, and tag path.
+- Compare receives exactly two ordered paths and holds no persistent source/output model.
+- Resize Copy decodes displayed orientation, resamples with Lanczos, writes a unique new file, strips embedded metadata by re-encoding, and removes partial files on failure.
+- Legacy task tables and obsolete GSettings keys are never read, written, migrated, or dropped at runtime.
 
-## State Rules
+## Follow-Up Boundaries
 
-- `LibraryManager` is the central image list store and cache coordinator.
-- Keep store state, path indexes, selected index, and caches consistent after move, rename, trash, virtual view, and collection changes.
-- Disabled folders must be respected by every scanning/query surface.
-- Focused Image Sets are temporary views, not replacement libraries.
-- SQLite may accelerate and remember curation state, but folder contents remain authoritative.
+`window.rs` and `library_index/mod.rs` remain large. Split sidebar/filmstrip orchestration and image/collection/reconciliation persistence when feature work naturally reaches those areas; do not perform a broad rewrite.
 
-## UI Boundaries
+## Packaging
 
-- Keep UI work in the relevant `src/ui/` module.
-- Do not add new behavior directly to `src/ui/window/` when touching compare mode, collection dialogs, or viewer layout wiring. Extract the relevant chunk first or use an existing focused module.
-- `tasks_page.rs` is large; extract helpers when useful, but do not split it preemptively unless a Tasks feature makes the boundary necessary.
-- Prefer existing action, dialog, popover, overlay, and preferences patterns already present in the app.
-
-## Persistence
-
-- Add persisted preferences in both `data/io.github.hebbihebb.Sharpr.gschema.xml` and `src/config/settings.rs`.
-- Clamp and sanitize loaded values in Rust even when the schema provides defaults.
-- Prefer focused setters on `AppSettings`.
-- For index work, prefer loading existing SQLite rows before filesystem reconciliation and batch writes in transactions.
-
-## Assets And Packaging
-
-- Runtime assets belong under `data/`.
-- If an asset must be embedded, update `data/io.github.hebbihebb.Sharpr.gresource.xml`.
-- Check whether `build.rs` needs `cargo:rerun-if-changed` updates for new schemas/resources.
-- Native and Flatpak behavior should remain aligned.
-- If `Cargo.lock` changes, regenerate `packaging/cargo-sources.json`.
+The Flatpak contains no Real-ESRGAN or ONNX Runtime module. If `Cargo.lock` changes, regenerate `packaging/cargo-sources.json`.

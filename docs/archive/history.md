@@ -26,3 +26,9 @@ This is a compact historical summary. It replaces the old `HISTORY.html` as the 
 - Add generation counters to stale-prone background flows.
 - Use platform widgets and libraries before custom code.
 - Keep agent docs short enough to be read and maintained.
+
+## July 2026
+
+- Sharpr reset to a viewer-first, fully local curation product.
+- Tasks, processing pipelines, AI upscale/tagging, model downloads, and runtime networking were removed.
+- Generic two-image Compare and deterministic Resize Copy replaced generated-output review and processing workflows.

@@ -27,6 +27,10 @@ Step 14f: Tasks queue batch selection and bulk edit.
 - Batch controls apply selected setting edits across rows.
 - The master plan was updated to move this item into the archive.
 
+## Viewer-First Reset
+
+The July 2026 reset removed the Tasks dashboard and persistent pipeline, all upscale backends and model assets, local AI tag suggestions, generated-output comparison state, and runtime networking. It retained the viewer/curation foundation, introduced generic two-selection Compare and Resize Copy, and isolated shared UI state plus schema initialization. The former external-edit/version roadmap is archived.
+
 ## Archive Policy
 
 - Completed implementation notes belong here only when they are useful to future agents.

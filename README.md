@@ -1,63 +1,38 @@
 # Sharpr
 
-A high-performance, local-first image curation tool and viewer for Linux, built with GTK4, Libadwaita, and Rust.
+A fast, local-first image curation viewer for Linux, built with GTK4, Libadwaita, and Rust.
 
 ![Sharpr — Dark mode showing image curation and the high-resolution viewer](./screenshot.webp)
 
 ## Features
 
-- **Zero-Latency Navigation:** Browse massive folders instantly with chunked loading and background thumbnail caching.
-- **Modern Image Pipeline:** Secure, sandboxed image decoding via [Glycin](https://gitlab.gnome.org/GNOME/glycin), providing robust format support.
-- **Pro Curation Workflow:** Organize images with virtual collections, smart tagging, and quality scoring—all stored in a local SQLite database so your original files remain untouched.
-- **Intelligent Tools:** Detect duplicates via perceptual hashing and enhance images with local AI models (NCNN or ComfyUI).
-- **Modern Linux Native:** Built with GTK4 and Libadwaita for a deeply integrated, adaptive GNOME experience.
+- Responsive folder browsing with visible-first background thumbnails.
+- Full-resolution viewing, zoom, metadata, and presentation mode.
+- Manual tags, automatic format/resolution tags, and virtual collections.
+- Duplicate detection and resolution-based quality views.
+- Generic side-by-side Compare for exactly two selected filmstrip images.
+- Non-destructive Resize Copy to JPEG, PNG, WebP, or JPEG XL.
+- No runtime networking, model downloads, or AI processing.
 
-## Getting Started
+Folders remain the source of truth. Sharpr never modifies original image files; Resize Copy creates a uniquely named output, and Delete moves files to the system trash only after an explicit action.
 
-### Flatpak (Recommended)
+## Build And Run
 
-**First-time setup:**
-
-```bash
-# Install flatpak-builder
-sudo dnf install flatpak-builder        # Fedora
-# or: sudo apt install flatpak-builder  # Ubuntu/Debian
-
-# Install the required runtime and Rust SDK extension
-flatpak install --user flathub \
-  org.gnome.Platform//50 \
-  org.gnome.Sdk//50 \
-  org.freedesktop.Sdk.Extension.rust-stable//25.08
-```
-
-**Build and run:**
+### Flatpak
 
 ```bash
 cd sharpr/packaging
-
-# Sync source tree
 bash sync-flatpak-source.sh
-
-# Regenerate cargo sources (only needed when Cargo.lock changes)
 flatpak-cargo-generator ../Cargo.lock -o cargo-sources.json
-
-# Build and install (~6 min first time)
 flatpak-builder --force-clean --user --install build-dir io.github.hebbihebb.Sharpr.yml
-
 flatpak run io.github.hebbihebb.Sharpr
 ```
 
-> **Note:** The build is capped at 4 parallel jobs to prevent RAM exhaustion from the C++ vendored dependencies. Do not remove `--jobs 4` from the manifest.
+The manifest targets GNOME 50 and requires the GNOME SDK plus the Rust stable SDK extension.
 
 ### Native Development
 
-**Dependencies (Fedora):**
-
-```bash
-sudo dnf install gtk4-devel libadwaita-devel gexiv2-devel pkg-config gcc
-```
-
-**Run:**
+On Fedora, install `gtk4-devel`, `libadwaita-devel`, `gexiv2-devel`, `pkg-config`, and `gcc`, then run:
 
 ```bash
 cd sharpr
@@ -65,28 +40,21 @@ glib-compile-schemas data/
 GSETTINGS_SCHEMA_DIR=data cargo run
 ```
 
-**Release build:**
-
-```bash
-cargo build --release
-```
-
-## Shortcuts
+## Core Shortcuts
 
 | Key | Action |
-|-----|--------|
-| Alt+Left / Right | Previous / Next image |
-| Ctrl+Scroll / 0 | Zoom / Reset to Fit |
-| Z | Toggle 1:1 Pixels |
-| F11 | Toggle Fullscreen |
-| Delete | Move to Trash |
-| Ctrl+T | Open Tag Editor |
+| --- | --- |
+| Alt+Left / Alt+Right | Previous / next image |
+| Ctrl+Scroll | Zoom |
+| Ctrl+0 | Fit image |
+| Ctrl+T | Open tag editor |
+| Ctrl+1 / Ctrl+2 | Viewer / Tags |
+| F9 | Toggle library sidebar |
+| F11 | Toggle presentation mode |
+| Delete | Move selected images to trash |
 | ? | Show all shortcuts |
 
-## System Requirements
-
-- Minimum window size: 1024 × 600 logical pixels (standard GNOME desktop minimum).
-- Phone-narrow or tablet-small sizes (below ~360 × 294 px) are out of scope.
+Minimum supported window size: 1024 × 600 logical pixels.
 
 ## License
 

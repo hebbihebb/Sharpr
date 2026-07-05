@@ -1,4 +1,6 @@
-# External Edit Workflow And Image Families
+# Archived: External Edit Workflow And Image Families
+
+This design is superseded by the viewer-first reset. Image families, managed edits, promotion, and Tasks integration are not active roadmap scope. Retain this document only as historical research if that product direction is explicitly reconsidered.
 
 Sharpr should support image families: a root original plus generated, edited, converted, or externally returned versions. Normal browsing shows one preferred version per family. Version review opens a focused Compare workspace with all versions available in a virtual filmstrip.
 

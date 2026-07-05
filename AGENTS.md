@@ -16,8 +16,8 @@ These instructions are the source of truth for AI coding agents working in this 
 
 - The Rust application lives in `sharpr/`.
 - Sharpr is a GNOME-native, local-first image curation tool built with Rust, GTK4, Libadwaita, GSettings, SQLite-backed local indexes, background thumbnail/hash workers, and optional AI features.
-- The core workflow is fast folder review: open a folder, move through the filmstrip, decide what to keep or trash, compare similar images, tag and collect keepers, and route export/upscale/format work through Tasks.
-- Folders are the source of truth. SQLite/cache state exists for speed, stability, task history, metadata, collections, and curation state. Do not make SQLite the only truth for a user's library.
+- The core workflow is fast folder review: open a folder, move through the filmstrip, decide what to keep or trash, compare two selections, and tag or collect keepers.
+- Folders are the source of truth. SQLite/cache state exists for speed, stability, metadata, collections, and curation state. Do not make SQLite the only truth for a user's library.
 
 ## Required Workflow
 
@@ -59,7 +59,7 @@ GSETTINGS_SCHEMA_DIR=data cargo run
 - Import workflow, saved searches, batch rename, embedded metadata writing, full image editor features, arbitrary scripting
 - Color management as a near-term project unless specifically requested
 
-**Optional/privacy-sensitive features:** AI tagging, ComfyUI upscaling, and any future API-based features must remain opt-in and clearly indicate when an image may leave the machine.
+**Removed scope:** Tasks, processing pipelines, AI tagging/upscaling, model downloads, ComfyUI, and runtime networking must not be reintroduced without an explicit product-direction decision.
 
 ## Research Before Reinventing
 
@@ -87,7 +87,7 @@ Use `bench_event!`, `bench_warn!`, and `bench_error!` for observable events or e
 - Keep GTK objects on the main thread. Do not use `Arc`/`Mutex` on GTK objects.
 - Use `Rc<RefCell<AppState>>` for main-thread UI state.
 - Use background workers plus channels (`async_channel`) for heavy work; drain results back through `glib::MainContext::spawn_local`.
-- Protect stale-result flows with generation counters. Viewer, thumbnail worker, virtual-folder loads, compare mode, and task results all rely on this discipline.
+- Protect stale-result flows with generation counters. Viewer, thumbnail worker, virtual-folder loads, and compare mode all rely on this discipline.
 - Keep `LibraryManager` store state, path indexes, selected index, and caches in sync.
 - Respect disabled folders everywhere: direct folder opens, indexing, smart folders, virtual views, duplicate detection, quality views, collections, metadata, hashes, tags, and future version storage.
 - Protect filmstrip and thumbnail responsiveness above theoretical micro-optimizations.
