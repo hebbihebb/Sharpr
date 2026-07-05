@@ -56,29 +56,8 @@ pub struct AppSettings {
     pub active_library_id: Option<String>,
     /// Optional custom folder for resized copies.
     pub resize_output_dir: Option<PathBuf>,
-    // Inert legacy values retained only so older in-module migration helpers
-    // remain source-compatible. Runtime code does not read or write them.
-    upscaler_binary_path: Option<PathBuf>,
-    upscaled_output_dir: Option<PathBuf>,
-    export_output_dir: Option<PathBuf>,
-    upscaler_default_model: String,
-    upscale_compress_output: bool,
-    upscale_compressed_format: String,
-    upscale_keep_raw_png_sidecar: bool,
-    upscaler_compression_mode: String,
-    upscaler_quality: i32,
-    upscaler_tile_size: i32,
-    upscaler_gpu_id: i32,
     /// Maximum thumbnail entries to retain in memory.
     pub thumbnail_cache_max: i32,
-    smart_tagger_model: String,
-    show_upscale_ui: bool,
-    upscale_backend: String,
-    onnx_upscale_model: String,
-    comfyui_url: String,
-    comfyui_workflow: String,
-    comfyui_enabled: bool,
-    pipeline_history_cap: i32,
     settings: gio::Settings,
 }
 
@@ -135,26 +114,7 @@ impl Default for AppSettings {
             active_library_id: Some(library.id.clone()),
             libraries: vec![library],
             resize_output_dir: None,
-            upscaler_binary_path: None,
-            upscaled_output_dir: None,
-            export_output_dir: None,
-            upscaler_default_model: "standard".into(),
-            upscale_compress_output: true,
-            upscale_compressed_format: "jxl".into(),
-            upscale_keep_raw_png_sidecar: false,
-            upscaler_compression_mode: "auto".into(),
-            upscaler_quality: 90,
-            upscaler_tile_size: 0,
-            upscaler_gpu_id: -1,
             thumbnail_cache_max: 500,
-            smart_tagger_model: "resnet50-v1-7".into(),
-            show_upscale_ui: false,
-            upscale_backend: "cli".into(),
-            onnx_upscale_model: "swin2sr-lightweight-x2".into(),
-            comfyui_url: "http://127.0.0.1:8188".into(),
-            comfyui_workflow: "esrgan".into(),
-            comfyui_enabled: false,
-            pipeline_history_cap: 500,
             settings: settings_for_app(),
         }
     }
@@ -191,7 +151,6 @@ impl AppSettings {
             resize_output_dir: string_path(&settings, "resize-output-dir"),
             thumbnail_cache_max: settings.int("thumbnail-cache-max").clamp(100, 2000),
             settings,
-            ..Self::default()
         }
     }
 
@@ -600,6 +559,7 @@ impl AppSettings {
         self.save();
     }
 
+    #[cfg(any())]
     pub fn set_upscale_backend(&mut self, value: &str) {
         self.upscale_backend = match value {
             "onnx" => "onnx".to_string(),
@@ -611,11 +571,13 @@ impl AppSettings {
             .set_string("upscale-backend", &self.upscale_backend);
     }
 
+    #[cfg(any())]
     pub fn set_comfyui_url(&mut self, value: &str) {
         self.comfyui_url = value.to_string();
         let _ = self.settings.set_string("comfyui-url", &self.comfyui_url);
     }
 
+    #[cfg(any())]
     pub fn set_comfyui_workflow(&mut self, value: &str) {
         self.comfyui_workflow = match value {
             "seedvr2" => "seedvr2".to_string(),
@@ -626,11 +588,13 @@ impl AppSettings {
             .set_string("comfyui-workflow", &self.comfyui_workflow);
     }
 
+    #[cfg(any())]
     pub fn set_comfyui_enabled(&mut self, value: bool) {
         self.comfyui_enabled = value;
         let _ = self.settings.set_boolean("comfyui-enabled", value);
     }
 
+    #[cfg(any())]
     pub fn set_onnx_upscale_model(&mut self, value: &str) {
         self.onnx_upscale_model = match value {
             "swin2sr-compressed-x4" => "swin2sr-compressed-x4".to_string(),
@@ -657,6 +621,7 @@ impl AppSettings {
         let _ = self.settings.set_string("library-root", &value);
     }
 
+    #[cfg(any())]
     pub fn set_upscaler_binary_path(&mut self, path: Option<PathBuf>) {
         self.upscaler_binary_path = path;
         let value = self
@@ -667,6 +632,7 @@ impl AppSettings {
         let _ = self.settings.set_string("upscaler-binary-path", &value);
     }
 
+    #[cfg(any())]
     pub fn set_upscaled_output_dir(&mut self, path: Option<PathBuf>) {
         self.upscaled_output_dir = path;
         let value = self
@@ -677,6 +643,7 @@ impl AppSettings {
         let _ = self.settings.set_string("upscaled-output-dir", &value);
     }
 
+    #[cfg(any())]
     pub fn set_export_output_dir(&mut self, path: Option<PathBuf>) {
         self.export_output_dir = path;
         let value = self
@@ -687,6 +654,7 @@ impl AppSettings {
         let _ = self.settings.set_string("export-output-dir", &value);
     }
 
+    #[cfg(any())]
     pub fn set_upscaler_default_model(&mut self, model: &str) {
         self.upscaler_default_model = if model == "anime" {
             "anime".to_string()
@@ -698,6 +666,7 @@ impl AppSettings {
             .set_string("upscaler-default-model", &self.upscaler_default_model);
     }
 
+    #[cfg(any())]
     pub fn set_upscale_compress_output(&mut self, value: bool) {
         self.upscale_compress_output = value;
         let _ = self
@@ -705,6 +674,7 @@ impl AppSettings {
             .set_boolean("upscale-compress-output", self.upscale_compress_output);
     }
 
+    #[cfg(any())]
     pub fn set_upscale_compressed_format(&mut self, value: &str) {
         self.upscale_compressed_format = match value {
             "jpeg" => "jpeg".to_string(),
@@ -716,6 +686,7 @@ impl AppSettings {
             .set_string("upscale-compressed-format", &self.upscale_compressed_format);
     }
 
+    #[cfg(any())]
     pub fn set_upscale_keep_raw_png_sidecar(&mut self, value: bool) {
         self.upscale_keep_raw_png_sidecar = value;
         let _ = self.settings.set_boolean(
@@ -724,6 +695,7 @@ impl AppSettings {
         );
     }
 
+    #[cfg(any())]
     pub fn set_upscaler_compression_mode(&mut self, value: &str) {
         self.upscaler_compression_mode = match value {
             "lossy" => "lossy".to_string(),
@@ -735,6 +707,7 @@ impl AppSettings {
             .set_string("upscaler-compression-mode", &self.upscaler_compression_mode);
     }
 
+    #[cfg(any())]
     pub fn set_upscaler_quality(&mut self, value: i32) {
         self.upscaler_quality = value.clamp(50, 100);
         let _ = self
@@ -742,6 +715,7 @@ impl AppSettings {
             .set_int("upscaler-quality", self.upscaler_quality);
     }
 
+    #[cfg(any())]
     pub fn set_upscaler_tile_size(&mut self, value: i32) {
         self.upscaler_tile_size = value.clamp(0, 4096);
         let _ = self
@@ -749,6 +723,7 @@ impl AppSettings {
             .set_int("upscaler-tile-size", self.upscaler_tile_size);
     }
 
+    #[cfg(any())]
     pub fn set_upscaler_gpu_id(&mut self, value: i32) {
         self.upscaler_gpu_id = value.clamp(-1, 16);
         let _ = self
@@ -773,6 +748,7 @@ impl AppSettings {
         let _ = self.settings.set_string("resize-output-dir", &value);
     }
 
+    #[cfg(any())]
     pub fn set_smart_tagger_model(&mut self, value: &str) {
         self.smart_tagger_model = match value {
             "resnet18-v1-7" => "resnet18-v1-7".to_string(),
@@ -784,11 +760,13 @@ impl AppSettings {
             .set_string("smart-tagger-model", &self.smart_tagger_model);
     }
 
+    #[cfg(any())]
     pub fn set_show_upscale_ui(&mut self, value: bool) {
         self.show_upscale_ui = value;
         let _ = self.settings.set_boolean("show-upscale-ui", value);
     }
 
+    #[cfg(any())]
     pub fn set_pipeline_history_cap(&mut self, cap: i32) {
         self.pipeline_history_cap = cap.clamp(10, 10000);
         let _ = self
@@ -1066,26 +1044,7 @@ mod tests {
             libraries: vec![library],
             active_library_id: Some("library-1".into()),
             resize_output_dir: Some(PathBuf::from("/tmp/resized")),
-            upscaler_binary_path: Some(PathBuf::from("/tmp/upscaler")),
-            upscaled_output_dir: Some(PathBuf::from("/tmp/upscaled")),
-            export_output_dir: Some(PathBuf::from("/tmp/export")),
-            upscaler_default_model: "weird".into(),
-            upscale_compress_output: false,
-            upscale_compressed_format: "bmp".into(),
-            upscale_keep_raw_png_sidecar: true,
-            upscaler_compression_mode: "strange".into(),
-            upscaler_quality: 1000,
-            upscaler_tile_size: -7,
-            upscaler_gpu_id: 999,
             thumbnail_cache_max: -5,
-            smart_tagger_model: "broken".into(),
-            show_upscale_ui: true,
-            upscale_backend: "mystery".into(),
-            onnx_upscale_model: "broken".into(),
-            comfyui_url: "http://localhost:9000".into(),
-            comfyui_workflow: "unknown".into(),
-            comfyui_enabled: true,
-            pipeline_history_cap: 500,
             settings: settings.clone(),
         };
 

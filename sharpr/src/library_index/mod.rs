@@ -51,6 +51,7 @@ pub struct IndexedImage {
     pub metadata_status: String,
 }
 
+#[cfg(any())]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PipelineStatus {
     Queued,
@@ -59,6 +60,7 @@ pub enum PipelineStatus {
     Failed,
 }
 
+#[cfg(any())]
 impl PipelineStatus {
     fn as_str(&self) -> &'static str {
         match self {
@@ -78,12 +80,14 @@ impl PipelineStatus {
     }
 }
 
+#[cfg(any())]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepType {
     Upscale,
     Export,
 }
 
+#[cfg(any())]
 impl StepType {
     fn as_str(&self) -> &'static str {
         match self {
@@ -99,6 +103,7 @@ impl StepType {
     }
 }
 
+#[cfg(any())]
 #[derive(Debug, Clone)]
 pub struct Pipeline {
     pub id: i64,
@@ -109,6 +114,7 @@ pub struct Pipeline {
     pub created_at: i64,
 }
 
+#[cfg(any())]
 #[derive(Debug, Clone)]
 pub struct PipelineStep {
     pub id: i64,
@@ -1080,6 +1086,7 @@ impl LibraryIndex {
 
     /// Insert a new pipeline and return its id.
     /// `queue_order` is set to max(queue_order)+1 among queued pipelines.
+    #[cfg(any())]
     pub fn create_pipeline(&self, source_path: &Path) -> rusqlite::Result<i64> {
         let conn = self.conn()?;
         let now = now_secs();
@@ -1099,6 +1106,7 @@ impl LibraryIndex {
     }
 
     /// Append a step to an existing pipeline. Returns the new step id.
+    #[cfg(any())]
     pub fn append_pipeline_step(
         &self,
         pipeline_id: i64,
@@ -1131,6 +1139,7 @@ impl LibraryIndex {
 
     /// Create a new pipeline with a single step, using `source` as the input.
     /// Returns the new pipeline id.
+    #[cfg(any())]
     pub fn enqueue_followup(
         &self,
         source: &Path,
@@ -1143,6 +1152,7 @@ impl LibraryIndex {
     }
 
     /// Update a pipeline's status.
+    #[cfg(any())]
     pub fn set_pipeline_status(&self, id: i64, status: PipelineStatus) -> rusqlite::Result<()> {
         let conn = self.conn()?;
         conn.execute(
@@ -1153,6 +1163,7 @@ impl LibraryIndex {
     }
 
     /// Update a step's status and optional timestamps.
+    #[cfg(any())]
     pub fn set_step_status(
         &self,
         step_id: i64,
@@ -1199,6 +1210,7 @@ impl LibraryIndex {
         Ok(())
     }
 
+    #[cfg(any())]
     pub fn set_step_input_path(&self, step_id: i64, path: &Path) -> rusqlite::Result<()> {
         let conn = self.pool.get().map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
@@ -1210,6 +1222,7 @@ impl LibraryIndex {
 
     /// Reorder a queued pipeline to a new position. Other queued pipelines
     /// are renumbered to close the gap.
+    #[cfg(any())]
     pub fn reorder_pipeline(&self, id: i64, new_order: i64) -> rusqlite::Result<()> {
         let conn = self.conn()?;
         conn.execute(
@@ -1235,6 +1248,7 @@ impl LibraryIndex {
 
     /// Delete a pipeline and all its steps (CASCADE handles steps).
     /// Only queued or failed pipelines may be deleted.
+    #[cfg(any())]
     pub fn delete_pipeline(&self, id: i64) -> rusqlite::Result<()> {
         let conn = self.conn()?;
         conn.execute(
@@ -1245,6 +1259,7 @@ impl LibraryIndex {
     }
 
     /// Fetch all pipelines with a given status, ordered by queue_order / created_at.
+    #[cfg(any())]
     pub fn pipelines_by_status(&self, status: PipelineStatus) -> rusqlite::Result<Vec<Pipeline>> {
         let conn = self.conn()?;
         let order = match status {
@@ -1271,6 +1286,7 @@ impl LibraryIndex {
     }
 
     /// Fetch all steps for a pipeline, ordered by step_order.
+    #[cfg(any())]
     pub fn steps_for_pipeline(&self, pipeline_id: i64) -> rusqlite::Result<Vec<PipelineStep>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
@@ -1299,6 +1315,7 @@ impl LibraryIndex {
     }
 
     /// Returns the next queued pipeline (lowest queue_order), if any.
+    #[cfg(any())]
     pub fn next_queued_pipeline(&self) -> rusqlite::Result<Option<Pipeline>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
@@ -1319,6 +1336,7 @@ impl LibraryIndex {
     }
 
     /// Total count of Completed + Failed pipelines (for cap enforcement).
+    #[cfg(any())]
     pub fn pipeline_history_count(&self) -> rusqlite::Result<usize> {
         let conn = self.conn()?;
         let n: i64 = conn.query_row(
@@ -1331,6 +1349,7 @@ impl LibraryIndex {
 
     /// Delete the oldest history entries, keeping at most `cap` rows.
     /// Deletes by `created_at ASC` (oldest first).
+    #[cfg(any())]
     pub fn prune_pipeline_history(&self, cap: usize) -> rusqlite::Result<()> {
         if cap == 0 {
             return Ok(());
@@ -1351,6 +1370,7 @@ impl LibraryIndex {
     }
 
     /// Delete all Completed and Failed pipelines (manual \"Clear history\").
+    #[cfg(any())]
     pub fn clear_pipeline_history(&self) -> rusqlite::Result<()> {
         let conn = self.conn()?;
         conn.execute(
@@ -1362,6 +1382,7 @@ impl LibraryIndex {
 
     /// Reset a failed or completed pipeline and all its steps back to Queued
     /// so it can be re-run. Returns Err if the pipeline is InProgress.
+    #[cfg(any())]
     pub fn requeue_pipeline(&self, id: i64) -> rusqlite::Result<()> {
         let conn = self.conn()?;
         // Only requeue non-running pipelines
