@@ -6,16 +6,15 @@
   <description>
     <p>
       Sharpr is a fast, local-first image quality review tool for Linux.
-      Open a folder, move through the filmstrip, decide what to keep, compare
-      similar images, tag and collect the keepers, and send export or upscale
-      work through Tasks. Folders are the source of truth; Sharpr never modifies
-      your original files.
+      Open a folder, move through the filmstrip, compare two selections, inspect
+      metadata, and tag or collect the keepers. Folders are the source of truth;
+      Sharpr never modifies your original files.
     </p>
     <p>
       Features include a GNOME-native three-pane layout, SQLite-backed library
       index, collections with tag inheritance, duplicate detection, resolution-based
-      quality scoring, export to JPEG/PNG/WebP/JXL, and optional AI upscaling via
-      local ONNX models or a configurable ComfyUI backend.
+      quality views, generic two-image Compare, and non-destructive Resize Copy
+      to JPEG, PNG, WebP, or JPEG XL. Sharpr has no runtime networking.
     </p>
   </description>
   <url type="homepage">https://github.com/hebbihebb/Sharpr</url>
@@ -35,8 +34,7 @@
         <p>
           SQLite library index, tags and collections with tag inheritance,
           duplicate detection via dHash, resolution-based quality scoring,
-          export pipeline (JPEG/PNG/WebP/JXL), AI upscaling via ONNX and
-          ComfyUI backends, Tasks dashboard, compare page, and presentation mode.
+          Resize Copy (JPEG/PNG/WebP/JXL), generic Compare, and presentation mode.
         </p>
       </description>
     </release>
@@ -68,7 +66,7 @@
     <keyword>curation</keyword>
     <keyword>quality</keyword>
     <keyword>duplicates</keyword>
-    <keyword>upscale</keyword>
+    <keyword>resize</keyword>
     <keyword>collections</keyword>
   </keywords>
   <requires>

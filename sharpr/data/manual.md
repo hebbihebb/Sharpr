@@ -1,97 +1,52 @@
 # Sharpr Manual
 
-Sharpr is a fast, native image library viewer for GNOME.
+Sharpr is a local-first image curation viewer for GNOME. It does not use runtime networking or AI services.
 
-## Setting Up AI Upscaling
+## Library And Filmstrip
 
-Sharpr supports three upscale backends. Choose one in **Preferences → Upscale backend**:
+Choose a folder in the Library sidebar to load its images. Thumbnails decode in the background, with visible images prioritized over preload work. Click an image to view it; Ctrl-click adds or removes images from the action selection.
 
-| Backend | Requires | Best for |
-|---|---|---|
-| **CLI** (default) | RealESRGAN-NCNN-Vulkan binary | Fastest GPU upscaling, no setup beyond the binary |
-| **ONNX** | Local model files | No external tools; works without a GPU |
-| **ComfyUI** | A running ComfyUI server | Custom workflows, your own model library |
-
-### CLI backend — RealESRGAN-NCNN-Vulkan
-
-**Step 1 — Download**
-
-[RealESRGAN-NCNN-Vulkan releases](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan/releases)
-
-Download the Linux build and extract it to a permanent location, for example `~/.local/share/realesrgan/`. The folder must contain the binary and a `models/` subfolder with the `.bin` and `.param` files.
-
-**Step 2 — Set the binary path**
-
-Open **Preferences** and paste the full path into the **Upscaler binary** field:
-
-`/home/yourname/.local/share/realesrgan/realesrgan-ncnn-vulkan`
-
-### ONNX backend — Swin2SR
-
-Select **ONNX** as the backend in Preferences and choose a model:
-
-- **Lightweight ×2** (8 MB) — fast, good general quality
-- **Compressed ×4** (55 MB) — optimised for compressed or low-quality source images
-- **Realworld ×4** (55 MB) — highest quality for photographs
-
-Place the model file at the path shown in Preferences. No GPU required; inference runs on CPU via ONNX Runtime. Transparency (alpha channel) is preserved.
-
-### ComfyUI backend
-
-For testing, first open **Preferences → Advanced** and enable **Show AI Upscale** so the upscale action appears in the main UI. Then open **Preferences → Upscaler**, confirm the **ComfyUI backend** toggle is on, and enter your server URL. On a remote machine over Tailscale, use the server IP directly, for example `http://100.121.114.22:8188`, rather than `localhost`.
-
-Use **Test Connection** to verify Sharpr can reach the server. When you run an upscale, Sharpr uploads the source image, runs the bundled RealESRGAN ×4 workflow, and downloads the result automatically. The current ComfyUI integration only switches between the standard and anime RealESRGAN models, and the remote workflow itself always executes at ×4.
-
-## Library
-
-The left panel shows your folder tree. Click any folder to load its images into the filmstrip. Use the **Library** toggle in the header to pin or hide the panel. The panel collapses automatically on narrow windows.
-
-## Filmstrip
-
-The filmstrip shows thumbnails for all images in the current folder. Click a thumbnail to open it in the viewer. Use the **left and right arrow keys** to move between images. Thumbnails are decoded in the background and preloaded for adjacent images.
-
-## Viewer
-
-The viewer displays the selected image at full resolution. Click and drag to pan when zoomed in.
+## Viewer Shortcuts
 
 | Shortcut | Action |
-|---|---|
-| Alt + ← → | Previous / next image |
+| --- | --- |
+| Alt + ← / → | Previous / next image |
 | Ctrl + Scroll | Zoom in / out |
-| Ctrl + 0 | Reset zoom to fit window |
-| Alt + Return | Toggle metadata and tag overlay |
+| Ctrl + 0 | Fit image to the viewer |
+| Alt + Return | Toggle metadata overlay |
 | Ctrl + T | Open tag editor |
 | Ctrl + F | Inline filename search |
-| F9 | Toggle sidebar |
-| [ / ] | Cycle between pages |
-| Ctrl + 1 / 2 / 3 / 4 | Go to Viewer / Tags / Tasks / Compare |
-| F11 | Toggle fullscreen |
-| Delete | Move selected image to trash |
+| Ctrl + 1 / 2 | Viewer / Tags |
+| [ / ] | Cycle Viewer and Tags |
+| F9 | Toggle Library sidebar |
+| F11 | Toggle presentation mode |
+| Delete | Move selected images to trash |
 
-## Metadata Overlay
+## Tags And Collections
 
-Press **Alt + Return** or use the View menu to toggle the overlay. It shows image dimensions, format, file size, and an image quality score (IQ) in the bottom-right corner. The tag bubble appears bottom-left when the image has tags.
+The tag editor adds and removes manual tags. Sharpr also adds format and resolution tags such as `jpg` and `1080p`. Collections are virtual groupings backed by tags; source files stay in their folders.
 
-## Image Quality
+## Duplicates And Quality
 
-Sharpr scores each image with an **IQ score** (0–100) based on resolution and file size. The score is shown in the metadata overlay and colour-coded: green is good, amber is fair, red needs attention. Use the Quality filters in the sidebar to show only images above or below a threshold.
+Duplicates uses perceptual hashes to group visually similar files. Quality views classify images by resolution. Both load results into the filmstrip without changing files.
 
-## Tags
+## Compare
 
-Press **Ctrl + T** with an image selected to open the tag editor. Type a tag name and press Enter to add it. Click the × on a tag chip to remove it. Images automatically receive format and resolution tags (e.g. **jpg**, **1080p**) on first load.
+Ctrl-click until exactly two filmstrip images are selected, then choose **Image → Compare Selected Images**. The images appear as neutral left and right panes. Close Compare to return to the viewer. Missing or corrupt files show an error in their pane.
 
-The **sparkles button (★)** in the tag editor runs local AI analysis and suggests tags based on image content. Click a suggestion to accept it, or press **Add All** to accept everything. Suggestions are not saved until accepted.
+## Resize Copy
 
-The **Tags** section in the sidebar lists every tag in your library with an image count. Click a tag to filter the filmstrip to matching images. Click × next to a tag to delete it from all images.
+Choose **Image → Resize Copy…** for the current image.
 
-## Duplicates
+- Width and height start at the displayed, orientation-corrected dimensions.
+- Aspect ratio is locked by default and can be unlocked.
+- Enlargement and reduction use Lanczos resampling.
+- Formats are JPEG, PNG, WebP, and JPEG XL. Quality is disabled for PNG.
+- The default folder is `~/Pictures/Resized`; the chosen folder is remembered.
+- Names use `<name>-resized-<width>x<height>.<ext>` with a numeric suffix when needed.
 
-The **Duplicates** section uses perceptual hashing (dHash) to find visually similar images. Groups are shown in the filmstrip so you can compare and delete unwanted copies.
-
-## Upscaling
-
-The **Upscale** action runs AI upscaling using whichever backend is configured in Preferences (CLI, ONNX, or ComfyUI). A before/after comparison slider lets you inspect the result. The output is saved as a new file; the original is never modified.
+Resize Copy writes a new file, does not copy embedded metadata, removes partial output after failure, and never changes the source.
 
 ## Preferences
 
-Open **Preferences** from the menu (⋮) to adjust the thumbnail cache size, choose the upscale backend, and configure other options.
+Preferences manages libraries, collection import/export, metadata overlay visibility, and thumbnail cache size.

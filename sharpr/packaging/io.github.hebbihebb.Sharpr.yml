@@ -21,8 +21,6 @@ build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
     CARGO_HOME: /run/build/sharpr/cargo
-  num-processes: 4
-
 modules:
   - name: exiv2
     buildsystem: cmake-ninja
@@ -46,40 +44,8 @@ modules:
         url: https://download.gnome.org/sources/gexiv2/0.14/gexiv2-0.14.3.tar.xz
         sha256: 21e64d2c56e9b333d44fef3f2a4b25653d922c419acd972fa96fab695217e2c8
 
-  # -------------------------------------------------------------------------
-  # Optional module: realesrgan-ncnn-vulkan
-  # -------------------------------------------------------------------------
-  # This module is included for AI-based upscaling.
-  # If you don't need it, you can remove or comment it out.
-  - name: realesrgan-ncnn-vulkan
-    buildsystem: simple
-    build-commands:
-      - install -Dm755 realesrgan-ncnn-vulkan /app/bin/realesrgan-ncnn-vulkan
-      - mkdir -p /app/bin/models/
-      - find . -maxdepth 1 \( -name '*.bin' -o -name '*.param' \) -exec cp -t /app/bin/models/ {} +
-    sources:
-      - type: archive
-        url: https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
-        sha256: e5aa6eb131234b87c0c51f82b89390f5e3e642b7b70f2b9bbe95b6a285a40c96
-
-  - name: onnxruntime
-    buildsystem: simple
-    build-commands:
-      - install -Dm755 lib/libonnxruntime.so.1.24.2 /app/lib/libonnxruntime.so.1.24.2
-      - ln -sf libonnxruntime.so.1.24.2 /app/lib/libonnxruntime.so.1
-      - ln -sf libonnxruntime.so.1.24.2 /app/lib/libonnxruntime.so
-      - install -Dm755 lib/libonnxruntime_providers_shared.so /app/lib/libonnxruntime_providers_shared.so
-    sources:
-      - type: archive
-        url: https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-linux-x64-1.24.2.tgz
-        sha256: 43725474ba5663642e17684717946693850e2005efbd724ac72da278fead25e6
-
   - name: sharpr
     buildsystem: simple
-    build-options:
-      env:
-        ORT_LIB_LOCATION: /app/lib
-        ORT_PREFER_DYNAMIC_LINK: "1"
     sources:
       - type: dir
         path: .flatpak-source
