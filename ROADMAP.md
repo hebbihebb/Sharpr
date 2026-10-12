@@ -22,11 +22,11 @@ Sort by aspect in both directions and closeness to 16:9. Filter landscape, portr
 
 Evaluate EmbeddingGemma 2 against SigLIP 2 on a representative 1,000-image sample and 30 predefined queries with expected examples. Compare Google's reference implementation with pinned native llama.cpp. Start at normalized 768 dimensions. Reference inference uses BF16 or float32, never float16.
 
-Require useful top-20 results for at least 80% of queries, warm queries below one second on this laptop, and no more than 10% measured navigation slowdown during indexing. CPU operation is required; GPU is optional. Select Gemma if it passes, otherwise SigLIP only if it passes. If neither passes, do not integrate semantic search.
+Require useful top-20 results for at least 80% of queries, warm queries below one second on this laptop, and no more than 10% measured navigation slowdown during indexing. CPU operation is required; GPU is optional. Initial whole-library indexing may run overnight: throughput is measured but is not a release gate. Partial/folder indexing and scheduling controls can follow later. Select Gemma if it passes, otherwise SigLIP only if it passes. If neither passes, do not integrate semantic search.
 
 ### Phase 4 — Offline visual search (gated by Phase 3)
 
-Reuse the search entry/filmstrip with Visual search and Names & tags modes. Filter scope/metadata before ranking; display closest 200 with load-more and Find similar. Keep results stable until refreshed. Opt-in indexing is incremental, resumable, lower priority than browsing, and reports coverage/errors.
+Reuse the search entry/filmstrip with Visual search and Names & tags modes. Filter scope/metadata before ranking; display closest 200 with load-more and Find similar. Keep results stable until refreshed. Start with indexing the entire enabled library, even if it takes overnight. Indexing must be resumable, lower priority than browsing, and report coverage/errors. On/off controls, indexing individual folders or subsets, and configurable background scheduling are later refinements, not prerequisites for the first implementation.
 
 Vectors are rebuildable SQLite data, versioned by model/preprocessing and file-change identity. Reject incompatible vectors and stale results; respect disabled folders. Use local model files and an app-managed native subprocess. Loopback HTTP is permitted only for that local child, never external inference or automatic downloads. Verify packaging; do not bundle Python/PyTorch as a fallback.
 
