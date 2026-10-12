@@ -1,5 +1,7 @@
 # Sharpr — next steps after the independent audit
 
+> Archived. These findings were folded into `ROADMAP.md` Phases 0–5 during the October 2026 documentation realignment. Kept as historical evidence; they are not instructions.
+
 Approved October 12: deliver audited ordinary browsing and an optional native visual-search trial using the existing 1,000-image sample. User testing comes before a release decision. Preserve original images, manual tags, buckets, and benchmark artifacts. Do not push.
 
 ## Audit remediation

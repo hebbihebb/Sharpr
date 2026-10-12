@@ -1,121 +1,80 @@
 # Sharpr Agent Instructions
 
-These instructions are the source of truth for AI coding agents working in this repository. Codex is the primary orchestrator now. Claude, Gemini, Antigravity, and other agents should treat their local files as thin entrypoints that defer here.
+The authoritative instructions for every coding agent working on this repository. Tool-specific files (`CLAUDE.md`, skills, memories) defer to this file.
 
 ## Read First
 
-1. `AGENTS.md` - workflow, constraints, and engineering rules.
-2. `CURRENT_TASKS.md` - current project state, next task, and active handoff notes.
-3. `ROADMAP.md` - future work and implementation order.
-4. `docs/reference/architecture.md` - module map and runtime patterns for non-trivial changes.
-5. `docs/reference/ui-gtk.md` - Sharpr-specific GTK/Libadwaita guidance for UI work.
+1. `CURRENT_TASKS.md`: Git and working-tree state, the active milestone, and the next task.
+2. `ROADMAP.md`: the only roadmap, including phase order, scope, and acceptance criteria.
+3. `docs/reference/architecture.md`: modules, threading, persistence, and invariants. Read it before any non-trivial change.
+4. `docs/reference/development.md`: build, run, test, verification, packaging, and the native launcher.
+5. `docs/reference/ui-gtk.md`: read it before UI work.
 
-`README.md` is GitHub-facing and should not be used as the project memory. Historical context lives under `docs/archive/`.
+`README.md` is for GitHub readers. `docs/archive/` is historical evidence, not instructions. If documents disagree, this file wins, then `ROADMAP.md`.
 
-## Project Shape
+## Product
 
-- The Rust application lives in `sharpr/`.
-- Sharpr is a GNOME-native, local-first image curation tool built with Rust, GTK4, Libadwaita, GSettings, SQLite-backed local indexes, background thumbnail/hash workers, and optional AI features.
-- The core workflow is fast folder review: open a folder, move through the filmstrip, decide what to keep or trash, compare two selections, and tag or collect keepers.
-- Folders are the source of truth. SQLite/cache state exists for speed, stability, metadata, collections, and curation state. Do not make SQLite the only truth for a user's library.
+Sharpr is a fast, local, offline Linux image organizer and wallpaper-preparation app (Rust, GTK4, Libadwaita, SQLite). Its strengths are the viewer, filmstrip navigation, folders, and buckets (tag-backed collections). Preserve them. Current work is described in `ROADMAP.md`.
 
-## Required Workflow
+## Invariants
 
-- Use a new git commit for each separate user task.
-- Do not push to GitHub until the user explicitly asks.
-- If the user reports a bug in an unpushed task commit, fix it and amend that commit instead of adding a noisy follow-up commit.
-- Before handing work back for manual testing, always run:
-  ```bash
-  cd sharpr
-  cargo build
-  ```
-- For behavior changes, prefer `cargo nextest run`; use `cargo test` only if nextest is unavailable.
-- For dependency or supply-chain changes, run `cargo deny check` and `cargo machete`.
-- Before committing or handing off larger work, consider `./check.sh` from `sharpr/` to run the standard fmt + clippy + nextest + deny + machete sequence.
-- After implementation, tell the user exactly what to test manually and how the app should behave.
+- **Originals are never modified.** No code path writes, re-encodes, renames, or moves a source image. Outputs are new, uniquely named files created exclusively, never overwriting an existing file. Delete moves files to the system trash only after an explicit user action.
+- **User data survives every change.** Tags, buckets, and settings in `~/.local/share/sharpr/` and `~/.config/sharpr/` are irreplaceable. Schema changes are additive. Never drop or rewrite legacy tables or keys. Tests and experiments use temporary directories, never the real data directory.
+- **The filmstrip stays responsive.** Never block the GTK main thread with decoding, scanning, header reads, hashing, SQLite bulk work, model calls, or exports. Keep visible-thumbnail priority and generation counters. Wrap or extend the thumbnail scheduler; do not rewrite it.
+- **Disabled folders are excluded** from every scan, index, search, view, and write path.
+- **Folders are the source of truth.** Caches, thumbnails, dimensions, hashes, and vectors are rebuildable. Tags and bucket membership are user data.
+- **The app is offline.** It makes no runtime network calls, downloads no models, and calls no external inference services. The only exception is the experimental visual-search trial, which may talk over loopback to a child process the app manages.
+- **No generated tags.** The app creates no descriptive, format, or resolution tags. Existing assignments stay intact.
 
-## Native Run Path
+## Scope
 
-Native runs require compiled schemas:
+- **Established:** viewer, filmstrip, folders, buckets, manual tags, search, filters, Compare, duplicates, quality views, Resize Copy, and explicit trash.
+- **In progress:** the roadmap phases.
+- **Experimental:** visual search, built only with the `visual-search-trial` Cargo feature. It is off by default and excluded from the Flatpak until `ROADMAP.md` Phase 4 promotes it. Keep experimental code in its own module behind the feature, and never let it change default behavior.
+- **Removed, do not reintroduce:** Tasks, processing queues, pipelines, and generation history; AI upscaling, enhancement, and tagging; ComfyUI and remote backends; model downloaders; rotate/flip pixel editing; metadata write-back; full-editor features; import workflow; saved searches; batch rename; splash screen; scripting. Enhancement and upscaling stay in external tools.
 
-```bash
-cd sharpr
-glib-compile-schemas data/
-GSETTINGS_SCHEMA_DIR=data cargo run
-```
+## Working Rules
 
-`GSETTINGS_SCHEMA_DIR=data` is only required for `cargo run`. It is not needed for `cargo build`, `cargo test`, `cargo nextest run`, or `cargo clippy`.
+- **Start from the repository, not chat history.** Read `CURRENT_TASKS.md` and run `git status`. If you find uncommitted work you did not create, identify it before you touch anything.
+- **Size tasks by outcome:** goal, effort, verification, and essential guardrails. For work spanning sessions, keep the durable plan in `CURRENT_TASKS.md`.
+- **Prefer extending proven code to rebuilding it.** Extract a focused controller only when you are already changing that area. No broad rewrites. Before writing infrastructure, check GTK, GNOME, and existing crates.
+- **Justify every dependency** by its packaging, Flatpak, and maintenance cost.
+- **Finish, then stop.** Do one self-review per milestone. Fix real defects, record the rest in `ROADMAP.md` under Backlog, and close the milestone when its acceptance criteria are met. Do not start review, audit, and remediation loops, and do not write dated audit documents into the repository.
+- **Report state precisely** using these words:
+  - *planned*: in the roadmap
+  - *implemented*: in the working tree
+  - *verified*: checks passed
+  - *accepted*: the user tested it
+  - *committed*: on `viewer-reset`
+  - *merged*: on `main`
+  - *deployed*: built into the binary the user launches
 
-## Product Constraints
+## Git
 
-**Non-destructive rule (strict):** Sharpr never modifies original image files. Export, upscale, format conversion, and future version workflows create new output files or explicitly managed copies. The Delete key sends files to the system trash only as an explicit user action. Never add a feature that silently writes back to source files.
+- `viewer-reset` is the development line. `main` is the older line from before the July 2026 reset. It is fast-forwarded only after user acceptance (`ROADMAP.md` Phase 0).
+- Commit each user-testable unit, and keep experimental work in separate commits. Never end a session with large uncommitted work. Either commit it or record its state in `CURRENT_TASKS.md`.
+- A fix to an unpushed commit may be amended into that commit.
+- Never push, merge into `main`, deploy, delete branches, or touch user data without explicit user approval.
+- The user has no Git background. Make the Git decisions yourself and explain them in plain language.
 
-**Do not re-add removed scope:**
+## Verification
 
-- Rotate/flip pixel editing, actions, menu items, or `image_ops.rs` save logic
-- Sharpness backfill worker (`quality/backfill.rs` removed; quality scoring is resolution-only)
-- ONNX model downloader (`upscale/downloader.rs` removed; ONNX expects local model files)
-- Splash screen
-- Import workflow, saved searches, batch rename, embedded metadata writing, full image editor features, arbitrary scripting
-- Color management as a near-term project unless specifically requested
+Check in proportion to the risk. `docs/reference/development.md` has the commands.
 
-**Removed scope:** Tasks, processing pipelines, AI tagging/upscaling, model downloads, ComfyUI, and external runtime networking remain removed.
+| Change | Minimum check |
+| --- | --- |
+| Docs only | `git diff --check`; referenced paths and commands exist |
+| Ordinary code | `cargo build` and targeted `cargo nextest run` tests |
+| Persistence, migrations, export, file operations, or trash | Regression test of the data path, original-byte preservation where relevant, then `./check.sh` |
+| Filmstrip, thumbnails, or threading | Above, plus a manual rapid scroll and folder-switch check on a large folder, with before/after bench logs |
+| Dependencies | `cargo deny check` and `cargo machete`; regenerate `packaging/cargo-sources.json` |
+| Release | `./check.sh`, a GTK test run, and a full Flatpak build |
 
-**Approved focused additions:** The wallpaper roadmap permits non-destructive Crop Copy/WebP Copy and optional local semantic image search after its benchmark gate passes. Local subprocess inference may use loopback HTTP only to its app-managed child. Never generate descriptive tags, download models automatically, or connect to external inference services. Preserve existing tag-backed buckets and legacy tag assignments; do not generate new format/resolution tags.
+Before handing work back, always run `cargo build` in `sharpr/`. Then tell the user exactly what to test and what should happen. The desktop launcher runs `sharpr/target/debug/sharpr` from the main checkout, so a build there changes what the user launches. Say so whenever it happens.
 
-## Research Before Reinventing
+## Documentation
 
-Big wins in this project have come from replacing custom work with existing GTK, GNOME, OS, or crate-level facilities. Before implementing new infrastructure, check whether the platform already provides the behavior.
-
-- Prefer standard GTK/Libadwaita widgets, actions, menus, dialogs, portals, and accessibility behavior over custom UI.
-- Prefer proven Rust crates or system libraries for image formats, file operations, model/runtime integration, and desktop integration when they fit the constraints.
-- Do not add a dependency casually. Justify it against existing code, packaging, Flatpak impact, and maintenance cost.
-- Keep custom code for Sharpr-specific workflow logic, performance scheduling, or domain constraints that general libraries do not cover.
-
-## Structured Logging
-
-Sharpr has built-in structured logging in `src/bench.rs`. It is enabled by default and writes JSONL to `~/.cache/sharpr/logs/run-<timestamp>-<pid>.jsonl`. Old files are auto-trimmed.
-
-Key env vars:
-
-- `SHARPR_BENCH=0` disables logging
-- `SHARPR_BENCH_LOG=<path>` overrides the output file
-- `SHARPR_BENCH_LOG_LIMIT=<n>` overrides retention count
-
-Use `bench_event!`, `bench_warn!`, and `bench_error!` for observable events or errors in new code. Do not use `println!` or `eprintln!` for structured output.
-
-## Engineering Rules
-
-- Keep GTK objects on the main thread. Do not use `Arc`/`Mutex` on GTK objects.
-- Use `Rc<RefCell<AppState>>` for main-thread UI state.
-- Use background workers plus channels (`async_channel`) for heavy work; drain results back through `glib::MainContext::spawn_local`.
-- Protect stale-result flows with generation counters. Viewer, thumbnail worker, virtual-folder loads, and compare mode all rely on this discipline.
-- Keep `LibraryManager` store state, path indexes, selected index, and caches in sync.
-- Respect disabled folders everywhere: direct folder opens, indexing, smart folders, virtual views, duplicate detection, quality views, collections, metadata, hashes, tags, and future version storage.
-- Protect filmstrip and thumbnail responsiveness above theoretical micro-optimizations.
-- Never block the GTK main thread with decoding, filesystem scans, hashing, model loading, exports, upscaling, or network calls.
-- Preserve visible-thumbnail priority over preload work in `thumbnails/worker.rs`.
-
-## Rust Guidance
-
-- Prefer simple, idiomatic Rust. Avoid cleverness that requires a comment to justify it.
-- Use structs, enums, and traits to clarify boundaries and make invalid states harder to represent.
-- Use traits as contracts at meaningful architectural boundaries, not as unnecessary abstraction.
-- Prefer clear control flow. Use iterator chains when they improve clarity; use `for` loops when they avoid awkward error handling or unnecessary allocation.
-- Avoid unnecessary `collect()` when the result is only immediately iterated again.
-- Prefer exhaustive `match` and explicit `if let` for stateful logic.
-- Avoid unnecessary `.clone()`, but allow it when it improves correctness, ownership clarity, or GTK/GObject/UI state handling.
-- Match the repo's current error style before introducing new error types: `Result<T, String>` for simple operations and `Box<dyn std::error::Error>` for serialization/export paths.
-- `thiserror` is appropriate for new structured domain/library errors where callers need to distinguish failure modes. `anyhow` is appropriate for app-level orchestration when typed recovery is not needed. Neither is currently a default dependency.
-- Avoid `unwrap()`/`expect()` in production paths unless the invariant is obvious. When using `expect()`, state the invariant in the message.
-- Do not add `#[inline(always)]` by default or rewrite ordinary UI/domain data into specialized layouts without measured need.
-- No async runtime is used. Do not add Tokio by default. Use `std::thread::spawn` plus `async_channel`.
-- Do not default to Rayon for image/task work; evaluate oversubscription against existing worker pools first.
-
-## Documentation Updates
-
-- Update `CURRENT_TASKS.md` when the active task, next task, or handoff state changes.
-- Update `ROADMAP.md` when priorities or planned feature scope changes.
-- Move completed implementation notes to `docs/archive/completed.md`.
-- Add historical summaries to `docs/archive/history.md` only when they are useful for future context.
-- Keep agent-specific files short and deferential. Do not mirror large architecture or workflow sections into tool-specific docs.
+- `CURRENT_TASKS.md`: update it at every checkpoint. Keep it under one page.
+- `ROADMAP.md`: update it when scope, order, or acceptance criteria change. Move finished phases to `docs/archive/history.md` as a short summary.
+- `docs/reference/`: update it when architecture, commands, or invariants change.
+- Keep agent-specific files to a few lines that point here.

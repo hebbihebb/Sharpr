@@ -1,37 +1,79 @@
 # Current Tasks
 
-## Active Work
+## Active Milestone
 
-Implement the approved wallpaper-focused roadmap on `viewer-reset`: baseline, scoped ordinary search/tag reliability, aspect/resolution controls, semantic benchmark, and crop/WebP copies.
+`ROADMAP.md` Phase 0, Checkpoint and trustworthy baseline. Nothing else starts until it is done.
 
-## Semantic Gate
+## State Snapshot (October 12, 2026)
 
-Visual search must not ship before the 1,000-image/30-query benchmark passes. The user supplied 17 search terms; a private 30-query manifest and 1,000-image sample are prepared. Local reference models and pinned native llama.cpp are installed for evaluation. Both Gemma runs are in progress; native parity, relevance review, browsing impact, and packaging verification remain pending. Do not call the model choice or integration complete without evidence.
+**Branches:**
+- **`viewer-reset`** is the development line. It is at `642665d` and was pushed to `origin/viewer-reset`.
+- **`main`** is at `2679e44`, from before the July reset. It is 9 commits behind `viewer-reset` and can be fast-forwarded.
+- **`docs-realignment`** held this documentation realignment and was fast-forwarded into `viewer-reset`. With the user's approval, both the branch and its worktree `../Sharpr-docs` can be deleted.
+- **`viewer-base`** (`f1d937c`, worktree `../Sharpr-Base`) marks the July reset baseline.
+- **Six older local branches** are fully merged into `main`: `advanced-queue`, `fix/folder-switch-performance`, `hig-writing-style-audit`, `improve-tag-popover`, `improve-upscale-save-flow`, and `quality-assessment`.
 
-The user accepts overnight whole-library indexing. Throughput is measured, not a release gate; folder/subset indexing and on/off or scheduling controls can follow later. Disabled folders must remain excluded.
+**Implemented but not committed** in the main checkout: about 2,400 changed lines in 23 files, plus untracked files.
 
-## Implementation State
+- **New files:**
+  - `model/browse.rs`
+  - `ui/crop_dialog.rs`
+  - `ui/window/{search,tag}_controller.rs`
+  - `ui/window/gtk_tests.rs`
+  - `tools/benchmark-*.py`
+  - `docs/research/image-search.md`
+- **What it does:**
+  - scoped search
+  - aspect and resolution filters
+  - manual-tag persistence fixes
+  - Crop and WebP copies with export safety fixes
+  - an unfinished experimental visual-search trial:
+    - `Cargo.toml` adds the `visual-search-trial` feature with `ureq` and `sha2`
+    - `main.rs` declares a `semantic_trial` module whose file does not exist yet
+- **Verification:**
+  - On October 12, before the trial wiring, build, clippy, 134 tests, the GTK test, deny, and machete passed.
+  - `./check.sh` will now fail until the trial module exists, because it builds with `--all-features`.
+- **Superseded doc edit:** the uncommitted one-line "evaluation exception" in `AGENTS.md` was discarded when the documentation was merged. The Scope section of the new `AGENTS.md` covers it.
 
-Launcher identity is repaired in commit `41a1a19`. Scoped ordinary search, manual-tag persistence, aspect/resolution controls, crop copies, and WebP copies are implemented in the working tree. Build, strict clippy, 134 automated tests, the isolated GTK search/copy test, cargo deny, and cargo machete pass. Final review, documentation, and implementation commit are still required. The optional semantic-search application integration has not started.
+**Deployed:**
+- The desktop launcher `sharpr-dev.desktop` runs `sharpr/target/debug/sharpr` from the main checkout. That binary was last built at 20:09 on October 12 from the uncommitted tree.
+- No Flatpak is installed.
 
-## Self-Audit Before Final Handoff
+**User data:**
+- `~/.local/share/sharpr/` holds 4,539 indexed images, 6 buckets, and 7,925 tag rows; 7,565 of those rows are legacy automatic tags.
+- It was last written on September 27, so October work has not touched it.
+- About 5,800 images live under `~/Pictures`, on a non-removable disk.
 
-Requested by the user on October 12: self-audit before writing the final audit summary. Reviewed today's commits and uncommitted implementation; the final audit artifact must wait until the job is finished.
+**Decisions recorded with the user on October 12:**
+- The visual-search trial stays, as an off-by-default experiment after the ordinary work is committed.
+- `main` is fast-forwarded after acceptance.
+- Gemini and Antigravity are no longer used.
+- Legacy automatic tags get a one-time cleanup, backed up and confirmed in the app.
+- No V2 rewrite (see `ROADMAP.md`, Architecture Decision).
 
-Corrected findings in the working tree:
+## Next Task: Phase 0, Steps 2–3
 
-- Export could overwrite a pre-existing hidden temporary image. A failing regression reproduced this; exclusive temporary-file reservation now preserves it.
-- Buffered encoder flush errors could be discarded. JPEG/PNG/WebP now explicitly check flushing before publishing the copy.
-- Creating a bucket with selected images performed bulk writes on GTK. It now runs in a worker and rolls back a newly created bucket when tag assignment fails.
-- Bucket rename could treat a failed membership read as an empty result. Checked reads now stop the operation and show errors.
-- Choosing closest-to-16:9 could leave the direction menu inconsistent. Action state now follows the applied order.
-- Clearing a search could restore old ordering after a sort change. Background re-sorting preserves the new order; the GTK test covers this with a persisted bucket and copy selection.
-- Repeated tag-popover reads for the same image could apply old rows after a newer read. A separate refresh generation now rejects those results.
-- EXIF handling covered JPEG only. PNG/WebP/TIFF use the existing image decoder's orientation support; a PNG crop regression checks dimensions, pixels, and original-byte preservation.
-- The baseline lockfile contained RUSTSEC-2026-0204 and RUSTSEC-2026-0186. Updated only crossbeam-epoch to 0.9.20 and memmap2 to 0.9.11, and regenerated matching Flatpak source checksums.
+Step 1, folding in the documentation, is done.
 
-Open review limits: hierarchy/rename updates span two databases and use compensating rollback, not crash-safe atomic commits; whole-library scan cancellation does not yet interrupt directory traversal; benchmark relevance/parity/navigation/package gates remain unverified. Flatpak source metadata matches the lockfile, but a full Flatpak build has not been run for today's changes. Credential-pattern scan passed and HF token permissions are owner-only, outside the repository.
+**Goal:** Turn the October 12 working tree into committed, green, reviewable units on `viewer-reset`, with no behavior changes beyond what is already implemented.
 
-## Constraints
+**Effort:** One session. Committing and making the build green, not new features.
 
-Preserve the interface, originals, existing tags, and tag-backed buckets. Stop new automatic labels. Diffusion/SeedVR remain external. Keep legacy task/settings state inert. Build before manual handoff; do not push.
+**Steps:**
+
+1. Resolve the trial wiring so that both `./check.sh` and `cargo build` (default features) pass. Either finish the minimal `semantic_trial` module behind its feature, or stash the trial wiring onto a `visual-search-trial` branch.
+2. Commit the ordinary work as units (a)–(c) from Phase 0 step 3, and the trial as (d), separately or on its own branch.
+
+**Acceptance:**
+- `git status` is clean on `viewer-reset`, apart from ignored paths.
+- `cargo build`, `./check.sh`, and the GTK test pass at the head (see `docs/reference/development.md`).
+- `cargo build --features visual-search-trial` passes, if the trial was committed.
+- Each commit builds on its own.
+- No file under `~/.local/share/sharpr/` was touched.
+
+**Guardrails:**
+- Do not start a new audit round. Unresolved findings already map to Phases 1, 2, and 5.
+- Do not push or merge into `main`.
+- Tell the user when the launcher's binary is rebuilt.
+
+**After this:** Phase 0 steps 4–7 cover the backup, release launcher, performance baseline, user acceptance, and fast-forwarding `main`. Then comes Phase 1, data-safety repairs.
