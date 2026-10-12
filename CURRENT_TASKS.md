@@ -101,6 +101,11 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 - **Screenshot:** checked at 1024×600.
 - `./check.sh` passes, with 158 tests.
 
+**Item 3: done (committed, not yet deployed).**
+- Type-to-search and Ctrl+F already worked, and the "Whole library" switch is visible.
+- Space, `[` and `]` no longer open search: Space stays free for viewing and Compare (D7), and the brackets keep cycling pages.
+- **Manual check at deployment:** press Space and the bracket keys while browsing.
+
 **Guardrails:**
 - Test in isolated directories only (`docs/reference/development.md`).
 - No tagging UX changes; tags are frozen (D1).

@@ -134,7 +134,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - aspects: `16:9`, `21:9`, `16:10`, `4:3`, `3:2`, `square`, `landscape`, `portrait`
 
    The remaining text goes to name search; after Phase 5 it goes to visual search. An ambiguous word becomes a chip that turns back into text with one click. Suggestions appear while typing.
-3. **Search from anywhere (D6, D7).**
+3. ~~Search from anywhere (D6, D7).~~ Done October 12. Typing anywhere and Ctrl+F already worked, and "Whole library" is visible; Space, `[` and `]` no longer open search.
+   Original scope:
    - Typing anywhere opens search with that text; Ctrl+F also opens it.
    - The scope switch (this folder or bucket, or the whole library) is visible.
    - Space stays free.

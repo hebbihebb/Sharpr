@@ -2593,7 +2593,9 @@ impl SharprWindow {
                 let Some(ch) = key.to_unicode() else {
                     return glib::Propagation::Proceed;
                 };
-                if ch.is_control() {
+                // Space stays free for viewing and Compare (decision D7), and
+                // [ and ] keep cycling pages.
+                if ch.is_control() || ch.is_whitespace() || matches!(ch, '[' | ']') {
                     return glib::Propagation::Proceed;
                 }
                 let Some(win) = window_weak.upgrade() else {
