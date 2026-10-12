@@ -1,6 +1,6 @@
 # Offline image-search feasibility
 
-Approved direction: visual search narrows the current folder/bucket; manual tags and bucket membership remain authoritative. Generated labels are not required.
+Approved direction (`docs/reference/product.md`): visual search replaces manual tags for finding images. It searches the current folder or bucket by default, with an explicit scope switch. Bucket membership remains authoritative, and generated labels are not required. Evaluation queries must cover subjects, style, mood and colour, and people or adult content (D15). Filter words are never sent to the model.
 
 ## Primary sources
 
@@ -19,7 +19,7 @@ Use a representative 1,000-image sample and 30 predefined queries/expected examp
 
 ## Release gate
 
-At least 80% useful top-20 results, warm queries below one second on this laptop, and no more than 10% navigation latency increase while indexing. CPU operation is required; GPU optional. Whole-library indexing overnight is acceptable; initial indexing speed is not a gate. Folder/partial indexing controls and scheduling are later refinements. Choose Gemma if it passes, otherwise SigLIP only if it passes. If neither passes, do not ship visual search. Runtime packaging must be verified before release. Model/setup downloads during development are separate from the application, which has no automatic model downloader.
+At least 80% useful top-20 results, warm queries below one second on this laptop, and no more than 10% navigation latency increase while indexing. CPU operation is required; GPU optional. Whole-library indexing overnight is acceptable; initial indexing speed is not a gate. Folder/partial indexing controls and scheduling are later refinements. The candidate decision rule is in `ROADMAP.md` Phase 3, and it supersedes the Gemma-first rule written here earlier. If no candidate passes, do not ship visual search, and keep tags frozen rather than retiring them. Runtime packaging must be verified before release. Model/setup downloads during development are separate from the application, which has no automatic model downloader.
 
 
 ## Checkpoint status

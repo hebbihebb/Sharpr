@@ -70,7 +70,7 @@ The thumbnail caches are an unbounded per-view memory cache, a global memory cac
 
 Rules:
 
-- **Buckets are tag-backed.** A bucket stores only its name, primary tag, extra tags, and parent. Its members are the paths that carry *every* effective tag, meaning the bucket's own tags plus all of its ancestors' tags. Membership is never stored separately.
+- **Buckets are tag-backed.** A bucket stores only its name, primary tag, extra tags, and parent. Its members are the paths that carry *every* effective tag, meaning the bucket's own tags plus all of its ancestors' tags. Membership is never stored separately. `ROADMAP.md` Phase 4 changes this. Each bucket gets its own membership list, keyed by content fingerprint and keeping the image's last known path. Inheritance is computed at display time. Tag rows are left in place, unused.
 - **Tags are keyed by path string.** Renames and moves made inside Sharpr call `rename_path`. Changes made outside Sharpr leave orphaned rows.
 - **There is no schema version.** `schema_meta.schema_version` is written but never read, and `user_version` is 0. Changes have so far been additive: `CREATE IF NOT EXISTS` and add-missing-column checks. Keep them additive. `ROADMAP.md` Phase 1 adds real versioning.
 - **Legacy tables and settings keys** (`pipelines`, `pipeline_steps`, `collection_items`, and removed-feature GSettings keys) are never dropped or migrated at runtime. Their code is compiled out with `#[cfg(any())]`.
@@ -89,4 +89,4 @@ Rules:
 
 - The app ID is `io.github.hebbihebb.Sharpr`. The desktop file and metainfo are in `sharpr/data/`.
 - The Flatpak manifest (`sharpr/packaging/io.github.hebbihebb.Sharpr.yml`, GNOME 50) builds from an rsync of the working tree in `.flatpak-source`. It is not pinned to a Git commit. It has no ONNX or Real-ESRGAN modules.
-- The version comes from `build.rs`, which derives it from the commit count. This disagrees with metainfo and with the bundle file names (`ROADMAP.md` Phase 6).
+- The version comes from `build.rs`, which derives it from the commit count. This disagrees with metainfo and with the bundle file names (`ROADMAP.md` Phase 9).

@@ -19,7 +19,17 @@ Each checkpoint builds from its own committed source. Final checks: `cargo build
 - Full original working tree: `preserve/october-12-wip` (`68858b3`). This is an archival snapshot, not a verified all-features build.
 - Trial-only Cargo/lockfile/main wiring: `visual-search-trial-wip` (`48a0539`). The missing `semantic_trial.rs` is recorded; the trial remains unfinished. `viewer-reset` has no trial feature, new HTTP dependencies or runtime networking.
 - Private model files, Python environment, sample manifest, vectors and original reports remain ignored under `.tmp/`; no experiment was rerun or discarded.
-- Data-safety repairs, dimension-cache consolidation, truthful membership chips, crop-preview fallback and benchmark methodology remain in Phases 1, 2, 3 and 5. No new phase was implemented.
+- Data-safety repairs, dimension-cache consolidation, truthful membership chips, crop-preview fallback and benchmark methodology remain in Phases 1, 2, 3 and 6 of the restructured roadmap. No new phase was implemented.
+
+## Product Direction (Approved October 12)
+
+After a product interview, the user approved `docs/reference/product.md` (decisions D1–D19), and the roadmap was restructured into Phases 0–9.
+
+- **Manual tags are frozen:** no tagging improvements. They are retired only if visual search passes Phase 3.
+- **Buckets move to fingerprint-keyed membership** in Phase 4, which survives files moved outside Sharpr.
+- **Finding comes first** after the data-safety work: typed filter chips, start-typing search, the Info panel, and fast add-to-bucket.
+
+Phase 0 and Phase 1 content is unchanged. Nothing was implemented.
 
 ## User Data And Deployment
 

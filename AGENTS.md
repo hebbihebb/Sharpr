@@ -6,20 +6,26 @@ The authoritative instructions for every coding agent working on this repository
 
 1. `CURRENT_TASKS.md`: Git and working-tree state, the active milestone, and the next task.
 2. `ROADMAP.md`: the only roadmap, including phase order, scope, and acceptance criteria.
-3. `docs/reference/architecture.md`: modules, threading, persistence, and invariants. Read it before any non-trivial change.
-4. `docs/reference/development.md`: build, run, test, verification, packaging, and the native launcher.
-5. `docs/reference/ui-gtk.md`: read it before UI work.
+3. `docs/reference/product.md`: the approved product vision, workflows, UX principles, non-goals, and decision log. Read it before any user-facing change.
+4. `docs/reference/architecture.md`: modules, threading, persistence, and invariants. Read it before any non-trivial change.
+5. `docs/reference/development.md`: build, run, test, verification, packaging, and the native launcher.
+6. `docs/reference/ui-gtk.md`: read it before UI work.
 
-`README.md` is for GitHub readers. `docs/archive/` is historical evidence, not instructions. If documents disagree, this file wins, then `ROADMAP.md`.
+`README.md` is for GitHub readers. `docs/archive/` is historical evidence, not instructions. If documents disagree, this file wins, then `product.md`, then `ROADMAP.md`. Product decisions change only with the user's approval and a decision-log entry.
 
 ## Product
 
-Sharpr is a fast, local, offline Linux image organizer and wallpaper-preparation app (Rust, GTK4, Libadwaita, SQLite). Its strengths are the viewer, filmstrip navigation, folders, and buckets (tag-backed collections). Preserve them. Current work is described in `ROADMAP.md`.
+Sharpr is a fast, offline Linux app for finding, curating, and preparing wallpaper-grade images (Rust, GTK4, Libadwaita, SQLite). Its strengths are the viewer, filmstrip navigation, folders, and buckets. Buckets are hand-curated collections, currently backed by tags. Preserve all of these.
+
+Images will be found through visual search and typed filters, not manual tags, and preparation is crop plus batch WebP export. Details are in `docs/reference/product.md`.
 
 ## Invariants
 
 - **Originals are never modified.** No code path writes, re-encodes, renames, or moves a source image. Outputs are new, uniquely named files created exclusively, never overwriting an existing file. Delete moves files to the system trash only after an explicit user action.
-- **User data survives every change.** Tags, buckets, and settings in `~/.local/share/sharpr/` and `~/.config/sharpr/` are irreplaceable. Schema changes are additive. Never drop or rewrite legacy tables or keys. Tests and experiments use temporary directories, never the real data directory.
+- **User data survives every change.** Tags, buckets, and settings in `~/.local/share/sharpr/` and `~/.config/sharpr/` are irreplaceable. Schema changes are additive. Never drop or rewrite legacy tables or keys.
+  - Retiring a feature from the UI never deletes its data. The one approved exception is the backed-up, confirm-first automatic-tag cleanup (decision D17).
+  - Back up and verify counts before any data migration.
+  - Tests and experiments use temporary directories, never the real data directory.
 - **The filmstrip stays responsive.** Never block the GTK main thread with decoding, scanning, header reads, hashing, SQLite bulk work, model calls, or exports. Keep visible-thumbnail priority and generation counters. Wrap or extend the thumbnail scheduler; do not rewrite it.
 - **Disabled folders are excluded** from every scan, index, search, view, and write path.
 - **Folders are the source of truth.** Caches, thumbnails, dimensions, hashes, and vectors are rebuildable. Tags and bucket membership are user data.
@@ -28,10 +34,14 @@ Sharpr is a fast, local, offline Linux image organizer and wallpaper-preparation
 
 ## Scope
 
-- **Established:** viewer, filmstrip, folders, buckets, manual tags, search, filters, Compare, duplicates, quality views, Resize Copy, and explicit trash.
+- **Established:** viewer, filmstrip, folders, buckets, search, filters, Compare, duplicates, Crop/WebP Copy, and explicit trash.
+- **Frozen:** manual tags (D1). Do no tagging improvements. Data-safety fixes are allowed. Tags are retired from the UI only after visual search passes `ROADMAP.md` Phase 3.
+- **Being replaced:**
+  - Quality views give way to resolution filters (Phase 2).
+  - Resize Copy and non-WebP output give way to batch WebP export (Phase 6).
 - **In progress:** the roadmap phases.
-- **Experimental:** visual search, built only with the `visual-search-trial` Cargo feature. It is off by default and excluded from the Flatpak until `ROADMAP.md` Phase 4 promotes it. Keep experimental code in its own module behind the feature, and never let it change default behavior.
-- **Removed, do not reintroduce:** Tasks, processing queues, pipelines, and generation history; AI upscaling, enhancement, and tagging; ComfyUI and remote backends; model downloaders; rotate/flip pixel editing; metadata write-back; full-editor features; import workflow; saved searches; batch rename; splash screen; scripting. Enhancement and upscaling stay in external tools.
+- **Experimental:** visual search. The unfinished trial wiring is on the `visual-search-trial-wip` branch, behind the `visual-search-trial` Cargo feature. It is off by default and excluded from the Flatpak until `ROADMAP.md` Phase 5 promotes it. Keep experimental code in its own module behind the feature, and never let it change default behavior.
+- **Removed, do not reintroduce:** Tasks, processing queues, pipelines, and generation history; AI upscaling, enhancement, and tagging; ComfyUI and remote backends; model downloaders; rotate/flip pixel editing; metadata write-back; full-editor features; import workflow; saved searches; batch rename; splash screen; scripting. Enhancement and upscaling stay in external tools. The product non-goals in `product.md` also apply.
 
 ## Working Rules
 

@@ -2,20 +2,27 @@
 
 ## Design Direction
 
-Sharpr should feel like a calm, fast GNOME review desk. The primary workflows are:
-- folder review in the viewer and filmstrip
-- buckets and manual tags
-- search and filters
-- Compare
-- Resize, Crop, and WebP copies
-- explicit trash
+Sharpr should feel like a calm, fast GNOME review desk. The workflows and the eight UX principles are in `product.md`:
+- find
+- curate in buckets
+- prepare wallpapers
+- clean up
+- compare
+- view fullscreen
+
+This file covers how to build them in GTK.
 
 ## UI Rules
 
 - Prefer standard GTK and Libadwaita widgets, actions, dialogs, popovers, overlays, and accessibility behavior over custom UI.
-- Use `GAction`s for menu commands and their sensitivity. Compare is enabled only when exactly two filmstrip images are selected.
+- Use `GAction`s for menu commands and their sensitivity.
+- Compare currently needs exactly two selected images. Phase 8 extends it to N images in pairwise knockout (D8).
 - Search, filters, and sort apply to the current folder or bucket unless the user explicitly picks the whole library. Clearing a search restores the scope, selection, scroll position, and current sort.
-- Names & tags is the default search mode. Experimental visual search must never replace it by default.
+- Open search by typing anywhere or pressing Ctrl+F (D7). Keep Space free for viewing and Compare.
+- Recognized filter words in the search box become removable chips that share state with the filter controls (D16).
+- Until Phase 5 ships, name search is the default. Experimental visual search never becomes the default early.
+- Tags are frozen (D1). Add no new tag UI.
+- Keep the interface quiet. Only resolution with format, and bucket membership, are always visible; everything else belongs in the Info panel (D18).
 - Destructive or broad actions need confirmation that states their effect. These include deleting a tag, deleting a bucket, trashing files, and bulk tag removal. When an action affects buckets, name them.
 - Every background failure surfaces as a toast or dialog. Never let a failed read look like an empty result.
 - Copy dialogs keep the oriented source aspect ratio by default. Crop defaults to a movable 16:9 selection. PNG output disables the quality control.

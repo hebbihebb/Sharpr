@@ -101,7 +101,7 @@ flatpak run io.github.hebbihebb.Sharpr
 - **Runtime:** GNOME 50 plus the rust-stable SDK extension.
 - **Memory:** the manifest caps cargo at `--jobs 4` to avoid running out of memory while libjxl compiles. Keep the cap.
 - **No version pinning:** the build uses whatever is in the working tree, uncommitted changes included, so record the commit you built.
-- **Stale target data:** `.flatpak-source` keeps an old `target/` from earlier syncs because the script does not delete excluded files (`ROADMAP.md` Phase 6).
+- **Stale target data:** `.flatpak-source` keeps an old `target/` from earlier syncs because the script does not delete excluded files (`ROADMAP.md` Phase 9).
 
 ## Structured Logging
 

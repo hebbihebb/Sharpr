@@ -42,3 +42,7 @@ A compact record of how Sharpr got here. It is historical context, not instructi
 The documentation realignment was followed by separate verified commits for dependency fixes, displayed dimensions and safe copy services, scoped browsing/manual bucket persistence, Crop/WebP dialogs, and offline benchmark tools. Full starting work and trial-only wiring were preserved on local archive branches. All normal checkpoints build; default checks and isolated GTK workflows pass. No model runtime or trial placeholder was added to the normal branch.
 
 Builds used an isolated target, leaving the user's existing launcher binary unchanged. Live Sharpr activity prevented claiming an idle backup or settings/WAL equivalence. Deployment, real-library release measurements, acceptance and `main` fast-forward remain Phase 0 steps requiring separate authorization. No branch/worktree was deleted and nothing was pushed.
+
+## October 2026: product vision
+
+The evening of October 12, a product-design interview with the user corrected the direction. Manual tagging is no longer a core feature to repair. Visual search plus typed filters should replace tags for finding images, and buckets remain the hand-curated way to keep them. The approved vision and decision log (D1–D19) are in `docs/reference/product.md`. The roadmap was restructured into Phases 0–9: new phases for file identity and buckets, cleanup, and Compare, and tags frozen until visual search passes its evaluation. No code changed.
