@@ -472,6 +472,8 @@ mod imp {
         pub search_whole_library: RefCell<Option<gtk4::CheckButton>>,
         pub search_chips: RefCell<Option<gtk4::FlowBox>>,
         pub bucket_open_generation: Cell<u64>,
+        /// Increases whenever a search session starts (a browse snapshot is taken).
+        pub browse_session: Cell<u64>,
         pub inline_search_generation: Cell<u64>,
         pub browse_generation: Arc<std::sync::atomic::AtomicU64>,
         pub(super) browse_worker: search_controller::BrowseWorker,
@@ -513,6 +515,7 @@ mod imp {
                 search_whole_library: RefCell::new(None),
                 search_chips: RefCell::new(None),
                 bucket_open_generation: Cell::new(0),
+                browse_session: Cell::new(0),
                 inline_search_generation: Cell::new(0),
                 browse_generation,
                 browse_worker,

@@ -1,9 +1,51 @@
 //! Scoped browsing keeps an immutable candidate set while query results change.
 use super::*;
 
-type BrowseTask = Box<
-    dyn FnOnce(&mut crate::model::browse::DimensionCache) -> Result<Vec<PathBuf>, String> + Send,
->;
+type BrowseTask = Box<dyn FnOnce(&mut BrowseCaches) -> Result<Vec<PathBuf>, String> + Send>;
+
+/// State the browse worker keeps between queries.
+#[derive(Default)]
+pub(super) struct BrowseCaches {
+    pub dimensions: crate::model::browse::DimensionCache,
+    /// Whole-library file list for one search session, keyed by session,
+    /// library root and disabled folders. Walking the library tree on every
+    /// keystroke grows with library size.
+    library_paths: Option<(u64, PathBuf, Vec<PathBuf>, Vec<PathBuf>)>,
+}
+
+impl BrowseCaches {
+    fn library_paths(
+        &mut self,
+        session: u64,
+        root: &Path,
+        disabled: &[PathBuf],
+        superseded: &dyn Fn() -> bool,
+    ) -> Result<Vec<PathBuf>, String> {
+        if let Some((cached_session, cached_root, cached_disabled, paths)) = &self.library_paths {
+            if *cached_session == session && cached_root == root && cached_disabled == disabled {
+                return Ok(paths.clone());
+            }
+        }
+        let paths = crate::model::library::collect_library_image_paths_cancellable(
+            Some(root.to_path_buf()),
+            FolderMode::DrillDown,
+            None,
+            disabled,
+            superseded,
+        );
+        // A walk cut short by a newer query is incomplete: never cache it.
+        if superseded() {
+            return Err("Search superseded".into());
+        }
+        self.library_paths = Some((
+            session,
+            root.to_path_buf(),
+            disabled.to_vec(),
+            paths.clone(),
+        ));
+        Ok(paths)
+    }
+}
 struct BrowseJob {
     generation: u64,
     task: BrowseTask,
@@ -16,7 +58,7 @@ impl BrowseWorker {
     pub fn new(generation: Arc<std::sync::atomic::AtomicU64>) -> Self {
         let (tx, rx) = async_channel::unbounded::<BrowseJob>();
         std::thread::spawn(move || {
-            let mut cache = crate::model::browse::DimensionCache::default();
+            let mut cache = BrowseCaches::default();
             while let Ok(mut job) = rx.recv_blocking() {
                 while let Ok(newer) = rx.try_recv() {
                     job = newer;
@@ -95,6 +137,9 @@ impl SharprWindow {
             .as_ref()
             .map(|f| f.scroll_position())
             .unwrap_or(0.0);
+        self.imp()
+            .browse_session
+            .set(self.imp().browse_session.get().wrapping_add(1));
         *self.imp().browse_snapshot.borrow_mut() = Some(BrowseSnapshot {
             scope: st.scope.clone(),
             folder: st.library.current_folder.clone(),
@@ -308,6 +353,7 @@ impl SharprWindow {
             }
         }
         let text = parsed.text;
+        let session = self.imp().browse_session.get();
         let (tx, rx) = async_channel::bounded(1);
         let expected_query = query.clone();
         let canceled = self.imp().browse_generation.clone();
@@ -323,13 +369,7 @@ impl SharprWindow {
                     }
                     let candidates = if options.whole_library {
                         let root = root.clone().ok_or("No active library")?;
-                        crate::model::library::collect_library_image_paths_cancellable(
-                            Some(root),
-                            FolderMode::DrillDown,
-                            None,
-                            &disabled,
-                            &superseded,
-                        )
+                        cache.library_paths(session, &root, &disabled, &superseded)?
                     } else {
                         candidates
                     };
@@ -376,7 +416,7 @@ impl SharprWindow {
                             continue;
                         }
                         let dimensions = needs_dimensions
-                            .then(|| cache.get(&path, &metadata))
+                            .then(|| cache.dimensions.get(&path, &metadata))
                             .flatten();
                         if !options.dimensions.matches(dimensions)
                             || !chips.matches(&path, dimensions)
@@ -479,6 +519,41 @@ fn match_candidates(candidates: &[PathBuf], tag_paths: &[PathBuf], query: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whole_library_list_is_reused_within_a_search_session_only() {
+        let root = std::env::temp_dir().join(format!(
+            "sharpr-browse-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.jpg"), b"a").unwrap();
+        let mut caches = BrowseCaches::default();
+        let current = || false;
+
+        assert_eq!(
+            caches.library_paths(1, &root, &[], &current).unwrap().len(),
+            1
+        );
+        std::fs::write(root.join("b.jpg"), b"b").unwrap();
+        assert_eq!(
+            caches.library_paths(1, &root, &[], &current).unwrap().len(),
+            1,
+            "same session reuses the walk"
+        );
+        assert!(caches.library_paths(2, &root, &[], &|| true).is_err());
+        assert_eq!(
+            caches.library_paths(2, &root, &[], &current).unwrap().len(),
+            2,
+            "a new session walks again; the cancelled walk was not kept"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn later_queries_use_original_candidates_and_never_escape_scope() {
         let paths = vec![

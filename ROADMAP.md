@@ -162,7 +162,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - Recommendation: build both from one action model, so they cannot drift apart. "…" lists every action for the current image or selection; right-click offers the same actions for the clicked item. Shortcuts cover the frequent actions.
    - GNOME guidance is that context menus should not be the only way to reach an action. Removing "…" therefore needs another visible path, and that choice belongs to the user.
 10. **Use one source for dimensions:** the library index's oriented width and height. Remove the extra `DimensionCache`s and the repeated header reads.
-11. **Move the remaining GTK-thread work off it:**
+11. ~~Move the remaining GTK-thread work off it.~~ Done October 12: badge colours, duplicate grouping, bucket open, virtual-view lookups, and the whole-library search cache. Sidebar counts were already on a worker.
+   Original scope:
    - Fill the tag lookup during filmstrip bind off-thread.
    - Open buckets on a worker with the checked query and a chunked store load.
    - Replace the linear `entries_for_path` scans with the path index.
