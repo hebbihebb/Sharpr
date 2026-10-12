@@ -91,7 +91,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - Workers must not `send_blocking` hash follow-ups into their own bounded queue (`thumbnails/worker.rs`).
    - The stale-drain loop must not discard hash or shutdown messages.
    - Add a stress test that exceeds the queue capacity.
-5. **Add real schema versioning.**
+5. ~~Add real schema versioning.~~ Done October 12: `user_version` 1 on both databases, newer databases refused untouched, and 1,304 lines of compiled-out legacy code deleted.
    - Set `PRAGMA user_version` on both databases.
    - A binary that finds a newer version refuses to write and shows an error.
    - Delete the compiled-out `#[cfg(any())]` pipeline code. The legacy tables stay.

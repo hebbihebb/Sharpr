@@ -50,7 +50,7 @@ The filmstrip is Sharpr's most performance-sensitive surface. Keep these rules:
 
 1. Bump the thumbnail generation whenever the list's contents change (folder, bucket, search, or sort).
 2. Every path added to `pending_paths` must be removed on every exit path, including failure and stale drops.
-3. The GTK side never blocks on a worker channel, and workers never block on their own bounded queue. The current thumbnail-to-hash chaining breaks this rule (`ROADMAP.md` Phase 1).
+3. The GTK side never blocks on a worker channel, and workers never block on their own bounded queue. Follow-up hash requests use `queue_hash` (non-blocking), and stale requests are skipped with `drain_stale`; reuse both.
 4. Factory bind callbacks do no database or filesystem I/O.
 5. Large store mutations are chunked.
 6. A result is applied only after both its generation and its path lookup still match.
@@ -72,17 +72,19 @@ Rules:
 
 - **Buckets are tag-backed.** A bucket stores only its name, primary tag, extra tags, and parent. Its members are the paths that carry *every* effective tag, meaning the bucket's own tags plus all of its ancestors' tags. Membership is never stored separately. `ROADMAP.md` Phase 4 changes this. Each bucket gets its own membership list, keyed by content fingerprint and keeping the image's last known path. Inheritance is computed at display time. Tag rows are left in place, unused.
 - **Tags are keyed by path string.** Renames and moves made inside Sharpr call `rename_path`. Changes made outside Sharpr leave orphaned rows.
-- **There is no schema version.** `schema_meta.schema_version` is written but never read, and `user_version` is 0. Changes have so far been additive: `CREATE IF NOT EXISTS` and add-missing-column checks. Keep them additive. `ROADMAP.md` Phase 1 adds real versioning.
-- **Legacy tables and settings keys** (`pipelines`, `pipeline_steps`, `collection_items`, and removed-feature GSettings keys) are never dropped or migrated at runtime. Their code is compiled out with `#[cfg(any())]`.
+- **Schema versions** live in `PRAGMA user_version` (`src/db_version.rs`), currently 1 for both databases. Before any setup, a database is opened read-only, and refused untouched if its version is newer than the build supports. Schema changes stay additive. Bump the version for any change an older build must not write to, and add a migration that runs only when the stored version is lower. `schema_meta.schema_version` is legacy, written but never read.
+- **Legacy tables and settings keys** (`pipelines`, `pipeline_steps`, `collection_items`, and removed-feature GSettings keys) are never dropped or migrated at runtime. The code that used them was deleted on October 12, 2026; the tables and keys remain, inert.
 - **Bucket create, rename, and reparent touch both databases.** Each database commits separately, with a compensating rollback if the second fails. A crash between the two commits can leave them inconsistent; this window is accepted, and recorded in the roadmap backlog.
-- **Two known destructive paths exist; do not extend them** (`ROADMAP.md` Phase 1 removes them):
-  - `TagDatabase::all_tags()` and `paths_for_tag()` delete tag rows for paths that are missing on disk.
-  - Removing an image from a bucket strips all of the bucket's effective tags, including inherited ancestor tags.
+- **Reads never delete.** Tag rows for missing or trashed files are kept and hidden: `paths_for_tag()`, `all_tags()`, and `paths_for_all_tags_checked()` filter missing paths, and `stored_paths_for_all_tags_checked()` includes them. The tags come back if the file does.
+- **Bucket edits go through `src/buckets.rs`.**
+  - Removal strips only the bucket's primary tag.
+  - Rename and reparent update every stored member under the library root, including disabled folders and missing files.
+  - Reparent keeps tags that other buckets still need.
 
 ## Output Files
 
 - Resize, Crop, and WebP copies decode the source in its displayed orientation and write to a new file. The output name is reserved with `create_new`, the data is written to a hidden partial file, and the partial is renamed into place. Encoder flushes are checked, and failed outputs are removed.
-- Originals are only ever opened for reading. The exceptions are explicit trash, move, and rename actions. In-app rename still uses an unchecked `std::fs::rename`, which can overwrite an existing file (`ROADMAP.md` Phase 1).
+- Originals are only ever opened for reading. The exceptions are explicit trash, move, and rename actions. Rename and Move to… go through `file_ops::rename_no_replace`, which never replaces an existing file.
 - Embedded metadata is never written.
 
 ## Packaging And Identity

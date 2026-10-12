@@ -59,7 +59,22 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 - **Verification:** `./check.sh` (146 tests) and both GTK tests pass.
 - **Pending:** the manual rapid-scroll and folder-switch check on the real library happens at Phase 1 deployment, compared against the baseline.
 
-**Next: item 5, schema versioning.** Then item 6.
+**Item 5: done (committed, verified, not yet deployed).**
+- `src/db_version.rs` stamps `PRAGMA user_version = 1` on both databases.
+- Before any setup, each database is opened read-only and refused untouched if it is newer than the build supports.
+- A tags-database failure now shows a persistent toast.
+- **Tests:** a refused database file is byte-identical afterwards.
+- **Round-trip:** a copy of the live databases went through the new build with identical tag rows, buckets, and image list (SHA-256), and is now stamped version 1.
+- **Dead code:** 1,304 lines of `#[cfg(any())]` pipeline and upscaler code were deleted; the legacy tables and keys remain.
+- `./check.sh` passes, with 150 tests.
+
+**Compatibility note:** the deployed build `5832010` ignores `user_version`, so going back to it after deploying Phase 1 is safe.
+
+**Next: item 6, guard broad actions.**
+- Tags-page "Delete tag" confirms and names affected buckets, and runs off the GTK thread.
+- Reject bucket names that differ only by case.
+- Single-key shortcuts don't fire while a text entry has focus.
+- Report trash failures.
 
 **Guardrails:**
 - Test in isolated directories only (`docs/reference/development.md`).
