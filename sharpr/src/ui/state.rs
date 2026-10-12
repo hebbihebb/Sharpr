@@ -15,6 +15,7 @@ pub struct AppState {
     pub library_index: Option<Arc<LibraryIndex>>,
     pub library_index_error: Option<String>,
     pub tags: Option<Arc<crate::tags::TagDatabase>>,
+    pub tags_error: Option<String>,
     pub ops: crate::ops::queue::OpQueue,
     pub selected_paths: HashSet<PathBuf>,
     pub scope: ViewScope,
@@ -54,14 +55,12 @@ impl AppState {
             .active_library()
             .map(|library| library.ignored_folders.clone())
             .unwrap_or_default();
-        let tags = match crate::tags::TagDatabase::open() {
-            Ok(tags) => Some(Arc::new(tags)),
+        let (tags, tags_error) = match crate::tags::TagDatabase::open() {
+            Ok(tags) => (Some(Arc::new(tags)), None),
             Err(error) => {
-                crate::bench_error!(
-                    "tags.open.fail",
-                    serde_json::json!({"error":error.to_string()})
-                );
-                None
+                let message = error.to_string();
+                crate::bench_error!("tags.open.fail", serde_json::json!({"error": message}));
+                (None, Some(message))
             }
         };
         if let (Some(index), Some(tags)) = (&library_index, &tags) {
@@ -77,6 +76,7 @@ impl AppState {
             library_index,
             library_index_error,
             tags,
+            tags_error,
             ops,
             selected_paths: HashSet::new(),
             scope: ViewScope::default(),

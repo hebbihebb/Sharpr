@@ -789,6 +789,12 @@ impl SharprWindow {
 
         let toast_overlay = libadwaita::ToastOverlay::new();
         *self.imp().toast_overlay.borrow_mut() = Some(toast_overlay.clone());
+        if let Some(error) = self.imp().state.borrow().tags_error.clone() {
+            let toast =
+                libadwaita::Toast::new(&format!("Tags and buckets are unavailable: {error}"));
+            toast.set_timeout(0);
+            toast_overlay.add_toast(toast);
+        }
         let tag_browser = state.borrow().tags.clone().map(TagBrowser::new);
         if let Some(tag_browser) = tag_browser.as_ref() {
             let collections = collections_for_sidebar(&state.borrow());

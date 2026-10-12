@@ -19,13 +19,21 @@ pub struct TagDatabase {
     conn: Mutex<Connection>,
 }
 
+/// Version recorded in `PRAGMA user_version`; see `crate::db_version`.
+const SCHEMA_VERSION: i64 = 1;
+
 impl TagDatabase {
     pub fn open() -> rusqlite::Result<Self> {
         let dir = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("sharpr");
         std::fs::create_dir_all(&dir).ok();
-        let conn = Connection::open(dir.join("tags.sqlite3"))?;
+        Self::open_at(&dir.join("tags.sqlite3"))
+    }
+
+    fn open_at(path: &Path) -> rusqlite::Result<Self> {
+        crate::db_version::ensure_not_newer(path, SCHEMA_VERSION, "tags database")?;
+        let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(
@@ -44,6 +52,7 @@ impl TagDatabase {
             );
             ",
         )?;
+        crate::db_version::stamp(&conn, SCHEMA_VERSION)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -665,6 +674,40 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn open_stamps_the_schema_version_and_refuses_newer_databases() {
+        let root = temp_path("versioned");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("tags.sqlite3");
+        let photo = root.join("photo.jpg");
+        std::fs::write(&photo, b"image").unwrap();
+        {
+            let db = TagDatabase::open_at(&path).unwrap();
+            db.add_tag(&photo, "art");
+            let version: i64 = db
+                .conn
+                .lock()
+                .unwrap()
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, SCHEMA_VERSION);
+        }
+        Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        assert!(TagDatabase::open_at(&path).is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "a refused database is untouched"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

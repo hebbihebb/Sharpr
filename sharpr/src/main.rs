@@ -3,6 +3,7 @@ mod bench;
 mod buckets;
 mod collection_export;
 mod config;
+mod db_version;
 mod duplicates;
 mod export;
 mod file_ops;

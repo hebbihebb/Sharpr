@@ -14,6 +14,9 @@ mod schema;
 use schema::initialize_schema;
 
 const SCHEMA_VERSION: &str = "3";
+/// Version recorded in `PRAGMA user_version`; see `crate::db_version`. The
+/// older `schema_meta.schema_version` value is still written but never read.
+const USER_VERSION: i64 = 1;
 
 #[derive(Clone, Debug)]
 pub struct Collection {
@@ -170,22 +173,27 @@ fn sort_indexed_aspects(
 
 impl LibraryIndex {
     pub fn open() -> rusqlite::Result<(Self, usize)> {
-        let started = std::time::Instant::now();
         let dir = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("sharpr");
         std::fs::create_dir_all(&dir).ok();
-        let manager =
-            SqliteConnectionManager::file(dir.join("library-index.sqlite")).with_init(|conn| {
-                configure_connection(conn)?;
-                Ok(())
-            });
+        Self::open_at(&dir.join("library-index.sqlite"))
+    }
+
+    fn open_at(path: &Path) -> rusqlite::Result<(Self, usize)> {
+        let started = std::time::Instant::now();
+        crate::db_version::ensure_not_newer(path, USER_VERSION, "library index")?;
+        let manager = SqliteConnectionManager::file(path).with_init(|conn| {
+            configure_connection(conn)?;
+            Ok(())
+        });
         let pool = Pool::new(manager).map_err(|_| rusqlite::Error::InvalidQuery)?;
         let interrupted_count = {
             let conn = pool.get().map_err(|_| rusqlite::Error::InvalidQuery)?;
             initialize_schema(&conn)?;
             invalidate_legacy_quality_labels(&conn)?;
             ensure_collection_schema(&conn)?;
+            crate::db_version::stamp(&conn, USER_VERSION)?;
             0
         };
         crate::bench_event!(
@@ -2191,6 +2199,45 @@ mod tests {
             .unwrap();
         let collection_ids: Vec<i64> = rows.filter_map(Result::ok).collect();
         assert_eq!(collection_ids, vec![first.id, second.id]);
+    }
+
+    #[test]
+    fn open_stamps_the_schema_version_and_refuses_newer_databases() {
+        let dir = std::env::temp_dir().join(format!(
+            "sharpr-index-version-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("library-index.sqlite");
+        {
+            let (index, _) = LibraryIndex::open_at(&path).unwrap();
+            index
+                .create_collection("test", None, "Art", &[], None, None)
+                .unwrap();
+            let conn = index.pool.get().unwrap();
+            let version: i64 = conn
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, USER_VERSION);
+        }
+        let conn = Connection::open(&path).unwrap();
+        conn.pragma_update(None, "user_version", USER_VERSION + 1)
+            .unwrap();
+        drop(conn);
+        let before = std::fs::read(&path).unwrap();
+
+        assert!(LibraryIndex::open_at(&path).is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "a refused index is untouched"
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
