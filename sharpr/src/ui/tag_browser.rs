@@ -561,6 +561,12 @@ impl TagBrowser {
                 }
                 widget.emit_tags_activated(SelectionModifiers::default());
                 widget.refresh();
+                if let Some(window) = widget
+                    .root()
+                    .and_downcast::<crate::ui::window::SharprWindow>()
+                {
+                    window.tags_changed();
+                }
             });
         });
         dialog.present(Some(self));

@@ -602,6 +602,14 @@ impl SharprWindow {
         }
     }
 
+    /// Called after tags change outside a bucket edit, so filmstrip badge
+    /// colours follow.
+    pub fn tags_changed(&self) {
+        if let Some(filmstrip) = self.imp().filmstrip.borrow().as_ref() {
+            filmstrip.rebuild_path_colors();
+        }
+    }
+
     pub fn add_toast(&self, toast: libadwaita::Toast) {
         if let Some(overlay) = self.imp().toast_overlay.borrow().as_ref() {
             overlay.add_toast(toast);

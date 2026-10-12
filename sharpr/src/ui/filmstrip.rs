@@ -250,6 +250,10 @@ mod imp {
         pub pending_notify_count: std::sync::atomic::AtomicU32,
         pub refresh_schedule_pending: Cell<bool>,
         pub tag_root_color: RefCell<HashMap<String, String>>,
+        /// Badge colour per path, built off the GTK thread from
+        /// `tag_root_color` so binding a row needs no database query.
+        pub path_colors: RefCell<Option<HashMap<PathBuf, String>>>,
+        pub path_colors_generation: Cell<u64>,
         pub cached_tags: RefCell<Option<std::sync::Arc<crate::tags::TagDatabase>>>,
         pub last_scroll_value: Cell<f64>,
         pub last_buffer_scan_time: Cell<Option<std::time::Instant>>,
@@ -323,6 +327,8 @@ mod imp {
                 pending_notify_count: std::sync::atomic::AtomicU32::new(0),
                 refresh_schedule_pending: Cell::new(false),
                 tag_root_color: RefCell::new(HashMap::new()),
+                path_colors: RefCell::new(None),
+                path_colors_generation: Cell::new(0),
                 cached_tags: RefCell::new(None),
                 last_scroll_value: Cell::new(0.0),
                 last_buffer_scan_time: Cell::new(None),
@@ -876,8 +882,12 @@ impl FilmstripPane {
             badge.set_visible(false);
 
             let badge_color = widget_weak_bind.upgrade().and_then(|w| {
-                let tags = w.imp().cached_tags.borrow().clone()?;
                 let path = entry.path();
+                if let Some(colors) = w.imp().path_colors.borrow().as_ref() {
+                    return colors.get(&path).cloned();
+                }
+                // Until the first colour map is ready, ask the database.
+                let tags = w.imp().cached_tags.borrow().clone()?;
                 let tag_root_color = w.imp().tag_root_color.borrow();
                 tags.tags_for_path(&path)
                     .into_iter()
@@ -1393,11 +1403,56 @@ impl FilmstripPane {
 
     pub fn refresh_collection_colors(&self, collections: &[crate::library_index::Collection]) {
         *self.imp().tag_root_color.borrow_mut() = collection_tag_color_map(collections);
+        self.rebuild_path_colors();
         self.imp().list_view.queue_draw();
     }
 
     pub fn set_cached_tags(&self, tags: std::sync::Arc<crate::tags::TagDatabase>) {
         *self.imp().cached_tags.borrow_mut() = Some(tags);
+        self.rebuild_path_colors();
+    }
+
+    /// Rebuilds the path → badge colour map on a worker. A path takes the
+    /// colour of its alphabetically first coloured tag, as the per-row query
+    /// did. Stale builds are dropped by generation.
+    pub fn rebuild_path_colors(&self) {
+        let Some(tags) = self.imp().cached_tags.borrow().clone() else {
+            return;
+        };
+        let mut tag_colors: Vec<(String, String)> = self
+            .imp()
+            .tag_root_color
+            .borrow()
+            .iter()
+            .map(|(tag, color)| (tag.clone(), color.clone()))
+            .collect();
+        tag_colors.sort();
+        let generation = self.imp().path_colors_generation.get().wrapping_add(1);
+        self.imp().path_colors_generation.set(generation);
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let mut colors: HashMap<PathBuf, String> = HashMap::new();
+            for (tag, color) in tag_colors {
+                let Ok(paths) = tags.stored_paths_for_all_tags_checked(std::slice::from_ref(&tag))
+                else {
+                    continue;
+                };
+                for path in paths {
+                    colors.entry(path).or_insert_with(|| color.clone());
+                }
+            }
+            let _ = tx.send_blocking(colors);
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(colors) = rx.recv().await else { return };
+            let Some(filmstrip) = weak.upgrade() else {
+                return;
+            };
+            if filmstrip.imp().path_colors_generation.get() == generation {
+                *filmstrip.imp().path_colors.borrow_mut() = Some(colors);
+            }
+        });
     }
 
     pub fn set_thumbnail_sender(

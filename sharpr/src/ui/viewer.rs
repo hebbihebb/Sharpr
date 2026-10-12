@@ -1037,6 +1037,12 @@ impl ViewerPane {
                         viewer.refresh_tag_chips();
                         viewer.refresh_tag_summary();
                     }
+                    if let Some(window) = viewer
+                        .root()
+                        .and_then(|r| r.downcast::<crate::ui::window::SharprWindow>().ok())
+                    {
+                        window.tags_changed();
+                    }
                 }
                 Err(error) => {
                     if let Some(window) = viewer
