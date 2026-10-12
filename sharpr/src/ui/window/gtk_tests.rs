@@ -171,6 +171,35 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
                 .entry_at(0)
                 .is_some_and(|e| e.path().ends_with("mountain.png"))
     });
+    // Finished filter words become chips and narrow the view (decision D16).
+    window.show_inline_search();
+    entry.set_text("png 16:9 ");
+    pump_until(|| {
+        let st = window.imp().state.borrow();
+        st.library.image_count() == 1
+            && st
+                .library
+                .entry_at(0)
+                .is_some_and(|e| e.path().ends_with("mountain.png"))
+    });
+    assert_eq!(entry.text().as_str(), "");
+    assert_eq!(window.imp().browse_options.borrow().chips.chips.len(), 2);
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
+    screenshot(&window, &root.parent().unwrap().join("search-chips.png"));
+    window
+        .imp()
+        .browse_options
+        .borrow_mut()
+        .chips
+        .chips
+        .retain(|chip| chip.label() != "16:9");
+    window.rebuild_search_chips();
+    window.run_scoped_search(String::new());
+    pump_until(|| window.imp().state.borrow().library.image_count() == 2);
+    window.close_browse_search();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 2);
+    assert!(window.imp().browse_options.borrow().chips.is_empty());
     let bucket = {
         let st = window.imp().state.borrow();
         let bucket = st

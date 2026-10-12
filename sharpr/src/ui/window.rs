@@ -463,6 +463,7 @@ mod imp {
         pub pending_created_copy: RefCell<Option<PathBuf>>,
         pub inline_search_revealer: RefCell<Option<gtk4::Revealer>>,
         pub search_whole_library: RefCell<Option<gtk4::CheckButton>>,
+        pub search_chips: RefCell<Option<gtk4::FlowBox>>,
         pub inline_search_generation: Cell<u64>,
         pub browse_generation: Arc<std::sync::atomic::AtomicU64>,
         pub(super) browse_worker: search_controller::BrowseWorker,
@@ -502,6 +503,7 @@ mod imp {
                 pending_created_copy: RefCell::new(None),
                 inline_search_revealer: RefCell::new(None),
                 search_whole_library: RefCell::new(None),
+                search_chips: RefCell::new(None),
                 inline_search_generation: Cell::new(0),
                 browse_generation,
                 browse_worker,
@@ -2292,6 +2294,23 @@ impl SharprWindow {
 
         let viewer_toolbar = libadwaita::ToolbarView::new();
         viewer_toolbar.add_top_bar(&viewer_header);
+        // Typed filter chips sit in their own bar under the header and wrap,
+        // so they never widen the window past its minimum size.
+        let search_chips = gtk4::FlowBox::new();
+        search_chips.set_selection_mode(gtk4::SelectionMode::None);
+        search_chips.set_halign(gtk4::Align::Start);
+        search_chips.set_max_children_per_line(32);
+        search_chips.set_column_spacing(6);
+        search_chips.set_row_spacing(6);
+        search_chips.set_margin_start(12);
+        search_chips.set_margin_end(12);
+        search_chips.set_margin_top(6);
+        search_chips.set_margin_bottom(6);
+        let search_chips_revealer = gtk4::Revealer::new();
+        search_chips_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideDown);
+        search_chips_revealer.set_child(Some(&search_chips));
+        viewer_toolbar.add_top_bar(&search_chips_revealer);
+        *self.imp().search_chips.borrow_mut() = Some(search_chips);
 
         use crate::ui::compare_page::ComparePage;
         let compare_page = ComparePage::new();
@@ -2528,13 +2547,14 @@ impl SharprWindow {
 
         {
             let weak = self.downgrade();
-            preview_search_entry.set_placeholder_text(Some("Search names and tags in this view…"));
+            preview_search_entry.set_placeholder_text(Some("Search names, tags, or 4k png 16:9…"));
             preview_search_entry.set_search_delay(150);
             preview_search_entry.connect_search_changed(move |entry| {
                 let Some(win) = weak.upgrade() else { return };
                 if win.imp().inline_search_suppressed.get() {
                     return;
                 }
+                win.take_completed_search_chips(entry);
                 win.run_scoped_search(entry.text().to_string());
             });
             let weak = self.downgrade();
@@ -3597,6 +3617,7 @@ impl SharprWindow {
         }
         self.imp().browse_snapshot.borrow_mut().take();
         *self.imp().browse_options.borrow_mut() = Default::default();
+        self.rebuild_search_chips();
         if let Some(filmstrip) = self.imp().filmstrip.borrow().as_ref() {
             filmstrip.reset_dimension_filters();
             filmstrip.reset_quality_filter();
@@ -3609,7 +3630,7 @@ impl SharprWindow {
         self.imp().inline_search_suppressed.set(true);
         if let Some(entry) = self.imp().inline_search_entry.borrow().as_ref() {
             entry.set_text("");
-            entry.set_placeholder_text(Some("Search names and tags in this view…"));
+            entry.set_placeholder_text(Some("Search names, tags, or 4k png 16:9…"));
         }
         self.imp().inline_search_suppressed.set(false);
         if hide {

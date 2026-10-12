@@ -93,6 +93,14 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 - `tools/bench-summary.py` summarizes a log and reproduces the Phase 0 baseline exactly. It reports startup stalls and browsing stalls separately.
 - A first debug-build run showed startup stalls of 639 ms and 487 ms, and one 222 ms stall while loading the first folder. Release builds will be measured at deployment.
 
+**Item 2: done (committed, verified, not yet deployed), except suggestions while typing.**
+- `model/search_query.rs` parses formats, resolutions (`4k` means at least 3840×2160 in either orientation; `below 4k` or `<4k` mean the opposite), and aspects (`16:9`, `21:9`, `16:10`, `4:3`, `3:2`, square, landscape, portrait). A quoted word stays text.
+- A filter word moves into a chip once followed by a space. A recognized word still being typed already filters.
+- The chips sit in a wrapping bar under the header, so they never widen the window past 1024 px. The first version did, and the GTK test caught it with Adwaita's width warning.
+- **Tests:** 6 unit tests, plus a GTK scenario covering typing `png 16:9 `, removing a chip, and closing search.
+- **Screenshot:** checked at 1024×600.
+- `./check.sh` passes, with 158 tests.
+
 **Guardrails:**
 - Test in isolated directories only (`docs/reference/development.md`).
 - No tagging UX changes; tags are frozen (D1).

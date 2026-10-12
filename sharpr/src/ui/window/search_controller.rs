@@ -61,10 +61,13 @@ pub(crate) struct BrowseOptions {
     pub quality: Option<crate::quality::QualityClass>,
     pub tags: Vec<String>,
     pub whole_library: bool,
+    /// Chips taken out of the search box (decision D16).
+    pub chips: crate::model::search_query::ChipFilters,
 }
 impl BrowseOptions {
     fn has_filters(&self) -> bool {
         self.whole_library
+            || !self.chips.is_empty()
             || !self.dimensions.is_empty()
             || self.quality.is_some()
             || !self.tags.is_empty()
@@ -159,6 +162,108 @@ impl SharprWindow {
         }
     }
 
+    /// Moves filter words the user has finished typing out of the search box
+    /// and into chips (decision D16).
+    pub(super) fn take_completed_search_chips(&self, entry: &gtk4::SearchEntry) {
+        let (chips, remaining) =
+            crate::model::search_query::take_completed_chips(entry.text().as_str());
+        if chips.is_empty() {
+            return;
+        }
+        {
+            let mut options = self.imp().browse_options.borrow_mut();
+            for chip in chips {
+                if !options.chips.chips.contains(&chip) {
+                    options.chips.chips.push(chip);
+                }
+            }
+        }
+        self.imp().inline_search_suppressed.set(true);
+        entry.set_text(&remaining);
+        entry.set_position(-1);
+        self.imp().inline_search_suppressed.set(false);
+        self.rebuild_search_chips();
+    }
+
+    /// Shows one chip per typed filter. The label turns the chip back into a
+    /// search word; the close button removes the filter.
+    pub(super) fn rebuild_search_chips(&self) {
+        let Some(container) = self.imp().search_chips.borrow().clone() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            container.remove(&child);
+        }
+        let chips = self.imp().browse_options.borrow().chips.chips.clone();
+        if let Some(revealer) = container.parent().and_downcast::<gtk4::Revealer>() {
+            revealer.set_reveal_child(!chips.is_empty());
+        }
+        for chip in chips {
+            let pill = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            pill.add_css_class("linked");
+            pill.set_halign(gtk4::Align::Start);
+            let label = gtk4::Button::with_label(&chip.label());
+            label.set_tooltip_text(Some("Search for this as a word instead"));
+            let remove = gtk4::Button::from_icon_name("window-close-symbolic");
+            remove.set_tooltip_text(Some("Remove filter"));
+            remove.update_property(&[gtk4::accessible::Property::Label(&format!(
+                "Remove {} filter",
+                chip.label()
+            ))]);
+            pill.append(&label);
+            pill.append(&remove);
+            container.append(&pill);
+            if let Some(child) = pill.parent() {
+                // Only the buttons take keyboard focus, not the wrapping cell.
+                child.set_focusable(false);
+            }
+
+            let weak = self.downgrade();
+            label.connect_clicked(move |_| {
+                let Some(win) = weak.upgrade() else { return };
+                win.imp()
+                    .browse_options
+                    .borrow_mut()
+                    .chips
+                    .chips
+                    .retain(|c| *c != chip);
+                win.rebuild_search_chips();
+                let entry = win.imp().inline_search_entry.borrow().clone();
+                if let Some(entry) = entry {
+                    let text = entry.text().to_string();
+                    let literal = chip.as_literal();
+                    let joined = if text.trim().is_empty() {
+                        literal
+                    } else {
+                        format!("{} {literal}", text.trim_end())
+                    };
+                    // The changed text runs the search through the entry.
+                    entry.set_text(&joined);
+                    entry.set_position(-1);
+                }
+            });
+            let weak = self.downgrade();
+            remove.connect_clicked(move |_| {
+                let Some(win) = weak.upgrade() else { return };
+                win.imp()
+                    .browse_options
+                    .borrow_mut()
+                    .chips
+                    .chips
+                    .retain(|c| *c != chip);
+                win.rebuild_search_chips();
+                let query = win
+                    .imp()
+                    .inline_search_entry
+                    .borrow()
+                    .as_ref()
+                    .map(|e| e.text().to_string())
+                    .unwrap_or_default();
+                win.run_scoped_search(query);
+            });
+        }
+    }
+
     pub(super) fn run_scoped_search(&self, query: String) {
         self.run_browse_query(query, false);
     }
@@ -194,6 +299,15 @@ impl SharprWindow {
                 st.sort_order,
             )
         };
+        // Chips already taken out of the box, plus filter words still being typed.
+        let parsed = crate::model::search_query::parse(&query);
+        let mut chips = options.chips.clone();
+        for chip in parsed.chips {
+            if !chips.chips.contains(&chip) {
+                chips.chips.push(chip);
+            }
+        }
+        let text = parsed.text;
         let (tx, rx) = async_channel::bounded(1);
         let expected_query = query.clone();
         let canceled = self.imp().browse_generation.clone();
@@ -229,10 +343,10 @@ impl SharprWindow {
                     };
                     let tag_paths = tags
                         .as_ref()
-                        .map(|db| db.search_paths_checked(&query))
+                        .map(|db| db.search_paths_checked(&text))
                         .transpose()?;
                     let mut paths =
-                        match_candidates(&candidates, tag_paths.as_deref().unwrap_or(&[]), &query);
+                        match_candidates(&candidates, tag_paths.as_deref().unwrap_or(&[]), &text);
                     if !options.tags.is_empty() {
                         let matching: std::collections::HashSet<_> = tags
                             .as_ref()
@@ -243,6 +357,7 @@ impl SharprWindow {
                         paths.retain(|p| matching.contains(p));
                     }
                     let needs_dimensions = !options.dimensions.is_empty()
+                        || chips.needs_dimensions()
                         || options.quality.is_some()
                         || matches!(
                             order.field(),
@@ -263,7 +378,9 @@ impl SharprWindow {
                         let dimensions = needs_dimensions
                             .then(|| cache.get(&path, &metadata))
                             .flatten();
-                        if !options.dimensions.matches(dimensions) {
+                        if !options.dimensions.matches(dimensions)
+                            || !chips.matches(&path, dimensions)
+                        {
                             continue;
                         }
                         if let Some(class) = options.quality {
