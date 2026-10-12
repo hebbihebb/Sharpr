@@ -112,6 +112,16 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 - **2.3 s folder wait: fixed.** Every perceptual hash was saved by its own job in the shared rayon pool, about 7,900 per session, and folder scans queued behind them. Hashes are now batched on one writer thread (`spawn_phash_writer`, one transaction per batch), and folder scans run on their own thread. Measure at deployment with `tools/bench-summary.py`.
 - **Thumbnail memory: analysed, not changed.** It is the cost of whole-folder preload plus sharp 2× thumbnails, not a leak. The decision is the user's, after measuring the deployed build (see `ROADMAP.md`).
 
+**Item 7: implemented and verified, not yet run (the user runs it after deployment).**
+- **Entry point:** main menu → Library → "Remove Old Automatic Tags…".
+- **What it removes:** tags the old auto-tagger produced, meaning the file's own extension, or 720p, 1080p, or 4k. A format tag goes only where it equals that file's real extension, and tags used by any bucket are never touched.
+- **Process:** it previews counts and asks first. It backs up with `VACUUM INTO` to `~/.local/share/sharpr/backups/tags-before-automatic-cleanup-<time>.sqlite3`, then deletes in one transaction.
+- **Preview on a copy of the live data:**
+  - 7,346 rows would be removed: jpg 2,817, 4k 2,048, 1080p 1,342, jxl 462, 720p 248, png 209, jpeg 128, webp 92.
+  - 372 manual rows would be kept.
+  - 18 `png` tags on non-PNG files are conservatively kept.
+- The dead `tags/indexer.rs` and the test-only `insert_auto_tags` were deleted.
+
 **Found:** at 1024×600 the viewer header overflows, and the window close button is partly off-screen. This predates the chip work; it is tracked under item 4.
 
 **Guardrails:**

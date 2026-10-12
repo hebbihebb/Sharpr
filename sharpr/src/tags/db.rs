@@ -22,6 +22,13 @@ pub struct TagDatabase {
 /// Version recorded in `PRAGMA user_version`; see `crate::db_version`.
 const SCHEMA_VERSION: i64 = 1;
 
+/// Tags the removed automatic tagger added: the file's own extension and a
+/// resolution class. See `TagDatabase::automatic_tag_rows`.
+const AUTOMATIC_FORMAT_TAGS: &[&str] = &[
+    "jpg", "jpeg", "png", "webp", "jxl", "gif", "tif", "tiff", "bmp", "ico",
+];
+const AUTOMATIC_RESOLUTION_TAGS: &[&str] = &["720p", "1080p", "4k"];
+
 impl TagDatabase {
     pub fn open() -> rusqlite::Result<Self> {
         let dir = dirs::data_local_dir()
@@ -87,20 +94,6 @@ impl TagDatabase {
             "INSERT OR REPLACE INTO image_quality (path, sharpness, mtime) VALUES (?1, ?2, ?3)",
             rusqlite::params![path.to_string_lossy().as_ref(), score, mtime as i64],
         );
-    }
-
-    #[cfg(test)]
-    pub fn insert_auto_tags(&self, path: &Path, tags: &[String]) {
-        let Ok(conn) = self.conn.lock() else {
-            return;
-        };
-        let path_str = path.to_string_lossy();
-        for tag in tags {
-            let _ = conn.execute(
-                "INSERT OR IGNORE INTO file_tags (path, tag) VALUES (?1, ?2)",
-                params![path_str.as_ref(), tag],
-            );
-        }
     }
 
     pub fn insert_tags(&self, path: &Path, tags: &[String]) {
@@ -333,6 +326,84 @@ impl TagDatabase {
             "INSERT OR IGNORE INTO file_tags (path, tag) VALUES (?1, ?2)",
             params![path.to_string_lossy().as_ref(), tag],
         );
+    }
+
+    /// `(path, tag)` rows the old automatic tagger created (decision D17).
+    /// A format tag only counts when it equals the file's own extension, so a
+    /// hand-made "png" tag on a JPEG is kept. Tags in `protected` (those used
+    /// by buckets) are never returned.
+    pub fn automatic_tag_rows(
+        &self,
+        protected: &std::collections::HashSet<String>,
+    ) -> Result<Vec<(String, String)>, String> {
+        let candidates: Vec<&str> = AUTOMATIC_FORMAT_TAGS
+            .iter()
+            .chain(AUTOMATIC_RESOLUTION_TAGS)
+            .copied()
+            .filter(|tag| !protected.contains(*tag))
+            .collect();
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(String, String)> = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let placeholders = std::iter::repeat_n("?", candidates.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT path, tag FROM file_tags WHERE tag IN ({placeholders})"
+                ))
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(&candidates), |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.collect::<rusqlite::Result<_>>()
+                .map_err(|e| e.to_string())?
+        };
+        Ok(rows
+            .into_iter()
+            .filter(|(path, tag)| {
+                AUTOMATIC_RESOLUTION_TAGS.contains(&tag.as_str())
+                    || Path::new(path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case(tag))
+            })
+            .collect())
+    }
+
+    /// Deletes exactly these `(path, tag)` rows in one transaction.
+    pub fn delete_rows(&self, rows: &[(String, String)]) -> Result<usize, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut deleted = 0;
+        {
+            let mut stmt = tx
+                .prepare("DELETE FROM file_tags WHERE path = ?1 AND tag = ?2")
+                .map_err(|e| e.to_string())?;
+            for (path, tag) in rows {
+                deleted += stmt
+                    .execute(params![path, tag])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(deleted)
+    }
+
+    /// Writes a consistent copy of the whole tags database to `dest`, which
+    /// must not exist yet.
+    pub fn backup_to(&self, dest: &Path) -> Result<(), String> {
+        if dest.exists() {
+            return Err(format!("{} already exists", dest.display()));
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("VACUUM INTO ?1", params![dest.to_string_lossy().as_ref()])
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// Removes `tag` from every image. Returns the number of rows deleted.
@@ -711,6 +782,45 @@ mod tests {
     }
 
     #[test]
+    fn automatic_tag_cleanup_takes_only_what_the_old_tagger_added() {
+        let root = temp_path("auto-cleanup");
+        std::fs::create_dir_all(&root).unwrap();
+        let db = TagDatabase::open_in_memory().unwrap();
+        let png = root.join("sea.PNG");
+        let jpg = root.join("road.jpg");
+        db.add_tag(&png, "png");
+        db.add_tag(&png, "4k");
+        db.add_tag(&png, "art");
+        db.add_tag(&jpg, "png"); // hand-made: not this file's format
+        db.add_tag(&jpg, "1080p");
+        db.add_tag(&jpg, "jpg");
+
+        let protected = std::collections::HashSet::from(["1080p".to_string()]);
+        let mut rows = db.automatic_tag_rows(&protected).unwrap();
+        rows.sort();
+        let p = |path: &PathBuf, tag: &str| (path.to_string_lossy().into_owned(), tag.to_string());
+        assert_eq!(rows, vec![p(&jpg, "jpg"), p(&png, "4k"), p(&png, "png")]);
+
+        let backup = root.join("backup.sqlite3");
+        db.backup_to(&backup).unwrap();
+        assert!(db.backup_to(&backup).is_err(), "never overwrites a backup");
+        assert_eq!(db.delete_rows(&rows).unwrap(), 3);
+
+        assert_eq!(db.tags_for_path(&png), vec!["art".to_string()]);
+        let mut left = db.tags_for_path(&jpg);
+        left.sort();
+        assert_eq!(left, vec!["1080p".to_string(), "png".to_string()]);
+        let restored = TagDatabase::open_at(&backup).unwrap();
+        assert_eq!(
+            restored.tags_for_path(&png).len(),
+            3,
+            "backup holds the old rows"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn tag_queries_hide_missing_paths_without_deleting_them() {
         let db = TagDatabase::open_in_memory().unwrap();
         let root = temp_path("root");
@@ -848,49 +958,6 @@ mod tests {
         assert!(
             db.get_sharpness(&img).is_none(),
             "stale mtime must invalidate the cached score"
-        );
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn insert_auto_tags_does_not_clobber_user_tags() {
-        let db = TagDatabase::open_in_memory().unwrap();
-        let root = temp_path("auto-tags");
-        std::fs::create_dir_all(&root).unwrap();
-        let img = root.join("img.jpg");
-        std::fs::write(&img, b"data").unwrap();
-
-        db.add_tag(&img, "people");
-        db.insert_auto_tags(&img, &["jpg".into(), "1080p".into()]);
-
-        let mut tags = db.tags_for_path(&img);
-        tags.sort();
-        assert_eq!(
-            tags,
-            vec!["1080p", "jpg", "people"],
-            "auto tags must be additive — user tag 'people' must survive"
-        );
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn insert_auto_tags_is_idempotent() {
-        let db = TagDatabase::open_in_memory().unwrap();
-        let root = temp_path("auto-idempotent");
-        std::fs::create_dir_all(&root).unwrap();
-        let img = root.join("img.jpg");
-        std::fs::write(&img, b"data").unwrap();
-
-        db.insert_auto_tags(&img, &["jpg".into()]);
-        db.insert_auto_tags(&img, &["jpg".into()]); // second call must not duplicate
-
-        let tags = db.tags_for_path(&img);
-        assert_eq!(
-            tags,
-            vec!["jpg"],
-            "duplicate auto-tag insert must be ignored"
         );
 
         std::fs::remove_dir_all(root).unwrap();

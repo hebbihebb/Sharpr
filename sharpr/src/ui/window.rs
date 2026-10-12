@@ -1709,6 +1709,18 @@ impl SharprWindow {
         }
 
         {
+            let window_weak = self.downgrade();
+            let tag_browser = tag_browser.clone();
+            let cleanup = gio::SimpleAction::new("remove-automatic-tags", None);
+            cleanup.connect_activate(move |_, _| {
+                if let Some(win) = window_weak.upgrade() {
+                    win.start_automatic_tag_cleanup(tag_browser.clone());
+                }
+            });
+            self.add_action(&cleanup);
+        }
+
+        {
             let filmstrip_c = filmstrip.clone();
             let viewer_c = viewer.clone();
             let sidebar_c = sidebar.clone();
@@ -3885,6 +3897,10 @@ impl SharprWindow {
         let library_section = gio::Menu::new();
         library_section.append(Some("Find Duplicates"), Some("win.find-duplicates"));
         library_section.append(Some("Browse Tags"), Some("win.show-tags"));
+        library_section.append(
+            Some("Remove Old Automatic Tags…"),
+            Some("win.remove-automatic-tags"),
+        );
         menu.append_section(Some("Library"), &library_section);
 
         let app_section = gio::Menu::new();

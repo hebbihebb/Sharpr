@@ -144,7 +144,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - Everything else (filename, position, size, dates, EXIF) moves to an Info panel opened from a key or the context menu.
 5. **Fast curation from results (D5, D10):** add the selection to a bucket by shortcut or by dragging onto a sidebar bucket, and create a new bucket from the selection.
 6. **Retire quality views (D12).** Resolution filters replace them.
-7. **Clean up legacy automatic tags (D17).** 7,565 of the 7,925 live tag rows are format and resolution tags, and no bucket uses them.
+7. ~~Clean up legacy automatic tags (D17).~~ Implemented October 12 as main menu → Library → "Remove Old Automatic Tags…". It backs up with `VACUUM INTO`, previews counts, and asks for confirmation. A preview on the live data showed 7,346 rows to remove and 372 manual rows kept. **The user runs it after deployment.**
+   Original scope: 7,565 of the 7,925 live tag rows are format and resolution tags, and no bucket uses them.
    - Make it a one-time action with a backup, a count preview, and confirmation.
    - It removes only known automatic tag names that no bucket references.
    - Delete the dead `tags/indexer.rs`.

@@ -239,4 +239,144 @@ impl SharprWindow {
             }
         });
     }
+
+    /// Finds the tags the old automatic tagger added (decision D17) and, after
+    /// confirmation and a backup, removes them. Manual tags and every tag a
+    /// bucket uses are kept.
+    pub(super) fn start_automatic_tag_cleanup(&self, tag_browser: Option<TagBrowser>) {
+        let (index, tags) = {
+            let st = self.imp().state.borrow();
+            (st.library_index.clone(), st.tags.clone())
+        };
+        let (Some(index), Some(tags)) = (index, tags) else {
+            self.add_toast(libadwaita::Toast::new(
+                "Tag database or library index is unavailable",
+            ));
+            return;
+        };
+        let (tx, rx) = async_channel::bounded(1);
+        let tags_worker = tags.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<_, String> {
+                let protected: std::collections::HashSet<String> = index
+                    .list_collections()
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .flat_map(|c| std::iter::once(c.primary_tag).chain(c.extra_tags))
+                    .collect();
+                tags_worker.automatic_tag_rows(&protected)
+            })();
+            let _ = tx.send_blocking(result);
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(result) = rx.recv().await else { return };
+            let Some(win) = weak.upgrade() else { return };
+            match result {
+                Ok(rows) if rows.is_empty() => {
+                    win.add_toast(libadwaita::Toast::new("No old automatic tags found"));
+                }
+                Ok(rows) => win.confirm_automatic_tag_cleanup(rows, tags, tag_browser),
+                Err(error) => win.add_toast(libadwaita::Toast::new(&format!(
+                    "Could not look for automatic tags: {error}"
+                ))),
+            }
+        });
+    }
+
+    fn confirm_automatic_tag_cleanup(
+        &self,
+        rows: Vec<(String, String)>,
+        tags: Arc<crate::tags::TagDatabase>,
+        tag_browser: Option<TagBrowser>,
+    ) {
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for (_, tag) in &rows {
+            match counts.iter_mut().find(|(t, _)| t == tag) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((tag.clone(), 1)),
+            }
+        }
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let summary = counts
+            .iter()
+            .map(|(tag, n)| format!("{tag} ({n})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let backups = dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("sharpr")
+            .join("backups");
+        let body = format!(
+            "{} tags that Sharpr once added automatically will be removed: {summary}.\n\n\
+             Tags you added yourself and tags used by buckets are kept. The tag database \
+             is backed up first, to {}.",
+            rows.len(),
+            backups.display()
+        );
+        let dialog = libadwaita::AlertDialog::new(Some("Remove Old Automatic Tags?"), Some(&body));
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("remove", "Remove");
+        dialog.set_response_appearance("remove", libadwaita::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let weak = self.downgrade();
+        dialog.connect_response(None, move |_, response| {
+            if response != "remove" {
+                return;
+            }
+            let (tx, rx) = async_channel::bounded(1);
+            let rows = rows.clone();
+            let tags = tags.clone();
+            let backups = backups.clone();
+            std::thread::spawn(move || {
+                let result = (|| -> Result<(usize, PathBuf), String> {
+                    std::fs::create_dir_all(&backups).map_err(|e| e.to_string())?;
+                    let stamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or_default();
+                    let backup =
+                        backups.join(format!("tags-before-automatic-cleanup-{stamp}.sqlite3"));
+                    tags.backup_to(&backup)?;
+                    let removed = tags.delete_rows(&rows)?;
+                    Ok((removed, backup))
+                })();
+                let _ = tx.send_blocking(result);
+            });
+            let weak = weak.clone();
+            let tag_browser = tag_browser.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let Ok(result) = rx.recv().await else { return };
+                let Some(win) = weak.upgrade() else { return };
+                match result {
+                    Ok((removed, backup)) => {
+                        crate::bench_event!(
+                            "tags.automatic_cleanup",
+                            serde_json::json!({
+                                "removed": removed,
+                                "backup": backup.display().to_string(),
+                            })
+                        );
+                        win.add_toast(libadwaita::Toast::new(&format!(
+                            "Removed {removed} automatic tags; a backup was saved first"
+                        )));
+                        if let Some(browser) = tag_browser.as_ref() {
+                            browser.refresh();
+                        }
+                    }
+                    Err(error) => {
+                        crate::bench_error!(
+                            "tags.automatic_cleanup.fail",
+                            serde_json::json!({"error": error})
+                        );
+                        win.add_toast(libadwaita::Toast::new(&format!(
+                            "Nothing was removed: {error}"
+                        )));
+                    }
+                }
+            });
+        });
+        dialog.present(Some(self));
+    }
 }
