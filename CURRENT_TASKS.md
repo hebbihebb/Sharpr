@@ -52,7 +52,14 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 - **Verification:** `./check.sh` passes (144 tests), and both GTK tests pass.
 - **Known interim limit:** with tag-backed buckets, a direct member of an old ancestor is indistinguishable from a member of the moved bucket, so it leaves the ancestor on reparent. Phase 4's explicit membership fixes this.
 
-**Next: item 4, thumbnail workers cannot deadlock.** Then items 5 and 6.
+**Item 4: done (committed, verified, not yet deployed).**
+- Hash follow-ups use a non-blocking send (`queue_hash`). When the queue is full, the hash is skipped and logged as `hash.skipped_queue_full`.
+- One shared `drain_stale` helper, used by both worker loops, drops stale thumbnails, puts current hash jobs back on the queue, and honors Shutdown instead of swallowing it. Scheduling order and priorities are unchanged.
+- **Stress test:** `overfilled_queue_never_stalls_workers_or_leaves_paths_pending`, with a 2-slot queue and 64 requests. It was confirmed to fail on the old blocking send ("workers stalled after 1 of 64 results").
+- **Verification:** `./check.sh` (146 tests) and both GTK tests pass.
+- **Pending:** the manual rapid-scroll and folder-switch check on the real library happens at Phase 1 deployment, compared against the baseline.
+
+**Next: item 5, schema versioning.** Then item 6.
 
 **Guardrails:**
 - Test in isolated directories only (`docs/reference/development.md`).

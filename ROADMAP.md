@@ -87,7 +87,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - Reparenting drops a tag only when no remaining lineage needs it.
    - Renaming a parent includes members that are in disabled folders.
    - Add parent/child/sibling regression tests.
-4. **Thumbnail workers cannot deadlock.**
+4. ~~Thumbnail workers cannot deadlock.~~ Done October 12 (`queue_hash`, `drain_stale`).
    - Workers must not `send_blocking` hash follow-ups into their own bounded queue (`thumbnails/worker.rs`).
    - The stale-drain loop must not discard hash or shutdown messages.
    - Add a stress test that exceeds the queue capacity.
