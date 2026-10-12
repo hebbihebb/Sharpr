@@ -70,7 +70,7 @@ Phase 0 → Phase 1 ─┬→ Phase 2 Finding ───────────�
 
 ## Phase 0: Checkpoint And Trustworthy Baseline
 
-**Status:** Repository checkpoint (steps 1–3) committed and verified. Operational acceptance (steps 4–7) remains deferred: Sharpr is running, and the current request explicitly excludes deployment, merge, push and cleanup. See `CURRENT_TASKS.md`.
+**Status:** Steps 1–6 are done, and the user accepted the build on October 12. Remaining: the user-approved fast-forward of `main` and the branch cleanup (step 7). See `CURRENT_TASKS.md`.
 
 **Outcome:** All of the October 12 work is committed in reviewable units, the build is green, the user runs a known build, and user data is backed up.
 
@@ -87,7 +87,7 @@ Phase 0 → Phase 1 ─┬→ Phase 2 Finding ───────────�
    Use the existing self-audit; do not start a new audit round. Leftover findings belong to Phases 1, 2, and 6.
 4. ~~Back up the real data.~~ Done October 12 at 22:16, with Sharpr closed: `~/.local/share/sharpr.backup-20261012-221640/`, including `gsettings.ini` and `config-sharpr/`. See `CURRENT_TASKS.md`.
 5. ~~Separate "deployed" from "dev".~~ Done October 12. `tools/install-native-launcher.py` installs per-commit release builds to `~/.local/opt/sharpr/`, and the launcher runs `current` (`5832010`).
-6. **Record a performance baseline** on the real library with the release build: folder open, thumbnail apply latency, and rapid scroll, using bench logs. Write the numbers in `CURRENT_TASKS.md`.
+6. ~~Record a performance baseline.~~ Done October 12 from the user's test session with release build `5832010`. The numbers are in `CURRENT_TASKS.md`.
 7. **After the user accepts the build:**
    - Fast-forward `main` to `viewer-reset` (agreed in principle on October 12; confirm at the time).
    - With approval, delete the six fully merged old branches and the `Sharpr-Base` worktree (`viewer-base`).
@@ -176,15 +176,23 @@ Phase 0 → Phase 1 ─┬→ Phase 2 Finding ───────────�
    - Make it a one-time action with a backup, a count preview, and confirmation.
    - It removes only known automatic tag names that no bucket references.
    - Delete the dead `tags/indexer.rs`.
-8. **Use one source for dimensions:** the library index's oriented width and height. Remove the extra `DimensionCache`s and the repeated header reads.
-9. **Move the remaining GTK-thread work off it:**
+8. **Fix the Phase 0 test findings.**
+   - The aspect filter popover closes when the user clicks away, not only on Escape.
+   - Hide the background-activity indicator (the gear icon at top right) when idle, and reveal it with an animation (`GtkRevealer`) while work runs (principle 6).
+   - A folder-open scan must never wait behind other jobs in the shared rayon pool. One open waited 2.3 s before its 5 ms scan started.
+   - Bound thumbnail memory in the active view. Memory peaked at 2.3 GB during a 5-minute session.
+9. **Decide with the user where image actions live.** Today the viewer's "…" menu and the filmstrip right-click menu overlap.
+   - Recommendation: build both from one action model, so they cannot drift apart. "…" lists every action for the current image or selection; right-click offers the same actions for the clicked item. Shortcuts cover the frequent actions.
+   - GNOME guidance is that context menus should not be the only way to reach an action. Removing "…" therefore needs another visible path, and that choice belongs to the user.
+10. **Use one source for dimensions:** the library index's oriented width and height. Remove the extra `DimensionCache`s and the repeated header reads.
+11. **Move the remaining GTK-thread work off it:**
    - Fill the tag lookup during filmstrip bind off-thread.
    - Open buckets on a worker with the checked query and a chunked store load.
    - Replace the linear `entries_for_path` scans with the path index.
    - Count sidebar buckets off-thread.
    - Compute duplicate groups once per change, not on every navigation, where it is currently O(n²).
    - Cache the whole-library search candidates for each session.
-10. **Extract the code this phase changes from `window.rs`** into `ui/window/` controllers: search, bucket actions, and file actions.
+12. **Extract the code this phase changes from `window.rs`** into `ui/window/` controllers: search, bucket actions, and file actions.
 
 **Not in scope (D1, tags frozen):** multi-select tagging, tag prefix matching, and Tags-page counts.
 
@@ -420,7 +428,7 @@ Phase 0 → Phase 1 ─┬→ Phase 2 Finding ───────────�
 Optional and unordered. Pick something up only when a phase touches that area, or the user asks.
 
 - Split the rest of `SharprWindow::setup` and `filmstrip::build_ui` (about 700 lines), following the architecture decision above.
-- Merge the two near-identical thumbnail worker loops. Bound active-view thumbnail memory in folders of 10,000+ images. Keep thumbnails across sort and search reloads.
+- Merge the two near-identical thumbnail worker loops. Keep thumbnails across sort and search reloads.
 - Use one sort implementation; the SQL and Rust versions currently break ties differently.
 - Move file move, copy, and trash operations off the GTK thread.
 - Add a folder-load token so two loads of the same folder cannot both append.

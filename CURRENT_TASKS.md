@@ -63,6 +63,33 @@ On October 12 at 22:22, with the user's approval, the launcher was switched to a
 - **Cosmetic only:** a GTK warning about a `SharprFolderRow` popover not being unparented at teardown.
 - **Old debug binary:** `sharpr/target/debug/sharpr` remains, unused.
 
+## Baseline And Acceptance (Phase 0 Steps 6–7)
+
+On October 12 the user tested release build `5832010` on the real library: folders, buckets, search, filters, Crop and WebP copies. Their verdict: everything works and feels fast. **Accepted.**
+
+Baseline from the bench log (`~/.cache/sharpr/logs/run-1791843839575-1067250.jsonl`, a 5.4-minute session):
+
+| Measure | Result |
+| --- | --- |
+| Startup to first folder ready | 498 ms |
+| Folder open, Wallpapers (2,216 images) | 116 ms and 162 ms |
+| Folder open, Art (408 images) | 34 ms |
+| Folder open, other folders | 2–150 ms |
+| Outlier: one Wallpapers open | 2,449 ms. The scan took 5 ms but waited 2.3 s to start in the busy shared rayon pool. Thumbnails kept applying meanwhile, so the UI was not frozen. |
+| Thumbnails | about 8,000 decoded; worker time p50 1 ms, p95 4 ms, max 293 ms |
+| Memory (RSS) | 243 MB at start, 2,345 MB peak, 1,382 MB at end |
+| CPU | 4% median, 528% peak |
+
+There is no main-loop stall probe yet, so scroll smoothness is the user's judgment ("feels fast"). The probe comes in Phase 2.
+
+User findings, recorded in `ROADMAP.md` Phase 2:
+- The aspect filter popover closes only on Escape, not on click-away.
+- The idle gear (background-activity indicator) should be hidden, and animate in when needed.
+- The "…" menu and the right-click menu overlap. Where actions belong is to be decided with the user.
+
 ## Next Authorized Work
 
-Phase 0 steps 6–7: collect real-library release bench logs, obtain user acceptance, then separately authorize the fast-forward/cleanup. Do not infer that authorization from this checkpoint request. `ROADMAP.md` remains authoritative.
+1. **Phase 0 step 7, finishing.** Fast-forwarding `main` to `viewer-reset` and deleting the merged old branches each need the user's explicit yes.
+2. **Then Phase 1, data-safety repairs.** Item 1, stopping tag deletion for missing files, comes first; it was observed in real use on October 12.
+
+Redeploy only with the user's approval, via `tools/install-native-launcher.py`. `ROADMAP.md` is authoritative.
