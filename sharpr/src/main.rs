@@ -1,5 +1,6 @@
 mod app;
 mod bench;
+mod buckets;
 mod collection_export;
 mod config;
 mod duplicates;

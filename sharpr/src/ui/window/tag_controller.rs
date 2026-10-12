@@ -102,88 +102,8 @@ impl SharprWindow {
         let worker_scope = scope.clone();
         std::thread::spawn(move || {
             let result = (|| -> Result<_, String> {
-                let collections = index.list_collections().map_err(|e| e.to_string())?;
-                let source = collections
-                    .iter()
-                    .find(|c| c.id == id)
-                    .ok_or("Collection no longer exists")?;
-                let old_parent = source.parent_id;
-                let name = source.name.clone();
-                let mut ids = vec![id];
-                let mut cursor = 0;
-                while cursor < ids.len() {
-                    let current = ids[cursor];
-                    for child in collections.iter().filter(|c| c.parent_id == Some(current)) {
-                        if !ids.contains(&child.id) {
-                            ids.push(child.id);
-                        }
-                    }
-                    cursor += 1;
-                }
-                let mut before = Vec::new();
-                for child_id in ids {
-                    let collection = collections
-                        .iter()
-                        .find(|c| c.id == child_id)
-                        .ok_or("Collection no longer exists")?;
-                    let effective = index
-                        .collection_effective_tags(child_id)
-                        .map_err(|e| e.to_string())?;
-                    let paths = filter_paths_for_library(
-                        tags.paths_for_all_tags_checked(&effective)?,
-                        root.as_deref(),
-                        &disabled,
-                    );
-                    before.push((
-                        child_id,
-                        effective,
-                        collection_local_tags(collection),
-                        paths,
-                    ));
-                }
-                index
-                    .reparent_collection(id, parent)
-                    .map_err(|e| e.to_string())?;
-                let update = (|| -> Result<(), String> {
-                    let mut batches = Vec::new();
-                    for (child_id, old, local, paths) in before {
-                        let new = index
-                            .collection_effective_tags(child_id)
-                            .map_err(|e| e.to_string())?;
-                        let remove = old
-                            .iter()
-                            .filter(|t| !local.contains(t) && !new.contains(t))
-                            .cloned()
-                            .collect();
-                        let add = new
-                            .iter()
-                            .filter(|t| !local.contains(t) && !old.contains(t))
-                            .cloned()
-                            .collect();
-                        batches.push(crate::tags::db::TagChange {
-                            paths: paths.clone(),
-                            tags: remove,
-                            remove: true,
-                        });
-                        batches.push(crate::tags::db::TagChange {
-                            paths,
-                            tags: add,
-                            remove: false,
-                        });
-                    }
-                    tags.change_tag_batches_checked(&batches)?;
-                    Ok(())
-                })();
-                if let Err(error) = update {
-                    if let Err(rollback) = index.reparent_collection(id, old_parent) {
-                        crate::bench_error!(
-                            "collection.reparent.rollback.fail",
-                            serde_json::json!({"error":rollback.to_string()})
-                        );
-                        return Err(format!("{error}; hierarchy rollback failed: {rollback}"));
-                    }
-                    return Err(error);
-                }
+                let name =
+                    crate::buckets::reparent_bucket(&index, &tags, id, parent, root.as_deref())?;
                 let remaining = if let ViewScope::Collection(active) = worker_scope {
                     let effective = index
                         .collection_effective_tags(active)
@@ -261,7 +181,11 @@ impl SharprWindow {
                         "Some images are outside the active library or in disabled folders".into(),
                     );
                 }
-                let changed = tags.change_tags_checked(&paths, &effective, remove)?;
+                let changed = if remove {
+                    crate::buckets::remove_from_bucket(&index, &tags, id, &paths)?
+                } else {
+                    crate::buckets::add_to_bucket(&index, &tags, id, &paths)?
+                };
                 if let Err(error) = index.touch_collection(id) {
                     crate::bench_warn!(
                         "collection.touch.fail",

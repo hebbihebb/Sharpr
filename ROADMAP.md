@@ -82,7 +82,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - Reject path separators and `..`.
    - Refuse an existing target name (no-replace rename).
    - Report `rename_path` tag-update failures.
-3. **Bucket edits remove only the bucket's own tags.** This is an interim fix; Phase 4 moves membership off tags.
+3. ~~Bucket edits remove only the bucket's own tags.~~ Done October 12 in `src/buckets.rs`. Phase 4 still moves membership off tags.
    - Removing an image from a child bucket must not strip inherited ancestor tags, which currently also drops the image from sibling buckets.
    - Reparenting drops a tag only when no remaining lineage needs it.
    - Renaming a parent includes members that are in disabled folders.

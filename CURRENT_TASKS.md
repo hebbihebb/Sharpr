@@ -45,7 +45,14 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 
 **Known limitation (Phase 4 fixes it):** tags are keyed by path. A *new* file that later appears at the exact path of a missing, tagged file inherits that file's tags.
 
-**Next: item 3, bucket edits remove only the bucket's own tags.** Then items 4–6 in order.
+**Item 3: done (committed, verified, not yet deployed).** The bucket edits now live in the GTK-free `src/buckets.rs`, with tests.
+- **Remove:** strips only the bucket's primary tag, so the image leaves this bucket and its sub-buckets but stays in its parent and siblings.
+- **Rename and reparent:** cover every stored member under the library root, including disabled folders and missing files.
+- **Reparent:** keeps any tag a sibling or unrelated bucket still needs.
+- **Verification:** `./check.sh` passes (144 tests), and both GTK tests pass.
+- **Known interim limit:** with tag-backed buckets, a direct member of an old ancestor is indistinguishable from a member of the moved bucket, so it leaves the ancestor on reparent. Phase 4's explicit membership fixes this.
+
+**Next: item 4, thumbnail workers cannot deadlock.** Then items 5 and 6.
 
 **Guardrails:**
 - Test in isolated directories only (`docs/reference/development.md`).

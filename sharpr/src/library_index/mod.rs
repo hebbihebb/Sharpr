@@ -1769,7 +1769,7 @@ fn push_unique_tag(tags: &mut Vec<String>, tag: &str) {
 
 #[cfg(test)]
 impl LibraryIndex {
-    fn open_in_memory() -> rusqlite::Result<Self> {
+    pub(crate) fn open_in_memory() -> rusqlite::Result<Self> {
         let manager = SqliteConnectionManager::memory().with_init(|conn| {
             configure_connection(conn)?;
             initialize_schema(conn)?;

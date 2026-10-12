@@ -378,7 +378,20 @@ impl TagDatabase {
                 Vec::new()
             })
     }
+    /// Paths carrying every tag in `tags` whose files currently exist.
     pub fn paths_for_all_tags_checked(&self, tags: &[String]) -> Result<Vec<PathBuf>, String> {
+        Ok(self
+            .stored_paths_for_all_tags_checked(tags)?
+            .into_iter()
+            .filter(|p| p.is_file())
+            .collect())
+    }
+
+    /// Paths carrying every tag in `tags`, including files that are missing.
+    pub fn stored_paths_for_all_tags_checked(
+        &self,
+        tags: &[String],
+    ) -> Result<Vec<PathBuf>, String> {
         let tags = normalized_unique_tags(tags);
         if tags.is_empty() {
             return Ok(Vec::new());
@@ -399,11 +412,7 @@ impl TagDatabase {
         let paths = rows
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| e.to_string())?;
-        Ok(paths
-            .into_iter()
-            .map(PathBuf::from)
-            .filter(|p| p.is_file())
-            .collect())
+        Ok(paths.into_iter().map(PathBuf::from).collect())
     }
 
     #[cfg(test)]

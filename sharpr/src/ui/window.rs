@@ -137,16 +137,6 @@ fn flatten_collection_paths(collections: &[Collection]) -> Vec<(i64, String)> {
     out
 }
 
-fn collection_local_tags(collection: &Collection) -> Vec<String> {
-    let mut tags = vec![collection.primary_tag.clone()];
-    for tag in &collection.extra_tags {
-        if !tags.contains(tag) {
-            tags.push(tag.clone());
-        }
-    }
-    tags
-}
-
 struct MetadataIndexResult {
     path: PathBuf,
     width: u32,

@@ -311,45 +311,7 @@ pub(super) fn show_rename_collection_dialog<F>(
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = (|| -> Result<Vec<PathBuf>, String> {
-                let before = index
-                    .collection(id)
-                    .map_err(|e| e.to_string())?
-                    .ok_or("Collection no longer exists")?;
-                let effective = index
-                    .collection_effective_tags(id)
-                    .map_err(|e| e.to_string())?;
-                let paths = super::window::filter_paths_for_library(
-                    tags.paths_for_all_tags_checked(&effective)?,
-                    root.as_deref(),
-                    &disabled,
-                );
-                let new_primary = normalize_collection_tag(&new_name);
-                index
-                    .update_collection(
-                        id,
-                        &new_name,
-                        &before.extra_tags,
-                        before.color.as_deref(),
-                        before.icon_name.as_deref(),
-                    )
-                    .map_err(|e| e.to_string())?;
-                if let Err(error) =
-                    tags.replace_tag_in_paths_checked(&paths, &before.primary_tag, &new_primary)
-                {
-                    if let Err(rollback) = index.update_collection(
-                        id,
-                        &before.name,
-                        &before.extra_tags,
-                        before.color.as_deref(),
-                        before.icon_name.as_deref(),
-                    ) {
-                        crate::bench_error!(
-                            "collection.rename.rollback.fail",
-                            serde_json::json!({"error":rollback.to_string()})
-                        );
-                    }
-                    return Err(error);
-                }
+                crate::buckets::rename_bucket(&index, &tags, id, &new_name, root.as_deref())?;
                 crate::bench_event!("collection.rename.finish", serde_json::json!({"id":id}));
                 let effective = index
                     .collection_effective_tags(id)
