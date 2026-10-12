@@ -37,12 +37,15 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 - Tests: the regression test proves rows survive a vanished library root and reappear when the files return; another covers per-tag counts. `./check.sh` passes, with 136 tests in isolated directories.
 - **Deployment:** the deployed build `5832010` still has the bug. Redeploy needs the user's approval.
 
-**Next: item 2, rename never overwrites.**
-- Reject path separators and `..`.
-- Refuse an existing target name.
-- Report failures from `rename_path`.
+**Item 2: done (committed, verified, not yet deployed).**
+- `file_ops::rename_no_replace` links and then unlinks, so an existing file is never replaced; filesystems without hard links fall back to a check plus rename. `rename_within_dir` also rejects `/`, `.`, `..`, empty names, and NUL.
+- Rename uses it, and Move to… uses it too, re-picking a free name if a collision appears.
+- `TagDatabase::rename_path` returns errors, which are shown in the toast and logged. Before a move, it clears leftover rows at the destination, so a renamed file can't inherit tags from a vanished file that once had its name.
+- `./check.sh` passes, with 140 tests.
 
-Then items 3–6 in order.
+**Known limitation (Phase 4 fixes it):** tags are keyed by path. A *new* file that later appears at the exact path of a missing, tagged file inherits that file's tags.
+
+**Next: item 3, bucket edits remove only the bucket's own tags.** Then items 4–6 in order.
 
 **Guardrails:**
 - Test in isolated directories only (`docs/reference/development.md`).

@@ -337,38 +337,38 @@ impl TagDatabase {
         let _ = conn.execute("DELETE FROM file_tags WHERE tag = ?1", params![tag]);
     }
 
-    pub fn rename_path(&self, old_path: &Path, new_path: &Path) {
+    /// Moves tags and sharpness from `old_path` to `new_path` after a file
+    /// rename or move. Callers guarantee `new_path` did not exist before, so
+    /// any rows already stored there belong to a vanished file and are
+    /// replaced rather than merged into the moved image.
+    pub fn rename_path(&self, old_path: &Path, new_path: &Path) -> Result<(), String> {
         if old_path == new_path {
-            return;
+            return Ok(());
         }
-        let Ok(mut conn) = self.conn.lock() else {
-            return;
-        };
-        let tx = match conn.transaction() {
-            Ok(tx) => tx,
-            Err(_) => return,
-        };
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
         let old_path_str = old_path.to_string_lossy();
         let new_path_str = new_path.to_string_lossy();
-        let _ = tx.execute(
-            "INSERT OR IGNORE INTO file_tags (path, tag)
-             SELECT ?2, tag FROM file_tags WHERE path = ?1",
-            params![old_path_str.as_ref(), new_path_str.as_ref()],
-        );
-        let _ = tx.execute(
-            "DELETE FROM file_tags WHERE path = ?1",
-            params![old_path_str.as_ref()],
-        );
-        let _ = tx.execute(
-            "INSERT OR REPLACE INTO image_quality (path, sharpness, mtime)
-             SELECT ?2, sharpness, mtime FROM image_quality WHERE path = ?1",
-            params![old_path_str.as_ref(), new_path_str.as_ref()],
-        );
-        let _ = tx.execute(
-            "DELETE FROM image_quality WHERE path = ?1",
-            params![old_path_str.as_ref()],
-        );
-        let _ = tx.commit();
+        let old = old_path_str.as_ref();
+        let new = new_path_str.as_ref();
+        for (sql, args) in [
+            ("DELETE FROM file_tags WHERE path = ?1", vec![new]),
+            (
+                "INSERT INTO file_tags (path, tag) SELECT ?2, tag FROM file_tags WHERE path = ?1",
+                vec![old, new],
+            ),
+            ("DELETE FROM file_tags WHERE path = ?1", vec![old]),
+            (
+                "INSERT OR REPLACE INTO image_quality (path, sharpness, mtime)
+                 SELECT ?2, sharpness, mtime FROM image_quality WHERE path = ?1",
+                vec![old, new],
+            ),
+            ("DELETE FROM image_quality WHERE path = ?1", vec![old]),
+        ] {
+            tx.execute(sql, rusqlite::params_from_iter(args))
+                .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
     }
 
     pub fn paths_for_all_tags(&self, tags: &[String]) -> Vec<PathBuf> {
@@ -914,6 +914,27 @@ mod tests {
     }
 
     #[test]
+    fn rename_path_replaces_stale_rows_of_a_vanished_file() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let root = temp_path("rename-stale");
+        std::fs::create_dir_all(&root).unwrap();
+        let old = root.join("keep.jpg");
+        let new = root.join("reused-name.jpg");
+        std::fs::write(&old, b"data").unwrap();
+        db.add_tag(&old, "art");
+        // A file that used to live at the new name left its tags behind.
+        db.add_tag(&new, "nsfw");
+
+        std::fs::rename(&old, &new).unwrap();
+        db.rename_path(&old, &new).unwrap();
+
+        assert_eq!(db.tags_for_path(&new), vec!["art".to_string()]);
+        assert!(db.tags_for_path(&old).is_empty());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rename_path_moves_tags_and_sharpness() {
         let db = TagDatabase::open_in_memory().unwrap();
         let root = temp_path("rename-path");
@@ -926,7 +947,7 @@ mod tests {
         db.add_tag(&old, "portrait");
         db.upsert_sharpness(&old, 7.5, 123);
 
-        db.rename_path(&old, &new);
+        db.rename_path(&old, &new).unwrap();
 
         assert!(db.tags_for_path(&old).is_empty());
         assert_eq!(db.tags_for_path(&new), vec!["portrait".to_string()]);
