@@ -188,6 +188,8 @@ mod imp {
         /// Async callbacks capture the value at dispatch time and discard their
         /// result if it no longer matches (i.e. a newer load was requested).
         pub load_gen: Cell<u64>,
+        pub tag_refresh_gen: Cell<u64>,
+        pub tag_summary_gen: Cell<u64>,
         /// Handle for submitting metadata load requests to the shared metadata worker.
         pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
         /// Called when the "Manage tags" button in the popover is clicked.
@@ -410,6 +412,8 @@ mod imp {
                 drag_origin: Cell::new(None),
                 drag_adjustments: Cell::new((0.0, 0.0)),
                 load_gen: Cell::new(0),
+                tag_refresh_gen: Cell::new(0),
+                tag_summary_gen: Cell::new(0),
                 metadata_handle: RefCell::new(None),
                 manage_tags_cb: RefCell::new(None),
                 base_quality: RefCell::new(None),
@@ -954,49 +958,6 @@ impl ViewerPane {
         imp.metadata_chip.update_quality(Some(quality));
     }
 
-    fn update_metadata_chip_context(&self, path: &std::path::Path, tags: &[String]) {
-        let imp = self.imp();
-        imp.metadata_chip.update_tags(tags);
-
-        let library_index = imp
-            .state
-            .borrow()
-            .as_ref()
-            .and_then(|state| state.borrow().library_index.clone());
-
-        let tag_set: HashSet<&str> = tags.iter().map(String::as_str).collect();
-        let collection_names = library_index
-            .as_ref()
-            .and_then(|index| index.list_collections().ok())
-            .map(|collections| {
-                collections
-                    .into_iter()
-                    .filter(|collection| {
-                        tag_set.contains(collection.primary_tag.as_str())
-                            || collection
-                                .extra_tags
-                                .iter()
-                                .any(|tag| tag_set.contains(tag.as_str()))
-                    })
-                    .map(|collection| collection.name)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        imp.metadata_chip.update_collections(&collection_names);
-
-        let duplicate_count = library_index
-            .as_ref()
-            .and_then(|index| index.duplicate_groups().ok())
-            .and_then(|groups| {
-                groups
-                    .into_iter()
-                    .find(|group| group.iter().any(|candidate| candidate == path))
-                    .map(|group| group.len().saturating_sub(1))
-            })
-            .unwrap_or(0);
-        imp.metadata_chip.update_duplicate_count(duplicate_count);
-    }
-
     /// Refresh the quality display for the currently shown image after a
     /// sharpness result arrives. Resolution remains the displayed tier.
     pub fn apply_sharpness(&self, path: &std::path::Path, _sharpness_norm: f64) {
@@ -1052,6 +1013,43 @@ impl ViewerPane {
         self.refresh_tag_chips();
         self.refresh_tag_summary();
         imp.tag_popover.popup();
+    }
+
+    fn change_tag(
+        &self,
+        db: std::sync::Arc<crate::tags::TagDatabase>,
+        path: PathBuf,
+        tag: String,
+        remove: bool,
+    ) {
+        let (tx, rx) = async_channel::bounded(1);
+        let changed_path = path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(db.change_tags_checked(&[path], &[tag], remove));
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(result) = rx.recv().await else { return };
+            let Some(viewer) = weak.upgrade() else { return };
+            match result {
+                Ok(_) => {
+                    if viewer.imp().current_path.borrow().as_ref() == Some(&changed_path) {
+                        viewer.refresh_tag_chips();
+                        viewer.refresh_tag_summary();
+                    }
+                }
+                Err(error) => {
+                    if let Some(window) = viewer
+                        .root()
+                        .and_then(|r| r.downcast::<crate::ui::window::SharprWindow>().ok())
+                    {
+                        window.add_toast(libadwaita::Toast::new(&format!(
+                            "Could not save tag: {error}"
+                        )));
+                    }
+                }
+            }
+        });
     }
 
     fn build_tag_popover(&self) {
@@ -1140,7 +1138,7 @@ impl ViewerPane {
             }
             let state = viewer.imp().tag_state.borrow();
             if let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) {
-                db.add_tag(&path, tag);
+                viewer.change_tag(db, path, tag.to_string(), false);
             }
             drop(state);
             viewer.refresh_tag_chips();
@@ -1212,6 +1210,8 @@ impl ViewerPane {
 
     fn refresh_tag_chips(&self) {
         let imp = self.imp();
+        let tag_generation = imp.tag_refresh_gen.get().wrapping_add(1);
+        imp.tag_refresh_gen.set(tag_generation);
         while let Some(child) = imp.selected_list.first_child() {
             imp.selected_list.remove(&child);
         }
@@ -1225,36 +1225,74 @@ impl ViewerPane {
         };
         drop(state);
 
-        let active_tags = db.tags_for_path(&path);
-        let all_tags = db.all_tags();
-
-        let mut active_set = std::collections::HashSet::new();
-        for tag in active_tags {
-            active_set.insert(tag.clone());
-            self.create_tag_row(&imp.selected_list, &tag, true, &db, &path);
-        }
-
-        if let Some(parent) = imp
-            .selected_list
-            .parent()
-            .and_then(|w| w.downcast::<gtk4::Box>().ok())
-        {
-            parent.set_visible(!active_set.is_empty());
-        }
-
-        for tag in all_tags {
-            if !active_set.contains(&tag.0) {
-                self.create_tag_row(&imp.all_tags_list, &tag.0, false, &db, &path);
+        let generation = imp.load_gen.get();
+        let (tx, rx) = async_channel::bounded(1);
+        let worker_db = db.clone();
+        let worker_path = path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(worker_db.tag_choices_checked(&worker_path));
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(result) = rx.recv().await else { return };
+            let Some(viewer) = weak.upgrade() else { return };
+            let imp = viewer.imp();
+            if imp.load_gen.get() != generation
+                || imp.tag_refresh_gen.get() != tag_generation
+                || imp.current_path.borrow().as_ref() != Some(&path)
+            {
+                return;
             }
-        }
+            let (active_tags, all_tags) = match result {
+                Ok(result) => (result.active, result.available),
+                Err(error) => {
+                    if let Some(window) = viewer
+                        .root()
+                        .and_then(|r| r.downcast::<crate::ui::window::SharprWindow>().ok())
+                    {
+                        window.add_toast(libadwaita::Toast::new(&format!(
+                            "Could not read tags: {error}"
+                        )));
+                    }
+                    return;
+                }
+            };
+            while let Some(child) = imp.selected_list.first_child() {
+                imp.selected_list.remove(&child);
+            }
+            while let Some(child) = imp.all_tags_list.first_child() {
+                imp.all_tags_list.remove(&child);
+            }
 
-        if let Some(parent) = imp
-            .all_tags_list
-            .parent()
-            .and_then(|w| w.downcast::<gtk4::Box>().ok())
-        {
-            parent.set_visible(false);
-        }
+            let mut active_set = std::collections::HashSet::new();
+            for tag in active_tags {
+                active_set.insert(tag.clone());
+                viewer.create_tag_row(&imp.selected_list, &tag, true, &db, &path);
+            }
+
+            if let Some(parent) = imp
+                .selected_list
+                .parent()
+                .and_then(|w| w.downcast::<gtk4::Box>().ok())
+            {
+                parent.set_visible(!active_set.is_empty());
+            }
+
+            for tag in all_tags {
+                if !active_set.contains(&tag.0) {
+                    viewer.create_tag_row(&imp.all_tags_list, &tag.0, false, &db, &path);
+                }
+            }
+
+            if let Some(parent) = imp
+                .all_tags_list
+                .parent()
+                .and_then(|w| w.downcast::<gtk4::Box>().ok())
+            {
+                parent.set_visible(false);
+            }
+            viewer.filter_tag_lists(imp.tag_entry.text().as_str());
+        });
     }
 
     fn create_tag_row(
@@ -1300,19 +1338,16 @@ impl ViewerPane {
         let db_clone = db.clone();
         let path_clone = path.to_path_buf();
 
-        let click = gtk4::GestureClick::new();
-        click.connect_released(move |_, _, _, _| {
+        row.connect_activate(move |_| {
             if let Some(viewer) = viewer_weak.upgrade() {
-                if selected {
-                    db_clone.remove_tag(&path_clone, &tag_clone);
-                } else {
-                    db_clone.add_tag(&path_clone, &tag_clone);
-                }
-                viewer.refresh_tag_chips();
-                viewer.refresh_tag_summary();
+                viewer.change_tag(
+                    db_clone.clone(),
+                    path_clone.clone(),
+                    tag_clone.clone(),
+                    selected,
+                );
             }
         });
-        row.add_controller(click);
 
         list.append(&row);
     }
@@ -1330,32 +1365,93 @@ impl ViewerPane {
             }
         };
 
-        let db = imp
+        let (db, index) = imp
             .state
             .borrow()
             .as_ref()
-            .and_then(|state| state.borrow().tags.clone());
-        let Some(db) = db else {
-            self.update_metadata_chip_context(&path, &[]);
-            imp.tag_osd.set_visible(false);
-            return;
-        };
-
-        let tag_to_color = imp
-            .state
-            .borrow()
-            .as_ref()
-            .and_then(|state| state.borrow().library_index.clone())
-            .and_then(|index| index.list_collections().ok())
-            .map(|collections| collection_tag_color_map(&collections))
+            .map(|state| {
+                let st = state.borrow();
+                (st.tags.clone(), st.library_index.clone())
+            })
             .unwrap_or_default();
+        let generation = imp.tag_summary_gen.get().wrapping_add(1);
+        imp.tag_summary_gen.set(generation);
+        imp.metadata_chip.update_tags(&[]);
+        imp.metadata_chip.update_collections(&[]);
+        imp.metadata_chip.update_duplicate_count(0);
+        imp.tag_osd.set_visible(false);
+        let worker_path = path.clone();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = (|| -> Result<_, String> {
+                let tags = db
+                    .map(|db| db.tags_for_path_checked(&worker_path))
+                    .transpose()?
+                    .unwrap_or_default();
+                let collections = index
+                    .as_ref()
+                    .map(|index| index.list_collections())
+                    .transpose()
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or_default();
+                let tag_set: HashSet<&str> = tags.iter().map(String::as_str).collect();
+                let names = collections
+                    .iter()
+                    .filter(|c| {
+                        tag_set.contains(c.primary_tag.as_str())
+                            || c.extra_tags.iter().any(|t| tag_set.contains(t.as_str()))
+                    })
+                    .map(|c| c.name.clone())
+                    .collect::<Vec<_>>();
+                let duplicates = index
+                    .as_ref()
+                    .map(|index| index.duplicate_groups())
+                    .transpose()
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or_default()
+                    .iter()
+                    .find(|g| g.contains(&worker_path))
+                    .map(|g| g.len().saturating_sub(1))
+                    .unwrap_or(0);
+                Ok((
+                    tags,
+                    collection_tag_color_map(&collections),
+                    names,
+                    duplicates,
+                ))
+            })();
+            let _ = tx.send_blocking(result);
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(result) = rx.recv().await else { return };
+            let Some(viewer) = weak.upgrade() else { return };
+            let imp = viewer.imp();
+            if imp.tag_summary_gen.get() != generation
+                || imp.current_path.borrow().as_ref() != Some(&path)
+            {
+                return;
+            }
+            match result {
+                Ok((tags, colors, names, duplicates)) => {
+                    imp.metadata_chip.update_tags(&tags);
+                    imp.metadata_chip.update_collections(&names);
+                    imp.metadata_chip.update_duplicate_count(duplicates);
+                    viewer.render_tag_summary(&tags, &colors);
+                }
+                Err(error) => crate::bench_warn!(
+                    "viewer.tags.summary.fail",
+                    serde_json::json!({"error":error})
+                ),
+            }
+        });
+    }
 
+    fn render_tag_summary(&self, tags: &[String], tag_to_color: &HashMap<String, String>) {
+        let imp = self.imp();
         while let Some(child) = imp.tag_chips_box.first_child() {
             imp.tag_chips_box.remove(&child);
         }
-
-        let tags = db.tags_for_path(&path);
-        self.update_metadata_chip_context(&path, &tags);
         const MAX_CHIPS: usize = 4;
         let expanded = imp.tag_chips_expanded.get();
         let shown = if expanded {

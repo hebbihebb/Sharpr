@@ -3,6 +3,17 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection};
 
+pub struct TagChoices {
+    pub active: Vec<String>,
+    pub available: Vec<(String, usize)>,
+}
+
+pub struct TagChange {
+    pub paths: Vec<PathBuf>,
+    pub tags: Vec<String>,
+    pub remove: bool,
+}
+
 pub struct TagDatabase {
     conn: Mutex<Connection>,
 }
@@ -68,8 +79,7 @@ impl TagDatabase {
         );
     }
 
-    /// Insert auto-generated tags (format, resolution) without touching any
-    /// user-created tags. Safe to call on every scan — uses INSERT OR IGNORE.
+    #[cfg(test)]
     pub fn insert_auto_tags(&self, path: &Path, tags: &[String]) {
         let Ok(conn) = self.conn.lock() else {
             return;
@@ -123,41 +133,49 @@ impl TagDatabase {
         prune_missing_paths(&conn, paths)
     }
 
+    #[cfg(test)]
     pub fn search_paths(&self, query: &str) -> Vec<PathBuf> {
+        self.search_paths_checked(query).unwrap_or_default()
+    }
+
+    pub fn search_paths_checked(&self, query: &str) -> Result<Vec<PathBuf>, String> {
         let terms = normalized_query_terms(query);
         if terms.is_empty() {
-            return vec![];
+            return Ok(Vec::new());
         }
-        let Ok(conn) = self.conn.lock() else {
-            return vec![];
-        };
-        let mut matching_paths: Option<Vec<PathBuf>> = None;
-        for term in &terms {
-            let pattern = format!("%{term}%");
-            let mut stmt =
-                match conn.prepare("SELECT DISTINCT path FROM file_tags WHERE tag LIKE ?1") {
-                    Ok(stmt) => stmt,
-                    Err(_) => return vec![],
-                };
-            let rows = match stmt.query_map(params![pattern], |row| row.get::<_, String>(0)) {
-                Ok(rows) => rows,
-                Err(_) => return vec![],
-            };
-            let paths: Vec<PathBuf> = rows.filter_map(|r| r.ok()).map(PathBuf::from).collect();
-            drop(stmt);
-            let paths = prune_missing_paths(&conn, paths);
-            matching_paths = Some(match matching_paths {
-                Some(current) => current
-                    .into_iter()
-                    .filter(|path| paths.contains(path))
-                    .collect(),
-                None => paths,
-            });
-            if matching_paths.as_ref().is_some_and(Vec::is_empty) {
-                return vec![];
-            }
-        }
-        matching_paths.unwrap_or_default()
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conditions = std::iter::repeat_n(
+            "EXISTS (SELECT 1 FROM file_tags t WHERE t.path = f.path AND t.tag LIKE ? ESCAPE '\\')",
+            terms.len(),
+        )
+        .collect::<Vec<_>>()
+        .join(" AND ");
+        let sql = format!("SELECT DISTINCT f.path FROM file_tags f WHERE {conditions} ORDER BY f.path COLLATE NOCASE");
+        let patterns: Vec<_> = terms
+            .iter()
+            .map(|t| {
+                format!(
+                    "%{}%",
+                    t.replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                )
+            })
+            .collect();
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(patterns), |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(|e| e.to_string())?;
+        let paths = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        Ok(paths
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|p| p.is_file())
+            .collect())
     }
 
     pub fn autocomplete(&self, prefix: &str, limit: usize) -> Vec<String> {
@@ -200,6 +218,32 @@ impl TagDatabase {
         rows.filter_map(|r| r.ok()).collect()
     }
 
+    pub fn tag_choices_checked(&self, path: &Path) -> Result<TagChoices, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut active = conn
+            .prepare("SELECT tag FROM file_tags WHERE path = ?1 ORDER BY tag COLLATE NOCASE")
+            .map_err(|e| e.to_string())?;
+        let tags = active
+            .query_map(params![path.to_string_lossy().as_ref()], |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        let mut all = conn
+            .prepare("SELECT tag, COUNT(*) FROM file_tags GROUP BY tag ORDER BY tag COLLATE NOCASE")
+            .map_err(|e| e.to_string())?;
+        let choices = all
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, usize>(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        Ok(TagChoices {
+            active: tags,
+            available: choices,
+        })
+    }
+
     pub fn tags_for_path(&self, path: &Path) -> Vec<String> {
         let Ok(conn) = self.conn.lock() else {
             return vec![];
@@ -216,6 +260,21 @@ impl TagDatabase {
             Err(_) => return vec![],
         };
         rows.filter_map(|r| r.ok()).collect()
+    }
+
+    pub fn tags_for_path_checked(&self, path: &Path) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT tag FROM file_tags WHERE path=?1 ORDER BY tag")
+            .map_err(|e| e.to_string())?;
+        let result = stmt
+            .query_map(params![path.to_string_lossy().as_ref()], |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string());
+        result
     }
 
     pub fn copy_tags(&self, source: &Path, output: &Path) {
@@ -235,6 +294,7 @@ impl TagDatabase {
         );
     }
 
+    #[cfg(test)]
     pub fn add_tag(&self, path: &Path, tag: &str) {
         let Ok(conn) = self.conn.lock() else {
             return;
@@ -245,20 +305,6 @@ impl TagDatabase {
         }
         let _ = conn.execute(
             "INSERT OR IGNORE INTO file_tags (path, tag) VALUES (?1, ?2)",
-            params![path.to_string_lossy().as_ref(), tag],
-        );
-    }
-
-    pub fn remove_tag(&self, path: &Path, tag: &str) {
-        let Ok(conn) = self.conn.lock() else {
-            return;
-        };
-        let tag = normalize_tag(tag);
-        if tag.is_empty() {
-            return;
-        }
-        let _ = conn.execute(
-            "DELETE FROM file_tags WHERE path = ?1 AND tag = ?2",
             params![path.to_string_lossy().as_ref(), tag],
         );
     }
@@ -317,129 +363,147 @@ impl TagDatabase {
     }
 
     pub fn paths_for_all_tags(&self, tags: &[String]) -> Vec<PathBuf> {
+        self.paths_for_all_tags_checked(tags)
+            .unwrap_or_else(|error| {
+                crate::bench_error!("tags.query.fail", serde_json::json!({"error": error}));
+                Vec::new()
+            })
+    }
+    pub fn paths_for_all_tags_checked(&self, tags: &[String]) -> Result<Vec<PathBuf>, String> {
         let tags = normalized_unique_tags(tags);
         if tags.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        let Ok(conn) = self.conn.lock() else {
-            return vec![];
-        };
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let placeholders = std::iter::repeat_n("?", tags.len())
             .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT path
-             FROM file_tags
-             WHERE tag IN ({placeholders})
-             GROUP BY path
-             HAVING COUNT(DISTINCT tag) = ?
-             ORDER BY path COLLATE NOCASE"
-        );
-        let mut stmt = match conn.prepare(&sql) {
-            Ok(stmt) => stmt,
-            Err(_) => return vec![],
-        };
-        let mut params_vec: Vec<&dyn rusqlite::ToSql> =
-            tags.iter().map(|tag| tag as &dyn rusqlite::ToSql).collect();
-        let tag_count = tags.len() as i64;
-        params_vec.push(&tag_count);
-        let rows = match stmt.query_map(params_vec.as_slice(), |row| row.get::<_, String>(0)) {
-            Ok(rows) => rows,
-            Err(_) => return vec![],
-        };
-        let paths: Vec<PathBuf> = rows.filter_map(|r| r.ok()).map(PathBuf::from).collect();
-        drop(stmt);
-        prune_missing_paths(&conn, paths)
+            .join(",");
+        let sql = format!("SELECT path FROM file_tags WHERE tag IN ({placeholders}) GROUP BY path HAVING COUNT(DISTINCT tag) = ? ORDER BY path COLLATE NOCASE");
+        let mut parameters: Vec<&dyn rusqlite::ToSql> =
+            tags.iter().map(|t| t as &dyn rusqlite::ToSql).collect();
+        let count = tags.len() as i64;
+        parameters.push(&count);
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(parameters.as_slice(), |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let paths = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        Ok(paths
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|p| p.is_file())
+            .collect())
     }
 
+    #[cfg(test)]
     pub fn add_tags_to_paths(&self, paths: &[PathBuf], tags: &[String]) -> usize {
-        let tags = normalized_unique_tags(tags);
-        if paths.is_empty() || tags.is_empty() {
-            return 0;
-        }
-        let Ok(mut conn) = self.conn.lock() else {
-            return 0;
-        };
-        let tx = match conn.transaction() {
-            Ok(tx) => tx,
-            Err(_) => return 0,
-        };
-        let mut changed = 0usize;
-        for path in paths {
-            let path_str = path.to_string_lossy();
-            for tag in &tags {
-                changed += tx
-                    .execute(
-                        "INSERT OR IGNORE INTO file_tags (path, tag) VALUES (?1, ?2)",
-                        params![path_str.as_ref(), tag],
-                    )
-                    .unwrap_or(0);
-            }
-        }
-        let _ = tx.commit();
-        changed
+        self.change_tags_checked(paths, tags, false)
+            .unwrap_or_else(|error| {
+                crate::bench_error!("tags.write.fail", serde_json::json!({"error": error}));
+                0
+            })
     }
-
+    #[cfg(test)]
     pub fn remove_tags_from_paths(&self, paths: &[PathBuf], tags: &[String]) -> usize {
-        let tags = normalized_unique_tags(tags);
-        if paths.is_empty() || tags.is_empty() {
-            return 0;
-        }
-        let Ok(mut conn) = self.conn.lock() else {
-            return 0;
-        };
-        let tx = match conn.transaction() {
-            Ok(tx) => tx,
-            Err(_) => return 0,
-        };
-        let mut changed = 0usize;
-        for path in paths {
-            let path_str = path.to_string_lossy();
-            for tag in &tags {
-                changed += tx
-                    .execute(
-                        "DELETE FROM file_tags WHERE path = ?1 AND tag = ?2",
-                        params![path_str.as_ref(), tag],
-                    )
-                    .unwrap_or(0);
-            }
-        }
-        let _ = tx.commit();
-        changed
+        self.change_tags_checked(paths, tags, true)
+            .unwrap_or_else(|error| {
+                crate::bench_error!("tags.write.fail", serde_json::json!({"error": error}));
+                0
+            })
+    }
+    pub fn change_tags_checked(
+        &self,
+        paths: &[PathBuf],
+        tags: &[String],
+        remove: bool,
+    ) -> Result<usize, String> {
+        self.change_tag_batches_checked(&[TagChange {
+            paths: paths.to_vec(),
+            tags: tags.to_vec(),
+            remove,
+        }])
     }
 
-    pub fn replace_tag_in_paths(&self, paths: &[PathBuf], old_tag: &str, new_tag: &str) -> usize {
-        let old_tag = normalize_tag(old_tag);
-        let new_tag = normalize_tag(new_tag);
-        if paths.is_empty() || old_tag.is_empty() || new_tag.is_empty() || old_tag == new_tag {
-            return 0;
-        }
-        let Ok(mut conn) = self.conn.lock() else {
-            return 0;
-        };
-        let tx = match conn.transaction() {
-            Ok(tx) => tx,
-            Err(_) => return 0,
-        };
-        let mut changed = 0usize;
-        for path in paths {
-            let path_str = path.to_string_lossy();
-            let removed = tx
-                .execute(
-                    "DELETE FROM file_tags WHERE path = ?1 AND tag = ?2",
-                    params![path_str.as_ref(), old_tag],
-                )
-                .unwrap_or(0);
-            if removed > 0 {
-                let _ = tx.execute(
-                    "INSERT OR IGNORE INTO file_tags (path, tag) VALUES (?1, ?2)",
-                    params![path_str.as_ref(), new_tag],
-                );
-                changed += removed;
+    /// Apply a hierarchy's membership changes together or roll all of them back.
+    pub fn change_tag_batches_checked(&self, batches: &[TagChange]) -> Result<usize, String> {
+        let result = (|| -> rusqlite::Result<usize> {
+            let mut conn = self
+                .conn
+                .lock()
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+            let tx = conn.transaction()?;
+            let mut changed = 0;
+            for batch in batches {
+                let tags = normalized_unique_tags(&batch.tags);
+                let sql = if batch.remove {
+                    "DELETE FROM file_tags WHERE path = ?1 AND tag = ?2"
+                } else {
+                    "INSERT OR IGNORE INTO file_tags (path,tag) VALUES (?1,?2)"
+                };
+                for path in &batch.paths {
+                    for tag in &tags {
+                        changed +=
+                            tx.execute(sql, params![path.to_string_lossy().as_ref(), tag])?;
+                    }
+                }
             }
+            tx.commit()?;
+            Ok(changed)
+        })()
+        .map_err(|e| e.to_string());
+        if let Err(error) = &result {
+            crate::bench_error!("tags.write.fail", serde_json::json!({"error": error}));
         }
-        let _ = tx.commit();
-        changed
+        result
+    }
+
+    #[cfg(test)]
+    pub fn replace_tag_in_paths(&self, paths: &[PathBuf], old_tag: &str, new_tag: &str) -> usize {
+        self.replace_tag_in_paths_checked(paths, old_tag, new_tag)
+            .unwrap_or(0)
+    }
+
+    pub fn replace_tag_in_paths_checked(
+        &self,
+        paths: &[PathBuf],
+        old_tag: &str,
+        new_tag: &str,
+    ) -> Result<usize, String> {
+        let result = (|| -> rusqlite::Result<usize> {
+            let old = normalize_tag(old_tag);
+            let new = normalize_tag(new_tag);
+            if old.is_empty() || new.is_empty() || old == new {
+                return Ok(0);
+            }
+            let mut conn = self
+                .conn
+                .lock()
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+            let tx = conn.transaction()?;
+            let mut changed = 0;
+            for path in paths {
+                let removed = tx.execute(
+                    "DELETE FROM file_tags WHERE path=?1 AND tag=?2",
+                    params![path.to_string_lossy().as_ref(), old],
+                )?;
+                if removed > 0 {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO file_tags(path,tag) VALUES (?1,?2)",
+                        params![path.to_string_lossy().as_ref(), new],
+                    )?;
+                    changed += removed;
+                }
+            }
+            tx.commit()?;
+            Ok(changed)
+        })()
+        .map_err(|e| e.to_string());
+        if let Err(error) = &result {
+            crate::bench_error!("tags.rename.fail", serde_json::json!({"error":error}));
+        }
+        result
     }
 }
 
@@ -536,6 +600,63 @@ fn prune_all_missing_paths(conn: &Connection) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hierarchy_tag_batches_roll_back_removals_when_addition_fails() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let path = PathBuf::from("/image.png");
+        db.change_tags_checked(std::slice::from_ref(&path), &["old-parent".into()], false)
+            .unwrap();
+        db.conn.lock().unwrap().execute_batch("CREATE TRIGGER reject_tag BEFORE INSERT ON file_tags WHEN NEW.tag='reject' BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
+        let changes = [
+            TagChange {
+                paths: vec![path.clone()],
+                tags: vec!["old-parent".into()],
+                remove: true,
+            },
+            TagChange {
+                paths: vec![path.clone()],
+                tags: vec!["reject".into()],
+                remove: false,
+            },
+        ];
+        assert!(db.change_tag_batches_checked(&changes).is_err());
+        assert_eq!(db.tags_for_path(&path), vec!["old-parent"]);
+    }
+
+    #[test]
+    fn failed_tag_rename_preserves_old_membership() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let path = PathBuf::from("/image.png");
+        db.change_tags_checked(
+            std::slice::from_ref(&path),
+            &["keeper".into(), "portrait".into()],
+            false,
+        )
+        .unwrap();
+        db.conn.lock().unwrap().execute_batch("CREATE TRIGGER reject_tag BEFORE INSERT ON file_tags WHEN NEW.tag='reject' BEGIN SELECT RAISE(ABORT,'forced failure'); END;").unwrap();
+        assert!(db
+            .replace_tag_in_paths_checked(std::slice::from_ref(&path), "keeper", "reject")
+            .is_err());
+        assert_eq!(
+            db.tags_for_path(&path),
+            vec!["keeper".to_string(), "portrait".to_string()]
+        );
+    }
+
+    #[test]
+    fn bulk_tag_failure_does_not_commit_partial_membership() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        db.conn.lock().unwrap().execute_batch("CREATE TRIGGER reject_tag BEFORE INSERT ON file_tags WHEN NEW.tag = 'reject' BEGIN SELECT RAISE(ABORT, 'forced write failure'); END;").unwrap();
+        assert_eq!(
+            db.add_tags_to_paths(
+                &[PathBuf::from("/image.png")],
+                &["keeper".into(), "reject".into()]
+            ),
+            0
+        );
+        assert!(db.tags_for_path(Path::new("/image.png")).is_empty());
+    }
 
     fn temp_path(name: &str) -> PathBuf {
         let unique = format!(

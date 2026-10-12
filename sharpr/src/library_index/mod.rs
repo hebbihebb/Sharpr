@@ -133,6 +133,39 @@ pub struct PipelineStep {
 
 pub struct LibraryIndex {
     pool: Pool<SqliteConnectionManager>,
+    dimensions: std::sync::Mutex<crate::model::browse::DimensionCache>,
+}
+
+fn sort_indexed_aspects(
+    rows: &mut [IndexedImage],
+    order: SortOrder,
+    cache: &std::sync::Mutex<crate::model::browse::DimensionCache>,
+) {
+    if !matches!(
+        order.field(),
+        crate::model::library::SortField::Aspect | crate::model::library::SortField::WideScreen
+    ) {
+        return;
+    }
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for row in rows.iter_mut() {
+        let dimensions = std::fs::metadata(&row.path)
+            .ok()
+            .and_then(|metadata| cache.get(&row.path, &metadata));
+        row.width = dimensions.map(|d| d.0);
+        row.height = dimensions.map(|d| d.1);
+    }
+    rows.sort_by(|a, b| {
+        crate::model::browse::compare_aspects(
+            a.width.zip(a.height),
+            b.width.zip(b.height),
+            order.field() == crate::model::library::SortField::WideScreen,
+            order.descending(),
+        )
+        .then_with(|| a.path.cmp(&b.path))
+    });
 }
 
 impl LibraryIndex {
@@ -161,7 +194,13 @@ impl LibraryIndex {
                 "duration_ms": crate::bench::duration_ms(started),
             }),
         );
-        Ok((Self { pool }, interrupted_count))
+        Ok((
+            Self {
+                pool,
+                dimensions: Default::default(),
+            },
+            interrupted_count,
+        ))
     }
 
     pub fn upsert_folder(&self, path: &Path) -> rusqlite::Result<()> {
@@ -359,8 +398,12 @@ impl LibraryIndex {
             }
             SortOrder::FileTypeAsc => "extension COLLATE NOCASE ASC, filename COLLATE NOCASE ASC",
             SortOrder::FileTypeDesc => "extension COLLATE NOCASE DESC, filename COLLATE NOCASE ASC",
+            SortOrder::AspectAsc => "CASE WHEN width > 0 AND height > 0 THEN 1.0*width/height END ASC NULLS LAST, filename COLLATE NOCASE ASC",
+            SortOrder::AspectDesc => "CASE WHEN width > 0 AND height > 0 THEN 1.0*width/height END DESC NULLS LAST, filename COLLATE NOCASE ASC",
+            SortOrder::WideScreenAsc => "CASE WHEN width > 0 AND height > 0 THEN ABS((1.0*width/height)/(16.0/9.0)-1.0) END ASC NULLS LAST, filename COLLATE NOCASE ASC",
+            SortOrder::WideScreenDesc => "CASE WHEN width > 0 AND height > 0 THEN ABS((1.0*width/height)/(16.0/9.0)-1.0) END DESC NULLS LAST, filename COLLATE NOCASE ASC",
         };
-        let rows: Vec<IndexedImage> = {
+        let mut rows: Vec<IndexedImage> = {
             let sql = format!(
                 "SELECT path, filename, extension, file_size, modified_secs,
                         width, height, metadata_status
@@ -388,6 +431,7 @@ impl LibraryIndex {
             collected
         };
 
+        sort_indexed_aspects(&mut rows, sort_order, &self.dimensions);
         Ok((rows, stale_count, metadata_pending))
     }
 
@@ -567,6 +611,10 @@ impl LibraryIndex {
             }
             SortOrder::FileTypeAsc => "extension COLLATE NOCASE ASC, filename COLLATE NOCASE ASC",
             SortOrder::FileTypeDesc => "extension COLLATE NOCASE DESC, filename COLLATE NOCASE ASC",
+            SortOrder::AspectAsc => "CASE WHEN width > 0 AND height > 0 THEN 1.0*width/height END ASC NULLS LAST, filename COLLATE NOCASE ASC",
+            SortOrder::AspectDesc => "CASE WHEN width > 0 AND height > 0 THEN 1.0*width/height END DESC NULLS LAST, filename COLLATE NOCASE ASC",
+            SortOrder::WideScreenAsc => "CASE WHEN width > 0 AND height > 0 THEN ABS((1.0*width/height)/(16.0/9.0)-1.0) END ASC NULLS LAST, filename COLLATE NOCASE ASC",
+            SortOrder::WideScreenDesc => "CASE WHEN width > 0 AND height > 0 THEN ABS((1.0*width/height)/(16.0/9.0)-1.0) END DESC NULLS LAST, filename COLLATE NOCASE ASC",
         };
         let sql = format!(
             "
@@ -579,7 +627,9 @@ impl LibraryIndex {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![path_to_string(folder)], indexed_image_from_row)?;
-        Ok(rows.filter_map(Result::ok).collect())
+        let mut rows: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
+        sort_indexed_aspects(&mut rows, sort_order, &self.dimensions);
+        Ok(rows)
     }
 
     pub fn images_by_quality(&self, class: QualityClass) -> rusqlite::Result<Vec<PathBuf>> {
@@ -1023,7 +1073,12 @@ impl LibraryIndex {
                     .collect::<Vec<_>>()
             };
             if !paths.is_empty() {
-                tags.add_tags_to_paths(&paths, std::slice::from_ref(&collection.primary_tag));
+                tags.change_tags_checked(
+                    &paths,
+                    std::slice::from_ref(&collection.primary_tag),
+                    false,
+                )
+                .map_err(rusqlite::Error::InvalidParameterName)?;
             }
             conn.execute(
                 "UPDATE collections
@@ -1727,7 +1782,10 @@ impl LibraryIndex {
             .max_size(1)
             .build(manager)
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            dimensions: Default::default(),
+        })
     }
 
     fn open_bare_db() -> rusqlite::Result<Self> {
@@ -1740,7 +1798,10 @@ impl LibraryIndex {
             .max_size(1)
             .build(manager)
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            dimensions: Default::default(),
+        })
     }
 }
 
@@ -2130,6 +2191,54 @@ mod tests {
             .unwrap();
         let collection_ids: Vec<i64> = rows.filter_map(Result::ok).collect();
         assert_eq!(collection_ids, vec![first.id, second.id]);
+    }
+
+    #[test]
+    fn parent_rename_preserves_descendant_members_with_inherited_extra_tags() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let tags = crate::tags::TagDatabase::open_in_memory().unwrap();
+        let path =
+            std::env::temp_dir().join(format!("sharpr-parent-rename-{}.png", std::process::id()));
+        std::fs::write(&path, b"fixture").unwrap();
+        let parent = idx
+            .create_collection("test", None, "Trips", &["outdoors".into()], None, None)
+            .unwrap();
+        let child = idx
+            .create_collection(
+                "test",
+                Some(parent.id),
+                "Iceland",
+                &["moss".into()],
+                None,
+                None,
+            )
+            .unwrap();
+        let grandchild = idx
+            .create_collection("test", Some(child.id), "Summer", &[], None, None)
+            .unwrap();
+        let before = idx.collection_effective_tags(grandchild.id).unwrap();
+        tags.change_tags_checked(std::slice::from_ref(&path), &before, false)
+            .unwrap();
+        let paths = tags
+            .paths_for_all_tags_checked(&idx.collection_effective_tags(parent.id).unwrap())
+            .unwrap();
+        assert_eq!(paths, vec![path.clone()]);
+        idx.update_collection(parent.id, "Travel", &parent.extra_tags, None, None)
+            .unwrap();
+        tags.replace_tag_in_paths_checked(&paths, &parent.primary_tag, "travel")
+            .unwrap();
+        assert_eq!(
+            tags.paths_for_all_tags_checked(&idx.collection_effective_tags(child.id).unwrap())
+                .unwrap(),
+            vec![path.clone()]
+        );
+        assert_eq!(
+            tags.paths_for_all_tags_checked(&idx.collection_effective_tags(grandchild.id).unwrap())
+                .unwrap(),
+            vec![path.clone()]
+        );
+        assert!(tags.tags_for_path(&path).contains(&"outdoors".into()));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

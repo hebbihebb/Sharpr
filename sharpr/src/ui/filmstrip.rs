@@ -11,6 +11,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
+use crate::model::browse::{AspectFilter, DimensionFilters};
 use crate::model::library::{SortField, SortOrder};
 use crate::model::ImageEntry;
 use crate::quality::QualityClass;
@@ -29,6 +30,8 @@ type CopyToFolderRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type MoveToFolderRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type RenameRequestedCallback = Box<dyn Fn(PathBuf) + 'static>;
 type DuplicateRequestedCallback = Box<dyn Fn(PathBuf) + 'static>;
+type DimensionFiltersChangedCallback = Box<dyn Fn(DimensionFilters) + 'static>;
+
 type SortOrderChangedCallback = Box<dyn Fn(SortOrder) + 'static>;
 type QualityFilterChangedCallback = Box<dyn Fn(Option<QualityClass>) + 'static>;
 type SaveSearchAsCollectionCallback = Box<dyn Fn(&str) + 'static>;
@@ -228,6 +231,11 @@ mod imp {
         #[allow(private_interfaces)]
         pub menu_ctx: RefCell<Option<MenuContext>>,
         pub sort_order_changed_cb: RefCell<Option<SortOrderChangedCallback>>,
+        pub dimension_filters_changed_cb: RefCell<Option<DimensionFiltersChangedCallback>>,
+        pub aspect_filter: gtk4::DropDown,
+        pub minimum_width: gtk4::SpinButton,
+        pub minimum_height: gtk4::SpinButton,
+        pub suppress_dimension_signals: Cell<bool>,
         pub quality_filter_changed_cb: RefCell<Option<QualityFilterChangedCallback>>,
         pub save_search_as_collection_cb: RefCell<Option<SaveSearchAsCollectionCallback>>,
         pub current_sort_order: Cell<SortOrder>,
@@ -296,6 +304,17 @@ mod imp {
                 duplicate_requested_cb: RefCell::new(None),
                 menu_ctx: RefCell::new(None),
                 sort_order_changed_cb: RefCell::new(None),
+                dimension_filters_changed_cb: RefCell::new(None),
+                aspect_filter: gtk4::DropDown::from_strings(&[
+                    "All aspects",
+                    "Landscape",
+                    "Portrait",
+                    "Square",
+                    "16:9 ±2%",
+                ]),
+                minimum_width: gtk4::SpinButton::with_range(0.0, 65535.0, 1.0),
+                minimum_height: gtk4::SpinButton::with_range(0.0, 65535.0, 1.0),
+                suppress_dimension_signals: Cell::new(false),
                 quality_filter_changed_cb: RefCell::new(None),
                 save_search_as_collection_cb: RefCell::new(None),
                 current_sort_order: Cell::new(SortOrder::default()),
@@ -361,6 +380,54 @@ impl FilmstripPane {
         sort_btn.set_tooltip_text(Some("Sort and filter"));
         header.pack_end(&sort_btn);
         *imp.sort_btn.borrow_mut() = Some(sort_btn.clone());
+        let filter_btn = gtk4::MenuButton::new();
+        filter_btn.set_label("Filter");
+        filter_btn.set_tooltip_text(Some("Filter aspect and resolution"));
+        let popover = gtk4::Popover::new();
+        let grid = gtk4::Grid::new();
+        grid.set_row_spacing(8);
+        grid.set_column_spacing(8);
+        grid.set_margin_top(12);
+        grid.set_margin_bottom(12);
+        grid.set_margin_start(12);
+        grid.set_margin_end(12);
+        grid.attach(&gtk4::Label::new(Some("Aspect")), 0, 0, 1, 1);
+        grid.attach(&imp.aspect_filter, 1, 0, 1, 1);
+        grid.attach(&gtk4::Label::new(Some("Minimum width")), 0, 1, 1, 1);
+        grid.attach(&imp.minimum_width, 1, 1, 1, 1);
+        grid.attach(&gtk4::Label::new(Some("Minimum height")), 0, 2, 1, 1);
+        grid.attach(&imp.minimum_height, 1, 2, 1, 1);
+        let note = gtk4::Label::new(Some("Pixels after display orientation. 0 means any size."));
+        note.set_wrap(true);
+        note.set_max_width_chars(32);
+        note.add_css_class("dim-label");
+        grid.attach(&note, 0, 3, 2, 1);
+        let reset = gtk4::Button::with_label("Reset aspect and resolution");
+        grid.attach(&reset, 0, 4, 2, 1);
+        popover.set_child(Some(&grid));
+        filter_btn.set_popover(Some(&popover));
+        header.pack_end(&filter_btn);
+        let weak = self.downgrade();
+        imp.aspect_filter.connect_selected_notify(move |_| {
+            if let Some(f) = weak.upgrade() {
+                f.emit_dimension_filters();
+            }
+        });
+        for spin in [&imp.minimum_width, &imp.minimum_height] {
+            let weak = self.downgrade();
+            spin.connect_value_changed(move |_| {
+                if let Some(f) = weak.upgrade() {
+                    f.emit_dimension_filters();
+                }
+            });
+        }
+        let weak = self.downgrade();
+        reset.connect_clicked(move |_| {
+            if let Some(f) = weak.upgrade() {
+                f.reset_dimension_filters();
+                f.emit_dimension_filters();
+            }
+        });
         imp.toolbar_view.add_top_bar(&header);
 
         let group = gio::SimpleActionGroup::new();
@@ -370,8 +437,9 @@ impl FilmstripPane {
         let sort_field = gio::SimpleAction::new_stateful(
             "sort-field",
             Some(glib::VariantTy::new("s").unwrap()),
-            &"name".to_variant(),
+            &"date".to_variant(),
         );
+        let sort_group = group.downgrade();
         sort_field.connect_activate(move |action, param| {
             if let Some(field_str) = param.and_then(|p| p.get::<String>()) {
                 action.set_state(param.expect("Action should have a parameter"));
@@ -380,11 +448,26 @@ impl FilmstripPane {
                         "name" => SortField::Name,
                         "date" => SortField::DateModified,
                         "type" => SortField::FileType,
+                        "aspect" => SortField::Aspect,
+                        "widescreen" => SortField::WideScreen,
                         _ => SortField::Name,
                     };
-                    let sort_order =
-                        SortOrder::from_parts(field, f.imp().current_sort_order.get().descending());
+                    let sort_order = SortOrder::from_parts(
+                        field,
+                        if field == SortField::WideScreen {
+                            false
+                        } else {
+                            f.imp().current_sort_order.get().descending()
+                        },
+                    );
                     f.imp().current_sort_order.set(sort_order);
+                    if let Some(group) = sort_group.upgrade() {
+                        if let Some(direction) = group.lookup_action("sort-direction") {
+                            if let Ok(direction) = direction.downcast::<gio::SimpleAction>() {
+                                direction.set_state(&sort_order.descending().to_variant());
+                            }
+                        }
+                    }
                     if let Some(cb) = f.imp().sort_order_changed_cb.borrow().as_ref() {
                         cb(sort_order);
                     }
@@ -398,7 +481,7 @@ impl FilmstripPane {
         let sort_direction = gio::SimpleAction::new_stateful(
             "sort-direction",
             Some(glib::VariantTy::new("b").unwrap()),
-            &false.to_variant(),
+            &true.to_variant(),
         );
         sort_direction.connect_activate(move |action, param| {
             if let Some(descending) = param.and_then(|p| p.get::<bool>()) {
@@ -458,6 +541,14 @@ impl FilmstripPane {
             Some("Type"),
             Some("filmstrip-sort.sort-field::type"),
         ));
+        sort_section.append(
+            Some("Aspect Ratio"),
+            Some("filmstrip-sort.sort-field::aspect"),
+        );
+        sort_section.append(
+            Some("Closest to 16:9"),
+            Some("filmstrip-sort.sort-field::widescreen"),
+        );
         menu.append_section(Some("Sort By"), &sort_section);
 
         let direction_section = gio::Menu::new();
@@ -1236,6 +1327,51 @@ impl FilmstripPane {
                 }
             },
         );
+    }
+
+    pub fn set_dimension_filters_changed_cb<F: Fn(DimensionFilters) + 'static>(&self, cb: F) {
+        *self.imp().dimension_filters_changed_cb.borrow_mut() = Some(Box::new(cb));
+    }
+    fn emit_dimension_filters(&self) {
+        let imp = self.imp();
+        if imp.suppress_dimension_signals.get() {
+            return;
+        }
+        let aspect = match imp.aspect_filter.selected() {
+            1 => AspectFilter::Landscape,
+            2 => AspectFilter::Portrait,
+            3 => AspectFilter::Square,
+            4 => AspectFilter::WideScreen,
+            _ => AspectFilter::All,
+        };
+        if let Some(cb) = imp.dimension_filters_changed_cb.borrow().as_ref() {
+            cb(DimensionFilters {
+                aspect,
+                min_width: imp.minimum_width.value_as_int() as u32,
+                min_height: imp.minimum_height.value_as_int() as u32,
+            });
+        }
+    }
+    pub fn reset_dimension_filters(&self) {
+        let imp = self.imp();
+        imp.suppress_dimension_signals.set(true);
+        imp.aspect_filter.set_selected(0);
+        imp.minimum_width.set_value(0.0);
+        imp.minimum_height.set_value(0.0);
+        imp.suppress_dimension_signals.set(false);
+    }
+
+    pub fn scroll_position(&self) -> f64 {
+        self.imp().scroll.vadjustment().value()
+    }
+
+    pub fn restore_scroll_position(&self, position: f64) {
+        let weak = self.downgrade();
+        gtk4::glib::idle_add_local_once(move || {
+            if let Some(filmstrip) = weak.upgrade() {
+                filmstrip.imp().scroll.vadjustment().set_value(position);
+            }
+        });
     }
 
     pub fn refresh_virtual(&self) {

@@ -13,9 +13,22 @@ use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::sidebar::SidebarPane;
 use crate::ui::state::{AppState, ViewScope};
 use crate::ui::viewer::ViewerPane;
-use crate::ui::window::{
-    apply_scope_to_sidebar, collection_paths_from_services, load_virtual_async,
-};
+use crate::ui::window::{apply_scope_to_sidebar, load_virtual_async};
+
+pub(super) fn run_collection_write<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+    complete: impl FnOnce(Result<T, String>) + 'static,
+) {
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = tx.send_blocking(work());
+    });
+    glib::MainContext::default().spawn_local(async move {
+        if let Ok(result) = rx.recv().await {
+            complete(result);
+        }
+    });
+}
 
 pub(super) fn parse_collection_tags_input(input: &str) -> Vec<String> {
     let mut tags = Vec::new();
@@ -192,42 +205,43 @@ pub(super) fn show_new_collection_dialog<F>(
         let selected_color = selected_color_clone.borrow().clone();
         let idx = state_d.borrow().library_index.clone();
         if let Some(idx) = idx {
-            let started = std::time::Instant::now();
             let library_id = state_d
                 .borrow()
                 .settings
-                .active_library()
-                .map(|l| l.id.clone())
+                .active_library_id
+                .clone()
                 .unwrap_or_default();
-            match idx.create_collection(
-                &library_id,
-                None,
-                &name,
-                &extra_tags,
-                selected_color.as_deref(),
-                None,
-            ) {
-                Ok(coll) => {
-                    crate::bench_event!(
-                        "collection.create",
-                        serde_json::json!({
-                            "collection_id": coll.id,
-                            "name": coll.name,
-                            "duration_ms": crate::bench::duration_ms(started),
-                        }),
-                    );
-                    refresh_d();
-                    toast_d.add_toast(libadwaita::Toast::new(&format!(
-                        "Collection \u{201c}{}\u{201d} created",
-                        coll.name
-                    )));
-                }
-                Err(e) => {
-                    toast_d.add_toast(libadwaita::Toast::new(&format!(
-                        "Could not create collection: {e}"
-                    )));
-                }
-            }
+            let refresh = refresh_d.clone();
+            let toast = toast_d.clone();
+            run_collection_write(
+                move || {
+                    idx.create_collection(
+                        &library_id,
+                        None,
+                        &name,
+                        &extra_tags,
+                        selected_color.as_deref(),
+                        None,
+                    )
+                    .map_err(|e| e.to_string())
+                },
+                move |result| match result {
+                    Ok(collection) => {
+                        crate::bench_event!(
+                            "collection.create",
+                            serde_json::json!({"id":collection.id})
+                        );
+                        refresh();
+                        toast.add_toast(libadwaita::Toast::new(&format!(
+                            "Created collection {}",
+                            collection.name
+                        )));
+                    }
+                    Err(error) => toast.add_toast(libadwaita::Toast::new(&format!(
+                        "Could not create collection: {error}"
+                    ))),
+                },
+            );
         }
     });
     dialog.present(Some(&window));
@@ -275,95 +289,119 @@ pub(super) fn show_rename_collection_dialog<F>(
     let viewer_d = viewer.clone();
     let sidebar_d = sidebar.clone();
     let name_clone = name_entry.clone();
+    let window_weak = window.downgrade();
     dialog.connect_response(None, move |_, response| {
         if response != "save" {
             return;
         }
-        let services = {
-            let state = state_d.borrow();
-            (state.library_index.clone(), state.tags.clone())
+        let (index, tags, root, disabled, library_id) = {
+            let st = state_d.borrow();
+            (
+                st.library_index.clone(),
+                st.tags.clone(),
+                st.settings.active_library().map(|l| l.root.clone()),
+                st.disabled_folders.clone(),
+                st.settings.active_library_id.clone(),
+            )
         };
-        let (Some(idx), Some(tags_db)) = services else {
-            return;
-        };
-        let Some(before) = idx.collection(id).ok().flatten() else {
+        let (Some(index), Some(tags)) = (index, tags) else {
             return;
         };
         let new_name = name_clone.text().to_string();
-        let (active_root_buf, disabled) = {
-            let s = state_d.borrow();
-            (
-                s.settings.active_library().map(|lib| lib.root.clone()),
-                s.disabled_folders.clone(),
-            )
-        };
-        let old_scope_paths = collection_paths_from_services(
-            &idx,
-            &tags_db,
-            id,
-            active_root_buf.as_deref(),
-            &disabled,
-        );
-        let old_primary = before.primary_tag.clone();
-        let new_primary = normalize_collection_tag(&new_name);
-        let started = std::time::Instant::now();
-        match idx.update_collection(
-            id,
-            &new_name,
-            &before.extra_tags,
-            before.color.as_deref(),
-            before.icon_name.as_deref(),
-        ) {
-            Ok(()) => {
-                if old_primary != new_primary {
-                    tags_db.replace_tag_in_paths(&old_scope_paths, &old_primary, &new_primary);
-                }
-                crate::bench_event!(
-                    "collection.update",
-                    serde_json::json!({
-                        "collection_id": id,
-                        "duration_ms": crate::bench::duration_ms(started),
-                    }),
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = (|| -> Result<Vec<PathBuf>, String> {
+                let before = index
+                    .collection(id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("Collection no longer exists")?;
+                let effective = index
+                    .collection_effective_tags(id)
+                    .map_err(|e| e.to_string())?;
+                let paths = super::window::filter_paths_for_library(
+                    tags.paths_for_all_tags_checked(&effective)?,
+                    root.as_deref(),
+                    &disabled,
                 );
-                refresh_d();
-                let is_active_collection = {
-                    let state = state_d.borrow();
-                    matches!(state.scope, ViewScope::Collection(active) if active == id)
-                };
-                if is_active_collection {
-                    let (active_root_buf, disabled) = {
-                        let s = state_d.borrow();
-                        (
-                            s.settings.active_library().map(|lib| lib.root.clone()),
-                            s.disabled_folders.clone(),
-                        )
-                    };
-                    let paths = collection_paths_from_services(
-                        &idx,
-                        &tags_db,
+                let new_primary = normalize_collection_tag(&new_name);
+                index
+                    .update_collection(
                         id,
-                        active_root_buf.as_deref(),
-                        &disabled,
-                    );
-                    state_d.borrow_mut().scope = ViewScope::Collection(id);
-                    load_virtual_async(&state_d, &paths);
-                    filmstrip_d.refresh_virtual();
-                    let scope = state_d.borrow().scope.clone();
-                    apply_scope_to_sidebar(&scope, &sidebar_d);
-                    if state_d.borrow().library.entry_at(0).is_some() {
-                        state_d.borrow_mut().library.selected_index = Some(0);
-                        filmstrip_d.navigate_to(0);
-                    } else {
-                        viewer_d.clear();
+                        &new_name,
+                        &before.extra_tags,
+                        before.color.as_deref(),
+                        before.icon_name.as_deref(),
+                    )
+                    .map_err(|e| e.to_string())?;
+                if let Err(error) =
+                    tags.replace_tag_in_paths_checked(&paths, &before.primary_tag, &new_primary)
+                {
+                    if let Err(rollback) = index.update_collection(
+                        id,
+                        &before.name,
+                        &before.extra_tags,
+                        before.color.as_deref(),
+                        before.icon_name.as_deref(),
+                    ) {
+                        crate::bench_error!(
+                            "collection.rename.rollback.fail",
+                            serde_json::json!({"error":rollback.to_string()})
+                        );
+                    }
+                    return Err(error);
+                }
+                crate::bench_event!("collection.rename.finish", serde_json::json!({"id":id}));
+                let effective = index
+                    .collection_effective_tags(id)
+                    .map_err(|e| e.to_string())?;
+                Ok(super::window::filter_paths_for_library(
+                    tags.paths_for_all_tags_checked(&effective)?,
+                    root.as_deref(),
+                    &disabled,
+                ))
+            })();
+            let _ = tx.send_blocking(result);
+        });
+        let state = state_d.clone();
+        let toast = toast_d.clone();
+        let refresh = refresh_d.clone();
+        let filmstrip = filmstrip_d.clone();
+        let viewer = viewer_d.clone();
+        let sidebar = sidebar_d.clone();
+        let weak = window_weak.clone();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(result) = rx.recv().await else { return };
+            match result {
+                Ok(paths) => {
+                    refresh();
+                    let active = {
+                        let st = state.borrow();
+                        st.scope == ViewScope::Collection(id)
+                            && st.settings.active_library_id == library_id
+                    };
+                    if active {
+                        if let Some(window) = weak
+                            .upgrade()
+                            .and_then(|w| w.downcast::<super::window::SharprWindow>().ok())
+                        {
+                            window.clear_browse_filters();
+                        }
+                        load_virtual_async(&state, &paths);
+                        filmstrip.refresh_virtual();
+                        apply_scope_to_sidebar(&ViewScope::Collection(id), &sidebar);
+                        if state.borrow().library.image_count() > 0 {
+                            state.borrow_mut().library.selected_index = Some(0);
+                            filmstrip.navigate_to(0);
+                        } else {
+                            viewer.clear();
+                        }
                     }
                 }
+                Err(error) => toast.add_toast(libadwaita::Toast::new(&format!(
+                    "Could not rename collection: {error}"
+                ))),
             }
-            Err(e) => {
-                toast_d.add_toast(libadwaita::Toast::new(&format!(
-                    "Could not rename collection: {e}"
-                )));
-            }
-        }
+        });
     });
     dialog.present(Some(&window));
     name_entry.grab_focus();
@@ -408,34 +446,34 @@ pub(super) fn show_change_color_dialog<F>(
         let Some(idx) = state_d.borrow().library_index.clone() else {
             return;
         };
-        let Some(before) = idx.collection(id).ok().flatten() else {
-            return;
-        };
-        let selected_color = selected_color_clone.borrow().clone();
-        let started = std::time::Instant::now();
-        match idx.update_collection(
-            id,
-            &before.name,
-            &before.extra_tags,
-            selected_color.as_deref(),
-            before.icon_name.as_deref(),
-        ) {
-            Ok(()) => {
-                crate::bench_event!(
-                    "collection.update",
-                    serde_json::json!({
-                        "collection_id": id,
-                        "duration_ms": crate::bench::duration_ms(started),
-                    }),
-                );
-                refresh_d();
-            }
-            Err(e) => {
-                toast_d.add_toast(libadwaita::Toast::new(&format!(
-                    "Could not change collection color: {e}"
-                )));
-            }
-        }
+        let color = selected_color_clone.borrow().clone();
+        let refresh = refresh_d.clone();
+        let toast = toast_d.clone();
+        run_collection_write(
+            move || {
+                let before = idx
+                    .collection(id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("Collection no longer exists")?;
+                idx.update_collection(
+                    id,
+                    &before.name,
+                    &before.extra_tags,
+                    color.as_deref(),
+                    before.icon_name.as_deref(),
+                )
+                .map_err(|e| e.to_string())
+            },
+            move |result| match result {
+                Ok(()) => {
+                    crate::bench_event!("collection.color", serde_json::json!({"id":id}));
+                    refresh();
+                }
+                Err(error) => toast.add_toast(libadwaita::Toast::new(&format!(
+                    "Could not change collection color: {error}"
+                ))),
+            },
+        );
     });
     dialog.present(Some(&window));
 }

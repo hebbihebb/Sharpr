@@ -32,6 +32,10 @@ use crate::ui::tag_browser::TagBrowser;
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 
 mod compare_controller;
+#[cfg(test)]
+mod gtk_tests;
+mod search_controller;
+mod tag_controller;
 
 // ---------------------------------------------------------------------------
 // Shared application state (main thread only, Rc<RefCell<>>)
@@ -95,37 +99,7 @@ pub(super) fn collection_paths_from_services(
 }
 
 fn collections_for_sidebar(state: &AppState) -> Vec<Collection> {
-    let Some(index) = state.library_index.as_ref() else {
-        return Vec::new();
-    };
-    let library_id = state
-        .settings
-        .active_library()
-        .map(|lib| lib.id.clone())
-        .unwrap_or_default();
-    let active_root = state
-        .settings
-        .active_library()
-        .map(|library| library.root.clone());
-    let Some(tags) = state.tags.as_ref() else {
-        return index
-            .list_collections_for_library(Some(&library_id))
-            .unwrap_or_default();
-    };
-    let mut collections = index
-        .list_collections_for_library(Some(&library_id))
-        .unwrap_or_default();
-    for collection in &mut collections {
-        collection.item_count = collection_paths_from_services(
-            index,
-            tags,
-            collection.id,
-            active_root.as_deref(),
-            &state.disabled_folders,
-        )
-        .len();
-    }
-    collections
+    state.collections.clone()
 }
 
 fn flatten_collection_paths(collections: &[Collection]) -> Vec<(i64, String)> {
@@ -173,50 +147,6 @@ fn collection_local_tags(collection: &Collection) -> Vec<String> {
     tags
 }
 
-fn apply_exact_tag_filter(
-    state: &Rc<RefCell<AppState>>,
-    filmstrip: &FilmstripPane,
-    viewer: &ViewerPane,
-    sidebar: &SidebarPane,
-    selected_tags: &[String],
-) {
-    let paths = {
-        let state_ref = state.borrow();
-        let Some(tags_db) = state_ref.tags.as_ref() else {
-            return;
-        };
-        let active_root = state_ref
-            .settings
-            .active_library()
-            .map(|library| library.root.as_path());
-        let paths = match selected_tags {
-            [] => return,
-            [single] => tags_db.paths_for_tag(single),
-            many => tags_db.paths_for_all_tags(many),
-        };
-        filter_paths_for_library(paths, active_root, &state_ref.disabled_folders)
-    };
-
-    {
-        let mut state_mut = state.borrow_mut();
-        state_mut.selected_paths.clear();
-        state_mut.scope = ViewScope::Search;
-    }
-
-    load_virtual_async(state, &paths);
-    let scope = state.borrow().scope.clone();
-    apply_scope_to_sidebar(&scope, sidebar);
-    filmstrip.refresh_virtual();
-
-    let has_first = state.borrow().library.entry_at(0).is_some();
-    if has_first {
-        state.borrow_mut().library.selected_index = Some(0);
-        filmstrip.navigate_to(0);
-    } else {
-        viewer.clear();
-    }
-}
-
 struct MetadataIndexResult {
     path: PathBuf,
     width: u32,
@@ -258,7 +188,7 @@ fn path_in_active_library(path: &Path, active_root: Option<&Path>) -> bool {
         .unwrap_or(true)
 }
 
-fn filter_paths_for_library(
+pub(super) fn filter_paths_for_library(
     paths: Vec<PathBuf>,
     active_root: Option<&Path>,
     disabled_folders: &[PathBuf],
@@ -304,7 +234,7 @@ fn start_metadata_indexer(
         let total = pending.len();
         let mut completed = 0usize;
         for info in pending {
-            match image::image_dimensions(&info.path) {
+            match crate::export::oriented_source_dimensions(&info.path) {
                 Ok((width, height)) => {
                     let quality = crate::quality::scorer::score_file_info(Some((width, height)));
                     if index
@@ -368,7 +298,7 @@ fn start_raw_dimension_hydrator(
         let total = paths.len();
         let mut completed = 0usize;
         for path in paths {
-            if let Ok((width, height)) = image::image_dimensions(&path) {
+            if let Ok((width, height)) = crate::export::oriented_source_dimensions(&path) {
                 completed += 1;
                 let _ = tx.send_blocking(MetadataIndexResult {
                     path,
@@ -470,9 +400,13 @@ mod imp {
         pub filmstrip: RefCell<Option<FilmstripPane>>,
         pub inline_search_entry: RefCell<Option<gtk4::SearchEntry>>,
         pub inline_search_revealer: RefCell<Option<gtk4::Revealer>>,
-        pub inline_search_pending: RefCell<Option<glib::SourceId>>,
+        pub search_whole_library: RefCell<Option<gtk4::CheckButton>>,
         pub inline_search_generation: Cell<u64>,
+        pub browse_generation: Arc<std::sync::atomic::AtomicU64>,
+        pub(super) browse_worker: search_controller::BrowseWorker,
         pub inline_search_suppressed: Cell<bool>,
+        pub(super) browse_snapshot: RefCell<Option<search_controller::BrowseSnapshot>>,
+        pub(super) browse_options: RefCell<search_controller::BrowseOptions>,
         pub presentation_mode: Cell<bool>,
         pub presentation_sidebar_was_visible: Cell<bool>,
         pub presentation_filmstrip_was_visible: Cell<bool>,
@@ -488,6 +422,8 @@ mod imp {
     impl Default for SharprWindow {
         fn default() -> Self {
             let (ops_queue, _ops_rx) = crate::ops::queue::new_queue();
+            let browse_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let browse_worker = search_controller::BrowseWorker::new(browse_generation.clone());
             Self {
                 state: Rc::new(RefCell::new(AppState::new(ops_queue))),
                 viewer: RefCell::new(None),
@@ -502,9 +438,13 @@ mod imp {
                 filmstrip: RefCell::new(None),
                 inline_search_entry: RefCell::new(None),
                 inline_search_revealer: RefCell::new(None),
-                inline_search_pending: RefCell::new(None),
+                search_whole_library: RefCell::new(None),
                 inline_search_generation: Cell::new(0),
+                browse_generation,
+                browse_worker,
                 inline_search_suppressed: Cell::new(false),
+                browse_snapshot: RefCell::new(None),
+                browse_options: RefCell::new(Default::default()),
                 presentation_mode: Cell::new(false),
                 presentation_sidebar_was_visible: Cell::new(false),
                 presentation_filmstrip_was_visible: Cell::new(false),
@@ -1201,8 +1141,7 @@ impl SharprWindow {
 
                     let target_index = {
                         let st = state_rx.borrow();
-                        st.library
-                            .restore_index_for(&path_rx)
+                        st.library.restore_index_for(&path_rx)
                             .filter(|&idx| st.library.entry_at(idx).is_some())
                             .or_else(|| st.library.entry_at(0).map(|_| 0))
                     };
@@ -1268,9 +1207,7 @@ impl SharprWindow {
                                     filmstrip_rx.refresh();
                                     let target = {
                                         let st = state_rx.borrow();
-                                        selected_path
-                                            .as_deref()
-                                            .and_then(|p| st.library.index_of_path(p))
+                                        selected_path.as_deref().and_then(|p| st.library.index_of_path(p))
                                             .or_else(|| {
                                                 if st.library.image_count() > 0 {
                                                     Some(0)
@@ -1326,17 +1263,70 @@ impl SharprWindow {
             let filmstrip_c = filmstrip.clone();
             let state_c = state.clone();
             let tag_browser_c = tag_browser.clone();
+            let generation = Rc::new(Cell::new(0u64));
             move || {
-                let (collections, scope) = {
-                    let state = state_c.borrow();
-                    (collections_for_sidebar(&state), state.scope.clone())
+                let next = generation.get().wrapping_add(1);
+                generation.set(next);
+                let (index, tags, library, root, disabled) = {
+                    let st = state_c.borrow();
+                    (
+                        st.library_index.clone(),
+                        st.tags.clone(),
+                        st.settings.active_library_id.clone(),
+                        st.settings.active_library().map(|l| l.root.clone()),
+                        st.disabled_folders.clone(),
+                    )
                 };
-                filmstrip_c.refresh_collection_colors(&collections);
-                sidebar_c.refresh_collections(&collections);
-                if let Some(tag_browser) = tag_browser_c.as_ref() {
-                    tag_browser.set_collections(collections.clone());
-                }
-                apply_scope_to_sidebar(&scope, &sidebar_c);
+                let Some(index) = index else { return };
+                let state = state_c.clone();
+                let sidebar = sidebar_c.clone();
+                let filmstrip = filmstrip_c.clone();
+                let tag_browser = tag_browser_c.clone();
+                let current_generation = generation.clone();
+                let expected_library = library.clone();
+                crate::ui::collection_dialogs::run_collection_write(
+                    move || {
+                        let mut collections = index
+                            .list_collections_for_library(library.as_deref())
+                            .map_err(|e| e.to_string())?;
+                        if let Some(tags) = tags {
+                            for collection in &mut collections {
+                                let effective = index
+                                    .collection_effective_tags(collection.id)
+                                    .map_err(|e| e.to_string())?;
+                                collection.item_count = filter_paths_for_library(
+                                    tags.paths_for_all_tags_checked(&effective)?,
+                                    root.as_deref(),
+                                    &disabled,
+                                )
+                                .len();
+                            }
+                        }
+                        Ok(collections)
+                    },
+                    move |result| {
+                        if current_generation.get() != next
+                            || state.borrow().settings.active_library_id != expected_library
+                        {
+                            return;
+                        }
+                        match result {
+                            Ok(collections) => {
+                                state.borrow_mut().collections = collections.clone();
+                                filmstrip.refresh_collection_colors(&collections);
+                                sidebar.refresh_collections(&collections);
+                                if let Some(browser) = tag_browser {
+                                    browser.set_collections(collections);
+                                }
+                                apply_scope_to_sidebar(&state.borrow().scope, &sidebar);
+                            }
+                            Err(error) => crate::bench_warn!(
+                                "collections.refresh.fail",
+                                serde_json::json!({"error":error})
+                            ),
+                        }
+                    },
+                );
             }
         };
         *self.imp().refresh_sidebar_collections_cb.borrow_mut() =
@@ -1437,13 +1427,32 @@ impl SharprWindow {
         }
 
         {
-            let state_sort = state.clone();
-            let open_folder_sort = open_folder.clone();
+            let weak = self.downgrade();
             filmstrip.set_sort_order_changed_cb(move |order| {
-                let current_folder = state_sort.borrow().settings.last_folder.clone();
-                state_sort.borrow_mut().sort_order = order;
-                if let Some(folder) = current_folder {
-                    open_folder_sort(folder);
+                if let Some(win) = weak.upgrade() {
+                    win.imp().state.borrow_mut().sort_order = order;
+                    let query = win
+                        .imp()
+                        .inline_search_entry
+                        .borrow()
+                        .as_ref()
+                        .map(|e| e.text().to_string())
+                        .unwrap_or_default();
+                    win.run_browse_query(query, true);
+                }
+            });
+            let weak = self.downgrade();
+            filmstrip.set_dimension_filters_changed_cb(move |filters| {
+                if let Some(win) = weak.upgrade() {
+                    win.imp().browse_options.borrow_mut().dimensions = filters;
+                    let query = win
+                        .imp()
+                        .inline_search_entry
+                        .borrow()
+                        .as_ref()
+                        .map(|e| e.text().to_string())
+                        .unwrap_or_default();
+                    win.run_scoped_search(query);
                 }
             });
         }
@@ -1797,20 +1806,26 @@ impl SharprWindow {
                     .active_library()
                     .map(|l| l.id.clone())
                     .unwrap_or_default();
-                match idx.create_collection(&library_id, None, &tag, &[], None, None) {
-                    Ok(coll) => {
-                        refresh_c();
-                        toast_c.add_toast(libadwaita::Toast::new(&format!(
-                            "Collection \u{201c}{}\u{201d} created",
-                            coll.name
-                        )));
-                    }
-                    Err(e) => {
-                        toast_c.add_toast(libadwaita::Toast::new(&format!(
-                            "Could not create collection: {e}"
-                        )));
-                    }
-                }
+                let refresh = refresh_c.clone();
+                let toast = toast_c.clone();
+                crate::ui::collection_dialogs::run_collection_write(
+                    move || {
+                        idx.create_collection(&library_id, None, &tag, &[], None, None)
+                            .map_err(|e| e.to_string())
+                    },
+                    move |result| match result {
+                        Ok(collection) => {
+                            refresh();
+                            toast.add_toast(libadwaita::Toast::new(&format!(
+                                "Created collection {}",
+                                collection.name
+                            )));
+                        }
+                        Err(error) => toast.add_toast(libadwaita::Toast::new(&format!(
+                            "Could not create collection: {error}"
+                        ))),
+                    },
+                );
             });
         }
 
@@ -1929,214 +1944,56 @@ impl SharprWindow {
             sidebar.connect_collection_delete_requested(move |id| {
                 let idx = { state_c.borrow().library_index.clone() };
                 if let Some(idx) = idx {
-                    let started = std::time::Instant::now();
-                    match idx.delete_collection(id) {
-                        Ok(()) => {
-                            crate::bench_event!(
-                                "collection.delete",
-                                serde_json::json!({
-                                    "collection_id": id,
-                                    "duration_ms": crate::bench::duration_ms(started),
-                                }),
-                            );
-                            let active_collection_id = {
-                                let state = state_c.borrow();
-                                match state.scope {
-                                    ViewScope::Collection(active) => Some(active),
-                                    _ => None,
+                    let scope = state_c.borrow().scope.clone();
+                    let worker_scope = scope.clone();
+                    let state = state_c.clone();
+                    let refresh = refresh_c.clone();
+                    let toast = toast_overlay_c.clone();
+                    let viewer = viewer_c.clone();
+                    let filmstrip = filmstrip_c.clone();
+                    crate::ui::collection_dialogs::run_collection_write(
+                        move || {
+                            idx.delete_collection(id).map_err(|e| e.to_string())?;
+                            if let ViewScope::Collection(active) = worker_scope {
+                                return Ok(idx
+                                    .collection(active)
+                                    .map_err(|e| e.to_string())?
+                                    .is_none());
+                            }
+                            Ok(false)
+                        },
+                        move |result| match result {
+                            Ok(deleted_active) => {
+                                crate::bench_event!(
+                                    "collection.delete",
+                                    serde_json::json!({"id":id})
+                                );
+                                if deleted_active && state.borrow().scope == scope {
+                                    state.borrow_mut().scope = ViewScope::Search;
+                                    state.borrow_mut().selected_paths.clear();
+                                    load_virtual_async(&state, &[]);
+                                    viewer.clear();
+                                    filmstrip.refresh_virtual();
                                 }
-                            };
-                            let was_active = active_collection_id.is_some_and(|active| {
-                                idx.collection(active).unwrap_or(None).is_none()
-                            });
-                            if was_active {
-                                let mut s = state_c.borrow_mut();
-                                s.scope = ViewScope::Search;
-                                s.selected_paths.clear();
-                                drop(s);
-                                load_virtual_async(&state_c, &[]);
+                                refresh();
                             }
-                            refresh_c();
-                            if was_active {
-                                viewer_c.clear();
-                                filmstrip_c.refresh_virtual();
-                            }
-                        }
-                        Err(e) => {
-                            toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                                "Could not delete collection: {e}"
-                            )));
-                        }
-                    }
+                            Err(error) => toast.add_toast(libadwaita::Toast::new(&format!(
+                                "Could not delete collection: {error}"
+                            ))),
+                        },
+                    );
                 }
             });
         }
 
         // Reparent a leaf collection under another collection.
         {
-            let filmstrip_c = filmstrip.clone();
-            let viewer_c = viewer.clone();
-            let sidebar_c = sidebar.clone();
-            let state_c = state.clone();
-            let toast_overlay_c = toast_overlay.clone();
-            let refresh_c = refresh_sidebar_collections.clone();
-            let reparent_collection =
-                Rc::new(move |source_id: i64, target_parent_id: Option<i64>| {
-                    let (Some(idx), Some(tags_db)) = (
-                        state_c.borrow().library_index.clone(),
-                        state_c.borrow().tags.clone(),
-                    ) else {
-                        return;
-                    };
-                    let collections_before = idx.list_collections().unwrap_or_default();
-                    let mut affected_ids = vec![source_id];
-                    let mut cursor = 0;
-                    while cursor < affected_ids.len() {
-                        let parent_id = affected_ids[cursor];
-                        for child in collections_before
-                            .iter()
-                            .filter(|collection| collection.parent_id == Some(parent_id))
-                        {
-                            affected_ids.push(child.id);
-                        }
-                        cursor += 1;
-                    }
-                    let (active_root_buf, disabled) = {
-                        let s = state_c.borrow();
-                        (
-                            s.settings.active_library().map(|lib| lib.root.clone()),
-                            s.disabled_folders.clone(),
-                        )
-                    };
-                    let affected_before: Vec<_> = affected_ids
-                        .iter()
-                        .filter_map(|id| {
-                            let collection = idx.collection(*id).ok().flatten()?;
-                            let effective_tags =
-                                idx.collection_effective_tags(*id).unwrap_or_default();
-                            let local_tags = collection_local_tags(&collection);
-                            let paths = collection_paths_from_services(
-                                &idx,
-                                &tags_db,
-                                *id,
-                                active_root_buf.as_deref(),
-                                &disabled,
-                            );
-                            Some((*id, effective_tags, local_tags, paths))
-                        })
-                        .collect();
-                    let started = std::time::Instant::now();
-                    match idx.reparent_collection(source_id, target_parent_id) {
-                        Ok(()) => {
-                            let mut retagged_path_count = 0;
-                            for (id, old_effective_tags, local_tags, old_paths) in affected_before {
-                                let new_effective_tags =
-                                    idx.collection_effective_tags(id).unwrap_or_default();
-                                let old_ancestor_tags: Vec<String> = old_effective_tags
-                                    .iter()
-                                    .filter(|tag| !local_tags.contains(*tag))
-                                    .cloned()
-                                    .collect();
-                                let new_ancestor_tags: Vec<String> = new_effective_tags
-                                    .iter()
-                                    .filter(|tag| !local_tags.contains(*tag))
-                                    .cloned()
-                                    .collect();
-                                let tags_to_remove: Vec<String> = old_ancestor_tags
-                                    .iter()
-                                    .filter(|tag| !new_ancestor_tags.contains(*tag))
-                                    .cloned()
-                                    .collect();
-                                let tags_to_add: Vec<String> = new_ancestor_tags
-                                    .iter()
-                                    .filter(|tag| !old_ancestor_tags.contains(*tag))
-                                    .cloned()
-                                    .collect();
-                                if !tags_to_remove.is_empty() {
-                                    tags_db.remove_tags_from_paths(&old_paths, &tags_to_remove);
-                                }
-                                if !tags_to_add.is_empty() {
-                                    tags_db.add_tags_to_paths(&old_paths, &tags_to_add);
-                                }
-                                retagged_path_count += old_paths.len();
-                            }
-                            crate::bench_event!(
-                                "collection.reparent",
-                                serde_json::json!({
-                                    "collection_id": source_id,
-                                    "target_parent_id": target_parent_id,
-                                    "path_count": retagged_path_count,
-                                    "duration_ms": crate::bench::duration_ms(started),
-                                }),
-                            );
-                            refresh_c();
-                            let active_collection_id = {
-                                let state = state_c.borrow();
-                                match state.scope {
-                                    ViewScope::Collection(active_id) => Some(active_id),
-                                    _ => None,
-                                }
-                            };
-                            if let Some(active_id) = active_collection_id {
-                                let (active_root_buf2, disabled2) = {
-                                    let s = state_c.borrow();
-                                    (
-                                        s.settings.active_library().map(|lib| lib.root.clone()),
-                                        s.disabled_folders.clone(),
-                                    )
-                                };
-                                let paths = collection_paths_from_services(
-                                    &idx,
-                                    &tags_db,
-                                    active_id,
-                                    active_root_buf2.as_deref(),
-                                    &disabled2,
-                                );
-                                state_c.borrow_mut().scope = ViewScope::Collection(active_id);
-                                load_virtual_async(&state_c, &paths);
-                                filmstrip_c.refresh_virtual();
-                                let scope = state_c.borrow().scope.clone();
-                                apply_scope_to_sidebar(&scope, &sidebar_c);
-                                let has_first = state_c.borrow().library.entry_at(0).is_some();
-                                if has_first {
-                                    state_c.borrow_mut().library.selected_index = Some(0);
-                                    filmstrip_c.navigate_to(0);
-                                } else {
-                                    viewer_c.clear();
-                                }
-                            }
-                            let moved_name = idx
-                                .collection(source_id)
-                                .ok()
-                                .flatten()
-                                .map(|c| c.name)
-                                .unwrap_or_else(|| "collection".to_string());
-                            if let Some(parent_id) = target_parent_id {
-                                let parent_name = idx
-                                    .collection(parent_id)
-                                    .ok()
-                                    .flatten()
-                                    .map(|c| c.name)
-                                    .unwrap_or_else(|| "collection".to_string());
-                                toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                                    "\u{201c}{}\u{201d} is now a child of \u{201c}{}\u{201d}",
-                                    moved_name, parent_name
-                                )));
-                            } else {
-                                sidebar_c.set_collection_selected(source_id);
-                                toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                                    "\u{201c}{}\u{201d} promoted to top level",
-                                    moved_name
-                                )));
-                            }
-                        }
-                        Err(e) => {
-                            toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                                "Could not move collection: {e}"
-                            )));
-                        }
-                    }
-                });
+            let window_weak = self.downgrade();
+            let reparent_collection = Rc::new(move |source_id: i64, parent: Option<i64>| {
+                if let Some(win) = window_weak.upgrade() {
+                    win.reparent_collection(source_id, parent);
+                }
+            });
 
             let state_move = state.clone();
             let toast_move = toast_overlay.clone();
@@ -2225,80 +2082,12 @@ impl SharprWindow {
             });
         }
 
-        // Drag-and-drop from filmstrip to sidebar collection row.
+        // Dragging to a bucket changes tags transactionally in a worker.
         {
-            let filmstrip_c = filmstrip.clone();
-            let state_c = state.clone();
-            let toast_overlay_c = toast_overlay.clone();
-            let refresh_c = refresh_sidebar_collections.clone();
+            let weak = self.downgrade();
             sidebar.connect_drop_paths_to_collection(move |id, paths| {
-                let (Some(idx), Some(tags_db)) = (
-                    state_c.borrow().library_index.clone(),
-                    state_c.borrow().tags.clone(),
-                ) else {
-                    return;
-                };
-                let started = std::time::Instant::now();
-                match idx.collection_effective_tags(id) {
-                    Ok(effective_tags) => {
-                        let added = tags_db.add_tags_to_paths(&paths, &effective_tags);
-                        let _ = idx.touch_collection(id);
-                        let name = idx
-                            .collection(id)
-                            .ok()
-                            .flatten()
-                            .map(|c| c.name)
-                            .unwrap_or_else(|| "collection".to_string());
-                        crate::bench_event!(
-                            "collection.drop_add",
-                            serde_json::json!({
-                                "collection_id": id,
-                                "path_count": paths.len(),
-                                "new_count": added,
-                                "duration_ms": crate::bench::duration_ms(started),
-                            })
-                        );
-                        refresh_c();
-                        let is_active_collection = {
-                            let state = state_c.borrow();
-                            matches!(state.scope, ViewScope::Collection(a) if a == id)
-                        };
-                        if is_active_collection {
-                            let (active_root_buf, disabled) = {
-                                let s = state_c.borrow();
-                                (
-                                    s.settings.active_library().map(|lib| lib.root.clone()),
-                                    s.disabled_folders.clone(),
-                                )
-                            };
-                            let all_paths = collection_paths_from_services(
-                                &idx,
-                                &tags_db,
-                                id,
-                                active_root_buf.as_deref(),
-                                &disabled,
-                            );
-                            state_c.borrow_mut().scope = ViewScope::Collection(id);
-                            load_virtual_async(&state_c, &all_paths);
-                            filmstrip_c.refresh_virtual();
-                            let has_first = state_c.borrow().library.entry_at(0).is_some();
-                            if has_first {
-                                state_c.borrow_mut().library.selected_index = Some(0);
-                                filmstrip_c.navigate_to(0);
-                            }
-                        }
-                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                            "Tagged {} image{} for \u{201c}{}\u{201d}",
-                            paths.len(),
-                            if paths.len() == 1 { "" } else { "s" },
-                            name
-                        )));
-                    }
-                    Err(e) => {
-                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                            "Could not tag images for collection: {e}"
-                        )));
-                    }
+                if let Some(win) = weak.upgrade() {
+                    win.change_collection_tags(id, paths, false);
                 }
             });
         }
@@ -2350,112 +2139,20 @@ impl SharprWindow {
         self.start_hash_poll(state.clone());
         self.start_sharpness_poll(state.clone(), viewer.clone());
 
-        // Quality filter in the filmstrip sort dropdown: re-derive paths from the
-        // current scope intersected with the chosen quality class.
         {
-            let state_c = state.clone();
-            let filmstrip_c = filmstrip.clone();
-            let viewer_c = viewer.clone();
-            let window_weak = self.downgrade();
-            filmstrip.connect_quality_filter_changed(move |quality_class| {
-                let (scope, library_index, sort_order, indexed_paths, metadata_cache) = {
-                    let s = state_c.borrow();
-                    let (indexed_paths, _, metadata_cache) = s.library.bg_scan_quality_prep();
-                    (
-                        s.scope.clone(),
-                        s.library_index.clone(),
-                        s.sort_order,
-                        indexed_paths,
-                        metadata_cache,
-                    )
-                };
-
-                let base_paths: Vec<PathBuf> = match &scope {
-                    ViewScope::Folder(path) => library_index
+            let weak = self.downgrade();
+            filmstrip.connect_quality_filter_changed(move |quality| {
+                if let Some(win) = weak.upgrade() {
+                    win.imp().browse_options.borrow_mut().quality = quality;
+                    let query = win
+                        .imp()
+                        .inline_search_entry
+                        .borrow()
                         .as_ref()
-                        .and_then(|idx| idx.images_in_folder(path, sort_order).ok())
-                        .map(|rows| rows.into_iter().map(|r| r.path).collect())
-                        .unwrap_or_default(),
-                    ViewScope::Collection(id) => library_index
-                        .as_ref()
-                        .and_then(|idx| {
-                            let state_ref = state_c.borrow();
-                            let active_root = state_ref
-                                .settings
-                                .active_library()
-                                .map(|library| library.root.as_path());
-                            state_ref.tags.as_ref().map(|tags| {
-                                collection_paths_from_services(
-                                    idx,
-                                    tags,
-                                    *id,
-                                    active_root,
-                                    &state_ref.disabled_folders,
-                                )
-                            })
-                        })
-                        .unwrap_or_default(),
-                    _ => {
-                        let s = state_c.borrow();
-                        (0..s.library.image_count())
-                            .filter_map(|i| s.library.entry_at(i).map(|e: ImageEntry| e.path()))
-                            .collect()
-                    }
-                };
-
-                if base_paths.is_empty() {
-                    return;
+                        .map(|e| e.text().to_string())
+                        .unwrap_or_default();
+                    win.run_scoped_search(query);
                 }
-
-                type ScanState = (
-                    Vec<PathBuf>,
-                    rustc_hash::FxHashMap<PathBuf, crate::model::library::CachedImageData>,
-                );
-                let (tx, rx) = async_channel::bounded::<(Vec<PathBuf>, Option<ScanState>)>(1);
-                rayon::spawn(move || {
-                    let result = if let Some(class) = quality_class {
-                        let (new_indexed, new_cache, filtered) =
-                            crate::model::library::LibraryManager::filter_paths_by_quality_class(
-                                class,
-                                base_paths,
-                                indexed_paths,
-                                metadata_cache,
-                            );
-                        (filtered, Some((new_indexed, new_cache)))
-                    } else {
-                        (base_paths, None)
-                    };
-                    let _ = tx.send_blocking(result);
-                });
-
-                let filmstrip_rx = filmstrip_c.clone();
-                let viewer_rx = viewer_c.clone();
-                let state_rx = state_c.clone();
-                let window_weak_rx = window_weak.clone();
-                glib::MainContext::default().spawn_local(async move {
-                    let Ok((paths, scan_state)) = rx.recv().await else {
-                        return;
-                    };
-                    if let Some(win) = window_weak_rx.upgrade() {
-                        let _ = win.bump_thumbnail_generation("filter.apply");
-                        win.complete_thumbnail_ops();
-                    }
-                    if let Some((new_indexed, new_cache)) = scan_state {
-                        state_rx
-                            .borrow_mut()
-                            .library
-                            .bg_scan_quality_finish(new_indexed, new_cache);
-                    }
-                    load_virtual_async(&state_rx, &paths);
-                    filmstrip_rx.refresh_virtual();
-                    let has_first = state_rx.borrow().library.entry_at(0).is_some();
-                    if has_first {
-                        state_rx.borrow_mut().library.selected_index = Some(0);
-                        filmstrip_rx.navigate_to(0);
-                    } else {
-                        viewer_rx.clear();
-                    }
-                });
             });
         }
 
@@ -2734,184 +2431,28 @@ impl SharprWindow {
         self.set_help_overlay(Some(&help_overlay));
 
         {
-            let filmstrip_c = filmstrip.clone();
-            let viewer_c = viewer.clone();
-            let state_c = state.clone();
-            let sidebar_c = sidebar.clone();
-            let content_stack_c = content_stack.clone();
-            let window_weak = self.downgrade();
+            let weak = self.downgrade();
+            preview_search_entry.set_placeholder_text(Some("Search names and tags in this view…"));
+            preview_search_entry.set_search_delay(150);
             preview_search_entry.connect_search_changed(move |entry| {
-                let Some(win) = window_weak.upgrade() else {
-                    return;
-                };
+                let Some(win) = weak.upgrade() else { return };
                 if win.imp().inline_search_suppressed.get() {
                     return;
                 }
-                if let Some(source_id) = win.imp().inline_search_pending.borrow_mut().take() {
-                    source_id.remove();
-                }
-                let search_gen = win.imp().inline_search_generation.get().wrapping_add(1);
-                win.imp().inline_search_generation.set(search_gen);
-
-                let query = entry.text().trim().to_string();
-                content_stack_c.set_visible_child_name("viewer");
-                if query.is_empty() {
-                    let Ok(mut state) = state_c.try_borrow_mut() else {
-                        return;
-                    };
-                    state.scope = ViewScope::Search;
-                    drop(state);
-                    load_virtual_async(&state_c, &[]);
-                    let Ok(state) = state_c.try_borrow() else {
-                        return;
-                    };
-                    let scope = state.scope.clone();
-                    drop(state);
-                    apply_scope_to_sidebar(&scope, &sidebar_c);
-                    viewer_c.clear();
-                    filmstrip_c.refresh_virtual();
-                    return;
-                }
-
-                if query.len() < 2 {
-                    return;
-                }
-
-                let filmstrip_rx = filmstrip_c.clone();
-                let viewer_rx = viewer_c.clone();
-                let state_rx = state_c.clone();
-                let sidebar_rx = sidebar_c.clone();
-                let content_stack_rx = content_stack_c.clone();
-                let window_weak_rx = window_weak.clone();
-                let source_id =
-                    glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
-                        if let Some(win) = window_weak_rx.upgrade() {
-                            win.imp().inline_search_pending.borrow_mut().take();
-                        }
-                        let db_query = query.clone();
-                        let ui_query = query.clone();
-                        let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
-                        let tags = state_rx
-                            .try_borrow()
-                            .ok()
-                            .and_then(|state| state.tags.clone());
-                        rayon::spawn(move || {
-                            let paths = tags
-                                .as_ref()
-                                .map(|db| db.search_paths(&db_query))
-                                .unwrap_or_default();
-                            let _ = tx.send_blocking(paths);
-                        });
-
-                        let filmstrip_ui = filmstrip_rx.clone();
-                        let viewer_ui = viewer_rx.clone();
-                        let state_ui = state_rx.clone();
-                        let sidebar_ui = sidebar_rx.clone();
-                        let content_stack_ui = content_stack_rx.clone();
-                        let window_weak_ui = window_weak_rx.clone();
-                        glib::MainContext::default().spawn_local(async move {
-                            if let Ok(db_paths) = rx.recv().await {
-                                let Some(win) = window_weak_ui.upgrade() else {
-                                    return;
-                                };
-                                if win.imp().inline_search_generation.get() != search_gen {
-                                    return;
-                                }
-                                let terms = search_terms(&ui_query);
-                                let library_paths: Vec<PathBuf> = {
-                                    let Ok(state) = state_ui.try_borrow() else {
-                                        return;
-                                    };
-                                    (0..state.library.image_count())
-                                        .filter_map(|i| state.library.entry_at(i))
-                                        .map(|e| e.path())
-                                        .filter(|p| {
-                                            p.file_name()
-                                                .and_then(|n| n.to_str())
-                                                .map(|n| {
-                                                    let name = n.to_lowercase();
-                                                    terms.iter().all(|term| name.contains(term))
-                                                })
-                                                .unwrap_or(false)
-                                        })
-                                        .collect()
-                                };
-
-                                let mut seen = std::collections::HashSet::new();
-                                let merged: Vec<PathBuf> = db_paths
-                                    .iter()
-                                    .chain(library_paths.iter())
-                                    .filter(|p| seen.insert((*p).clone()))
-                                    .cloned()
-                                    .collect();
-
-                                let Ok(mut state) = state_ui.try_borrow_mut() else {
-                                    return;
-                                };
-                                state.scope = ViewScope::Search;
-                                drop(state);
-                                load_virtual_async(&state_ui, &merged);
-                                content_stack_ui.set_visible_child_name("viewer");
-                                let Ok(state) = state_ui.try_borrow() else {
-                                    return;
-                                };
-                                let scope = state.scope.clone();
-                                drop(state);
-                                apply_scope_to_sidebar(&scope, &sidebar_ui);
-                                viewer_ui.clear();
-                                filmstrip_ui.refresh_virtual();
-                                let has_first = state_ui
-                                    .try_borrow()
-                                    .ok()
-                                    .and_then(|state| state.library.entry_at(0))
-                                    .is_some();
-                                if has_first {
-                                    if let Ok(mut state) = state_ui.try_borrow_mut() {
-                                        state.library.selected_index = Some(0);
-                                    } else {
-                                        return;
-                                    }
-                                    filmstrip_ui.navigate_to(0);
-                                }
-                            }
-                        });
-
-                        glib::ControlFlow::Break
-                    });
-                *win.imp().inline_search_pending.borrow_mut() = Some(source_id);
+                win.run_scoped_search(entry.text().to_string());
             });
-        }
-
-        {
-            let state_c = state.clone();
-            let open_folder_c = open_folder.clone();
-            let window_weak = self.downgrade();
-            let search_key = gtk4::EventControllerKey::new();
-            search_key.connect_key_pressed(move |_, key, _, _| {
+            let weak = self.downgrade();
+            let key = gtk4::EventControllerKey::new();
+            key.connect_key_pressed(move |_, key, _, _| {
                 if key != gtk4::gdk::Key::Escape {
                     return glib::Propagation::Proceed;
                 }
-                let Some(win) = window_weak.upgrade() else {
-                    return glib::Propagation::Proceed;
-                };
-                let Some(revealer) = win.imp().inline_search_revealer.borrow().clone() else {
-                    return glib::Propagation::Proceed;
-                };
-                if !revealer.reveals_child() {
-                    return glib::Propagation::Proceed;
-                }
-                win.clear_inline_search(true);
-                if !matches!(state_c.borrow().scope, ViewScope::Folder(_)) {
-                    let last_folder = state_c.borrow().settings.last_folder.clone();
-                    if let Some(folder) = last_folder {
-                        if folder.is_dir() {
-                            open_folder_c(folder);
-                        }
-                    }
+                if let Some(win) = weak.upgrade() {
+                    win.close_browse_search();
                 }
                 glib::Propagation::Stop
             });
-            preview_search_entry.add_controller(search_key);
+            preview_search_entry.add_controller(key);
         }
 
         {
@@ -2967,10 +2508,6 @@ impl SharprWindow {
 
         if let Some(tag_browser) = tag_browser.as_ref() {
             let content_stack_c = content_stack.clone();
-            let filmstrip_c = filmstrip.clone();
-            let viewer_c = viewer.clone();
-            let sidebar_c = sidebar.clone();
-            let state_c = state.clone();
             let window_weak = self.downgrade();
             tag_browser.connect_tags_activated(move |activation| {
                 if activation.tags.is_empty() {
@@ -2979,14 +2516,18 @@ impl SharprWindow {
                 let Some(win) = window_weak.upgrade() else {
                     return;
                 };
-                win.clear_inline_search(true);
-                apply_exact_tag_filter(
-                    &state_c,
-                    &filmstrip_c,
-                    &viewer_c,
-                    &sidebar_c,
-                    &activation.tags,
-                );
+                win.imp().inline_search_suppressed.set(true);
+                if let Some(entry) = win.imp().inline_search_entry.borrow().as_ref() {
+                    entry.set_text("");
+                    entry.set_placeholder_text(Some(&format!(
+                        "Tags: {} · type to narrow…",
+                        activation.tags.join(", ")
+                    )));
+                }
+                win.imp().inline_search_suppressed.set(false);
+                win.imp().browse_options.borrow_mut().tags = activation.tags.clone();
+                win.show_inline_search();
+                win.run_scoped_search(String::new());
                 if activation.focus_viewer {
                     content_stack_c.set_visible_child_name("viewer");
                 }
@@ -3027,7 +2568,6 @@ impl SharprWindow {
         {
             let state_c = state.clone();
             let toast_overlay_c = toast_overlay.clone();
-            let refresh_c = refresh_sidebar_collections.clone();
             let window_weak = self.downgrade();
             filmstrip.connect_add_to_collection_requested(move |paths| {
                 let Some(win) = window_weak.upgrade() else {
@@ -3101,9 +2641,6 @@ impl SharprWindow {
                 dialog.set_extra_child(Some(&extra));
 
                 let paths_c = paths.clone();
-                let state_d = state_c.clone();
-                let toast_d = toast_overlay_c.clone();
-                let refresh_d = refresh_c.clone();
                 let win_weak2 = win.downgrade();
                 list_box.connect_row_activated(move |_, row| {
                     let coll_id: Option<i64> =
@@ -3138,69 +2675,15 @@ impl SharprWindow {
                         eb.append(&tags_entry);
                         new_dialog.set_extra_child(Some(&eb));
                         let paths_cc = paths_c.clone();
-                        let state_dd = state_d.clone();
-                        let toast_dd = toast_d.clone();
-                        let refresh_dd = refresh_d.clone();
+                        let window_weak = win2.downgrade();
                         let tags_entry_c = tags_entry.clone();
                         let create_collection = Rc::new(move |name: String| {
-                            let (Some(idx), Some(tags_db)) = (
-                                state_dd.borrow().library_index.clone(),
-                                state_dd.borrow().tags.clone(),
-                            ) else {
-                                return;
-                            };
-                            let started = std::time::Instant::now();
-                            let extra_tags =
-                                parse_collection_tags_input(tags_entry_c.text().as_str());
-                            let library_id = state_dd
-                                .borrow()
-                                .settings
-                                .active_library()
-                                .map(|l| l.id.clone())
-                                .unwrap_or_default();
-                            match idx.create_collection(
-                                &library_id,
-                                None,
-                                &name,
-                                &extra_tags,
-                                None,
-                                None,
-                            ) {
-                                Ok(coll) => {
-                                    let effective_tags =
-                                        idx.collection_effective_tags(coll.id).unwrap_or_default();
-                                    let added =
-                                        tags_db.add_tags_to_paths(&paths_cc, &effective_tags);
-                                    crate::bench_event!(
-                                        "collection.create",
-                                        serde_json::json!({
-                                            "collection_id": coll.id,
-                                            "name": coll.name,
-                                            "duration_ms": crate::bench::duration_ms(started),
-                                        })
-                                    );
-                                    crate::bench_event!(
-                                        "collection.add_paths",
-                                        serde_json::json!({
-                                            "collection_id": coll.id,
-                                            "path_count": paths_cc.len(),
-                                            "new_count": added,
-                                            "duration_ms": crate::bench::duration_ms(started),
-                                        })
-                                    );
-                                    refresh_dd();
-                                    toast_dd.add_toast(libadwaita::Toast::new(&format!(
-                                        "Tagged {} image{} for \u{201c}{}\u{201d}",
-                                        paths_cc.len(),
-                                        if paths_cc.len() == 1 { "" } else { "s" },
-                                        coll.name
-                                    )));
-                                }
-                                Err(e) => {
-                                    toast_dd.add_toast(libadwaita::Toast::new(&format!(
-                                        "Could not create collection: {e}"
-                                    )));
-                                }
+                            if let Some(window) = window_weak.upgrade() {
+                                window.create_collection_with_paths(
+                                    name,
+                                    parse_collection_tags_input(tags_entry_c.text().as_str()),
+                                    paths_cc.clone(),
+                                );
                             }
                         });
                         let entry_c = entry.clone();
@@ -3221,45 +2704,8 @@ impl SharprWindow {
                         entry.grab_focus();
                         return;
                     }
-                    let id = coll_id.unwrap();
-                    if let (Some(idx), Some(tags_db)) = (
-                        state_d.borrow().library_index.clone(),
-                        state_d.borrow().tags.clone(),
-                    ) {
-                        let started = std::time::Instant::now();
-                        match idx.collection_effective_tags(id) {
-                            Ok(effective_tags) => {
-                                let added = tags_db.add_tags_to_paths(&paths_c, &effective_tags);
-                                let name = idx
-                                    .collection(id)
-                                    .ok()
-                                    .flatten()
-                                    .map(|c| c.name)
-                                    .unwrap_or_else(|| "collection".to_string());
-                                let _ = idx.touch_collection(id);
-                                crate::bench_event!(
-                                    "collection.add_paths",
-                                    serde_json::json!({
-                                        "collection_id": id,
-                                        "path_count": paths_c.len(),
-                                        "new_count": added,
-                                        "duration_ms": crate::bench::duration_ms(started),
-                                    })
-                                );
-                                refresh_d();
-                                toast_d.add_toast(libadwaita::Toast::new(&format!(
-                                    "Tagged {} image{} for \u{201c}{}\u{201d}",
-                                    paths_c.len(),
-                                    if paths_c.len() == 1 { "" } else { "s" },
-                                    name
-                                )));
-                            }
-                            Err(e) => {
-                                toast_d.add_toast(libadwaita::Toast::new(&format!(
-                                    "Could not tag images for collection: {e}"
-                                )));
-                            }
-                        }
+                    if let (Some(id), Some(win)) = (coll_id, win_weak2.upgrade()) {
+                        win.change_collection_tags(id, paths_c.clone(), false);
                     }
                 });
 
@@ -3267,74 +2713,14 @@ impl SharprWindow {
             });
         }
 
-        // "Remove from Collection" context menu → remove from active collection → reload view.
+        // Removing bucket membership uses the same transactional worker.
         {
-            let filmstrip_c = filmstrip.clone();
-            let viewer_c = viewer.clone();
-            let state_c = state.clone();
-            let toast_overlay_c = toast_overlay.clone();
-            let refresh_c = refresh_sidebar_collections.clone();
+            let weak = self.downgrade();
             filmstrip.connect_remove_from_collection_requested(move |paths| {
-                let (Some(idx), Some(tags_db)) = (
-                    state_c.borrow().library_index.clone(),
-                    state_c.borrow().tags.clone(),
-                ) else {
-                    return;
-                };
-                let id = match state_c.borrow().scope {
-                    ViewScope::Collection(id) => id,
-                    _ => return,
-                };
-                let started = std::time::Instant::now();
-                match idx.collection_effective_tags(id) {
-                    Ok(effective_tags) => {
-                        let removed = tags_db.remove_tags_from_paths(&paths, &effective_tags);
-                        let _ = idx.touch_collection(id);
-                        crate::bench_event!(
-                            "collection.remove_paths",
-                            serde_json::json!({
-                                "collection_id": id,
-                                "path_count": paths.len(),
-                                "removed_count": removed,
-                                "duration_ms": crate::bench::duration_ms(started),
-                            })
-                        );
-                        let (active_root_buf, disabled) = {
-                            let s = state_c.borrow();
-                            (
-                                s.settings.active_library().map(|lib| lib.root.clone()),
-                                s.disabled_folders.clone(),
-                            )
-                        };
-                        let remaining = collection_paths_from_services(
-                            &idx,
-                            &tags_db,
-                            id,
-                            active_root_buf.as_deref(),
-                            &disabled,
-                        );
-                        state_c.borrow_mut().scope = ViewScope::Collection(id);
-                        load_virtual_async(&state_c, &remaining);
-                        state_c.borrow_mut().selected_paths.clear();
-                        filmstrip_c.refresh_virtual();
-                        let has_first = state_c.borrow().library.entry_at(0).is_some();
-                        if has_first {
-                            state_c.borrow_mut().library.selected_index = Some(0);
-                            filmstrip_c.navigate_to(0);
-                        } else {
-                            viewer_c.clear();
-                        }
-                        refresh_c();
-                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                            "Removed {} image{} from collection",
-                            paths.len(),
-                            if paths.len() == 1 { "" } else { "s" }
-                        )));
-                    }
-                    Err(e) => {
-                        toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                            "Could not remove from collection: {e}"
-                        )));
+                if let Some(win) = weak.upgrade() {
+                    let scope = win.imp().state.borrow().scope.clone();
+                    if let ViewScope::Collection(id) = scope {
+                        win.change_collection_tags(id, paths, true);
                     }
                 }
             });
@@ -4108,15 +3494,37 @@ impl SharprWindow {
         }
     }
 
+    pub(super) fn clear_browse_filters(&self) {
+        self.clear_inline_search(true);
+    }
+
+    pub(super) fn close_browse_search(&self) {
+        let snapshot = self.imp().browse_snapshot.borrow_mut().take();
+        self.clear_inline_search(true);
+        *self.imp().browse_snapshot.borrow_mut() = snapshot;
+        self.restore_browse_view();
+    }
+
     fn clear_inline_search(&self, hide: bool) {
-        if let Some(source_id) = self.imp().inline_search_pending.borrow_mut().take() {
-            source_id.remove();
+        self.imp().inline_search_suppressed.set(true);
+        if let Some(button) = self.imp().search_whole_library.borrow().as_ref() {
+            button.set_active(false);
+        }
+        self.imp().browse_snapshot.borrow_mut().take();
+        *self.imp().browse_options.borrow_mut() = Default::default();
+        if let Some(filmstrip) = self.imp().filmstrip.borrow().as_ref() {
+            filmstrip.reset_dimension_filters();
+            filmstrip.reset_quality_filter();
         }
         let next_gen = self.imp().inline_search_generation.get().wrapping_add(1);
         self.imp().inline_search_generation.set(next_gen);
+        self.imp()
+            .browse_generation
+            .store(next_gen, std::sync::atomic::Ordering::Relaxed);
         self.imp().inline_search_suppressed.set(true);
         if let Some(entry) = self.imp().inline_search_entry.borrow().as_ref() {
             entry.set_text("");
+            entry.set_placeholder_text(Some("Search names and tags in this view…"));
         }
         self.imp().inline_search_suppressed.set(false);
         if hide {
@@ -4301,22 +3709,6 @@ impl SharprWindow {
                                 }),
                             );
                         }
-                    });
-                }
-                if let Some(tags_arc) = state.borrow().tags.clone() {
-                    rayon::spawn(move || {
-                        let started = Instant::now();
-                        let meta = crate::metadata::exif::ImageMetadata::load(&path);
-                        let tag_list = crate::tags::indexer::auto_tags(&path, &meta);
-                        tags_arc.insert_auto_tags(&path, &tag_list);
-                        crate::bench_event!(
-                            "tags.auto_index.finish",
-                            serde_json::json!({
-                                "path": path.display().to_string(),
-                                "tag_count": tag_list.len(),
-                                "duration_ms": crate::bench::duration_ms(started),
-                            }),
-                        );
                     });
                 }
             }
@@ -4575,7 +3967,29 @@ impl SharprWindow {
 
         let preview_search_revealer = gtk4::Revealer::new();
         preview_search_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideRight);
-        preview_search_revealer.set_child(Some(&preview_search_entry));
+        let search_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        search_row.append(&preview_search_entry);
+        let all_library = gtk4::CheckButton::with_label("Whole library");
+        *self.imp().search_whole_library.borrow_mut() = Some(all_library.clone());
+        let weak = self.downgrade();
+        all_library.connect_toggled(move |button| {
+            if let Some(win) = weak.upgrade() {
+                if win.imp().inline_search_suppressed.get() {
+                    return;
+                }
+                win.imp().browse_options.borrow_mut().whole_library = button.is_active();
+                let query = win
+                    .imp()
+                    .inline_search_entry
+                    .borrow()
+                    .as_ref()
+                    .map(|e| e.text().to_string())
+                    .unwrap_or_default();
+                win.run_scoped_search(query);
+            }
+        });
+        search_row.append(&all_library);
+        preview_search_revealer.set_child(Some(&search_row));
         preview_search_revealer.set_reveal_child(false);
 
         header.pack_end(&preview_search_revealer);

@@ -77,6 +77,7 @@ mod imp {
         pub selection_anchor: RefCell<Option<String>>,
         pub visible_order: RefCell<Vec<String>>,
         pub(crate) mode: Cell<BrowserMode>,
+        pub refresh_generation: Cell<u64>,
         pub preview_resolver: RefCell<Option<PreviewResolver>>,
         pub preview_requester: RefCell<Option<PreviewRequester>>,
         pub(crate) card_bindings: RefCell<Vec<TagCardBinding>>,
@@ -118,6 +119,7 @@ mod imp {
                 selection_anchor: RefCell::new(None),
                 visible_order: RefCell::new(Vec::new()),
                 mode: Cell::new(BrowserMode::Grid),
+                refresh_generation: Cell::new(0),
                 preview_resolver: RefCell::new(None),
                 preview_requester: RefCell::new(None),
                 card_bindings: RefCell::new(Vec::new()),
@@ -212,29 +214,44 @@ impl TagBrowser {
             return;
         };
 
-        let existing_tags: BTreeSet<String> = tags_db
-            .all_tags()
-            .into_iter()
-            .filter(|(_, count)| *count >= 1)
-            .map(|(tag, _)| tag)
-            .collect();
+        let generation = imp.refresh_generation.get().wrapping_add(1);
+        imp.refresh_generation.set(generation);
+        let colors = collection_tag_color_map(&imp.collections.borrow());
+        let selected = imp.selected_tags.borrow().clone();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(build_tag_view_models(&tags_db, &colors, &selected));
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(models) = rx.recv().await else { return };
+            let Some(browser) = weak.upgrade() else {
+                return;
+            };
+            if browser.imp().refresh_generation.get() == generation {
+                browser.render_models(models);
+            }
+        });
+    }
+
+    fn render_models(&self, models: Vec<TagViewModel>) {
+        let imp = self.imp();
+        imp.card_bindings.borrow_mut().clear();
+        while let Some(child) = imp.content_box.first_child() {
+            imp.content_box.remove(&child);
+        }
+        let existing: BTreeSet<_> = models.iter().map(|m| m.name.clone()).collect();
         imp.selected_tags
             .borrow_mut()
-            .retain(|tag| existing_tags.contains(tag));
+            .retain(|tag| existing.contains(tag));
         if imp
             .selection_anchor
             .borrow()
             .as_ref()
-            .is_some_and(|anchor| !existing_tags.contains(anchor))
+            .is_some_and(|tag| !existing.contains(tag))
         {
             *imp.selection_anchor.borrow_mut() = None;
         }
-
-        let models = build_tag_view_models(
-            &tags_db,
-            &collection_tag_color_map(&imp.collections.borrow()),
-            &imp.selected_tags.borrow(),
-        );
 
         if models.is_empty() {
             self.show_empty_state("No tags yet.\nSelect an image and press Ctrl+T to add tags.");

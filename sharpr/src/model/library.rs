@@ -16,6 +16,8 @@ pub enum SortField {
     Name,
     DateModified,
     FileType,
+    Aspect,
+    WideScreen,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -27,6 +29,10 @@ pub enum SortOrder {
     DateModifiedDesc,
     FileTypeAsc,
     FileTypeDesc,
+    AspectAsc,
+    AspectDesc,
+    WideScreenAsc,
+    WideScreenDesc,
 }
 
 impl SortOrder {
@@ -35,13 +41,19 @@ impl SortOrder {
             Self::NameAsc | Self::NameDesc => SortField::Name,
             Self::DateModifiedAsc | Self::DateModifiedDesc => SortField::DateModified,
             Self::FileTypeAsc | Self::FileTypeDesc => SortField::FileType,
+            Self::AspectAsc | Self::AspectDesc => SortField::Aspect,
+            Self::WideScreenAsc | Self::WideScreenDesc => SortField::WideScreen,
         }
     }
 
     pub fn descending(self) -> bool {
         matches!(
             self,
-            Self::NameDesc | Self::DateModifiedDesc | Self::FileTypeDesc
+            Self::NameDesc
+                | Self::DateModifiedDesc
+                | Self::FileTypeDesc
+                | Self::AspectDesc
+                | Self::WideScreenDesc
         )
     }
 
@@ -53,6 +65,10 @@ impl SortOrder {
             (SortField::DateModified, true) => Self::DateModifiedDesc,
             (SortField::FileType, false) => Self::FileTypeAsc,
             (SortField::FileType, true) => Self::FileTypeDesc,
+            (SortField::Aspect, false) => Self::AspectAsc,
+            (SortField::Aspect, true) => Self::AspectDesc,
+            (SortField::WideScreen, false) => Self::WideScreenAsc,
+            (SortField::WideScreen, true) => Self::WideScreenDesc,
         }
     }
 }
@@ -96,6 +112,7 @@ pub struct LibraryManager {
     pub(crate) path_to_index: FxHashMap<PathBuf, u32>,
     /// Set of all image paths encountered during the session, for cross-folder duplicates.
     pub(crate) all_known_paths: HashSet<PathBuf>,
+    pub(crate) removed_paths: HashSet<PathBuf>,
     hash_store: FxHashMap<PathBuf, u64>,
     active_thumbnail_cache: FxHashMap<PathBuf, Texture>,
     thumbnail_cache: FxHashMap<PathBuf, Texture>,
@@ -116,6 +133,7 @@ impl LibraryManager {
             folder_history: FxHashMap::default(),
             path_to_index: FxHashMap::default(),
             all_known_paths: HashSet::new(),
+            removed_paths: HashSet::new(),
             hash_store: FxHashMap::default(),
             active_thumbnail_cache: FxHashMap::default(),
             thumbnail_cache: FxHashMap::default(),
@@ -142,6 +160,7 @@ impl LibraryManager {
     }
 
     pub fn reset_for_folder(&mut self, folder: &Path) {
+        self.removed_paths.clear();
         self.store.remove_all();
         self.path_to_index.clear();
         self.hash_store.clear();
@@ -378,6 +397,7 @@ impl LibraryManager {
     /// Remove the entry for `path` from the store and all internal maps.
     /// Reindexes entries that shifted down. Does nothing if not present.
     pub fn remove_path(&mut self, path: &Path) {
+        self.removed_paths.insert(path.to_path_buf());
         let Some(index) = self.path_to_index.remove(path) else {
             return;
         };
@@ -505,6 +525,20 @@ impl LibraryManager {
             self.path_to_index.insert(path.clone(), index as u32);
         }
         (generation, metadata_pending)
+    }
+
+    /// Restore a captured view without rescanning or decoding on the GTK thread.
+    pub fn restore_view(&mut self, entries: &[ImageEntry], folder: Option<PathBuf>) {
+        self.virtual_generation = focused_image_set::next_generation();
+        self.store.remove_all();
+        self.path_to_index.clear();
+        self.active_thumbnail_cache.clear();
+        self.current_folder = folder;
+        self.selected_index = None;
+        for (i, entry) in entries.iter().enumerate() {
+            self.store.append(entry);
+            self.path_to_index.insert(entry.path(), i as u32);
+        }
     }
 
     pub fn apply_cached_image_data(&mut self, path: &Path, cached: CachedImageData) {
@@ -661,7 +695,7 @@ impl LibraryManager {
         }
 
         let file_size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
-        let dimensions = image::image_dimensions(path).ok();
+        let dimensions = crate::metadata::exif::display_dimensions(path);
         let cached = CachedImageData {
             file_size,
             dimensions,
@@ -721,129 +755,79 @@ impl Default for LibraryManager {
     }
 }
 
-fn collect_library_image_paths(
+pub(crate) fn collect_library_image_paths(
     library_root: Option<PathBuf>,
     folder_mode: FolderMode,
     current_folder: Option<&Path>,
-    disabled_folders: &[PathBuf],
+    disabled: &[PathBuf],
 ) -> Vec<PathBuf> {
-    let mut folders = collect_library_folders(library_root, folder_mode);
-    if let Some(current_folder) = current_folder {
-        if current_folder.is_dir()
-            && !path_is_disabled(current_folder, disabled_folders)
-            && !folders.iter().any(|folder| folder == current_folder)
-        {
-            folders.push(current_folder.to_path_buf());
-        }
-    }
+    collect_library_image_paths_cancellable(
+        library_root,
+        folder_mode,
+        current_folder,
+        disabled,
+        &|| false,
+    )
+}
 
+/// Cancellation is cooperative between filesystem operations; no GTK work is done here.
+pub(crate) fn collect_library_image_paths_cancellable(
+    library_root: Option<PathBuf>,
+    folder_mode: FolderMode,
+    current_folder: Option<&Path>,
+    disabled: &[PathBuf],
+    canceled: &dyn Fn() -> bool,
+) -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home"));
+    let roots = library_root
+        .map(|root| vec![root])
+        .unwrap_or_else(|| vec![home.join("Pictures"), home.join("Downloads"), home]);
+    let maximum_depth = if folder_mode == FolderMode::DrillDown {
+        usize::MAX
+    } else {
+        1
+    };
+    let mut pending: Vec<_> = roots.into_iter().map(|p| (p, 0)).collect();
+    if let Some(folder) = current_folder {
+        pending.insert(0, (folder.to_path_buf(), maximum_depth));
+    }
+    let mut seen = HashSet::new();
     let mut paths = Vec::new();
-    for folder in folders {
-        if path_is_disabled(&folder, disabled_folders) {
+    while let Some((folder, depth)) = pending.pop() {
+        if canceled() {
+            return Vec::new();
+        }
+        if path_is_disabled(&folder, disabled) || !seen.insert(folder.clone()) {
             continue;
         }
         let Ok(entries) = std::fs::read_dir(&folder) else {
             continue;
         };
-
-        let mut folder_paths: Vec<PathBuf> = entries
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().map(|t| t.is_file()).unwrap_or(false))
-            .map(|entry| entry.path())
-            .filter(|path| LibraryManager::is_image(path))
-            .collect();
-        folder_paths.sort_by(|a, b| path_sort_key(a, b));
-        paths.extend(folder_paths);
+        for entry in entries.filter_map(Result::ok) {
+            if canceled() {
+                return Vec::new();
+            }
+            let path = entry.path();
+            if path_is_disabled(&path, disabled) {
+                continue;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() && depth < maximum_depth {
+                pending.push((path, depth + 1));
+            } else if kind.is_file() && LibraryManager::is_image(&path) {
+                paths.push(path);
+            }
+        }
     }
-
     paths.sort_by(|a, b| path_sort_key(a, b));
     paths.dedup();
     paths
 }
 
-fn path_is_disabled(path: &Path, disabled_folders: &[PathBuf]) -> bool {
-    disabled_folders
-        .iter()
-        .any(|folder| path.starts_with(folder))
-}
-
-fn collect_library_folders(library_root: Option<PathBuf>, folder_mode: FolderMode) -> Vec<PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/home".into());
-    let home = PathBuf::from(home);
-    let roots = if let Some(root) = library_root {
-        vec![root]
-    } else {
-        vec![home.join("Pictures"), home.join("Downloads"), home]
-    };
-
-    let mut folders = Vec::new();
-    let mut seen = HashSet::new();
-    for root in roots {
-        if !root.is_dir() {
-            continue;
-        }
-
-        if directory_contains_images(&root) && seen.insert(root.clone()) {
-            folders.push(root.clone());
-        }
-
-        match folder_mode {
-            FolderMode::TopLevel => {
-                let Ok(entries) = std::fs::read_dir(&root) else {
-                    continue;
-                };
-                for entry in entries.filter_map(Result::ok) {
-                    let Ok(file_type) = entry.file_type() else {
-                        continue;
-                    };
-                    if !file_type.is_dir() {
-                        continue;
-                    }
-
-                    let path = entry.path();
-                    if directory_contains_images(&path) && seen.insert(path.clone()) {
-                        folders.push(path);
-                    }
-                }
-            }
-            FolderMode::DrillDown => {
-                collect_recursive_folders(&root, &mut seen, &mut folders);
-            }
-        }
-    }
-
-    folders.sort_by(|a, b| path_sort_key(a, b));
-    folders
-}
-
-fn collect_recursive_folders(root: &Path, seen: &mut HashSet<PathBuf>, folders: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.filter_map(Result::ok) {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        let path = entry.path();
-        if directory_contains_images(&path) && seen.insert(path.clone()) {
-            folders.push(path.clone());
-        }
-        collect_recursive_folders(&path, seen, folders);
-    }
-}
-
-fn directory_contains_images(dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-
-    entries.filter_map(Result::ok).any(|entry| {
-        entry.file_type().map(|t| t.is_file()).unwrap_or(false)
-            && LibraryManager::is_image(&entry.path())
-    })
+fn path_is_disabled(path: &Path, disabled: &[PathBuf]) -> bool {
+    disabled.iter().any(|folder| path.starts_with(folder))
 }
 
 fn path_sort_key(a: &Path, b: &Path) -> std::cmp::Ordering {
@@ -854,6 +838,21 @@ fn path_sort_key(a: &Path, b: &Path) -> std::cmp::Ordering {
 
 pub fn sort_raw_entries(entries: &mut [RawImageEntry], order: SortOrder) {
     match order {
+        SortOrder::AspectAsc
+        | SortOrder::AspectDesc
+        | SortOrder::WideScreenAsc
+        | SortOrder::WideScreenDesc => {
+            entries.sort_by(|a, b| {
+                crate::model::browse::compare_aspects(
+                    Some((a.width, a.height)),
+                    Some((b.width, b.height)),
+                    order.field() == SortField::WideScreen,
+                    order.descending(),
+                )
+                .then_with(|| a.path.cmp(&b.path))
+            });
+        }
+
         SortOrder::NameAsc => entries.sort_by(|a, b| {
             a.filename
                 .to_lowercase()
@@ -934,6 +933,29 @@ mod tests {
         encoder
             .encode_image(&image::DynamicImage::ImageRgb8(image))
             .unwrap();
+    }
+
+    #[test]
+    fn whole_library_scan_finds_unindexed_images_and_excludes_disabled_subtrees() {
+        let root = temp_path("enabled-tree");
+        let enabled = root.join("enabled/deep");
+        let disabled = root.join("disabled");
+        std::fs::create_dir_all(&enabled).unwrap();
+        std::fs::create_dir_all(disabled.join("deep")).unwrap();
+        write_bmp(&root.join("root.bmp"), 16, 9);
+        write_bmp(&enabled.join("new.bmp"), 16, 9);
+        write_bmp(&disabled.join("hidden.bmp"), 16, 9);
+        write_bmp(&disabled.join("deep/hidden.bmp"), 16, 9);
+        let paths = collect_library_image_paths(
+            Some(root.clone()),
+            FolderMode::DrillDown,
+            None,
+            std::slice::from_ref(&disabled),
+        );
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&enabled.join("new.bmp")));
+        assert!(paths.contains(&root.join("root.bmp")));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

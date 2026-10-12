@@ -1,0 +1,200 @@
+//! Run explicitly with isolated data/settings and a graphical session.
+use super::*;
+
+fn pump_until(mut condition: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !condition() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "GTK operation did not complete"
+        );
+        let context = glib::MainContext::default();
+        while context.pending() {
+            context.iteration(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn scoped_search_restores_folder_and_bucket() {
+    assert_eq!(std::env::var("GSETTINGS_BACKEND").unwrap(), "memory");
+    let root = PathBuf::from(
+        std::env::var("SHARPR_GTK_FIXTURE").expect("explicit isolated fixture directory"),
+    );
+    let data = PathBuf::from(std::env::var("XDG_DATA_HOME").unwrap());
+    assert!(
+        data.starts_with(root.parent().unwrap()),
+        "test data must be isolated beside fixtures"
+    );
+    std::fs::create_dir_all(&root).unwrap();
+    for (name, (w, h)) in [("mountain.png", (160, 90)), ("sea.png", (160, 120))] {
+        let mut image = image::RgbImage::new(w, h);
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            *pixel = image::Rgb([x as u8, y as u8, 150]);
+        }
+        image.save(root.join(name)).unwrap();
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 2 && window.is_mapped());
+    let sea = root.join("sea.png");
+    let index = window
+        .imp()
+        .state
+        .borrow()
+        .library
+        .index_of_path(&sea)
+        .unwrap();
+    window
+        .imp()
+        .filmstrip
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .navigate_to(index);
+    let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
+    window.show_inline_search();
+    entry.set_text("mountain");
+    pump_until(|| {
+        window.imp().state.borrow().library.image_count() == 1
+            && window
+                .imp()
+                .state
+                .borrow()
+                .library
+                .entry_at(0)
+                .unwrap()
+                .path()
+                .ends_with("mountain.png")
+    });
+    entry.set_text("sea");
+    pump_until(|| {
+        window.imp().state.borrow().library.image_count() == 1
+            && window
+                .imp()
+                .state
+                .borrow()
+                .library
+                .entry_at(0)
+                .unwrap()
+                .path()
+                == sea
+    });
+    entry.set_text("");
+    pump_until(|| window.imp().state.borrow().library.image_count() == 2);
+    assert_eq!(
+        window.imp().state.borrow().scope,
+        ViewScope::Folder(root.clone())
+    );
+    assert_eq!(
+        window.imp().state.borrow().library.current_folder,
+        Some(root.clone())
+    );
+    assert_eq!(
+        window
+            .imp()
+            .state
+            .borrow()
+            .library
+            .entry_at(window.imp().state.borrow().library.selected_index.unwrap())
+            .unwrap()
+            .path(),
+        sea
+    );
+    entry.set_text("sea");
+    pump_until(|| window.imp().state.borrow().library.image_count() == 1);
+    window.imp().state.borrow_mut().sort_order = crate::model::library::SortOrder::NameDesc;
+    window.run_browse_query("sea".into(), true);
+    entry.set_text("");
+    pump_until(|| {
+        let st = window.imp().state.borrow();
+        st.library.image_count() == 2 && st.library.entry_at(0).is_some_and(|e| e.path() == sea)
+    });
+    // Exercise the exact Escape operation order, not only clearing text.
+    entry.set_text("sea");
+    pump_until(|| window.imp().state.borrow().library.image_count() == 1);
+    window.imp().state.borrow_mut().sort_order = crate::model::library::SortOrder::NameAsc;
+    window.run_browse_query("sea".into(), true);
+    window.close_browse_search();
+    pump_until(|| {
+        let st = window.imp().state.borrow();
+        st.library.image_count() == 2
+            && st
+                .library
+                .entry_at(0)
+                .is_some_and(|e| e.path().ends_with("mountain.png"))
+    });
+    let bucket = {
+        let st = window.imp().state.borrow();
+        let bucket = st
+            .library_index
+            .as_ref()
+            .unwrap()
+            .create_collection(
+                st.settings.active_library_id.as_deref().unwrap(),
+                None,
+                "Test bucket",
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+        st.tags
+            .as_ref()
+            .unwrap()
+            .change_tags_checked(
+                &[root.join("mountain.png"), sea.clone()],
+                std::slice::from_ref(&bucket.primary_tag),
+                false,
+            )
+            .unwrap();
+        bucket.id
+    };
+    window.imp().state.borrow_mut().scope = ViewScope::Collection(bucket);
+    entry.set_text("mountain");
+    pump_until(|| window.imp().state.borrow().library.image_count() == 1);
+    entry.set_text("");
+    pump_until(|| window.imp().state.borrow().library.image_count() == 2);
+    assert_eq!(
+        window.imp().state.borrow().scope,
+        ViewScope::Collection(bucket)
+    );
+    window.imp().state.borrow_mut().scope = ViewScope::Folder(root.clone());
+    window.imp().browse_options.borrow_mut().dimensions = crate::model::browse::DimensionFilters {
+        aspect: crate::model::browse::AspectFilter::WideScreen,
+        min_width: 160,
+        min_height: 90,
+    };
+    window.run_scoped_search(String::new());
+    pump_until(|| window.imp().state.borrow().library.image_count() == 1);
+    assert!(window
+        .imp()
+        .state
+        .borrow()
+        .library
+        .entry_at(0)
+        .unwrap()
+        .path()
+        .ends_with("mountain.png"));
+    window.imp().browse_options.borrow_mut().dimensions = Default::default();
+    window.run_scoped_search(String::new());
+    assert_eq!(window.imp().state.borrow().library.image_count(), 2);
+    window.close();
+}

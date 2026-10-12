@@ -137,11 +137,17 @@ pub fn import_collections(
     )?;
 
     // 2. Apply tag assignments
-    let mut paths_tagged = 0;
-    for assignment in &data.tag_assignments {
-        tags_db.add_tags_to_paths(std::slice::from_ref(&assignment.path), &assignment.tags);
-        paths_tagged += 1;
-    }
+    let batches: Vec<_> = data
+        .tag_assignments
+        .iter()
+        .map(|assignment| crate::tags::db::TagChange {
+            paths: vec![assignment.path.clone()],
+            tags: assignment.tags.clone(),
+            remove: false,
+        })
+        .collect();
+    tags_db.change_tag_batches_checked(&batches)?;
+    let paths_tagged = batches.len();
 
     Ok(ImportSummary {
         collections_added,

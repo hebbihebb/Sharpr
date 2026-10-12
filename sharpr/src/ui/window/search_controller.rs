@@ -1,0 +1,379 @@
+//! Scoped browsing keeps an immutable candidate set while query results change.
+use super::*;
+
+type BrowseTask = Box<
+    dyn FnOnce(&mut crate::model::browse::DimensionCache) -> Result<Vec<PathBuf>, String> + Send,
+>;
+struct BrowseJob {
+    generation: u64,
+    task: BrowseTask,
+    response: async_channel::Sender<Result<Vec<PathBuf>, String>>,
+}
+pub(super) struct BrowseWorker {
+    requests: async_channel::Sender<BrowseJob>,
+}
+impl BrowseWorker {
+    pub fn new(generation: Arc<std::sync::atomic::AtomicU64>) -> Self {
+        let (tx, rx) = async_channel::unbounded::<BrowseJob>();
+        std::thread::spawn(move || {
+            let mut cache = crate::model::browse::DimensionCache::default();
+            while let Ok(mut job) = rx.recv_blocking() {
+                while let Ok(newer) = rx.try_recv() {
+                    job = newer;
+                }
+                if generation.load(std::sync::atomic::Ordering::Relaxed) != job.generation {
+                    continue;
+                }
+                let result = (job.task)(&mut cache);
+                let _ = job.response.send_blocking(result);
+            }
+        });
+        Self { requests: tx }
+    }
+    fn submit(
+        &self,
+        generation: u64,
+        response: async_channel::Sender<Result<Vec<PathBuf>, String>>,
+        task: BrowseTask,
+    ) {
+        let _ = self.requests.try_send(BrowseJob {
+            generation,
+            task,
+            response,
+        });
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct BrowseSnapshot {
+    pub scope: ViewScope,
+    pub folder: Option<PathBuf>,
+    pub entries: Vec<ImageEntry>,
+    pub selected: Option<PathBuf>,
+    pub action_selection: std::collections::HashSet<PathBuf>,
+    pub scroll: f64,
+    pub sort_order: crate::model::library::SortOrder,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct BrowseOptions {
+    pub dimensions: crate::model::browse::DimensionFilters,
+    pub quality: Option<crate::quality::QualityClass>,
+    pub tags: Vec<String>,
+    pub whole_library: bool,
+}
+impl BrowseOptions {
+    fn has_filters(&self) -> bool {
+        self.whole_library
+            || !self.dimensions.is_empty()
+            || self.quality.is_some()
+            || !self.tags.is_empty()
+    }
+}
+
+impl SharprWindow {
+    pub(super) fn capture_browse_view(&self) {
+        if self.imp().browse_snapshot.borrow().is_some() {
+            return;
+        }
+        let st = self.imp().state.borrow();
+        let entries: Vec<_> = (0..st.library.image_count())
+            .filter_map(|i| st.library.entry_at(i))
+            .collect();
+        let selected = st
+            .library
+            .selected_index
+            .and_then(|i| st.library.entry_at(i))
+            .map(|e| e.path());
+        let scroll = self
+            .imp()
+            .filmstrip
+            .borrow()
+            .as_ref()
+            .map(|f| f.scroll_position())
+            .unwrap_or(0.0);
+        *self.imp().browse_snapshot.borrow_mut() = Some(BrowseSnapshot {
+            scope: st.scope.clone(),
+            folder: st.library.current_folder.clone(),
+            entries,
+            selected,
+            action_selection: st.selected_paths.clone(),
+            scroll,
+            sort_order: st.sort_order,
+        });
+    }
+
+    pub(super) fn restore_browse_view(&self) {
+        let Some(snapshot) = self.imp().browse_snapshot.borrow_mut().take() else {
+            return;
+        };
+        let disabled = self.imp().state.borrow().disabled_folders.clone();
+        let removed = self.imp().state.borrow().library.removed_paths.clone();
+        let entries: Vec<_> = snapshot
+            .entries
+            .into_iter()
+            .filter(|e| !path_is_disabled(&e.path(), &disabled) && !removed.contains(&e.path()))
+            .collect();
+        {
+            let mut st = self.imp().state.borrow_mut();
+            st.scope = snapshot.scope.clone();
+            st.library.restore_view(&entries, snapshot.folder);
+            st.selected_paths = snapshot
+                .action_selection
+                .into_iter()
+                .filter(|p| st.library.index_of_path(p).is_some())
+                .collect();
+        }
+        if let Some(sidebar) = self.imp().sidebar.borrow().as_ref() {
+            apply_scope_to_sidebar(&snapshot.scope, sidebar);
+        }
+        self.present_browse_paths(snapshot.selected.as_deref());
+        if let Some(f) = self.imp().filmstrip.borrow().as_ref() {
+            f.refresh_multi_selection_visuals();
+        }
+        if let Some(filmstrip) = self.imp().filmstrip.borrow().as_ref() {
+            filmstrip.restore_scroll_position(snapshot.scroll);
+        }
+        if self.imp().state.borrow().sort_order != snapshot.sort_order {
+            self.run_browse_query(String::new(), true);
+        }
+    }
+
+    pub(super) fn present_browse_paths(&self, preferred: Option<&Path>) {
+        let Some(filmstrip) = self.imp().filmstrip.borrow().clone() else {
+            return;
+        };
+        let selected = {
+            let mut st = self.imp().state.borrow_mut();
+            let selected = preferred
+                .and_then(|p| st.library.index_of_path(p))
+                .or_else(|| (st.library.image_count() > 0).then_some(0));
+            st.library.selected_index = selected;
+            selected
+        };
+        filmstrip.refresh_virtual();
+        if let Some(selected) = selected {
+            filmstrip.navigate_to(selected);
+        } else if let Some(viewer) = self.imp().viewer.borrow().as_ref() {
+            viewer.clear();
+        }
+    }
+
+    pub(super) fn run_scoped_search(&self, query: String) {
+        self.run_browse_query(query, false);
+    }
+
+    pub(super) fn run_browse_query(&self, query: String, sort_only: bool) {
+        let generation = self.imp().inline_search_generation.get().wrapping_add(1);
+        self.imp().inline_search_generation.set(generation);
+        self.imp()
+            .browse_generation
+            .store(generation, std::sync::atomic::Ordering::Relaxed);
+        let options = self.imp().browse_options.borrow().clone();
+        if query.trim().is_empty() && !options.has_filters() && !sort_only {
+            self.restore_browse_view();
+            return;
+        }
+        self.capture_browse_view();
+        let (candidates, tags, root, disabled, scope, order) = {
+            let st = self.imp().state.borrow();
+            let snapshot = self.imp().browse_snapshot.borrow();
+            let Some(snapshot) = snapshot.as_ref() else {
+                return;
+            };
+            (
+                snapshot
+                    .entries
+                    .iter()
+                    .map(|e| e.path())
+                    .collect::<Vec<_>>(),
+                st.tags.clone(),
+                st.settings.active_library().map(|l| l.root.clone()),
+                st.disabled_folders.clone(),
+                st.scope.clone(),
+                st.sort_order,
+            )
+        };
+        let (tx, rx) = async_channel::bounded(1);
+        let expected_query = query.clone();
+        let canceled = self.imp().browse_generation.clone();
+        self.imp().browse_worker.submit(
+            generation,
+            tx,
+            Box::new(move |cache| {
+                let result = (|| -> Result<Vec<PathBuf>, String> {
+                    let superseded =
+                        || canceled.load(std::sync::atomic::Ordering::Relaxed) != generation;
+                    if superseded() {
+                        return Err("Search superseded".into());
+                    }
+                    let candidates = if options.whole_library {
+                        let root = root.clone().ok_or("No active library")?;
+                        crate::model::library::collect_library_image_paths_cancellable(
+                            Some(root),
+                            FolderMode::DrillDown,
+                            None,
+                            &disabled,
+                            &superseded,
+                        )
+                    } else {
+                        candidates
+                    };
+                    let candidates = if options.whole_library {
+                        filter_paths_for_library(candidates, root.as_deref(), &disabled)
+                    } else {
+                        candidates
+                            .into_iter()
+                            .filter(|p| !path_is_disabled(p, &disabled))
+                            .collect()
+                    };
+                    let tag_paths = tags
+                        .as_ref()
+                        .map(|db| db.search_paths_checked(&query))
+                        .transpose()?;
+                    let mut paths =
+                        match_candidates(&candidates, tag_paths.as_deref().unwrap_or(&[]), &query);
+                    if !options.tags.is_empty() {
+                        let matching: std::collections::HashSet<_> = tags
+                            .as_ref()
+                            .ok_or("Tag database is unavailable")?
+                            .paths_for_all_tags_checked(&options.tags)?
+                            .into_iter()
+                            .collect();
+                        paths.retain(|p| matching.contains(p));
+                    }
+                    let needs_dimensions = !options.dimensions.is_empty()
+                        || options.quality.is_some()
+                        || matches!(
+                            order.field(),
+                            crate::model::library::SortField::Aspect
+                                | crate::model::library::SortField::WideScreen
+                        );
+                    let mut raw = Vec::with_capacity(paths.len());
+                    for path in paths {
+                        if canceled.load(std::sync::atomic::Ordering::Relaxed) != generation {
+                            return Err("Search superseded".into());
+                        }
+                        let Ok(metadata) = std::fs::metadata(&path) else {
+                            continue;
+                        };
+                        if !metadata.is_file() {
+                            continue;
+                        }
+                        let dimensions = needs_dimensions
+                            .then(|| cache.get(&path, &metadata))
+                            .flatten();
+                        if !options.dimensions.matches(dimensions) {
+                            continue;
+                        }
+                        if let Some(class) = options.quality {
+                            if dimensions.map(|(w, h)| {
+                                crate::quality::scorer::score_file_info(Some((w, h))).class
+                            }) != Some(class)
+                            {
+                                continue;
+                            }
+                        }
+                        let (width, height) = dimensions.unwrap_or((0, 0));
+                        raw.push(RawImageEntry {
+                            filename: path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                            path,
+                            file_size: metadata.len(),
+                            modified: metadata.modified().ok(),
+                            width,
+                            height,
+                        });
+                    }
+                    crate::model::library::sort_raw_entries(&mut raw, order);
+                    Ok(raw.into_iter().map(|r| r.path).collect())
+                })();
+                result
+            }),
+        );
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(result) = rx.recv().await else { return };
+            let Some(win) = weak.upgrade() else { return };
+            if win.imp().inline_search_generation.get() != generation
+                || win.imp().state.borrow().scope != scope
+                || win
+                    .imp()
+                    .inline_search_entry
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|e| e.text().as_str() != expected_query)
+            {
+                return;
+            }
+            match result {
+                Ok(paths) => {
+                    let selected = win
+                        .imp()
+                        .state
+                        .borrow()
+                        .library
+                        .selected_index
+                        .and_then(|i| win.imp().state.borrow().library.entry_at(i))
+                        .map(|e| e.path());
+                    win.bump_thumbnail_generation("search.apply");
+                    win.imp().state.borrow_mut().selected_paths.clear();
+                    load_virtual_async(&win.imp().state, &paths);
+                    win.present_browse_paths(selected.as_deref());
+                    if sort_only
+                        && expected_query.is_empty()
+                        && !win.imp().browse_options.borrow().has_filters()
+                    {
+                        let snapshot = win.imp().browse_snapshot.borrow_mut().take();
+                        if let Some(snapshot) = snapshot {
+                            win.imp().state.borrow_mut().library.current_folder = snapshot.folder;
+                            if let Some(filmstrip) = win.imp().filmstrip.borrow().as_ref() {
+                                filmstrip.restore_scroll_position(snapshot.scroll);
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    win.add_toast(libadwaita::Toast::new(&format!("Search failed: {error}")))
+                }
+            }
+        });
+    }
+}
+
+fn match_candidates(candidates: &[PathBuf], tag_paths: &[PathBuf], query: &str) -> Vec<PathBuf> {
+    let terms = search_terms(query);
+    let tags: std::collections::HashSet<_> = tag_paths.iter().collect();
+    candidates
+        .iter()
+        .filter(|p| {
+            tags.contains(p)
+                || p.file_name().and_then(|n| n.to_str()).is_some_and(|name| {
+                    let name = name.to_lowercase();
+                    terms.iter().all(|term| name.contains(term))
+                })
+        })
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn later_queries_use_original_candidates_and_never_escape_scope() {
+        let paths = vec![
+            PathBuf::from("/folder/mountain.jpg"),
+            PathBuf::from("/folder/sea.jpg"),
+        ];
+        let tagged = vec![PathBuf::from("/other/mountain.jpg")];
+        assert_eq!(
+            match_candidates(&paths, &tagged, "mountain"),
+            vec![paths[0].clone()]
+        );
+        assert_eq!(match_candidates(&paths, &[], "sea"), vec![paths[1].clone()]);
+        assert_eq!(match_candidates(&paths, &[], ""), paths);
+    }
+}

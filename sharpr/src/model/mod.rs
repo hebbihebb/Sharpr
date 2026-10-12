@@ -1,3 +1,4 @@
+pub mod browse;
 pub mod image_entry;
 pub mod library;
 

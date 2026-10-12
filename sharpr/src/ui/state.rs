@@ -23,6 +23,7 @@ pub struct AppState {
     pub previous_content_page: Option<String>,
     pub comparison: Option<CompareItem>,
     pub disabled_folders: Vec<PathBuf>,
+    pub collections: Vec<crate::library_index::Collection>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -53,7 +54,16 @@ impl AppState {
             .active_library()
             .map(|library| library.ignored_folders.clone())
             .unwrap_or_default();
-        let tags = crate::tags::TagDatabase::open().ok().map(Arc::new);
+        let tags = match crate::tags::TagDatabase::open() {
+            Ok(tags) => Some(Arc::new(tags)),
+            Err(error) => {
+                crate::bench_error!(
+                    "tags.open.fail",
+                    serde_json::json!({"error":error.to_string()})
+                );
+                None
+            }
+        };
         if let (Some(index), Some(tags)) = (&library_index, &tags) {
             let _ = index.migrate_legacy_collections_to_tags(tags);
         }
@@ -75,6 +85,7 @@ impl AppState {
             previous_content_page: None,
             comparison: None,
             disabled_folders,
+            collections: Vec::new(),
         }
     }
 }
