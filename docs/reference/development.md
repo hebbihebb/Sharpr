@@ -131,7 +131,16 @@ These events are useful for checking responsiveness:
 - `thumbnail.apply` (includes `worker_ms`)
 - `filmstrip.thumbnail_schedule`
 
-To check filmstrip performance, compare logs from the same folder before and after a change, using release builds.
+`mainloop.stall` is logged whenever the GTK main loop was blocked for 50 ms or more. A 100 ms probe timer ticked late; `late_ms` is the delay. `mainloop.probe` marks that the probe was running.
+
+To summarize a log, run `python3 tools/bench-summary.py [LOG.jsonl]`; without an argument it reads the newest log. The summary covers:
+- startup time
+- per-folder open time, flagging scans that waited in the queue
+- stalls during startup and while browsing, reported separately
+- thumbnail time
+- memory and CPU
+
+To check filmstrip performance, do the same steps in the same folders before and after a change, using release builds, and compare the two summaries. The Phase 0 baseline is in `CURRENT_TASKS.md`.
 
 ## Rust Conventions
 

@@ -80,6 +80,45 @@ pub fn enabled() -> bool {
     matches!(LOGGER.get(), Some(Some(_)))
 }
 
+/// Interval of the main-loop stall probe.
+const STALL_PROBE_INTERVAL: Duration = Duration::from_millis(100);
+/// Lateness at which a probe tick is logged as `mainloop.stall`.
+const STALL_REPORT_MS: u128 = 50;
+
+/// Starts a timer on the GTK main loop that logs `mainloop.stall` whenever a
+/// tick runs at least `STALL_REPORT_MS` late, meaning the UI could not
+/// respond for that long. Does nothing when logging is off. Must be called
+/// on the GTK main thread.
+pub fn start_main_loop_probe() {
+    if !enabled() {
+        return;
+    }
+    event(
+        "mainloop.probe",
+        json!({
+            "interval_ms": STALL_PROBE_INTERVAL.as_millis(),
+            "report_ms": STALL_REPORT_MS,
+        }),
+    );
+    let mut last = Instant::now();
+    glib::timeout_add_local(STALL_PROBE_INTERVAL, move || {
+        let now = Instant::now();
+        let late_ms = now
+            .duration_since(last)
+            .saturating_sub(STALL_PROBE_INTERVAL)
+            .as_millis();
+        last = now;
+        if late_ms >= STALL_REPORT_MS {
+            event_with_level(
+                "mainloop.stall",
+                LogLevel::Warn,
+                json!({ "late_ms": late_ms }),
+            );
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
 pub fn duration_ms(start: Instant) -> u128 {
     start.elapsed().as_millis()
 }

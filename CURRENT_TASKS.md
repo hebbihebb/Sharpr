@@ -77,7 +77,21 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 - Both trash paths share `trash_paths`, which reports files that could not be trashed.
 - **Verification:** `./check.sh` (152 tests) and both GTK tests pass.
 
-**Phase 1 is implemented and verified.** Next: deploy it with the user's approval and run their manual check (see below), then Phase 2.
+**Phase 1 is implemented and verified, but not deployed.** On October 12 the user chose to defer deployment and continue. Their manual check runs at the next deployment.
+
+**Manual check plan:**
+1. Scroll the filmstrip fast and switch between large folders.
+2. Press Delete in the search box; no images may be trashed.
+3. Rename an image onto an existing name; it must be refused.
+4. Open Delete Tag and cancel; the affected buckets must be listed.
+5. All 6 buckets must be intact.
+
+## Phase 2 Progress
+
+**Item 1: done (committed, verified, not yet deployed).**
+- A main-loop stall probe in `bench.rs` logs `mainloop.stall` with `late_ms`.
+- `tools/bench-summary.py` summarizes a log and reproduces the Phase 0 baseline exactly. It reports startup stalls and browsing stalls separately.
+- A first debug-build run showed startup stalls of 639 ms and 487 ms, and one 222 ms stall while loading the first folder. Release builds will be measured at deployment.
 
 **Guardrails:**
 - Test in isolated directories only (`docs/reference/development.md`).

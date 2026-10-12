@@ -46,6 +46,7 @@ mod imp {
 
         fn startup(&self) {
             self.parent_startup();
+            crate::bench::start_main_loop_probe();
             // Register the GResource prefix so GTK's icon theme finds the
             // bundled app icon (icons/hicolor/512x512/apps/…) at runtime.
             if let Some(display) = gdk4::Display::default() {
