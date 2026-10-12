@@ -45,7 +45,7 @@ impl ImageMetadata {
         // rexiv2 0.10.0 is incompatible with the system gexiv2 0.16.0 — multiple
         // gexiv2 functions (get_tag_string, get_exif_tag_long, etc.) segfault.
         // Fall back to the image crate for dimensions until rexiv2 is updated.
-        if let Some((w, h)) = read_dimensions_with_image(path) {
+        if let Some((w, h)) = display_dimensions(path) {
             meta.width = w;
             meta.height = h;
         }
@@ -93,6 +93,18 @@ fn extension_format(path: &Path) -> String {
     path.extension()
         .map(|e| e.to_string_lossy().to_uppercase())
         .unwrap_or_else(|| "Unknown".into())
+}
+
+/// Header-only dimensions in displayed orientation; never decodes full pixels.
+pub(crate) fn display_dimensions(path: &Path) -> Option<(u32, u32)> {
+    let (width, height) = read_dimensions_with_image(path)?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some(crate::export::oriented_dimensions(
+        (width, height),
+        crate::metadata::orientation::exif_orientation(path),
+    ))
 }
 
 fn read_dimensions_with_image(path: &Path) -> Option<(u32, u32)> {

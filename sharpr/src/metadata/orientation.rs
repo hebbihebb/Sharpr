@@ -27,7 +27,19 @@ pub fn apply_exif_orientation(img: DynamicImage, path: &Path) -> DynamicImage {
 }
 
 pub fn exif_orientation(path: &Path) -> u32 {
-    extract_exif_data(path, 0).1
+    let orientation = extract_exif_data(path, 0).1;
+    if orientation != 1 {
+        return orientation;
+    }
+    // The JPEG preview parser does not cover PNG, WebP, or TIFF metadata.
+    use image::ImageDecoder;
+    image::ImageReader::open(path)
+        .ok()
+        .and_then(|reader| reader.with_guessed_format().ok())
+        .and_then(|reader| reader.into_decoder().ok())
+        .and_then(|mut decoder| decoder.orientation().ok())
+        .map(|orientation| u32::from(orientation.to_exif()))
+        .unwrap_or(1)
 }
 
 pub fn extract_exif_data(path: &Path, min_preview_height: u32) -> (Option<DynamicImage>, u32) {
