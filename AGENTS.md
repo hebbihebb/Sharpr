@@ -80,7 +80,7 @@ Check in proportion to the risk. `docs/reference/development.md` has the command
 | Dependencies | `cargo deny check` and `cargo machete`; regenerate `packaging/cargo-sources.json` |
 | Release | `./check.sh`, a GTK test run, and a full Flatpak build |
 
-Before handing work back, always run `cargo build` in `sharpr/`. Then tell the user exactly what to test and what should happen. The desktop launcher runs `sharpr/target/debug/sharpr` from the main checkout, so a build there changes what the user launches. Say so whenever it happens.
+Before handing work back, always run `cargo build` in `sharpr/`. Then tell the user exactly what to test and what should happen. The desktop launcher runs an installed release build of one commit (`~/.local/opt/sharpr/current`), so a `cargo build` in the checkout does not change what the user launches. Deploying means running `tools/install-native-launcher.py`, and only with the user's approval.
 
 ## Documentation
 

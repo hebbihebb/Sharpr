@@ -77,15 +77,26 @@ To inspect the live databases, open them read-only. Python example: `sqlite3.con
 
 ## Native Launcher (What The User Runs)
 
-`tools/install-native-launcher.py` installs:
-- `~/.local/share/applications/sharpr-dev.desktop`, which runs `sharpr/target/debug/sharpr` from the main checkout with `GSETTINGS_SCHEMA_DIR=sharpr/data`
-- the app icon
+The user launches an installed release build, not the checkout. To deploy, with the user's approval only:
 
-This has two consequences:
-- **Any `cargo build` in the main checkout replaces what the user launches.** That includes uncommitted work. When you rebuild there, tell the user.
-- **The user experiences debug-build performance.**
+```bash
+python3 tools/install-native-launcher.py     # from the repository root
+```
 
-`ROADMAP.md` Phase 0 changes the launcher to an installed release build of an accepted commit. After that, this section describes the release path.
+The script:
+1. Refuses to run on an uncommitted tree.
+2. Runs `cargo build --release --locked`.
+3. Copies the binary and a freshly compiled GSettings schema to `~/.local/opt/sharpr/<commit>/`, together with a `COMMIT` file.
+4. Switches the link `~/.local/opt/sharpr/current` to the new install.
+5. Rewrites `~/.local/share/applications/sharpr-dev.desktop` to run `current/sharpr` with `GSETTINGS_SCHEMA_DIR=current/schemas`.
+
+Earlier installs are kept. To roll back, repoint the link and the launcher follows it:
+
+```bash
+ln -sfn ~/.local/opt/sharpr/<older-commit> ~/.local/opt/sharpr/current
+```
+
+To see what is deployed, run `cat ~/.local/opt/sharpr/current/COMMIT`. Development builds in `sharpr/target/` never affect the launcher.
 
 ## Flatpak
 
