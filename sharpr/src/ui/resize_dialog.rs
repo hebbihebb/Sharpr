@@ -19,6 +19,25 @@ pub fn present_resize_dialog(
     state: Rc<RefCell<AppState>>,
     refresh_saved_folder: Rc<dyn Fn(PathBuf)>,
 ) {
+    present_copy_dialog(parent, source, state, refresh_saved_folder, false);
+}
+
+pub fn present_webp_dialog(
+    parent: &SharprWindow,
+    source: PathBuf,
+    state: Rc<RefCell<AppState>>,
+    refresh_saved_folder: Rc<dyn Fn(PathBuf)>,
+) {
+    present_copy_dialog(parent, source, state, refresh_saved_folder, true);
+}
+
+fn present_copy_dialog(
+    parent: &SharprWindow,
+    source: PathBuf,
+    state: Rc<RefCell<AppState>>,
+    refresh_saved_folder: Rc<dyn Fn(PathBuf)>,
+    webp: bool,
+) {
     let operation = state.borrow().ops.add("Reading image size…");
     let (tx, rx) = async_channel::bounded(1);
     let source_for_worker = source.clone();
@@ -39,7 +58,14 @@ pub fn present_resize_dialog(
         match result {
             Ok(dimensions) => {
                 operation.complete();
-                build_dialog(&parent, source, dimensions, state, refresh_saved_folder);
+                build_dialog(
+                    &parent,
+                    source,
+                    dimensions,
+                    state,
+                    refresh_saved_folder,
+                    webp,
+                );
             }
             Err(error) => {
                 operation.fail(error.to_string());
@@ -57,9 +83,10 @@ fn build_dialog(
     source_dimensions: (u32, u32),
     state: Rc<RefCell<AppState>>,
     refresh_saved_folder: Rc<dyn Fn(PathBuf)>,
+    webp: bool,
 ) {
     let dialog = libadwaita::Dialog::new();
-    dialog.set_title("Resize Copy");
+    dialog.set_title(if webp { "WebP Copy" } else { "Resize Copy" });
     dialog.set_content_width(480);
 
     let toolbar = libadwaita::ToolbarView::new();
@@ -122,6 +149,11 @@ fn build_dialog(
         "JPEG", "PNG", "WebP", "JPEG XL",
     ])));
 
+    if webp {
+        format_row.set_selected(2);
+        format_row.set_sensitive(false);
+    }
+
     let quality = libadwaita::SpinRow::with_range(1.0, 100.0, 1.0);
     quality.set_title("Quality");
     quality.set_subtitle("Used for lossy formats");
@@ -168,9 +200,41 @@ fn build_dialog(
         });
     }
 
-    let resize = gtk4::Button::with_label("Create Resized Copy");
+    let resize = gtk4::Button::with_label(if webp {
+        "Create WebP Copy"
+    } else {
+        "Create Resized Copy"
+    });
     resize.add_css_class("suggested-action");
     resize.set_halign(gtk4::Align::End);
+    let webp_limit = gtk4::Label::new(Some(
+        "WebP supports up to 16,383 pixels per side. Reduce larger SeedVR outputs here before converting.",
+    ));
+    webp_limit.set_wrap(true);
+    webp_limit.set_xalign(0.0);
+    webp_limit.add_css_class("dim-label");
+    let validate = Rc::new({
+        let width = width.clone();
+        let height = height.clone();
+        let format = format_row.clone();
+        let resize = resize.clone();
+        let note = webp_limit.clone();
+        move || {
+            let is_webp = format.selected() == 2;
+            note.set_visible(is_webp);
+            resize.set_sensitive(
+                !is_webp
+                    || (width.value_as_int() as u32 <= crate::export::WEBP_MAX_DIMENSION
+                        && height.value_as_int() as u32 <= crate::export::WEBP_MAX_DIMENSION),
+            );
+        }
+    });
+    validate();
+    for dimension in [&width, &height] {
+        let validate = validate.clone();
+        dimension.connect_value_changed(move |_| validate());
+    }
+    format_row.connect_selected_notify(move |_| validate());
     {
         let dialog_weak = dialog.downgrade();
         let parent_weak = parent.downgrade();
@@ -199,7 +263,11 @@ fn build_dialog(
                 .borrow_mut()
                 .settings
                 .set_resize_output_dir(Some(destination_dir));
-            let operation = state.borrow().ops.add("Creating resized copy…");
+            let operation = state.borrow().ops.add(if webp {
+                "Creating WebP copy…"
+            } else {
+                "Creating resized copy…"
+            });
             if let Some(dialog) = dialog_weak.upgrade() {
                 dialog.close();
             }
@@ -247,6 +315,7 @@ fn build_dialog(
     preferences.add(&quality);
     preferences.add(&destination);
     content.append(&preferences);
+    content.append(&webp_limit);
     content.append(&resize);
     toolbar.set_content(Some(&content));
     dialog.set_child(Some(&toolbar));

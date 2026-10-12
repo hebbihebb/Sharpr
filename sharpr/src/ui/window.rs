@@ -399,6 +399,7 @@ mod imp {
         pub sidebar: RefCell<Option<SidebarPane>>,
         pub filmstrip: RefCell<Option<FilmstripPane>>,
         pub inline_search_entry: RefCell<Option<gtk4::SearchEntry>>,
+        pub pending_created_copy: RefCell<Option<PathBuf>>,
         pub inline_search_revealer: RefCell<Option<gtk4::Revealer>>,
         pub search_whole_library: RefCell<Option<gtk4::CheckButton>>,
         pub inline_search_generation: Cell<u64>,
@@ -437,6 +438,7 @@ mod imp {
                 sidebar: RefCell::new(None),
                 filmstrip: RefCell::new(None),
                 inline_search_entry: RefCell::new(None),
+                pending_created_copy: RefCell::new(None),
                 inline_search_revealer: RefCell::new(None),
                 search_whole_library: RefCell::new(None),
                 inline_search_generation: Cell::new(0),
@@ -497,6 +499,17 @@ impl SharprWindow {
 
     pub fn app_state(&self) -> std::rc::Rc<std::cell::RefCell<AppState>> {
         self.imp().state.clone()
+    }
+
+    pub fn show_created_copy(&self, output: PathBuf) {
+        let Some(folder) = output.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        *self.imp().pending_created_copy.borrow_mut() = Some(output);
+        self.imp().state.borrow_mut().library.current_folder = None;
+        if let Some(open) = self.imp().open_folder_cb.borrow().as_ref() {
+            open(folder);
+        }
     }
 
     pub fn add_toast(&self, toast: libadwaita::Toast) {
@@ -998,6 +1011,7 @@ impl SharprWindow {
                 let viewer_rx = viewer_c.clone();
                 let sidebar_rx = sidebar_c.clone();
                 let state_rx = state_c.clone();
+                let created_window = window_weak.clone();
                 let path_rx = path.clone();
                 let toast_overlay_rx = toast_overlay_c.clone();
                 glib::MainContext::default().spawn_local(async move {
@@ -1141,7 +1155,14 @@ impl SharprWindow {
 
                     let target_index = {
                         let st = state_rx.borrow();
-                        st.library.restore_index_for(&path_rx)
+                        let created = created_window.upgrade().and_then(|win| {
+                            let path = win.imp().pending_created_copy.borrow().clone();
+                            let selected = path.as_ref().and_then(|path| st.library.index_of_path(path));
+                            if selected.is_some() { win.imp().pending_created_copy.borrow_mut().take(); }
+                            selected
+                        });
+                        created.or_else(|| st.library
+                            .restore_index_for(&path_rx))
                             .filter(|&idx| st.library.entry_at(idx).is_some())
                             .or_else(|| st.library.entry_at(0).map(|_| 0))
                     };
@@ -1207,7 +1228,15 @@ impl SharprWindow {
                                     filmstrip_rx.refresh();
                                     let target = {
                                         let st = state_rx.borrow();
-                                        selected_path.as_deref().and_then(|p| st.library.index_of_path(p))
+                                        let created = created_window.upgrade().and_then(|win| {
+                                            let path = win.imp().pending_created_copy.borrow().clone();
+                                            let selected = path.as_ref().and_then(|path| st.library.index_of_path(path));
+                                            if selected.is_some() { win.imp().pending_created_copy.borrow_mut().take(); }
+                                            selected
+                                        });
+                                        created.or_else(|| selected_path
+                                            .as_deref()
+                                            .and_then(|p| st.library.index_of_path(p)))
                                             .or_else(|| {
                                                 if st.library.image_count() > 0 {
                                                     Some(0)
@@ -3747,6 +3776,8 @@ impl SharprWindow {
 
         let image_section = gio::Menu::new();
         image_section.append(Some("Resize Copy…"), Some("win.resize-copy"));
+        image_section.append(Some("Crop Copy…"), Some("win.crop-copy"));
+        image_section.append(Some("WebP Copy…"), Some("win.webp-copy"));
         image_section.append(Some("Compare Selected Images"), Some("win.compare"));
         menu.append_section(Some("Image"), &image_section);
 
@@ -3873,6 +3904,39 @@ impl SharprWindow {
             });
         }
         self.add_action(&pref_action);
+
+        for (name, crop) in [("crop-copy", true), ("webp-copy", false)] {
+            let action = gio::SimpleAction::new(name, None);
+            let weak = self.downgrade();
+            let viewer_weak = viewer.downgrade();
+            let state = state.clone();
+            action.connect_activate(move |_, _| {
+                let (Some(window), Some(viewer)) = (weak.upgrade(), viewer_weak.upgrade()) else {
+                    return;
+                };
+                let Some(source) = viewer.current_path() else {
+                    window.add_toast(libadwaita::Toast::new("Select an image first"));
+                    return;
+                };
+                if crop {
+                    crate::ui::crop_dialog::present_crop_dialog(&window, source, state.clone());
+                } else {
+                    let weak = window.downgrade();
+                    let refresh = Rc::new(move |path| {
+                        if let Some(window) = weak.upgrade() {
+                            window.show_created_copy(path);
+                        }
+                    });
+                    crate::ui::resize_dialog::present_webp_dialog(
+                        &window,
+                        source,
+                        state.clone(),
+                        refresh,
+                    );
+                }
+            });
+            self.add_action(&action);
+        }
 
         let resize_action = gio::SimpleAction::new("resize-copy", None);
         {

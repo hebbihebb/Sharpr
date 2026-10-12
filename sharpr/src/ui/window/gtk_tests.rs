@@ -16,9 +16,23 @@ fn pump_until(mut condition: impl FnMut() -> bool) {
     }
 }
 
+fn screenshot(window: &SharprWindow, path: &Path) {
+    let paintable = gtk4::WidgetPaintable::new(Some(window));
+    let snapshot = gtk4::Snapshot::new();
+    paintable.snapshot(&snapshot, window.width() as f64, window.height() as f64);
+    let node = snapshot
+        .to_node()
+        .expect("realized window has a render node");
+    let renderer = window.renderer().expect("realized window has a renderer");
+    renderer
+        .render_texture(&node, None)
+        .save_to_png(path)
+        .unwrap();
+}
+
 #[test]
 #[ignore = "requires isolated GSettings/data directories and a graphical session"]
-fn scoped_search_restores_folder_and_bucket() {
+fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     assert_eq!(std::env::var("GSETTINGS_BACKEND").unwrap(), "memory");
     let root = PathBuf::from(
         std::env::var("SHARPR_GTK_FIXTURE").expect("explicit isolated fixture directory"),
@@ -196,5 +210,44 @@ fn scoped_search_restores_folder_and_bucket() {
     window.imp().browse_options.borrow_mut().dimensions = Default::default();
     window.run_scoped_search(String::new());
     assert_eq!(window.imp().state.borrow().library.image_count(), 2);
+    window.clear_inline_search(true);
+    let index = window
+        .imp()
+        .state
+        .borrow()
+        .library
+        .index_of_path(&sea)
+        .unwrap();
+    window
+        .imp()
+        .filmstrip
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .navigate_to(index);
+    gtk4::prelude::WidgetExt::activate_action(&window, "win.crop-copy", None).unwrap();
+    pump_until(|| window.visible_dialog().is_some());
+    let ready = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    pump_until(|| std::time::Instant::now() > ready);
+    screenshot(&window, &root.parent().unwrap().join("crop-dialog.png"));
+    window.visible_dialog().unwrap().close();
+    let output = crate::export::resize_copy(&crate::export::ResizeConfig {
+        source: sea.clone(),
+        destination_dir: root.join("outputs"),
+        target_width: 160,
+        target_height: 120,
+        format: crate::export::ResizeFormat::Webp,
+        quality: 90,
+    })
+    .unwrap()
+    .output;
+    window.show_created_copy(output.clone());
+    pump_until(|| {
+        let st = window.imp().state.borrow();
+        st.library
+            .selected_index
+            .and_then(|i| st.library.entry_at(i))
+            .is_some_and(|e| e.path() == output)
+    });
     window.close();
 }
