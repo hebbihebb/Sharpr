@@ -85,7 +85,7 @@ Phase 0 → Phase 1 ─┬→ Phase 2 Finding ───────────�
    - (d) unfinished trial wiring preserved on `visual-search-trial-wip` (`48a0539`); full starting work also preserved on `preserve/october-12-wip` (`68858b3`). Neither archive claims all-features verification.
 
    Use the existing self-audit; do not start a new audit round. Leftover findings belong to Phases 1, 2, and 6.
-4. **Back up the real data** using the commands in `docs/reference/development.md`.
+4. ~~Back up the real data.~~ Done October 12 at 22:16, with Sharpr closed: `~/.local/share/sharpr.backup-20261012-221640/`, including `gsettings.ini` and `config-sharpr/`. See `CURRENT_TASKS.md`.
 5. **Separate "deployed" from "dev".** Install a release build of the accepted commit (with compiled schemas) to a fixed location outside the checkout. Point the launcher there; update `tools/install-native-launcher.py`.
 6. **Record a performance baseline** on the real library with the release build: folder open, thumbnail apply latency, and rapid scroll, using bench logs. Write the numbers in `CURRENT_TASKS.md`.
 7. **After the user accepts the build:**

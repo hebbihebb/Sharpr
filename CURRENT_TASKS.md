@@ -37,6 +37,22 @@ All tests used memory GSettings and isolated data/config/cache/schema directorie
 
 The user's request expressly forbids deployment, merging, pushing and branch/worktree deletion. Those steps were not performed. `main` remains at `2679e44`; no existing branch or worktree was deleted. None of these new checkpoint commits is accepted, merged or deployed.
 
+## Backup (Phase 0 Step 4, Done)
+
+On October 12 at 22:16, with Sharpr closed, the data folder was copied to `~/.local/share/sharpr.backup-20261012-221640/`.
+
+- **Contents:** everything in `~/.local/share/sharpr`, plus `gsettings.ini` (a dconf dump) and `config-sharpr/`.
+- **Verification:**
+  - every file is byte-identical to the original (SHA-256)
+  - a scratch copy passes `integrity_check` on both databases
+  - the copy holds 4,544 indexed images, 6 buckets, and 7,718 tag rows
+
+**Observed incident: the Phase 1 tag-pruning bug.** Compared with the September 27 checkpoint, 81 image paths lost all their tags when Sharpr restarted at 21:29.
+- 21 of them were files moved outside Sharpr (for example `Upscaled/` → `Diffusion/gpt wide/`).
+- 5 paths carried manual tags (`exports`, `comics`), and those files no longer exist.
+- Moved files lost only automatic tags, and no bucket lost a member, so nothing of value was lost this time.
+- It confirms Phase 1 item 1 is urgent before buckets are relied on further.
+
 ## Next Authorized Work
 
-Phase 0 steps 4–7: close Sharpr for a consistent backup, separately authorize release installation, collect real-library release bench logs, obtain user acceptance, then separately authorize the fast-forward/cleanup. Do not infer that authorization from this checkpoint request. `ROADMAP.md` remains authoritative.
+Phase 0 steps 5–7: separately authorize release installation, collect real-library release bench logs, obtain user acceptance, then separately authorize the fast-forward/cleanup. Do not infer that authorization from this checkpoint request. `ROADMAP.md` remains authoritative.
