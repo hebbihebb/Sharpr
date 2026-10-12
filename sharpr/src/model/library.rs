@@ -110,6 +110,9 @@ pub struct LibraryManager {
     folder_history: FxHashMap<PathBuf, u32>,
     /// O(1) path → list index lookup, kept in sync with `store`.
     pub(crate) path_to_index: FxHashMap<PathBuf, u32>,
+    /// True when the current virtual view lists some path more than once,
+    /// which `path_to_index` cannot represent.
+    virtual_has_repeated_paths: bool,
     /// Set of all image paths encountered during the session, for cross-folder duplicates.
     pub(crate) all_known_paths: HashSet<PathBuf>,
     pub(crate) removed_paths: HashSet<PathBuf>,
@@ -132,6 +135,7 @@ impl LibraryManager {
             virtual_generation: 0,
             folder_history: FxHashMap::default(),
             path_to_index: FxHashMap::default(),
+            virtual_has_repeated_paths: false,
             all_known_paths: HashSet::new(),
             removed_paths: HashSet::new(),
             hash_store: FxHashMap::default(),
@@ -354,8 +358,10 @@ impl LibraryManager {
         self.entry_at(self.index_of_path(path)?)
     }
 
+    /// Every row showing `path`. Uses the path index; only a virtual view
+    /// that lists a path more than once needs the full scan.
     pub fn entries_for_path(&self, path: &std::path::Path) -> Vec<(u32, ImageEntry)> {
-        if self.current_folder.is_some() {
+        if self.current_folder.is_some() || !self.virtual_has_repeated_paths {
             return self
                 .index_of_path(path)
                 .and_then(|index| self.entry_at(index).map(|entry| (index, entry)))
@@ -508,6 +514,7 @@ impl LibraryManager {
         self.selected_index = None;
         self.current_folder = None;
         let mut metadata_pending = Vec::new();
+        let mut repeated = false;
         for (index, path) in paths.iter().enumerate() {
             let entry = ImageEntry::new(path.clone());
             if let Some(cached) = self.metadata_cache.get(path) {
@@ -522,8 +529,12 @@ impl LibraryManager {
                 entry.set_thumbnail(Some(texture.clone()));
             }
             self.store.append(&entry);
-            self.path_to_index.insert(path.clone(), index as u32);
+            repeated |= self
+                .path_to_index
+                .insert(path.clone(), index as u32)
+                .is_some();
         }
+        self.virtual_has_repeated_paths = repeated;
         (generation, metadata_pending)
     }
 
@@ -535,10 +546,12 @@ impl LibraryManager {
         self.active_thumbnail_cache.clear();
         self.current_folder = folder;
         self.selected_index = None;
+        let mut repeated = false;
         for (i, entry) in entries.iter().enumerate() {
             self.store.append(entry);
-            self.path_to_index.insert(entry.path(), i as u32);
+            repeated |= self.path_to_index.insert(entry.path(), i as u32).is_some();
         }
+        self.virtual_has_repeated_paths = repeated;
     }
 
     pub fn apply_cached_image_data(&mut self, path: &Path, cached: CachedImageData) {
@@ -956,6 +969,31 @@ mod tests {
         assert!(paths.contains(&enabled.join("new.bmp")));
         assert!(paths.contains(&root.join("root.bmp")));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn entries_for_path_in_virtual_views_with_and_without_repeats() {
+        let mut library = LibraryManager::new();
+        let a = PathBuf::from("/v/a.jpg");
+        let b = PathBuf::from("/v/b.jpg");
+        library.load_virtual(&[a.clone(), b.clone()]);
+        let found: Vec<u32> = library
+            .entries_for_path(&b)
+            .into_iter()
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(found, vec![1]);
+        assert!(library
+            .entries_for_path(Path::new("/v/none.jpg"))
+            .is_empty());
+
+        library.load_virtual(&[a.clone(), b, a.clone()]);
+        let found: Vec<u32> = library
+            .entries_for_path(&a)
+            .into_iter()
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(found, vec![0, 2], "a repeated path is found in every row");
     }
 
     #[test]

@@ -122,12 +122,13 @@ The user judged scrolling and switching as "everything works and feels fast". Th
   - 18 `png` tags on non-PNG files are conservatively kept.
 - The dead `tags/indexer.rs` and the test-only `insert_auto_tags` were deleted.
 
-**Item 11, main-thread work: 3 of 6 done (committed, not yet deployed).**
+**Item 11, main-thread work: 4 of 6 done (committed, not yet deployed).**
 - **Filmstrip badge colours:** binding a row no longer queries SQLite. A worker builds a path → colour map whenever bucket colours change, a viewer tag edit lands, or a tag is deleted. Until the first map is ready, binding falls back to the old query.
 - **Manual check at deployment:** the coloured position badges of bucket members still appear, and update after adding an image to a bucket.
 - **Duplicate groups:** they are reused until the stored hash list changes, checked by a fingerprint of the list. Changing images costs one linear query instead of a regrouping that compares every pair of images.
 - **Bucket open:** the member query and per-file checks run on a worker using the checked query, so a database error shows a toast instead of an empty bucket. Stale results are dropped by a generation counter and a scope check. A GTK step now opens a bucket the way a sidebar click does.
-- **Remaining:** the linear `entries_for_path` lookups in virtual views, sidebar bucket counts, and caching whole-library search candidates.
+- **Virtual-view lookups:** `entries_for_path` uses the path index in bucket and search views, so each applied thumbnail is O(1) instead of a scan of the whole view. The scan remains only for a view that lists a path twice, which is flagged when the view loads.
+- **Remaining:** sidebar bucket counts, and caching whole-library search candidates.
 
 **Found:** at 1024×600 the viewer header overflows, and the window close button is partly off-screen. This predates the chip work; it is tracked under item 4.
 
