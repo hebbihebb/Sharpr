@@ -2,78 +2,31 @@
 
 ## Active Milestone
 
-`ROADMAP.md` Phase 0, Checkpoint and trustworthy baseline. Nothing else starts until it is done.
+Phase 0 repository checkpoint is committed and verified on `viewer-reset`. Operational Phase 0 acceptance remains deferred; do not start Phase 1 yet.
 
-## State Snapshot (October 12, 2026)
+## Verified Checkpoints
 
-**Branches:**
-- **`viewer-reset`** is the development line. It is at `642665d` and was pushed to `origin/viewer-reset`.
-- **`main`** is at `2679e44`, from before the July reset. It is 9 commits behind `viewer-reset` and can be fast-forwarded.
-- **`docs-realignment`** held this documentation realignment and was fast-forwarded into `viewer-reset`. With the user's approval, both the branch and its worktree `../Sharpr-docs` can be deleted.
-- **`viewer-base`** (`f1d937c`, worktree `../Sharpr-Base`) marks the July reset baseline.
-- **Six older local branches** are fully merged into `main`: `advanced-queue`, `fix/folder-switch-performance`, `hig-writing-style-audit`, `improve-tag-popover`, `improve-upscale-save-flow`, and `quality-assessment`.
+- `515e2c5`: patched dependencies; default runtime excludes unfinished trial wiring.
+- `4e412e3`: safe copy services and displayed dimensions.
+- `4af3857`: scoped browsing, filters, manual tags and bucket persistence.
+- `6bb3ac5`: Crop/WebP dialogs and created-copy selection.
+- `4cbefd2`: development-only benchmark tools and research notes.
 
-**Implemented but not committed** in the main checkout: about 2,400 changed lines in 23 files, plus untracked files.
+Each checkpoint builds from its own committed source. Final checks: `cargo build`, `./check.sh` (135 tests, strict clippy, deny, machete), and two isolated GTK tests covering search/filters/copies plus rapid navigation/folder switching. Each GTK process now gets fresh fixture and XDG directories, preventing bucket-name collisions when rerunning the suite. Synthetic navigation passes before and after the October work; it is not a real-library release-performance measurement. Logs/artifacts: `.tmp/phase0/`.
 
-- **New files:**
-  - `model/browse.rs`
-  - `ui/crop_dialog.rs`
-  - `ui/window/{search,tag}_controller.rs`
-  - `ui/window/gtk_tests.rs`
-  - `tools/benchmark-*.py`
-  - `docs/research/image-search.md`
-- **What it does:**
-  - scoped search
-  - aspect and resolution filters
-  - manual-tag persistence fixes
-  - Crop and WebP copies with export safety fixes
-  - an unfinished experimental visual-search trial:
-    - `Cargo.toml` adds the `visual-search-trial` feature with `ureq` and `sha2`
-    - `main.rs` declares a `semantic_trial` module whose file does not exist yet
-- **Verification:**
-  - On October 12, before the trial wiring, build, clippy, 134 tests, the GTK test, deny, and machete passed.
-  - `./check.sh` will now fail until the trial module exists, because it builds with `--all-features`.
-- **Superseded doc edit:** the uncommitted one-line "evaluation exception" in `AGENTS.md` was discarded when the documentation was merged. The Scope section of the new `AGENTS.md` covers it.
+## Preserved And Deferred
 
-**Deployed:**
-- The desktop launcher `sharpr-dev.desktop` runs `sharpr/target/debug/sharpr` from the main checkout. That binary was last built at 20:09 on October 12 from the uncommitted tree.
-- No Flatpak is installed.
+- Full original working tree: `preserve/october-12-wip` (`68858b3`). This is an archival snapshot, not a verified all-features build.
+- Trial-only Cargo/lockfile/main wiring: `visual-search-trial-wip` (`48a0539`). The missing `semantic_trial.rs` is recorded; the trial remains unfinished. `viewer-reset` has no trial feature, new HTTP dependencies or runtime networking.
+- Private model files, Python environment, sample manifest, vectors and original reports remain ignored under `.tmp/`; no experiment was rerun or discarded.
+- Data-safety repairs, dimension-cache consolidation, truthful membership chips, crop-preview fallback and benchmark methodology remain in Phases 1, 2, 3 and 5. No new phase was implemented.
 
-**User data:**
-- `~/.local/share/sharpr/` holds 4,539 indexed images, 6 buckets, and 7,925 tag rows; 7,565 of those rows are legacy automatic tags.
-- It was last written on September 27, so October work has not touched it.
-- About 5,800 images live under `~/Pictures`, on a non-removable disk.
+## User Data And Deployment
 
-**Decisions recorded with the user on October 12:**
-- The visual-search trial stays, as an off-by-default experiment after the ordinary work is committed.
-- `main` is fast-forwarded after acceptance.
-- Gemini and Antigravity are no longer used.
-- Legacy automatic tags get a one-time cleanup, backed up and confirmed in the app.
-- No V2 rewrite (see `ROADMAP.md`, Architecture Decision).
+All tests used memory GSettings and isolated data/config/cache/schema directories. Builds used `CARGO_TARGET_DIR=.tmp/phase0/target`; the existing debug launcher and its binary were not replaced. Main database-file/config/launcher/binary hashes remained unchanged. Live WAL/SHM files and GSettings changed while the user's existing Sharpr process was running, so idle live-data equivalence and a consistent closed-app backup were not verified. Never restore over that live activity.
 
-## Next Task: Phase 0, Steps 2–3
+The user's request expressly forbids deployment, merging, pushing and branch/worktree deletion. Those steps were not performed. `main` remains at `2679e44`; no existing branch or worktree was deleted. None of these new checkpoint commits is accepted, merged or deployed.
 
-Step 1, folding in the documentation, is done.
+## Next Authorized Work
 
-**Goal:** Turn the October 12 working tree into committed, green, reviewable units on `viewer-reset`, with no behavior changes beyond what is already implemented.
-
-**Effort:** One session. Committing and making the build green, not new features.
-
-**Steps:**
-
-1. Resolve the trial wiring so that both `./check.sh` and `cargo build` (default features) pass. Either finish the minimal `semantic_trial` module behind its feature, or stash the trial wiring onto a `visual-search-trial` branch.
-2. Commit the ordinary work as units (a)–(c) from Phase 0 step 3, and the trial as (d), separately or on its own branch.
-
-**Acceptance:**
-- `git status` is clean on `viewer-reset`, apart from ignored paths.
-- `cargo build`, `./check.sh`, and the GTK test pass at the head (see `docs/reference/development.md`).
-- `cargo build --features visual-search-trial` passes, if the trial was committed.
-- Each commit builds on its own.
-- No file under `~/.local/share/sharpr/` was touched.
-
-**Guardrails:**
-- Do not start a new audit round. Unresolved findings already map to Phases 1, 2, and 5.
-- Do not push or merge into `main`.
-- Tell the user when the launcher's binary is rebuilt.
-
-**After this:** Phase 0 steps 4–7 cover the backup, release launcher, performance baseline, user acceptance, and fast-forwarding `main`. Then comes Phase 1, data-safety repairs.
+Phase 0 steps 4–7: close Sharpr for a consistent backup, separately authorize release installation, collect real-library release bench logs, obtain user acceptance, then separately authorize the fast-forward/cleanup. Do not infer that authorization from this checkpoint request. `ROADMAP.md` remains authoritative.

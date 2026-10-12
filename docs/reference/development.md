@@ -15,7 +15,6 @@ Commands for building, running, testing, and packaging Sharpr. Run them from `sh
 cargo build                                   # always run this before handing work back
 glib-compile-schemas data/
 GSETTINGS_SCHEMA_DIR=data cargo run           # native run; the variable is needed only for run
-cargo build --features visual-search-trial    # experimental visual-search build
 ```
 
 Debug builds are unoptimized, so image decoding and filmstrip speed look much slower than in a release build. Judge performance only with `cargo build --release`.
@@ -28,7 +27,7 @@ cargo nextest run <name-filter>       # targeted tests
 ./check.sh                            # fmt, strict clippy, nextest, deny, machete
 ```
 
-`check.sh` runs clippy with `--all-features`, so the experimental feature must compile too.
+`check.sh` runs clippy with `--all-features` for the features present in the current checkout. Unfinished `visual-search-trial` wiring is preserved on the local `visual-search-trial-wip` branch, not enabled on `viewer-reset`. That branch has no `semantic_trial.rs` and is not an all-features checkpoint.
 
 Most tests live in `#[cfg(test)]` modules next to the code. The main ones cover:
 - `library_index`
@@ -44,10 +43,21 @@ The GTK end-to-end test is `#[ignore]`d by default. It needs a graphical session
 ```bash
 glib-compile-schemas data/
 GSETTINGS_BACKEND=memory GSETTINGS_SCHEMA_DIR=data \
-XDG_DATA_HOME="$PWD/../.tmp/gtk/data" XDG_CACHE_HOME="$PWD/../.tmp/gtk/cache" \
+XDG_DATA_HOME="$PWD/../.tmp/gtk/data" XDG_CONFIG_HOME="$PWD/../.tmp/gtk/config" \
+XDG_CACHE_HOME="$PWD/../.tmp/gtk/cache" \
 SHARPR_GTK_FIXTURE="$PWD/../.tmp/gtk/fixtures" \
-cargo nextest run --ignored gtk_tests
+cargo nextest run --run-ignored ignored-only -E 'test(gtk_tests)'
 ```
+
+## Checkpoint Without Replacing The Launcher
+
+When deployment is not authorized, build with a separate target directory:
+
+```bash
+CARGO_TARGET_DIR="$PWD/../.tmp/phase0/target" cargo build --offline --locked
+```
+
+Run checks with `GSETTINGS_BACKEND=memory`, an isolated compiled schema, and isolated `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME`. The Phase 0 verification used these variables for unit tests as well as GTK. Do not run `cargo run` against the live library or assume an idle-data snapshot while another Sharpr process is running.
 
 ## Protecting User Data
 

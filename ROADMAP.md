@@ -66,19 +66,19 @@ Phase 0 → Phase 1 → Phase 2 ─┬→ Phase 3 → (go) Phase 4 ─┐
 
 ## Phase 0: Checkpoint And Trustworthy Baseline
 
-**Status:** next.
+**Status:** Repository checkpoint (steps 1–3) committed and verified. Operational acceptance (steps 4–7) remains deferred: Sharpr is running, and the current request explicitly excludes deployment, merge, push and cleanup. See `CURRENT_TASKS.md`.
 
 **Outcome:** All of the October 12 work is committed in reviewable units, the build is green, the user runs a known build, and user data is backed up.
 
 **Scope:**
 
 1. ~~Fold the documentation realignment into `viewer-reset`.~~ Done on October 12.
-2. **Make the tree build and pass `./check.sh` with default features.** `main.rs` declares `semantic_trial`, but `src/semantic_trial.rs` does not exist yet. Because `check.sh` uses `--all-features`, either finish the module or move the trial wiring out of the ordinary commits.
-3. **Commit the uncommitted work as separate units:**
-   - (a) search, filters, aspect/resolution, manual-tag persistence fixes, and the GTK test
-   - (b) Crop and WebP copies with the export safety fixes
-   - (c) benchmark tools and `docs/research/image-search.md`; private artifacts stay in `.tmp/`
-   - (d) the experimental visual-search trial, last and separately, only once it compiles with its feature
+2. ~~Make the tree build and pass `./check.sh` with default features.~~ Verified. Unfinished trial wiring is isolated on `visual-search-trial-wip`; no empty module was invented to mask the missing implementation.
+3. **Checkpoint work as separate units (ordinary work committed; experiment preserved separately):**
+   - (a) search, filters, aspect/resolution, manual-tag persistence fixes, and the GTK test: `4af3857`
+   - (b) Crop and WebP copies with the export safety fixes: service `4e412e3`, dialogs `6bb3ac5`
+   - (c) benchmark tools and `docs/research/image-search.md`: `4cbefd2`; private artifacts stay in `.tmp/`
+   - (d) unfinished trial wiring preserved on `visual-search-trial-wip` (`48a0539`); full starting work also preserved on `preserve/october-12-wip` (`68858b3`). Neither archive claims all-features verification.
 
    Use the existing self-audit; do not start a new audit round. Leftover findings belong to Phases 1, 2, and 5.
 4. **Back up the real data** using the commands in `docs/reference/development.md`.
@@ -140,7 +140,7 @@ Phase 0 → Phase 1 → Phase 2 ─┬→ Phase 3 → (go) Phase 4 ─┐
 
 **Outcome:** Tagging, searching, and filtering stay quick in a library of 5,000–50,000 images, without stalling the filmstrip.
 
-**Already implemented:** these are uncommitted until Phase 0.
+**Existing implementation:** committed in the Phase 0 checkpoint; remaining scope below is still planned.
 - scoped search with a whole-library toggle
 - 150 ms debounce and a single coalescing worker
 - aspect sort in both directions, plus closest to 16:9
@@ -262,7 +262,7 @@ Phase 0 → Phase 1 → Phase 2 ─┬→ Phase 3 → (go) Phase 4 ─┐
 
 **Outcome:** The user can turn any image into a correctly oriented 16:9 wallpaper copy in one short flow.
 
-**Already implemented:** these are uncommitted until Phase 0.
+**Existing implementation:** committed in the Phase 0 checkpoint; remaining scope below is still planned.
 - Crop Copy: a movable 16:9 selection, or free aspect
 - WebP Copy: quality 90 by default, original size or resized
 - intermediate PNG copies
@@ -270,7 +270,7 @@ Phase 0 → Phase 1 → Phase 2 ─┬→ Phase 3 → (go) Phase 4 ─┐
 
 **Scope:**
 
-1. If the hidden partial file collides with an existing file, move on to the next free output name instead of failing.
+1. ~~Retry a free output name when a hidden partial file collides.~~ Existing implementation checkpointed in `4e412e3`; regression passes.
 2. When glycin cannot preview a format, fall back to a crop preview decoded and oriented on a worker. Add a test with an EXIF-rotated source.
 3. Remember the last destination, offer a Wallpapers folder, and let the user open the result beside its source in Compare.
 

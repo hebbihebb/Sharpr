@@ -2,7 +2,7 @@
 
 Sharpr is a GTK4 + Libadwaita image organizer written in Rust. It builds its UI in code (no Blueprint), keeps settings in GSettings, persists data in two SQLite databases, runs heavy work on background threads, and needs no network access.
 
-Paths marked † were added by the October 2026 wallpaper work. Until `CURRENT_TASKS.md` reports that work committed, they may exist only in the main checkout's working tree.
+The October 2026 browsing and copy modules are committed in the Phase 0 checkpoint. Unfinished experimental wiring is preserved separately; it is not compiled into the default application.
 
 ## Module Map (`sharpr/src/`)
 
@@ -10,14 +10,14 @@ Paths marked † were added by the October 2026 wallpaper work. Until `CURRENT_T
 | --- | --- |
 | `app.rs`, `main.rs` | Application startup, resources, and the gexiv2 shim |
 | `ui/window.rs` | Main shell and cross-pane wiring. `setup()` is one function of more than 2,000 lines. Do not add features to it. |
-| `ui/window/` | Controllers extracted from `window.rs`: `compare_controller`, `search_controller`†, `tag_controller`†, and `gtk_tests`† |
+| `ui/window/` | Controllers extracted from `window.rs`: `compare_controller`, `search_controller`, `tag_controller`, and `gtk_tests` |
 | `ui/filmstrip.rs` | Filmstrip list, factory and bind callbacks, and the thumbnail scheduler (visible range, buffer, trickle) |
 | `ui/viewer.rs` | Full-image viewer (glycin decoding), tag popover, and info chips |
 | `ui/sidebar.rs`, `ui/tag_browser.rs` | Folder tree and buckets; Tags page |
-| `ui/resize_dialog.rs`, `ui/crop_dialog.rs`† | Resize Copy, and Crop/WebP Copy dialogs |
+| `ui/resize_dialog.rs`, `ui/crop_dialog.rs` | Resize Copy, and Crop/WebP Copy dialogs |
 | `ui/state.rs` | `AppState` (`Rc<RefCell<_>>`, GTK thread only) and `ViewScope` |
 | `model/library.rs` | `LibraryManager`: list store, path index, selection, and metadata caches |
-| `model/browse.rs`† | Pure aspect, resolution, and orientation filter and sort logic |
+| `model/browse.rs` | Pure aspect, resolution, and orientation filter and sort logic |
 | `thumbnails/` | Visible and preload worker pools, and the memory and disk thumbnail caches |
 | `image_pipeline/` | Viewer preview and metadata workers |
 | `library_index/` | SQLite index of folders, images, and buckets (`schema.rs` sets up new databases) |
@@ -27,7 +27,7 @@ Paths marked † were added by the October 2026 wallpaper work. Until `CURRENT_T
 | `ops/`, `ui/ops_indicator.rs` | Events for transient background operations. There is no persistent queue. |
 | `config/settings.rs` | GSettings wrapper. Keys for removed features stay declared but are not used. |
 | `bench.rs` | Structured JSONL event log (see `development.md`) |
-| `semantic_trial` | Experimental module, compiled only with `--features visual-search-trial` |
+| Planned `semantic_trial` | Missing module; unfinished feature wiring is preserved on `visual-search-trial-wip`, not on the default development line |
 
 ## Threading
 

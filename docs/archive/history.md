@@ -35,3 +35,10 @@ A compact record of how Sharpr got here. It is historical context, not instructi
 - Stale-prone background flows need generation counters.
 - Use platform widgets and libraries before custom code.
 - Keep agent docs short enough to be read. Commit working code before writing more plans about it.
+
+
+## October 2026: repository checkpoint
+
+The documentation realignment was followed by separate verified commits for dependency fixes, displayed dimensions and safe copy services, scoped browsing/manual bucket persistence, Crop/WebP dialogs, and offline benchmark tools. Full starting work and trial-only wiring were preserved on local archive branches. All normal checkpoints build; default checks and isolated GTK workflows pass. No model runtime or trial placeholder was added to the normal branch.
+
+Builds used an isolated target, leaving the user's existing launcher binary unchanged. Live Sharpr activity prevented claiming an idle backup or settings/WAL equivalence. Deployment, real-library release measurements, acceptance and `main` fast-forward remain Phase 0 steps requiring separate authorization. No branch/worktree was deleted and nothing was pushed.

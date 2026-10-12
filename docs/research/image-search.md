@@ -20,3 +20,10 @@ Use a representative 1,000-image sample and 30 predefined queries/expected examp
 ## Release gate
 
 At least 80% useful top-20 results, warm queries below one second on this laptop, and no more than 10% navigation latency increase while indexing. CPU operation is required; GPU optional. Whole-library indexing overnight is acceptable; initial indexing speed is not a gate. Folder/partial indexing controls and scheduling are later refinements. Choose Gemma if it passes, otherwise SigLIP only if it passes. If neither passes, do not ship visual search. Runtime packaging must be verified before release. Model/setup downloads during development are separate from the application, which has no automatic model downloader.
+
+
+## Checkpoint status
+
+These tools are preserved development experiments, not application runtime dependencies. Existing reports and vectors remain private under `.tmp/`. They do not establish a release gate: reports measure known-example hits, lack complete provenance, and use one timed query per warmup. Relevance judgments, reproducibility, indexing impact and packaging remain Phase 3 work. The authoritative rubric and candidate decision are in `ROADMAP.md`; do not substitute the hit-rate metric for relevance.
+
+Unfinished in-app trial wiring is preserved on `visual-search-trial-wip`; the ordinary checkpoint has neither that Cargo feature nor an inference client. Tool syntax and help paths were checked without model loading or rerunning the corpus.

@@ -1,6 +1,30 @@
 //! Run explicitly with isolated data/settings and a graphical session.
 use super::*;
 
+fn isolated_fixture(case: &str) -> PathBuf {
+    assert_eq!(std::env::var("GSETTINGS_BACKEND").unwrap(), "memory");
+    let fixtures = PathBuf::from(std::env::var("SHARPR_GTK_FIXTURE").unwrap());
+    let parent = fixtures.parent().expect("isolated fixture parent");
+    assert!(parent.is_absolute());
+    assert!(
+        parent.starts_with(std::env::temp_dir())
+            || parent.components().any(|c| c.as_os_str() == ".tmp")
+    );
+    let unique = format!("{case}-{}", std::process::id());
+    for variable in ["XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"] {
+        let base = PathBuf::from(std::env::var(variable).expect("explicit isolated XDG directory"));
+        assert!(
+            base.starts_with(parent),
+            "XDG directories must be beside the fixtures"
+        );
+        let directory = base.join(&unique);
+        std::fs::create_dir_all(&directory).unwrap();
+        // Nextest runs each GTK test in its own process, before GTK/GIO starts.
+        std::env::set_var(variable, directory);
+    }
+    fixtures.join(unique)
+}
+
 fn pump_until(mut condition: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while !condition() {
@@ -33,15 +57,7 @@ fn screenshot(window: &SharprWindow, path: &Path) {
 #[test]
 #[ignore = "requires isolated GSettings/data directories and a graphical session"]
 fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
-    assert_eq!(std::env::var("GSETTINGS_BACKEND").unwrap(), "memory");
-    let root = PathBuf::from(
-        std::env::var("SHARPR_GTK_FIXTURE").expect("explicit isolated fixture directory"),
-    );
-    let data = PathBuf::from(std::env::var("XDG_DATA_HOME").unwrap());
-    assert!(
-        data.starts_with(root.parent().unwrap()),
-        "test data must be isolated beside fixtures"
-    );
+    let root = isolated_fixture("search-copy");
     std::fs::create_dir_all(&root).unwrap();
     for (name, (w, h)) in [("mountain.png", (160, 90)), ("sea.png", (160, 120))] {
         let mut image = image::RgbImage::new(w, h);
@@ -249,5 +265,65 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
             .and_then(|i| st.library.entry_at(i))
             .is_some_and(|e| e.path() == output)
     });
+    window.close();
+}
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn rapid_navigation_and_folder_switch_preserve_latest_view() {
+    let fixtures = isolated_fixture("navigation");
+    let root = fixtures.join("navigation");
+    let first = root.join("first");
+    let second = root.join("second");
+    for (folder, count) in [(&first, 400), (&second, 40)] {
+        std::fs::create_dir_all(folder).unwrap();
+        for i in 0..count {
+            image::RgbImage::from_pixel(32, 18, image::Rgb([i as u8, 100, 150]))
+                .save(folder.join(format!("image-{i:04}.bmp")))
+                .unwrap();
+        }
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Navigation test", root, FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(first.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.NavigationTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 400 && window.is_mapped());
+    let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
+    for i in (0..400).step_by(17).rev() {
+        filmstrip.navigate_to(i);
+    }
+    let open = window.imp().open_folder_cb.borrow().clone().unwrap();
+    open(second.clone());
+    open(first.clone());
+    open(second.clone());
+    pump_until(|| {
+        let st = window.imp().state.borrow();
+        st.library.current_folder == Some(second.clone()) && st.library.image_count() == 40
+    });
+    for i in (0..40).rev() {
+        filmstrip.navigate_to(i);
+    }
+    let settled = std::time::Instant::now() + std::time::Duration::from_millis(400);
+    pump_until(|| std::time::Instant::now() > settled);
+    let st = window.imp().state.borrow();
+    assert_eq!(st.scope, ViewScope::Folder(second.clone()));
+    assert_eq!(st.library.image_count(), 40);
+    for i in 0..40 {
+        assert!(st.library.entry_at(i).unwrap().path().starts_with(&second));
+    }
+    assert!(st.library.selected_index.is_some());
+    drop(st);
     window.close();
 }
