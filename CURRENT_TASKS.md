@@ -53,6 +53,16 @@ On October 12 at 22:16, with Sharpr closed, the data folder was copied to `~/.lo
 - Moved files lost only automatic tags, and no bucket lost a member, so nothing of value was lost this time.
 - It confirms Phase 1 item 1 is urgent before buckets are relied on further.
 
+## Deployment (Phase 0 Step 5, Done)
+
+On October 12 at 22:22, with the user's approval, the launcher was switched to an installed release build.
+
+- **Deployed commit:** `5832010`, at `~/.local/opt/sharpr/5832010/`, with `current` pointing to it.
+- **The launcher** runs it with its own compiled schema. Development builds no longer change what the user launches.
+- **Smoke test:** the installed build ran `--help`, then started against isolated data and kept running until it was stopped. The real database files were confirmed unchanged.
+- **Cosmetic only:** a GTK warning about a `SharprFolderRow` popover not being unparented at teardown.
+- **Old debug binary:** `sharpr/target/debug/sharpr` remains, unused.
+
 ## Next Authorized Work
 
-Phase 0 steps 5–7: separately authorize release installation, collect real-library release bench logs, obtain user acceptance, then separately authorize the fast-forward/cleanup. Do not infer that authorization from this checkpoint request. `ROADMAP.md` remains authoritative.
+Phase 0 steps 6–7: collect real-library release bench logs, obtain user acceptance, then separately authorize the fast-forward/cleanup. Do not infer that authorization from this checkpoint request. `ROADMAP.md` remains authoritative.
