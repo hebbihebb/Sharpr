@@ -57,6 +57,8 @@ pub struct IndexedImage {
 pub struct LibraryIndex {
     pool: Pool<SqliteConnectionManager>,
     dimensions: std::sync::Mutex<crate::model::browse::DimensionCache>,
+    /// Duplicate groups with a fingerprint of the hash list they came from.
+    duplicate_groups: std::sync::Mutex<Option<(u64, Vec<Vec<PathBuf>>)>>,
 }
 
 fn sort_indexed_aspects(
@@ -126,6 +128,7 @@ impl LibraryIndex {
             Self {
                 pool,
                 dimensions: Default::default(),
+                duplicate_groups: Default::default(),
             },
             interrupted_count,
         ))
@@ -610,10 +613,27 @@ impl LibraryIndex {
         Ok(rows.filter_map(Result::ok).collect())
     }
 
+    /// Duplicate groups over all stored hashes. Grouping compares every pair,
+    /// so the result is reused until the hash list itself changes; the viewer
+    /// asks on every image change.
     pub fn duplicate_groups(&self) -> rusqlite::Result<Vec<Vec<PathBuf>>> {
-        Ok(crate::duplicates::phash::group_duplicates(
-            &self.images_with_phash()?,
-        ))
+        use std::hash::{Hash, Hasher};
+        let hashes = self.images_with_phash()?;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        hashes.hash(&mut hasher);
+        let fingerprint = hasher.finish();
+        if let Ok(cache) = self.duplicate_groups.lock() {
+            if let Some((cached, groups)) = cache.as_ref() {
+                if *cached == fingerprint {
+                    return Ok(groups.clone());
+                }
+            }
+        }
+        let groups = crate::duplicates::phash::group_duplicates(&hashes);
+        if let Ok(mut cache) = self.duplicate_groups.lock() {
+            *cache = Some((fingerprint, groups.clone()));
+        }
+        Ok(groups)
     }
 
     pub fn all_indexed_paths(&self) -> rusqlite::Result<Vec<PathBuf>> {
@@ -1315,6 +1335,7 @@ impl LibraryIndex {
         Ok(Self {
             pool,
             dimensions: Default::default(),
+            duplicate_groups: Default::default(),
         })
     }
 
@@ -1331,6 +1352,7 @@ impl LibraryIndex {
         Ok(Self {
             pool,
             dimensions: Default::default(),
+            duplicate_groups: Default::default(),
         })
     }
 }
@@ -1562,6 +1584,35 @@ mod tests {
 
         assert!(!idx.is_folder_ignored(Path::new("/library")).unwrap());
         assert!(!idx.is_folder_ignored(Path::new("/library/child")).unwrap());
+    }
+
+    #[test]
+    fn duplicate_groups_follow_hash_changes() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        for name in ["a.jpg", "b.jpg", "c.jpg"] {
+            idx.upsert_image_basic(&make_info("/photos", name, 100, None))
+                .unwrap();
+        }
+        idx.update_image_phashes(&[
+            (PathBuf::from("/photos/a.jpg"), 0xF0F0),
+            (PathBuf::from("/photos/b.jpg"), 0xF0F0),
+            (PathBuf::from("/photos/c.jpg"), 0xFFFF_0000_FFFF_0000),
+        ])
+        .unwrap();
+        let first = idx.duplicate_groups().unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].len(), 2);
+        assert_eq!(
+            idx.duplicate_groups().unwrap(),
+            first,
+            "cached result reused"
+        );
+
+        idx.update_image_phash(Path::new("/photos/c.jpg"), 0xF0F0)
+            .unwrap();
+        let after = idx.duplicate_groups().unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].len(), 3, "a changed hash regroups");
     }
 
     #[test]
