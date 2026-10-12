@@ -176,26 +176,6 @@ fn search_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn collection_paths_from_services(
-    index: &LibraryIndex,
-    tags: &crate::tags::TagDatabase,
-    collection_id: i64,
-    active_root: Option<&Path>,
-    disabled_folders: &[PathBuf],
-) -> Vec<PathBuf> {
-    let effective_tags = index
-        .collection_effective_tags(collection_id)
-        .unwrap_or_default();
-    if effective_tags.is_empty() {
-        return Vec::new();
-    }
-    filter_paths_for_library(
-        tags.paths_for_all_tags(&effective_tags),
-        active_root,
-        disabled_folders,
-    )
-}
-
 fn collections_for_sidebar(state: &AppState) -> Vec<Collection> {
     state.collections.clone()
 }
@@ -491,6 +471,7 @@ mod imp {
         pub inline_search_revealer: RefCell<Option<gtk4::Revealer>>,
         pub search_whole_library: RefCell<Option<gtk4::CheckButton>>,
         pub search_chips: RefCell<Option<gtk4::FlowBox>>,
+        pub bucket_open_generation: Cell<u64>,
         pub inline_search_generation: Cell<u64>,
         pub browse_generation: Arc<std::sync::atomic::AtomicU64>,
         pub(super) browse_worker: search_controller::BrowseWorker,
@@ -531,6 +512,7 @@ mod imp {
                 inline_search_revealer: RefCell::new(None),
                 search_whole_library: RefCell::new(None),
                 search_chips: RefCell::new(None),
+                bucket_open_generation: Cell::new(0),
                 inline_search_generation: Cell::new(0),
                 browse_generation,
                 browse_worker,
@@ -1989,53 +1971,95 @@ impl SharprWindow {
             let toast_overlay_c = toast_overlay.clone();
             let window_weak = self.downgrade();
             sidebar.connect_collection_selected(move |id| {
-                if let Some(win) = window_weak.upgrade() {
-                    let _ = win.bump_thumbnail_generation("collection.load");
-                    win.complete_thumbnail_ops();
-                    win.clear_inline_search(true);
-                }
+                let Some(win) = window_weak.upgrade() else {
+                    return;
+                };
+                let _ = win.bump_thumbnail_generation("collection.load");
+                win.complete_thumbnail_ops();
+                win.clear_inline_search(true);
                 content_stack.set_visible_child_name("viewer");
-                let paths = {
+                let generation = win.imp().bucket_open_generation.get().wrapping_add(1);
+                win.imp().bucket_open_generation.set(generation);
+                state_c.borrow_mut().scope = ViewScope::Collection(id);
+                apply_scope_to_sidebar(&ViewScope::Collection(id), &sidebar_c);
+                let (index, tags, active_root, disabled) = {
                     let state = state_c.borrow();
-                    let active_root = state.settings.active_library().map(|lib| lib.root.clone());
-                    match (state.library_index.as_ref(), state.tags.as_ref()) {
-                        (Some(idx), Some(tags)) => collection_paths_from_services(
-                            idx,
-                            tags,
-                            id,
-                            active_root.as_deref(),
-                            &state.disabled_folders,
-                        ),
-                        _ => Vec::new(),
-                    }
+                    (
+                        state.library_index.clone(),
+                        state.tags.clone(),
+                        state.settings.active_library().map(|lib| lib.root.clone()),
+                        state.disabled_folders.clone(),
+                    )
                 };
                 let started = std::time::Instant::now();
-                {
-                    let mut s = state_c.borrow_mut();
-                    s.selected_paths.clear();
-                }
-                filmstrip_c.reset_quality_filter();
-                state_c.borrow_mut().scope = ViewScope::Collection(id);
-                load_virtual_async(&state_c, &paths);
-                crate::bench_event!(
-                    "collection.load",
-                    serde_json::json!({
-                        "collection_id": id,
-                        "path_count": paths.len(),
-                        "duration_ms": crate::bench::duration_ms(started),
-                    }),
-                );
-                let scope = state_c.borrow().scope.clone();
-                apply_scope_to_sidebar(&scope, &sidebar_c);
-                filmstrip_c.refresh_virtual();
-                let has_first = state_c.borrow().library.entry_at(0).is_some();
-                if has_first {
-                    state_c.borrow_mut().library.selected_index = Some(0);
-                    filmstrip_c.navigate_to(0);
-                } else {
-                    viewer_c.clear();
-                    toast_overlay_c.add_toast(libadwaita::Toast::new("No images in collection"));
-                }
+                // Membership needs a database query and a file check per member,
+                // so it runs on a worker instead of the GTK thread.
+                let (tx, rx) = async_channel::bounded(1);
+                std::thread::spawn(move || {
+                    let result = (|| -> Result<Vec<PathBuf>, String> {
+                        let (Some(index), Some(tags)) = (index, tags) else {
+                            return Err("the bucket database is unavailable".into());
+                        };
+                        let effective = index
+                            .collection_effective_tags(id)
+                            .map_err(|e| e.to_string())?;
+                        if effective.is_empty() {
+                            return Ok(Vec::new());
+                        }
+                        Ok(filter_paths_for_library(
+                            tags.paths_for_all_tags_checked(&effective)?,
+                            active_root.as_deref(),
+                            &disabled,
+                        ))
+                    })();
+                    let _ = tx.send_blocking(result);
+                });
+                let filmstrip_c = filmstrip_c.clone();
+                let viewer_c = viewer_c.clone();
+                let state_c = state_c.clone();
+                let toast_overlay_c = toast_overlay_c.clone();
+                let window_weak = window_weak.clone();
+                glib::MainContext::default().spawn_local(async move {
+                    let Ok(result) = rx.recv().await else { return };
+                    let Some(win) = window_weak.upgrade() else {
+                        return;
+                    };
+                    if win.imp().bucket_open_generation.get() != generation
+                        || state_c.borrow().scope != ViewScope::Collection(id)
+                    {
+                        return;
+                    }
+                    let paths = match result {
+                        Ok(paths) => paths,
+                        Err(error) => {
+                            toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                                "Could not open bucket: {error}"
+                            )));
+                            Vec::new()
+                        }
+                    };
+                    state_c.borrow_mut().selected_paths.clear();
+                    filmstrip_c.reset_quality_filter();
+                    load_virtual_async(&state_c, &paths);
+                    crate::bench_event!(
+                        "collection.load",
+                        serde_json::json!({
+                            "collection_id": id,
+                            "path_count": paths.len(),
+                            "duration_ms": crate::bench::duration_ms(started),
+                        }),
+                    );
+                    filmstrip_c.refresh_virtual();
+                    let has_first = state_c.borrow().library.entry_at(0).is_some();
+                    if has_first {
+                        state_c.borrow_mut().library.selected_index = Some(0);
+                        filmstrip_c.navigate_to(0);
+                    } else {
+                        viewer_c.clear();
+                        toast_overlay_c
+                            .add_toast(libadwaita::Toast::new("No images in collection"));
+                    }
+                });
             });
         }
 

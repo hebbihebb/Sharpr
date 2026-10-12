@@ -226,6 +226,23 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
             .unwrap();
         bucket.id
     };
+    // Open the bucket the way a sidebar click does: membership loads on a
+    // worker. Narrow the folder view first so the bucket's two images prove it.
+    window.show_inline_search();
+    entry.set_text("sea");
+    pump_until(|| window.imp().state.borrow().library.image_count() == 1);
+    window
+        .imp()
+        .sidebar
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .emit_collection_selected(bucket);
+    pump_until(|| {
+        let st = window.imp().state.borrow();
+        st.scope == ViewScope::Collection(bucket) && st.library.image_count() == 2
+    });
+    window.show_inline_search();
     window.imp().state.borrow_mut().scope = ViewScope::Collection(bucket);
     entry.set_text("mountain");
     pump_until(|| window.imp().state.borrow().library.image_count() == 1);

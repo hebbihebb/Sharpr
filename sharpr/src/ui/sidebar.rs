@@ -950,7 +950,7 @@ impl SidebarPane {
         row.add_controller(gesture);
     }
 
-    fn emit_collection_selected(&self, id: i64) {
+    pub(crate) fn emit_collection_selected(&self, id: i64) {
         if let Some(cb) = self.imp().collection_selected_cb.borrow().as_ref() {
             cb(id);
         }
