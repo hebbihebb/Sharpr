@@ -6,11 +6,6 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
-const IDLE_ICON_CANDIDATES: &[&str] = &[
-    "circle-outline-thick-symbolic",
-    "circle-outline-symbolic",
-    "emblem-system-symbolic",
-];
 const BUSY_ICON_CANDIDATES: &[&str] = &[
     "spinner-symbolic",
     "process-working-symbolic",
@@ -28,8 +23,7 @@ mod imp {
     #[derive(Default)]
     pub struct OpsIndicator {
         pub(super) icon: RefCell<Option<gtk4::Image>>,
-        pub(super) idle_icon_name: RefCell<Option<String>>,
-        pub(super) busy_icon_name: RefCell<Option<String>>,
+        pub(super) revealer: RefCell<Option<gtk4::Revealer>>,
         pub(super) active_ops: RefCell<HashSet<u64>>,
     }
 
@@ -50,21 +44,25 @@ mod imp {
             let widget = self.obj();
             super::install_css();
 
-            let idle_icon = super::resolve_icon_name(super::IDLE_ICON_CANDIDATES);
             let busy_icon = super::resolve_icon_name(super::BUSY_ICON_CANDIDATES);
-
-            let icon = gtk4::Image::from_icon_name(&idle_icon);
+            let icon = gtk4::Image::from_icon_name(&busy_icon);
             icon.set_pixel_size(16);
-            icon.set_tooltip_text(Some("Background activity"));
-            icon.set_parent(&*widget);
+            icon.add_css_class("ops-indicator-busy");
+            icon.set_tooltip_text(Some("Working in the background"));
+
+            // Hidden while idle; slides in only while work runs.
+            let revealer = gtk4::Revealer::new();
+            revealer.set_transition_type(gtk4::RevealerTransitionType::SlideLeft);
+            revealer.set_transition_duration(200);
+            revealer.set_child(Some(&icon));
+            revealer.set_parent(&*widget);
             *self.icon.borrow_mut() = Some(icon);
-            *self.idle_icon_name.borrow_mut() = Some(idle_icon);
-            *self.busy_icon_name.borrow_mut() = Some(busy_icon);
+            *self.revealer.borrow_mut() = Some(revealer);
         }
 
         fn dispose(&self) {
-            if let Some(icon) = self.icon.borrow().as_ref() {
-                icon.unparent();
+            if let Some(revealer) = self.revealer.borrow().as_ref() {
+                revealer.unparent();
             }
         }
     }
@@ -105,25 +103,27 @@ impl OpsIndicator {
         self.refresh_icon();
     }
 
+    /// Shows the indicator only for work that lasts longer than a moment, so
+    /// quick operations do not make the header flicker.
     fn refresh_icon(&self) {
-        let imp = self.imp();
-        let busy = !imp.active_ops.borrow().is_empty();
-        let idle_icon = imp.idle_icon_name.borrow();
-        let busy_icon = imp.busy_icon_name.borrow();
-
-        if let Some(icon) = imp.icon.borrow().as_ref() {
-            if busy {
-                if let Some(name) = busy_icon.as_deref() {
-                    icon.set_icon_name(Some(name));
-                }
-                icon.add_css_class("ops-indicator-busy");
-            } else {
-                if let Some(name) = idle_icon.as_deref() {
-                    icon.set_icon_name(Some(name));
-                }
-                icon.remove_css_class("ops-indicator-busy");
+        let busy = !self.imp().active_ops.borrow().is_empty();
+        if !busy {
+            if let Some(revealer) = self.imp().revealer.borrow().as_ref() {
+                revealer.set_reveal_child(false);
             }
+            return;
         }
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+            let Some(indicator) = weak.upgrade() else {
+                return;
+            };
+            let still_busy = !indicator.imp().active_ops.borrow().is_empty();
+            let revealer = indicator.imp().revealer.borrow().clone();
+            if let Some(revealer) = revealer {
+                revealer.set_reveal_child(still_busy);
+            }
+        });
     }
 }
 

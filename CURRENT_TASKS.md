@@ -106,6 +106,13 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 - Space, `[` and `]` no longer open search: Space stays free for viewing and Compare (D7), and the brackets keep cycling pages.
 - **Manual check at deployment:** press Space and the bracket keys while browsing.
 
+**Item 8, user findings: two of four done (committed, not yet deployed).**
+- **Filter popover:** the aspect drop-down nested a second popover, which broke click-away closing, so it is now radio buttons. Manual check at deployment: click outside the Filter popover.
+- **Indicator:** the background-activity indicator is hidden when idle and slides in for work lasting over 0.4 s.
+- **Still open:** the 2.3 s folder-scan wait and thumbnail memory.
+
+**Found:** at 1024×600 the viewer header overflows, and the window close button is partly off-screen. This predates the chip work; it is tracked under item 4.
+
 **Guardrails:**
 - Test in isolated directories only (`docs/reference/development.md`).
 - No tagging UX changes; tags are frozen (D1).

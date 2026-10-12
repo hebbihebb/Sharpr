@@ -139,7 +139,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - Typing anywhere opens search with that text; Ctrl+F also opens it.
    - The scope switch (this folder or bucket, or the whole library) is visible.
    - Space stays free.
-4. **Quiet interface (D18).**
+4. **Quiet interface (D18).** Also observed October 12 in a GTK screenshot at 1024×600: the viewer header is too crowded, and the window's close button is pushed partly off-screen. This predates the chip work.
    - Always visible: resolution and format (with a below-4K hint) and the image's real bucket membership, meaning every effective tag within the active library.
    - Everything else (filename, position, size, dates, EXIF) moves to an Info panel opened from a key or the context menu.
 5. **Fast curation from results (D5, D10):** add the selection to a bucket by shortcut or by dragging onto a sidebar bucket, and create a new bucket from the selection.
@@ -149,8 +149,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - It removes only known automatic tag names that no bucket references.
    - Delete the dead `tags/indexer.rs`.
 8. **Fix the Phase 0 test findings.**
-   - The aspect filter popover closes when the user clicks away, not only on Escape.
-   - Hide the background-activity indicator (the gear icon at top right) when idle, and reveal it with an animation (`GtkRevealer`) while work runs (principle 6).
+   - ~~The aspect filter popover closes when the user clicks away.~~ Done October 12. The nested drop-down was replaced with radio buttons.
+   - ~~Hide the background-activity indicator when idle.~~ Done October 12. It slides in only for work lasting over 0.4 s.
    - A folder-open scan must never wait behind other jobs in the shared rayon pool. One open waited 2.3 s before its 5 ms scan started.
    - Bound thumbnail memory in the active view. Memory peaked at 2.3 GB during a 5-minute session.
 9. **Decide with the user where image actions live.** Today the viewer's "…" menu and the filmstrip right-click menu overlap.

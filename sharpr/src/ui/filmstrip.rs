@@ -232,7 +232,9 @@ mod imp {
         pub menu_ctx: RefCell<Option<MenuContext>>,
         pub sort_order_changed_cb: RefCell<Option<SortOrderChangedCallback>>,
         pub dimension_filters_changed_cb: RefCell<Option<DimensionFiltersChangedCallback>>,
-        pub aspect_filter: gtk4::DropDown,
+        /// Radio buttons, not a drop-down: a drop-down's own popover inside the
+        /// Filter popover broke closing it with a click outside.
+        pub aspect_filter: Vec<(AspectFilter, gtk4::CheckButton)>,
         pub minimum_width: gtk4::SpinButton,
         pub minimum_height: gtk4::SpinButton,
         pub suppress_dimension_signals: Cell<bool>,
@@ -305,13 +307,7 @@ mod imp {
                 menu_ctx: RefCell::new(None),
                 sort_order_changed_cb: RefCell::new(None),
                 dimension_filters_changed_cb: RefCell::new(None),
-                aspect_filter: gtk4::DropDown::from_strings(&[
-                    "All aspects",
-                    "Landscape",
-                    "Portrait",
-                    "Square",
-                    "16:9 ±2%",
-                ]),
+                aspect_filter: super::aspect_filter_choices(),
                 minimum_width: gtk4::SpinButton::with_range(0.0, 65535.0, 1.0),
                 minimum_height: gtk4::SpinButton::with_range(0.0, 65535.0, 1.0),
                 suppress_dimension_signals: Cell::new(false),
@@ -392,7 +388,11 @@ impl FilmstripPane {
         grid.set_margin_start(12);
         grid.set_margin_end(12);
         grid.attach(&gtk4::Label::new(Some("Aspect")), 0, 0, 1, 1);
-        grid.attach(&imp.aspect_filter, 1, 0, 1, 1);
+        let aspect_choices = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        for (_, button) in &imp.aspect_filter {
+            aspect_choices.append(button);
+        }
+        grid.attach(&aspect_choices, 1, 0, 1, 1);
         grid.attach(&gtk4::Label::new(Some("Minimum width")), 0, 1, 1, 1);
         grid.attach(&imp.minimum_width, 1, 1, 1, 1);
         grid.attach(&gtk4::Label::new(Some("Minimum height")), 0, 2, 1, 1);
@@ -408,11 +408,17 @@ impl FilmstripPane {
         filter_btn.set_popover(Some(&popover));
         header.pack_end(&filter_btn);
         let weak = self.downgrade();
-        imp.aspect_filter.connect_selected_notify(move |_| {
-            if let Some(f) = weak.upgrade() {
-                f.emit_dimension_filters();
-            }
-        });
+        for (_, button) in &imp.aspect_filter {
+            let weak = weak.clone();
+            button.connect_toggled(move |button| {
+                if !button.is_active() {
+                    return;
+                }
+                if let Some(f) = weak.upgrade() {
+                    f.emit_dimension_filters();
+                }
+            });
+        }
         for spin in [&imp.minimum_width, &imp.minimum_height] {
             let weak = self.downgrade();
             spin.connect_value_changed(move |_| {
@@ -1337,13 +1343,12 @@ impl FilmstripPane {
         if imp.suppress_dimension_signals.get() {
             return;
         }
-        let aspect = match imp.aspect_filter.selected() {
-            1 => AspectFilter::Landscape,
-            2 => AspectFilter::Portrait,
-            3 => AspectFilter::Square,
-            4 => AspectFilter::WideScreen,
-            _ => AspectFilter::All,
-        };
+        let aspect = imp
+            .aspect_filter
+            .iter()
+            .find(|(_, button)| button.is_active())
+            .map(|(aspect, _)| *aspect)
+            .unwrap_or_default();
         if let Some(cb) = imp.dimension_filters_changed_cb.borrow().as_ref() {
             cb(DimensionFilters {
                 aspect,
@@ -1355,7 +1360,9 @@ impl FilmstripPane {
     pub fn reset_dimension_filters(&self) {
         let imp = self.imp();
         imp.suppress_dimension_signals.set(true);
-        imp.aspect_filter.set_selected(0);
+        if let Some((_, all)) = imp.aspect_filter.first() {
+            all.set_active(true);
+        }
         imp.minimum_width.set_value(0.0);
         imp.minimum_height.set_value(0.0);
         imp.suppress_dimension_signals.set(false);
@@ -2082,4 +2089,24 @@ fn reveal_in_file_manager(path: &Path) {
             }
         }
     });
+}
+
+/// The aspect choices in the Filter popover, as one radio group.
+fn aspect_filter_choices() -> Vec<(AspectFilter, gtk4::CheckButton)> {
+    let mut choices: Vec<(AspectFilter, gtk4::CheckButton)> = Vec::new();
+    for (aspect, label) in [
+        (AspectFilter::All, "All aspects"),
+        (AspectFilter::Landscape, "Landscape"),
+        (AspectFilter::Portrait, "Portrait"),
+        (AspectFilter::Square, "Square"),
+        (AspectFilter::WideScreen, "16:9 ±2%"),
+    ] {
+        let button = gtk4::CheckButton::with_label(label);
+        match choices.first() {
+            Some((_, first)) => button.set_group(Some(first)),
+            None => button.set_active(true),
+        }
+        choices.push((aspect, button));
+    }
+    choices
 }
