@@ -1,54 +1,45 @@
 # Sharpr Roadmap
 
-Historical completed work lives in `docs/archive/`.
-
 ## Product Direction
 
-Sharpr is a fast, local-first image curation viewer for Linux. Folders are the source of truth. The primary loop is open a folder, review the filmstrip, inspect metadata, compare two selections, tag or collect keepers, and explicitly trash rejects.
+Keep the viewer-reset interface, filmstrip, viewer, manual tags, and tag-backed buckets. Discovery should narrow a large folder without requiring manual labeling. Originals remain immutable; preparation creates new copies. Diffusion and SeedVR remain external.
 
-Sharpr does not run persistent processing queues, AI upscalers, model downloads, smart tagging, or runtime network clients. Resize Copy is deterministic local resampling that always creates a new file.
+## Delivery Order
 
-## Priorities
+### Phase 0 — Trustworthy baseline
 
-1. Protect thumbnail loading, filmstrip responsiveness, and rapid folder switching.
-2. Make keyboard-only review and curation a complete acceptance path.
-3. Keep viewer, Compare, tags, collections, duplicates, and quality views reliable across stale background work.
-4. Improve boundaries in `window.rs` and `library_index/mod.rs` only as feature work reaches them.
-5. Prefer GTK, GNOME, OS, and proven crate capabilities over custom infrastructure.
+Correct the installed Sharpr launcher and icon, rebuild the launched binary, and record performance before indexing. Preserve settings and curation data.
 
-## Current Implementation Order
+### Phase 1 — Tags and ordinary search
 
-### 1. Viewer Reliability
+Search within the current folder/bucket by default, with an explicit whole-library option. Restore scope, selection, and scroll position when clearing search. Surface persistence failures; keep work off the GTK thread. Stop creating automatic format/resolution tags while preserving every existing assignment and bucket.
 
-- Add focused integration coverage for folder switching, viewer navigation, Compare close/return, and corrupt images.
-- Audit generation counters and selection restoration around virtual views.
+### Phase 2 — Aspect and resolution
 
-### 2. Curation Efficiency
+Sort by aspect in both directions and closeness to 16:9. Filter landscape, portrait, square, 16:9 ±2%, and minimum displayed width/height. Respect EXIF orientation; resolve unknown dimensions in the background. Combine filters with scope and search.
 
-- Complete keyboard-only flows for tags, collections, duplicates, quality views, Compare, Resize Copy, and trash.
-- Review bulk selection feedback and action sensitivity.
+### Phase 3 — Semantic-search feasibility gate
 
-### 3. Targeted Architecture Boundaries
+Evaluate EmbeddingGemma 2 against SigLIP 2 on a representative 1,000-image sample and 30 predefined queries with expected examples. Compare Google's reference implementation with pinned native llama.cpp. Start at normalized 768 dimensions. Reference inference uses BF16 or float32, never float16.
 
-- Extract sidebar and filmstrip coordination from `ui/window.rs` when touched.
-- Split image reconciliation and collection persistence from `library_index/mod.rs`.
-- Remove inert legacy settings and index declarations once branch-switch compatibility is no longer needed.
+Require useful top-20 results for at least 80% of queries, warm queries below one second on this laptop, and no more than 10% measured navigation slowdown during indexing. CPU operation is required; GPU is optional. Select Gemma if it passes, otherwise SigLIP only if it passes. If neither passes, do not integrate semantic search.
 
-## Out Of Scope
+### Phase 4 — Offline visual search (gated by Phase 3)
 
-- Persistent Tasks/queue/history and generated-output lineage
-- AI upscaling, ComfyUI, ONNX inference, model downloaders, and runtime networking
-- Local AI tag suggestions
-- In-place pixel editing or source-file metadata writing
-- Import workflows, saved searches, batch rename, full editor tools, or arbitrary scripts
-- External edit/version-family workflows unless the product direction is explicitly revisited
+Reuse the search entry/filmstrip with Visual search and Names & tags modes. Filter scope/metadata before ranking; display closest 200 with load-more and Find similar. Keep results stable until refreshed. Opt-in indexing is incremental, resumable, lower priority than browsing, and reports coverage/errors.
 
-## Testing Priorities
+Vectors are rebuildable SQLite data, versioned by model/preprocessing and file-change identity. Reject incompatible vectors and stale results; respect disabled folders. Use local model files and an app-managed native subprocess. Loopback HTTP is permitted only for that local child, never external inference or automatic downloads. Verify packaging; do not bundle Python/PyTorch as a fallback.
 
-- Thumbnail loading, corrupt files, huge files, and rapid scrolling
-- Rapid folder switching while background work is active
-- Folder, collection, duplicate, quality, and tag-filtered filmstrips
-- Exactly-two selection behavior and missing/corrupt images in Compare
-- Resize enlargement/reduction, orientation, formats, unique naming, and partial cleanup
-- Explicit trash behavior and non-modification of originals
-- Fresh/existing SQLite migration and compatibility behavior
+### Phase 5 — Wallpaper preparation
+
+Crop Copy defaults to a movable 16:9 selection and offers free aspect. Save intermediate PNG copies. WebP Copy defaults to original dimensions and quality 90, with optional resizing. Choose a destination including Wallpapers, use unique names, clean failed outputs, and inspect copies in the viewer/Compare. No remote orchestration or persistent processing queues.
+
+Phase 5 can ship independently while the semantic benchmark awaits relevance judgments.
+
+## Verification
+
+Test search restoration, compound filters, tag/bucket persistence, disabled folders, stale results, corrupt files, indexing recovery/model mismatch, EXIF crops, collision safety, and original-byte preservation. Measure real collections plus 10,000/50,000-entry ranking fixtures. Build before manual handoff; nextest for behavior changes, deny/machete for dependency changes.
+
+## Boundaries
+
+No generated descriptive tags, AI upscalers, server orchestration, model downloaders, persistent queues/history, source metadata writes, or full editor. Extract focused controllers when touched; avoid a broad rewrite. Old queue tables/settings remain inert. Historical work lives in docs/archive/.

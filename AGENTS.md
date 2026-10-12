@@ -59,7 +59,9 @@ GSETTINGS_SCHEMA_DIR=data cargo run
 - Import workflow, saved searches, batch rename, embedded metadata writing, full image editor features, arbitrary scripting
 - Color management as a near-term project unless specifically requested
 
-**Removed scope:** Tasks, processing pipelines, AI tagging/upscaling, model downloads, ComfyUI, and runtime networking must not be reintroduced without an explicit product-direction decision.
+**Removed scope:** Tasks, processing pipelines, AI tagging/upscaling, model downloads, ComfyUI, and external runtime networking remain removed.
+
+**Approved focused additions:** The wallpaper roadmap permits non-destructive Crop Copy/WebP Copy and optional local semantic image search after its benchmark gate passes. Local subprocess inference may use loopback HTTP only to its app-managed child. Never generate descriptive tags, download models automatically, or connect to external inference services. Preserve existing tag-backed buckets and legacy tag assignments; do not generate new format/resolution tags.
 
 ## Research Before Reinventing
 
