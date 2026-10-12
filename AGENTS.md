@@ -61,7 +61,7 @@ Images will be found through visual search and typed filters, not manual tags, a
 
 ## Git
 
-- `viewer-reset` is the development line. `main` is the older line from before the July 2026 reset. It is fast-forwarded only after user acceptance (`ROADMAP.md` Phase 0).
+- `viewer-reset` is the development line, where work is *committed*. `main` holds *accepted* work. Fast-forward `main` only after the user accepts a milestone, and only with their approval. The archive branches `preserve/october-12-wip` and `visual-search-trial-wip` are kept for reference; never delete them without approval.
 - Commit each user-testable unit, and keep experimental work in separate commits. Never end a session with large uncommitted work. Either commit it or record its state in `CURRENT_TASKS.md`.
 - A fix to an unpushed commit may be amended into that commit.
 - Never push, merge into `main`, deploy, delete branches, or touch user data without explicit user approval.

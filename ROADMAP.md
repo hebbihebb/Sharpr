@@ -55,49 +55,19 @@ Tags are **frozen**: no improvements to tagging. They are retired only after vis
 ## Order
 
 ```text
-Phase 0 → Phase 1 ─┬→ Phase 2 Finding ──────────────────┐
-                   ├→ Phase 3 Visual-search evaluation ─┤
-                   └→ Phase 4 File identity + buckets ──┴→ Phase 5 Visual search + tag retirement (go only)
-                      then Phase 6 Wallpaper output → Phase 7 Cleanup → Phase 8 Compare → Phase 9 Release
+Phase 1 ─┬→ Phase 2 Finding ──────────────────┐
+         ├→ Phase 3 Visual-search evaluation ─┤
+         └→ Phase 4 File identity + buckets ──┴→ Phase 5 Visual search + tag retirement (go only)
+            then Phase 6 Wallpaper output → Phase 7 Cleanup → Phase 8 Compare → Phase 9 Release
 ```
 
-- **Mandatory:** Phases 0, 1, 2, 4, 6, 7, 8, and 9. Phase 3 is a mandatory evaluation; Phase 5 happens only if Phase 3 says go.
+- **Phase 0 is done**; see `docs/archive/history.md`.
+- **Mandatory:** Phases 1, 2, 4, 6, 7, 8, and 9. Phase 3 is a mandatory evaluation; Phase 5 happens only if Phase 3 says go.
 - **Finding comes first** after the data-safety work (D19). Phases 2 and 3 can run in parallel, because Phase 3 is mostly human relevance judging.
 - **Phase 4 is shared groundwork.** Phase 5 (vector identity) and Phase 7 (exact duplicates) both need it.
 - **Phases 6–8 depend only on Phase 1.** The user may reorder them. Phase 6 needs nothing from Phase 4, so it can move earlier if wallpaper output becomes urgent.
 
 ---
-
-## Phase 0: Checkpoint And Trustworthy Baseline
-
-**Status:** Steps 1–6 are done, and the user accepted the build on October 12. Remaining: the user-approved fast-forward of `main` and the branch cleanup (step 7). See `CURRENT_TASKS.md`.
-
-**Outcome:** All of the October 12 work is committed in reviewable units, the build is green, the user runs a known build, and user data is backed up.
-
-**Scope:**
-
-1. ~~Fold the documentation realignment into `viewer-reset`.~~ Done on October 12.
-2. ~~Make the tree build and pass `./check.sh` with default features.~~ Verified. Unfinished trial wiring is isolated on `visual-search-trial-wip`; no empty module was invented to mask the missing implementation.
-3. **Checkpoint work as separate units (ordinary work committed; experiment preserved separately):**
-   - (a) search, filters, aspect/resolution, manual-tag persistence fixes, and the GTK test: `4af3857`
-   - (b) Crop and WebP copies with the export safety fixes: service `4e412e3`, dialogs `6bb3ac5`
-   - (c) benchmark tools and `docs/research/image-search.md`: `4cbefd2`; private artifacts stay in `.tmp/`
-   - (d) unfinished trial wiring preserved on `visual-search-trial-wip` (`48a0539`); full starting work also preserved on `preserve/october-12-wip` (`68858b3`). Neither archive claims all-features verification.
-
-   Use the existing self-audit; do not start a new audit round. Leftover findings belong to Phases 1, 2, and 6.
-4. ~~Back up the real data.~~ Done October 12 at 22:16, with Sharpr closed: `~/.local/share/sharpr.backup-20261012-221640/`, including `gsettings.ini` and `config-sharpr/`. See `CURRENT_TASKS.md`.
-5. ~~Separate "deployed" from "dev".~~ Done October 12. `tools/install-native-launcher.py` installs per-commit release builds to `~/.local/opt/sharpr/`, and the launcher runs `current` (`5832010`).
-6. ~~Record a performance baseline.~~ Done October 12 from the user's test session with release build `5832010`. The numbers are in `CURRENT_TASKS.md`.
-7. **After the user accepts the build:**
-   - Fast-forward `main` to `viewer-reset` (agreed in principle on October 12; confirm at the time).
-   - With approval, delete the six fully merged old branches and the `Sharpr-Base` worktree (`viewer-base`).
-
-**Acceptance:**
-
-- `viewer-reset` has a clean working tree, and `cargo build`, `./check.sh`, and the GTK test pass at its head.
-- The launcher runs a release build of a named commit, and a `cargo build` in the checkout does not change it.
-- The user opens their library with folders, all 6 buckets, and their manual tags intact, and accepts search, filters, and crop/WebP after manual testing.
-- `main` equals `viewer-reset`.
 
 ## Phase 1: Data-Safety Repairs
 

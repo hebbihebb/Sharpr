@@ -46,3 +46,13 @@ Builds used an isolated target, leaving the user's existing launcher binary unch
 ## October 2026: product vision
 
 The evening of October 12, a product-design interview with the user corrected the direction. Manual tagging is no longer a core feature to repair. Visual search plus typed filters should replace tags for finding images, and buckets remain the hand-curated way to keep them. The approved vision and decision log (D1–D19) are in `docs/reference/product.md`. The roadmap was restructured into Phases 0–9: new phases for file identity and buckets, cleanup, and Compare, and tags frozen until visual search passes its evaluation. No code changed.
+
+## October 2026: Phase 0 complete
+
+Phase 0 finished on October 12.
+- **Checkpoint:** Sol committed the October 12 work in verified units. The unfinished visual-search trial went to `visual-search-trial-wip`, and the full snapshot to `preserve/october-12-wip`.
+- **Backup:** Sharpr was closed and the data backed up and verified, to `~/.local/share/sharpr.backup-20261012-221640/`. The backup exposed real tag pruning; no bucket lost a member.
+- **Deployment:** the launcher moved to per-commit release installs under `~/.local/opt/sharpr/` (first install `5832010`).
+- **Acceptance:** the user tested the build ("everything works and feels fast"), and a release baseline was recorded. Startup took 498 ms, a 2,216-image folder opened in 116–162 ms, and memory peaked at 2.3 GB.
+- **Branches:** `main` was fast-forwarded to `viewer-reset`. Six merged legacy branches, `docs-realignment`, and `viewer-base` were deleted along with their worktrees.
+- **Findings carried into Phase 2:** the aspect popover's click-away, the idle gear, the overlap between the "…" and right-click menus, the 2.3 s pool wait, and thumbnail memory.
