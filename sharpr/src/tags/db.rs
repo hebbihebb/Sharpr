@@ -335,15 +335,15 @@ impl TagDatabase {
         );
     }
 
-    pub fn delete_tag_globally(&self, tag: &str) {
-        let Ok(conn) = self.conn.lock() else {
-            return;
-        };
+    /// Removes `tag` from every image. Returns the number of rows deleted.
+    pub fn delete_tag_globally(&self, tag: &str) -> Result<usize, String> {
         let tag = tag.trim().to_lowercase();
         if tag.is_empty() {
-            return;
+            return Ok(0);
         }
-        let _ = conn.execute("DELETE FROM file_tags WHERE tag = ?1", params![tag]);
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM file_tags WHERE tag = ?1", params![tag])
+            .map_err(|e| e.to_string())
     }
 
     /// Moves tags and sharpness from `old_path` to `new_path` after a file

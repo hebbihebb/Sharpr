@@ -737,6 +737,7 @@ impl LibraryIndex {
         }
         let now = now_secs();
         let primary_tag = normalize_collection_tag(name);
+        self.ensure_bucket_tag_free(&primary_tag, None)?;
         let mut extra_tags = normalize_collection_tags(extra_tags);
         extra_tags.retain(|tag| tag != &primary_tag);
         let conn = self.conn()?;
@@ -831,6 +832,30 @@ impl LibraryIndex {
         Ok(())
     }
 
+    /// Two buckets with the same primary tag would silently share members, so
+    /// names that differ only by case (or surrounding space) are rejected.
+    fn ensure_bucket_tag_free(
+        &self,
+        primary_tag: &str,
+        except: Option<i64>,
+    ) -> rusqlite::Result<()> {
+        let existing: Option<String> = self
+            .conn()?
+            .query_row(
+                "SELECT name FROM collections WHERE primary_tag = ?1 AND id IS NOT ?2 LIMIT 1",
+                params![primary_tag, except],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match existing {
+            Some(name) => Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                Some(format!("A bucket named “{name}” already exists")),
+            )),
+            None => Ok(()),
+        }
+    }
+
     pub fn update_collection(
         &self,
         id: i64,
@@ -847,6 +872,7 @@ impl LibraryIndex {
         }
         let now = now_secs();
         let primary_tag = normalize_collection_tag(name);
+        self.ensure_bucket_tag_free(&primary_tag, Some(id))?;
         let mut extra_tags = normalize_collection_tags(extra_tags);
         extra_tags.retain(|tag| tag != &primary_tag);
         let conn = self.conn()?;
@@ -1814,6 +1840,30 @@ mod tests {
         let stored = idx.collection(collection.id).unwrap().unwrap();
         assert_eq!(stored.color.as_deref(), Some("#62a0ea"));
         assert_eq!(stored.icon_name.as_deref(), Some("starred-symbolic"));
+    }
+
+    #[test]
+    fn bucket_names_differing_only_by_case_are_rejected() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let art = idx
+            .create_collection("", None, "Art", &[], None, None)
+            .unwrap();
+        let photos = idx
+            .create_collection("", None, "Photos", &[], None, None)
+            .unwrap();
+        let error = idx
+            .create_collection("", None, " art ", &[], None, None)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("“Art” already exists"),
+            "{error}"
+        );
+        assert!(idx
+            .update_collection(photos.id, "ART", &[], None, None)
+            .is_err());
+        // Renaming a bucket to a different case of its own name is fine.
+        idx.update_collection(art.id, "ART", &[], None, None)
+            .unwrap();
     }
 
     #[test]

@@ -95,7 +95,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - Set `PRAGMA user_version` on both databases.
    - A binary that finds a newer version refuses to write and shows an error.
    - Delete the compiled-out `#[cfg(any())]` pipeline code. The legacy tables stay.
-6. **Guard broad actions.**
+6. ~~Guard broad actions.~~ Done October 12.
    - Tags page "Delete tag": confirm first, naming the affected buckets, and run off the GTK thread.
    - Reject bucket names that differ only by case.
    - Delete and other single-key shortcuts must not fire while a text entry has focus.

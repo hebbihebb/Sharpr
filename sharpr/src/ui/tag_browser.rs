@@ -8,6 +8,7 @@ use gtk4::gdk;
 use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
+use libadwaita::prelude::*;
 
 use crate::library_index::Collection;
 use crate::tags::TagDatabase;
@@ -499,6 +500,72 @@ impl TagBrowser {
         widget.add_controller(drag_source);
     }
 
+    /// Asks before deleting a tag everywhere, naming the buckets that would
+    /// lose their images, then deletes it on a worker thread.
+    fn confirm_delete_tag(&self, tag_name: String) {
+        let Some(db) = self.imp().tags.borrow().as_ref().cloned() else {
+            return;
+        };
+        let buckets = buckets_using_tag(&self.imp().collections.borrow(), &tag_name);
+        let mut body =
+            "The tag is removed from every image that has it. This cannot be undone.".to_string();
+        if !buckets.is_empty() {
+            body.push_str(&format!(
+                "\n\nThese buckets use it and will lose their images: {}.",
+                buckets.join(", ")
+            ));
+        }
+        let dialog =
+            libadwaita::AlertDialog::new(Some(&format!("Delete Tag “{tag_name}”?")), Some(&body));
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("delete", "Delete");
+        dialog.set_response_appearance("delete", libadwaita::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let widget_weak = self.downgrade();
+        dialog.connect_response(None, move |_, response| {
+            if response != "delete" {
+                return;
+            }
+            let (tx, rx) = async_channel::bounded(1);
+            let db = db.clone();
+            let tag = tag_name.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send_blocking(db.delete_tag_globally(&tag));
+            });
+            let widget_weak = widget_weak.clone();
+            let tag_name = tag_name.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let Ok(result) = rx.recv().await else { return };
+                let Some(widget) = widget_weak.upgrade() else {
+                    return;
+                };
+                if let Err(error) = result {
+                    crate::bench_error!(
+                        "tags.delete.fail",
+                        serde_json::json!({"tag": tag_name, "error": error})
+                    );
+                    if let Some(window) = widget
+                        .root()
+                        .and_downcast::<crate::ui::window::SharprWindow>()
+                    {
+                        window.add_toast(libadwaita::Toast::new(&format!(
+                            "Could not delete tag “{tag_name}”: {error}"
+                        )));
+                    }
+                    return;
+                }
+                widget.imp().selected_tags.borrow_mut().remove(&tag_name);
+                if widget.imp().selection_anchor.borrow().as_deref() == Some(tag_name.as_str()) {
+                    *widget.imp().selection_anchor.borrow_mut() = None;
+                }
+                widget.emit_tags_activated(SelectionModifiers::default());
+                widget.refresh();
+            });
+        });
+        dialog.present(Some(self));
+    }
+
     fn attach_tag_menu(&self, menu_button: &gtk4::MenuButton, tag: &str) {
         let menu = gio::Menu::new();
         menu.append(Some("Create Collection"), Some("tag.create-collection"));
@@ -524,16 +591,7 @@ impl TagBrowser {
             let Some(widget) = widget_weak.upgrade() else {
                 return;
             };
-            let Some(db) = widget.imp().tags.borrow().as_ref().cloned() else {
-                return;
-            };
-            db.delete_tag_globally(&tag_name);
-            widget.imp().selected_tags.borrow_mut().remove(&tag_name);
-            if widget.imp().selection_anchor.borrow().as_deref() == Some(tag_name.as_str()) {
-                *widget.imp().selection_anchor.borrow_mut() = None;
-            }
-            widget.emit_tags_activated(SelectionModifiers::default());
-            widget.refresh();
+            widget.confirm_delete_tag(tag_name.clone());
         });
         group.add_action(&delete);
 
@@ -707,6 +765,31 @@ fn update_selection(
     }
 }
 
+/// Names of the buckets whose membership needs `tag`, either as their own
+/// tag or inherited from an ancestor, sorted case-insensitively.
+fn buckets_using_tag(collections: &[Collection], tag: &str) -> Vec<String> {
+    let tag = tag.trim().to_lowercase();
+    let by_id: HashMap<i64, &Collection> = collections.iter().map(|c| (c.id, c)).collect();
+    let mut names: Vec<String> = collections
+        .iter()
+        .filter(|collection| {
+            let mut current = Some(*collection);
+            let mut seen = Vec::new();
+            while let Some(bucket) = current.filter(|b| !seen.contains(&b.id)) {
+                if bucket.primary_tag == tag || bucket.extra_tags.contains(&tag) {
+                    return true;
+                }
+                seen.push(bucket.id);
+                current = bucket.parent_id.and_then(|id| by_id.get(&id).copied());
+            }
+            false
+        })
+        .map(|collection| collection.name.clone())
+        .collect();
+    names.sort_by_key(|name| name.to_lowercase());
+    names
+}
+
 fn collection_tag_color_map(collections: &[Collection]) -> HashMap<String, String> {
     let parent_by_id: HashMap<i64, Option<i64>> = collections
         .iter()
@@ -829,6 +912,40 @@ fn install_css() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bucket(id: i64, parent_id: Option<i64>, name: &str, extra: &[&str]) -> Collection {
+        Collection {
+            id,
+            parent_id,
+            name: name.to_string(),
+            primary_tag: name.to_lowercase(),
+            extra_tags: extra.iter().map(|t| t.to_string()).collect(),
+            color: None,
+            icon_name: None,
+            created_at: 0,
+            updated_at: 0,
+            item_count: 0,
+        }
+    }
+
+    #[test]
+    fn buckets_using_tag_includes_sub_buckets_and_extra_tags() {
+        let collections = vec![
+            bucket(1, None, "Art", &[]),
+            bucket(2, Some(1), "Diffusion", &[]),
+            bucket(3, None, "Model", &["portrait"]),
+            bucket(4, None, "CSR", &[]),
+        ];
+        assert_eq!(
+            buckets_using_tag(&collections, "Art"),
+            vec!["Art".to_string(), "Diffusion".to_string()]
+        );
+        assert_eq!(
+            buckets_using_tag(&collections, "portrait"),
+            vec!["Model".to_string()]
+        );
+        assert!(buckets_using_tag(&collections, "jpg").is_empty());
+    }
 
     #[test]
     fn group_key_uses_hash_for_non_letters() {

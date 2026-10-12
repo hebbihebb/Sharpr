@@ -70,11 +70,14 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 
 **Compatibility note:** the deployed build `5832010` ignores `user_version`, so going back to it after deploying Phase 1 is safe.
 
-**Next: item 6, guard broad actions.**
-- Tags-page "Delete tag" confirms and names affected buckets, and runs off the GTK thread.
-- Reject bucket names that differ only by case.
-- Single-key shortcuts don't fire while a text entry has focus.
-- Report trash failures.
+**Item 6: done (committed, verified, not yet deployed).**
+- Delete tag on the Tags page asks first, names every bucket that would lose its images (inherited ones included), and deletes on a worker thread, with errors in a toast.
+- Bucket names that differ only by case are rejected with a readable message.
+- Delete, F2, Ctrl+T, `[` and `]` never fire while a text field has focus (`text_input_has_focus`).
+- Both trash paths share `trash_paths`, which reports files that could not be trashed.
+- **Verification:** `./check.sh` (152 tests) and both GTK tests pass.
+
+**Phase 1 is implemented and verified.** Next: deploy it with the user's approval and run their manual check (see below), then Phase 2.
 
 **Guardrails:**
 - Test in isolated directories only (`docs/reference/development.md`).

@@ -70,6 +70,77 @@ fn remove_path_from_action_selection(state: &mut AppState, path: &Path) {
         .retain(|selected| state.library.entry_for_path(selected).is_some());
 }
 
+/// True while a text field has keyboard focus. Single-key shortcuts then leave
+/// the key to the text field, so Delete never trashes images while editing text.
+fn text_input_has_focus(widget: &gtk4::Widget) -> bool {
+    widget
+        .downcast_ref::<gtk4::Window>()
+        .and_then(gtk4::prelude::GtkWindowExt::focus)
+        .is_some_and(|focus| focus.is::<gtk4::Text>() || focus.is::<gtk4::SearchEntry>())
+}
+
+/// Moves `paths` to the system trash and drops them from the view. Tags are
+/// kept, so restoring a file from the trash restores its buckets. Files that
+/// cannot be trashed are reported instead of being skipped silently.
+fn trash_paths(
+    window: Option<&SharprWindow>,
+    state: &Rc<RefCell<AppState>>,
+    filmstrip: &FilmstripPane,
+    viewer: &ViewerPane,
+    paths: &[PathBuf],
+) {
+    let mut failures = Vec::new();
+    for path in paths {
+        match gio::File::for_path(path).trash(None::<&gio::Cancellable>) {
+            Ok(()) => {
+                let mut state = state.borrow_mut();
+                state.library.remove_path(path);
+                remove_path_from_action_selection(&mut state, path);
+            }
+            Err(error) => failures.push((path.clone(), error.to_string())),
+        }
+    }
+    let new_count = state.borrow().library.image_count();
+    if new_count == 0 {
+        viewer.clear();
+        filmstrip.refresh_multi_selection_visuals();
+    } else {
+        let index = state.borrow().library.selected_index.unwrap_or(0);
+        let new_index = index.min(new_count - 1);
+        filmstrip.navigate_to(new_index);
+        let next_path = state
+            .borrow()
+            .library
+            .entry_at(new_index)
+            .map(|e: ImageEntry| e.path());
+        if let Some(next_path) = next_path {
+            filmstrip.set_action_selection_to_path(&next_path);
+        }
+    }
+    if let Some((path, error)) = failures.first() {
+        crate::bench_warn!(
+            "file.trash.fail",
+            serde_json::json!({
+                "count": failures.len(),
+                "path": path.display().to_string(),
+                "error": error,
+            })
+        );
+        if let Some(window) = window {
+            let message = if failures.len() == 1 {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                format!("Could not move “{name}” to the trash: {error}")
+            } else {
+                format!(
+                    "Could not move {} files to the trash: {error}",
+                    failures.len()
+                )
+            };
+            window.add_toast(libadwaita::Toast::new(&message));
+        }
+    }
+}
+
 fn search_terms(query: &str) -> Vec<String> {
     query
         .split_whitespace()
@@ -2999,7 +3070,10 @@ impl SharprWindow {
             let content_stack_c = content_stack.clone();
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("bracketleft").unwrap()),
-                Some(gtk4::CallbackAction::new(move |_, _| {
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if text_input_has_focus(widget) {
+                        return glib::Propagation::Proceed;
+                    }
                     let current = content_stack_c
                         .visible_child_name()
                         .unwrap_or_default()
@@ -3023,7 +3097,10 @@ impl SharprWindow {
             let content_stack_c = content_stack.clone();
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("bracketright").unwrap()),
-                Some(gtk4::CallbackAction::new(move |_, _| {
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if text_input_has_focus(widget) {
+                        return glib::Propagation::Proceed;
+                    }
                     let current = content_stack_c
                         .visible_child_name()
                         .unwrap_or_default()
@@ -3073,38 +3150,21 @@ impl SharprWindow {
             let viewer_d = viewer.clone();
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("Delete").unwrap()),
-                Some(gtk4::CallbackAction::new(move |_, _| {
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if text_input_has_focus(widget) {
+                        return glib::Propagation::Proceed;
+                    }
                     let paths = filmstrip_d.selected_paths_for_action();
                     if paths.is_empty() {
                         return glib::Propagation::Proceed;
                     }
-                    for path in &paths {
-                        if gio::File::for_path(path)
-                            .trash(None::<&gio::Cancellable>)
-                            .is_ok()
-                        {
-                            let mut state = state_d.borrow_mut();
-                            state.library.remove_path(path);
-                            remove_path_from_action_selection(&mut state, path);
-                        }
-                    }
-                    let new_count = state_d.borrow().library.image_count();
-                    if new_count == 0 {
-                        viewer_d.clear();
-                        filmstrip_d.refresh_multi_selection_visuals();
-                    } else {
-                        let index = state_d.borrow().library.selected_index.unwrap_or(0);
-                        let new_index = index.min(new_count - 1);
-                        filmstrip_d.navigate_to(new_index);
-                        let next_path = state_d
-                            .borrow()
-                            .library
-                            .entry_at(new_index)
-                            .map(|e: ImageEntry| e.path());
-                        if let Some(next_path) = next_path {
-                            filmstrip_d.set_action_selection_to_path(&next_path);
-                        }
-                    }
+                    trash_paths(
+                        widget.downcast_ref::<SharprWindow>(),
+                        &state_d,
+                        &filmstrip_d,
+                        &viewer_d,
+                        &paths,
+                    );
                     glib::Propagation::Stop
                 })),
             ));
@@ -3116,12 +3176,8 @@ impl SharprWindow {
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("F2").unwrap()),
                 Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if let Some(window) = widget.downcast_ref::<gtk4::Window>() {
-                        if let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) {
-                            if focus.is::<gtk4::Text>() || focus.is::<gtk4::SearchEntry>() {
-                                return glib::Propagation::Proceed;
-                            }
-                        }
+                    if text_input_has_focus(widget) {
+                        return glib::Propagation::Proceed;
                     }
                     if let Some(path) = filmstrip_f2.selected_single_path() {
                         filmstrip_f2.emit_rename_requested(path);
@@ -3154,34 +3210,16 @@ impl SharprWindow {
             let state_tr = state.clone();
             let filmstrip_tr = filmstrip.clone();
             let viewer_tr = viewer.clone();
+            let window_weak = self.downgrade();
             filmstrip.connect_trash_requested(move |paths| {
-                for path in &paths {
-                    if gio::File::for_path(path)
-                        .trash(None::<&gio::Cancellable>)
-                        .is_ok()
-                    {
-                        let mut state = state_tr.borrow_mut();
-                        state.library.remove_path(path);
-                        remove_path_from_action_selection(&mut state, path);
-                    }
-                }
-                let new_count = state_tr.borrow().library.image_count();
-                if new_count == 0 {
-                    viewer_tr.clear();
-                    filmstrip_tr.refresh_multi_selection_visuals();
-                } else {
-                    let index = state_tr.borrow().library.selected_index.unwrap_or(0);
-                    let new_index = index.min(new_count - 1);
-                    filmstrip_tr.navigate_to(new_index);
-                    let next_path = state_tr
-                        .borrow()
-                        .library
-                        .entry_at(new_index)
-                        .map(|e: ImageEntry| e.path());
-                    if let Some(p) = next_path {
-                        filmstrip_tr.set_action_selection_to_path(&p);
-                    }
-                }
+                let window = window_weak.upgrade();
+                trash_paths(
+                    window.as_ref(),
+                    &state_tr,
+                    &filmstrip_tr,
+                    &viewer_tr,
+                    &paths,
+                );
             });
         }
 
@@ -3468,12 +3506,8 @@ impl SharprWindow {
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("<Control>T").unwrap()),
                 Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if let Some(window) = widget.downcast_ref::<gtk4::Window>() {
-                        if let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) {
-                            if focus.is::<gtk4::Text>() || focus.is::<gtk4::SearchEntry>() {
-                                return glib::Propagation::Proceed;
-                            }
-                        }
+                    if text_input_has_focus(widget) {
+                        return glib::Propagation::Proceed;
                     }
 
                     let has_selection = state_t
@@ -3496,7 +3530,10 @@ impl SharprWindow {
             let win_weak = self.downgrade();
             let sc_prev = gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("bracketleft").unwrap()),
-                Some(gtk4::CallbackAction::new(move |_, _| {
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if text_input_has_focus(widget) {
+                        return glib::Propagation::Proceed;
+                    }
                     if let Some(win) = win_weak.upgrade() {
                         gio::prelude::ActionGroupExt::activate_action(
                             &win,
@@ -3512,7 +3549,10 @@ impl SharprWindow {
             let win_weak = self.downgrade();
             let sc_next = gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("bracketright").unwrap()),
-                Some(gtk4::CallbackAction::new(move |_, _| {
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if text_input_has_focus(widget) {
+                        return glib::Propagation::Proceed;
+                    }
                     if let Some(win) = win_weak.upgrade() {
                         gio::prelude::ActionGroupExt::activate_action(
                             &win,
