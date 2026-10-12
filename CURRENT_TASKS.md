@@ -29,19 +29,22 @@ Phase 2 and Phase 9 compare against these numbers, from release build `5832010` 
 
 The user judged scrolling and switching as "everything works and feels fast". There is no stall probe yet; it comes in Phase 2.
 
-## Next Task: Phase 1, Item 1 (Stop Deleting Tags For Missing Files)
+## Phase 1 Progress
 
-**Goal:** Reading tags never deletes tag rows. `TagDatabase::all_tags()`, `paths_for_tag()`, and `prune_*` in `sharpr/src/tags/db.rs` filter missing paths when reading, and keep the rows.
+**Item 1: done (committed, verified, not yet deployed).**
+- Reading tags never deletes rows. `paths_for_tag()` and `all_tags()` hide missing files and stat them after releasing the database lock.
+- Trash no longer deletes an image's tags, so restoring from the trash brings its tags and bucket membership back.
+- Tests: the regression test proves rows survive a vanished library root and reappear when the files return; another covers per-tag counts. `./check.sh` passes, with 136 tests in isolated directories.
+- **Deployment:** the deployed build `5832010` still has the bug. Redeploy needs the user's approval.
 
-**Why first:** It happened in real use. When Sharpr restarted at 21:29 on October 12, 81 paths lost their tags, including 21 files that had been moved outside Sharpr. Moved files lost only automatic tags this time, but a bucket member would have dropped out silently.
+**Next: item 2, rename never overwrites.**
+- Reject path separators and `..`.
+- Refuse an existing target name.
+- Report failures from `rename_path`.
 
-**Acceptance:**
-- A regression test with a tagged path that is missing on disk: after `all_tags()` and `paths_for_tag()`, the rows still exist, and counts and lists exclude the missing path.
-- The test that enshrined pruning is replaced.
-- A missing library root deletes nothing.
-- `./check.sh` passes.
+Then items 3–6 in order.
 
 **Guardrails:**
-- Don't touch the live data. Test in isolated directories (`docs/reference/development.md`).
-- Make no tagging UX changes; tags are frozen (D1).
-- Commit when done. Continue with Phase 1 items 2–6 in order, committing each user-testable unit.
+- Test in isolated directories only (`docs/reference/development.md`).
+- No tagging UX changes; tags are frozen (D1).
+- Commit each unit.

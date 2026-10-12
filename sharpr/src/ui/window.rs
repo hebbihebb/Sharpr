@@ -3087,14 +3087,9 @@ impl SharprWindow {
                             .trash(None::<&gio::Cancellable>)
                             .is_ok()
                         {
-                            if let Some(tags) = state_d.borrow().tags.clone() {
-                                tags.remove_path(path);
-                            }
-                            {
-                                let mut state = state_d.borrow_mut();
-                                state.library.remove_path(path);
-                                remove_path_from_action_selection(&mut state, path);
-                            }
+                            let mut state = state_d.borrow_mut();
+                            state.library.remove_path(path);
+                            remove_path_from_action_selection(&mut state, path);
                         }
                     }
                     let new_count = state_d.borrow().library.image_count();
@@ -3169,14 +3164,9 @@ impl SharprWindow {
                         .trash(None::<&gio::Cancellable>)
                         .is_ok()
                     {
-                        if let Some(tags) = state_tr.borrow().tags.clone() {
-                            tags.remove_path(path);
-                        }
-                        {
-                            let mut state = state_tr.borrow_mut();
-                            state.library.remove_path(path);
-                            remove_path_from_action_selection(&mut state, path);
-                        }
+                        let mut state = state_tr.borrow_mut();
+                        state.library.remove_path(path);
+                        remove_path_from_action_selection(&mut state, path);
                     }
                 }
                 let new_count = state_tr.borrow().library.image_count();

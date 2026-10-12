@@ -75,7 +75,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 **Scope:**
 
-1. **Stop deleting tag rows for missing files.** `TagDatabase::all_tags()` and `paths_for_tag()` currently delete tags for every path that doesn't exist, and the Tags page calls them on every refresh. Files moved outside Sharpr, or an unmounted root, lose their tags permanently.
+1. ~~Stop deleting tag rows for missing files.~~ Done October 12, including trash no longer deleting tags. `TagDatabase::all_tags()` and `paths_for_tag()` currently delete tags for every path that doesn't exist, and the Tags page calls them on every refresh. Files moved outside Sharpr, or an unmounted root, lose their tags permanently.
    - Filter missing paths when reading instead, and keep the rows.
    - Replace the test that enshrines pruning (`tags/db.rs`).
 2. **Rename never overwrites.** The in-app rename uses `std::fs::rename` with no checks.

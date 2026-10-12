@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -130,7 +131,10 @@ impl TagDatabase {
         };
         let paths: Vec<PathBuf> = rows.filter_map(|r| r.ok()).map(PathBuf::from).collect();
         drop(stmt);
-        prune_missing_paths(&conn, paths)
+        drop(conn);
+        // Missing files are hidden, never deleted: they may be on an unmounted
+        // drive or moved back later, and their tags back bucket membership.
+        paths.into_iter().filter(|p| p.is_file()).collect()
     }
 
     #[cfg(test)]
@@ -198,24 +202,37 @@ impl TagDatabase {
         rows.filter_map(|r| r.ok()).collect()
     }
 
+    /// Tags with the number of their paths that exist on disk. Rows for
+    /// missing paths are kept but not counted; tags with no existing path
+    /// are omitted.
     pub fn all_tags(&self) -> Vec<(String, usize)> {
-        let Ok(conn) = self.conn.lock() else {
-            return vec![];
+        let rows: Vec<(String, String)> = {
+            let Ok(conn) = self.conn.lock() else {
+                return vec![];
+            };
+            let mut stmt = match conn.prepare("SELECT tag, path FROM file_tags") {
+                Ok(stmt) => stmt,
+                Err(_) => return vec![],
+            };
+            let rows = match stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))) {
+                Ok(rows) => rows,
+                Err(_) => return vec![],
+            };
+            rows.filter_map(|r| r.ok()).collect()
         };
-        prune_all_missing_paths(&conn);
-        let mut stmt = match conn
-            .prepare("SELECT tag, COUNT(*) FROM file_tags GROUP BY tag ORDER BY tag COLLATE NOCASE")
-        {
-            Ok(stmt) => stmt,
-            Err(_) => return vec![],
-        };
-        let rows = match stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
-        }) {
-            Ok(rows) => rows,
-            Err(_) => return vec![],
-        };
-        rows.filter_map(|r| r.ok()).collect()
+        let mut exists: HashMap<String, bool> = HashMap::new();
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for (tag, path) in rows {
+            let present = *exists
+                .entry(path)
+                .or_insert_with_key(|p| Path::new(p).is_file());
+            if present {
+                *counts.entry(tag).or_default() += 1;
+            }
+        }
+        let mut tags: Vec<_> = counts.into_iter().collect();
+        tags.sort_by_cached_key(|(tag, _)| tag.to_lowercase());
+        tags
     }
 
     pub fn tag_choices_checked(&self, path: &Path) -> Result<TagChoices, String> {
@@ -318,14 +335,6 @@ impl TagDatabase {
             return;
         }
         let _ = conn.execute("DELETE FROM file_tags WHERE tag = ?1", params![tag]);
-    }
-
-    pub fn remove_path(&self, path: &Path) {
-        let Ok(conn) = self.conn.lock() else { return };
-        let _ = conn.execute(
-            "DELETE FROM file_tags WHERE path = ?1",
-            params![path.to_string_lossy().as_ref()],
-        );
     }
 
     pub fn rename_path(&self, old_path: &Path, new_path: &Path) {
@@ -541,21 +550,6 @@ pub(crate) fn file_mtime_secs(path: &Path) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-fn prune_missing_paths(conn: &Connection, paths: Vec<PathBuf>) -> Vec<PathBuf> {
-    let mut existing = Vec::with_capacity(paths.len());
-    for path in paths {
-        if path.exists() {
-            existing.push(path);
-        } else {
-            let _ = conn.execute(
-                "DELETE FROM file_tags WHERE path = ?1",
-                params![path.to_string_lossy().as_ref()],
-            );
-        }
-    }
-    existing
-}
-
 fn normalize_tag(tag: &str) -> String {
     tag.trim().to_lowercase()
 }
@@ -577,24 +571,6 @@ fn normalized_unique_tags(tags: &[String]) -> Vec<String> {
         }
     }
     out
-}
-
-fn prune_all_missing_paths(conn: &Connection) {
-    let mut stmt = match conn.prepare("SELECT DISTINCT path FROM file_tags") {
-        Ok(stmt) => stmt,
-        Err(_) => return,
-    };
-    let rows = match stmt.query_map([], |row| row.get::<_, String>(0)) {
-        Ok(rows) => rows,
-        Err(_) => return,
-    };
-    let paths: Vec<String> = rows.filter_map(Result::ok).collect();
-    drop(stmt);
-    for path in paths {
-        if !Path::new(&path).exists() {
-            let _ = conn.execute("DELETE FROM file_tags WHERE path = ?1", params![path]);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -670,8 +646,20 @@ mod tests {
         std::env::temp_dir().join(unique).join(name)
     }
 
+    fn stored_rows(db: &TagDatabase, tag: &str) -> i64 {
+        db.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM file_tags WHERE tag = ?1",
+                params![tag],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
     #[test]
-    fn tag_queries_prune_missing_paths() {
+    fn tag_queries_hide_missing_paths_without_deleting_them() {
         let db = TagDatabase::open_in_memory().unwrap();
         let root = temp_path("root");
         std::fs::create_dir_all(&root).unwrap();
@@ -685,10 +673,49 @@ mod tests {
         assert_eq!(db.paths_for_tag("cow"), vec![existing.clone()]);
         assert_eq!(db.search_paths("cow"), vec![existing.clone()]);
         assert_eq!(db.all_tags(), vec![("cow".to_string(), 1)]);
+        assert_eq!(stored_rows(&db, "cow"), 2);
 
-        std::fs::remove_file(&existing).unwrap();
+        // The whole library root disappears, as with an unmounted drive or a
+        // folder moved away outside Sharpr.
+        std::fs::remove_dir_all(&root).unwrap();
         assert!(db.paths_for_tag("cow").is_empty());
+        assert!(db.search_paths("cow").is_empty());
         assert!(db.all_tags().is_empty());
+        assert_eq!(
+            stored_rows(&db, "cow"),
+            2,
+            "reads must never delete tag rows"
+        );
+
+        // When the file returns, so do its tags.
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&existing, b"not really an image").unwrap();
+        assert_eq!(db.paths_for_tag("cow"), vec![existing.clone()]);
+        assert_eq!(db.all_tags(), vec![("cow".to_string(), 1)]);
+        assert_eq!(db.tags_for_path(&existing), vec!["cow".to_string()]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn all_tags_counts_existing_paths_in_case_insensitive_order() {
+        let db = TagDatabase::open_in_memory().unwrap();
+        let root = temp_path("counts");
+        std::fs::create_dir_all(&root).unwrap();
+        let a = root.join("a.jpg");
+        let b = root.join("b.jpg");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+
+        db.add_tag(&a, "Zebra");
+        db.add_tag(&a, "art");
+        db.add_tag(&b, "art");
+        db.add_tag(&root.join("gone.jpg"), "Gone");
+
+        assert_eq!(
+            db.all_tags(),
+            vec![("art".to_string(), 2), ("zebra".to_string(), 1)]
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }
