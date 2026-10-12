@@ -109,7 +109,8 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 **Item 8, user findings: two of four done (committed, not yet deployed).**
 - **Filter popover:** the aspect drop-down nested a second popover, which broke click-away closing, so it is now radio buttons. Manual check at deployment: click outside the Filter popover.
 - **Indicator:** the background-activity indicator is hidden when idle and slides in for work lasting over 0.4 s.
-- **Still open:** the 2.3 s folder-scan wait and thumbnail memory.
+- **2.3 s folder wait: fixed.** Every perceptual hash was saved by its own job in the shared rayon pool, about 7,900 per session, and folder scans queued behind them. Hashes are now batched on one writer thread (`spawn_phash_writer`, one transaction per batch), and folder scans run on their own thread. Measure at deployment with `tools/bench-summary.py`.
+- **Thumbnail memory: analysed, not changed.** It is the cost of whole-folder preload plus sharp 2× thumbnails, not a leak. The decision is the user's, after measuring the deployed build (see `ROADMAP.md`).
 
 **Found:** at 1024×600 the viewer header overflows, and the window close button is partly off-screen. This predates the chip work; it is tracked under item 4.
 

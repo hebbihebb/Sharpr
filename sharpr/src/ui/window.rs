@@ -70,6 +70,33 @@ fn remove_path_from_action_selection(state: &mut AppState, path: &Path) {
         .retain(|selected| state.library.entry_for_path(selected).is_some());
 }
 
+/// Saves perceptual hashes on one background thread, a batch per
+/// transaction. One pool job per hash used to flood the shared rayon pool
+/// and make folder opens wait behind thousands of single-row writes.
+fn spawn_phash_writer(index: Arc<LibraryIndex>) -> async_channel::Sender<(PathBuf, u64)> {
+    let (tx, rx) = async_channel::unbounded::<(PathBuf, u64)>();
+    let _ = std::thread::Builder::new()
+        .name("phash-writer".into())
+        .spawn(move || {
+            while let Ok(first) = rx.recv_blocking() {
+                let mut batch = vec![first];
+                while batch.len() < 512 {
+                    match rx.try_recv() {
+                        Ok(next) => batch.push(next),
+                        Err(_) => break,
+                    }
+                }
+                if let Err(err) = index.update_image_phashes(&batch) {
+                    crate::bench_warn!(
+                        "hash.index_persist_fail",
+                        serde_json::json!({"count": batch.len(), "error": err.to_string()})
+                    );
+                }
+            }
+        });
+    tx
+}
+
 /// True while a text field has keyboard focus. Single-key shortcuts then leave
 /// the key to the text field, so Delete never trashes images while editing text.
 fn text_input_has_focus(widget: &gtk4::Widget) -> bool {
@@ -986,95 +1013,100 @@ impl SharprWindow {
                 };
                 let (tx, rx) = async_channel::unbounded::<FolderOpenResult>();
                 let scan_path = path.clone();
-                rayon::spawn(move || {
-                    let started = Instant::now();
-                    if let Some(index) = index {
-                        // Send cached rows immediately so the UI can render before the
-                        // filesystem scan finishes.
-                        if let Ok(cached) = index.images_in_folder(&scan_path, sort_order) {
-                            if !cached.is_empty() {
-                                crate::bench_event!(
-                                    "folder.open.cached_rows",
-                                    serde_json::json!({
-                                        "path": scan_path.display().to_string(),
-                                        "row_count": cached.len(),
-                                    }),
-                                );
-                                let _ = tx.send_blocking(FolderOpenResult::Cached { rows: cached });
+                // Its own thread, never queued behind background work in the
+                // shared rayon pool (a 2.3 s wait was measured on October 12).
+                let _ = std::thread::Builder::new()
+                    .name("folder-open".into())
+                    .spawn(move || {
+                        let started = Instant::now();
+                        if let Some(index) = index {
+                            // Send cached rows immediately so the UI can render before the
+                            // filesystem scan finishes.
+                            if let Ok(cached) = index.images_in_folder(&scan_path, sort_order) {
+                                if !cached.is_empty() {
+                                    crate::bench_event!(
+                                        "folder.open.cached_rows",
+                                        serde_json::json!({
+                                            "path": scan_path.display().to_string(),
+                                            "row_count": cached.len(),
+                                        }),
+                                    );
+                                    let _ =
+                                        tx.send_blocking(FolderOpenResult::Cached { rows: cached });
+                                }
+                            }
+
+                            let scan_started = Instant::now();
+                            let entries = LibraryManager::scan_folder_basic(&scan_path);
+                            crate::bench_event!(
+                                "index.folder_scan_basic.finish",
+                                serde_json::json!({
+                                    "path": scan_path.display().to_string(),
+                                    "entry_count": entries.len(),
+                                    "duration_ms": crate::bench::duration_ms(scan_started),
+                                }),
+                            );
+
+                            match index.reconcile_folder(&scan_path, &entries, sort_order) {
+                                Ok((rows, stale_removed, metadata_pending)) => {
+                                    crate::bench_event!(
+                                        "folder.open.stale_rows_removed",
+                                        serde_json::json!({
+                                            "path": scan_path.display().to_string(),
+                                            "count": stale_removed,
+                                        }),
+                                    );
+                                    crate::bench_event!(
+                                        "folder.open.db_rows",
+                                        serde_json::json!({
+                                            "path": scan_path.display().to_string(),
+                                            "row_count": rows.len(),
+                                        }),
+                                    );
+                                    crate::bench_event!(
+                                        "folder.scan.finish",
+                                        serde_json::json!({
+                                            "path": scan_path.display().to_string(),
+                                            "source": "index",
+                                            "duration_ms": crate::bench::duration_ms(started),
+                                        }),
+                                    );
+                                    let _ = tx.send_blocking(FolderOpenResult::Indexed {
+                                        rows,
+                                        metadata_pending,
+                                        stale_removed,
+                                        basic_count: entries.len(),
+                                    });
+                                    return;
+                                }
+                                Err(err) => {
+                                    index_error = Some(err.to_string());
+                                    crate::bench_event!(
+                                        "index.reconcile_folder.fail",
+                                        serde_json::json!({
+                                            "path": scan_path.display().to_string(),
+                                            "error": err.to_string(),
+                                        }),
+                                    );
+                                }
                             }
                         }
 
-                        let scan_started = Instant::now();
-                        let entries = LibraryManager::scan_folder_basic(&scan_path);
+                        let entries = LibraryManager::scan_folder_raw(&scan_path);
                         crate::bench_event!(
-                            "index.folder_scan_basic.finish",
+                            "folder.scan.finish",
                             serde_json::json!({
                                 "path": scan_path.display().to_string(),
+                                "source": "raw",
                                 "entry_count": entries.len(),
-                                "duration_ms": crate::bench::duration_ms(scan_started),
+                                "duration_ms": crate::bench::duration_ms(started),
                             }),
                         );
-
-                        match index.reconcile_folder(&scan_path, &entries, sort_order) {
-                            Ok((rows, stale_removed, metadata_pending)) => {
-                                crate::bench_event!(
-                                    "folder.open.stale_rows_removed",
-                                    serde_json::json!({
-                                        "path": scan_path.display().to_string(),
-                                        "count": stale_removed,
-                                    }),
-                                );
-                                crate::bench_event!(
-                                    "folder.open.db_rows",
-                                    serde_json::json!({
-                                        "path": scan_path.display().to_string(),
-                                        "row_count": rows.len(),
-                                    }),
-                                );
-                                crate::bench_event!(
-                                    "folder.scan.finish",
-                                    serde_json::json!({
-                                        "path": scan_path.display().to_string(),
-                                        "source": "index",
-                                        "duration_ms": crate::bench::duration_ms(started),
-                                    }),
-                                );
-                                let _ = tx.send_blocking(FolderOpenResult::Indexed {
-                                    rows,
-                                    metadata_pending,
-                                    stale_removed,
-                                    basic_count: entries.len(),
-                                });
-                                return;
-                            }
-                            Err(err) => {
-                                index_error = Some(err.to_string());
-                                crate::bench_event!(
-                                    "index.reconcile_folder.fail",
-                                    serde_json::json!({
-                                        "path": scan_path.display().to_string(),
-                                        "error": err.to_string(),
-                                    }),
-                                );
-                            }
-                        }
-                    }
-
-                    let entries = LibraryManager::scan_folder_raw(&scan_path);
-                    crate::bench_event!(
-                        "folder.scan.finish",
-                        serde_json::json!({
-                            "path": scan_path.display().to_string(),
-                            "source": "raw",
-                            "entry_count": entries.len(),
-                            "duration_ms": crate::bench::duration_ms(started),
-                        }),
-                    );
-                    let _ = tx.send_blocking(FolderOpenResult::Raw {
-                        entries,
-                        index_error,
+                        let _ = tx.send_blocking(FolderOpenResult::Raw {
+                            entries,
+                            index_error,
+                        });
                     });
-                });
 
                 let filmstrip_rx = filmstrip_c.clone();
                 let viewer_rx = viewer_c.clone();
@@ -3782,6 +3814,7 @@ impl SharprWindow {
     fn start_hash_poll(&self, state: Rc<RefCell<AppState>>) {
         let hash_rx = self.imp().hash_result_rx.borrow().clone();
         let Some(rx) = hash_rx else { return };
+        let persist = state.borrow().library_index.clone().map(spawn_phash_writer);
 
         glib::MainContext::default().spawn_local(async move {
             while let Ok(result) = rx.recv().await {
@@ -3805,19 +3838,8 @@ impl SharprWindow {
                     }),
                 );
                 // Persist phash to the index so duplicate detection is cross-session.
-                if let Some(index) = state.borrow().library_index.clone() {
-                    let path_clone = path.clone();
-                    rayon::spawn(move || {
-                        if let Err(err) = index.update_image_phash(&path_clone, hash) {
-                            crate::bench_event!(
-                                "hash.index_persist_fail",
-                                serde_json::json!({
-                                    "path": path_clone.display().to_string(),
-                                    "error": err.to_string(),
-                                }),
-                            );
-                        }
-                    });
+                if let Some(persist) = persist.as_ref() {
+                    let _ = persist.try_send((path, hash));
                 }
             }
         });

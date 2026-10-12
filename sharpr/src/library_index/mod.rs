@@ -462,13 +462,25 @@ impl LibraryIndex {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn update_image_phash(&self, path: &Path, hash: u64) -> rusqlite::Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE images SET phash = ?2, phash_status = 'ready', error = NULL WHERE path = ?1",
-            params![path_to_string(path), hash as i64],
-        )?;
-        Ok(())
+        self.update_image_phashes(&[(path.to_path_buf(), hash)])
+    }
+
+    /// Stores perceptual hashes in one transaction. Writing them one by one
+    /// flooded the shared worker pool and delayed folder opens.
+    pub fn update_image_phashes(&self, hashes: &[(PathBuf, u64)]) -> rusqlite::Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE images SET phash = ?2, phash_status = 'ready', error = NULL WHERE path = ?1",
+            )?;
+            for (path, hash) in hashes {
+                stmt.execute(params![path_to_string(path), *hash as i64])?;
+            }
+        }
+        tx.commit()
     }
 
     pub fn mark_image_error(&self, path: &Path, error: &str) -> rusqlite::Result<()> {
@@ -1550,6 +1562,30 @@ mod tests {
 
         assert!(!idx.is_folder_ignored(Path::new("/library")).unwrap());
         assert!(!idx.is_folder_ignored(Path::new("/library/child")).unwrap());
+    }
+
+    #[test]
+    fn phashes_are_stored_in_one_batch() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        for name in ["a.jpg", "b.jpg"] {
+            idx.upsert_image_basic(&make_info("/photos", name, 100, None))
+                .unwrap();
+        }
+        idx.update_image_phashes(&[
+            (PathBuf::from("/photos/a.jpg"), 1),
+            (PathBuf::from("/photos/b.jpg"), 2),
+            (PathBuf::from("/photos/not-indexed.jpg"), 3),
+        ])
+        .unwrap();
+        let mut hashes = idx.images_with_phash().unwrap();
+        hashes.sort();
+        assert_eq!(
+            hashes,
+            vec![
+                (PathBuf::from("/photos/a.jpg"), 1),
+                (PathBuf::from("/photos/b.jpg"), 2)
+            ]
+        );
     }
 
     #[test]
