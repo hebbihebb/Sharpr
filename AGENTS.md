@@ -42,7 +42,7 @@ Images will be found through visual search and typed filters, not manual tags, a
   - Quality views give way to resolution filters (Phase 2).
   - Resize Copy and non-WebP output give way to batch WebP export (Phase 6).
 - **In progress:** the roadmap phases.
-- **Experimental:** visual search. The unfinished trial wiring is on the `visual-search-trial-wip` branch, behind the `visual-search-trial` Cargo feature. It is off by default and excluded from the Flatpak until `ROADMAP.md` Phase 5 promotes it. Keep experimental code in its own module behind the feature, and never let it change default behavior.
+- **Being built (Phase 5):** visual search, in `src/visual_search/`. It is on by default but does nothing until the user installs the model (D23); without it, search matches file names. The old trial wiring on the `visual-search-trial-wip` branch is reference only.
 - **Removed, do not reintroduce:** Tasks, processing queues, pipelines, and generation history; AI upscaling, enhancement, and tagging; ComfyUI and remote backends; model downloaders; rotate/flip pixel editing; metadata write-back; full-editor features; import workflow; saved searches; batch rename; splash screen; scripting. Enhancement and upscaling stay in external tools. The product non-goals in `product.md` also apply.
 
 ## Working Rules

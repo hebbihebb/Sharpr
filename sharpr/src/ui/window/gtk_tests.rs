@@ -614,3 +614,136 @@ fn rapid_navigation_and_folder_switch_preserve_latest_view() {
     drop(st);
     window.close();
 }
+
+/// Visual search end to end with the real model: indexing in the
+/// background, then words ranking images by content, file-name matches
+/// first. Needs `SHARPR_TEST_MODEL_DIR` (the two GGUF files) and
+/// `SHARPR_LLAMA_SERVER`; without them it only checks the name fallback.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn visual_search_ranks_by_content() {
+    let root = isolated_fixture("visual-search");
+    std::fs::create_dir_all(&root).unwrap();
+    // Names say nothing about content, except one misleading name.
+    for (name, colour) in [
+        ("one.png", [220, 30, 30]),
+        ("two.png", [30, 40, 220]),
+        ("three.png", [30, 190, 40]),
+        ("green-notes.png", [235, 220, 40]),
+    ] {
+        image::RgbImage::from_pixel(256, 192, image::Rgb(colour))
+            .save(root.join(name))
+            .unwrap();
+    }
+    let model = std::env::var_os("SHARPR_TEST_MODEL_DIR").map(PathBuf::from);
+    if let Some(model) = &model {
+        // Installed the way a user would (D23), inside the isolated data folder.
+        let dir = crate::visual_search::files::model_dir();
+        std::fs::create_dir_all(dir.join("runtime")).unwrap();
+        for file in [
+            crate::visual_search::files::MODEL_FILE,
+            crate::visual_search::files::PROJECTOR_FILE,
+        ] {
+            std::os::unix::fs::symlink(model.join(file), dir.join(file)).unwrap();
+        }
+        let server = PathBuf::from(std::env::var_os("SHARPR_LLAMA_SERVER").unwrap());
+        std::fs::remove_dir(dir.join("runtime")).unwrap();
+        std::os::unix::fs::symlink(server.parent().unwrap(), dir.join("runtime")).unwrap();
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 4 && window.is_mapped());
+    let status_text = || {
+        window
+            .imp()
+            .search_status
+            .borrow()
+            .as_ref()
+            .filter(|(bar, _, _)| bar.is_visible())
+            .map(|(_, label, _)| label.text().to_string())
+    };
+    let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
+    let paths = || {
+        let st = window.imp().state.borrow();
+        (0..st.library.image_count())
+            .map(|i| st.library.entry_at(i).unwrap().path())
+            .collect::<Vec<_>>()
+    };
+
+    if model.is_none() {
+        window.show_inline_search();
+        entry.set_text("green");
+        pump_until(|| paths() == vec![root.join("green-notes.png")]);
+        pump_until(|| status_text().is_some_and(|t| t.starts_with("Matching file names only")));
+        window.close();
+        return;
+    }
+
+    // Fingerprints start 10 s after launch; indexing follows them.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    loop {
+        use crate::visual_search::index::Status;
+        match window.visual_search_status() {
+            Some(Status::Done(coverage)) if coverage.indexed == 4 => break,
+            Some(Status::Unavailable(message)) | Some(Status::Failed(message)) => {
+                panic!("{message}")
+            }
+            _ => {}
+        }
+        assert!(std::time::Instant::now() < deadline, "indexing timed out");
+        let context = glib::MainContext::default();
+        while context.pending() {
+            context.iteration(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    window.show_inline_search();
+    entry.set_text("green");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while status_text().is_none_or(|t| !t.contains("by file name first")) {
+        assert!(std::time::Instant::now() < deadline, "search timed out");
+        let context = glib::MainContext::default();
+        while context.pending() {
+            context.iteration(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let found = paths();
+    assert_eq!(found.len(), 4, "{found:?}");
+    assert_eq!(found[0], root.join("green-notes.png"), "name match first");
+    assert_eq!(found[1], root.join("three.png"), "then the green image");
+    let status = status_text().unwrap();
+    assert!(status.contains("all 3 images searched"), "{status}");
+    assert!(status.contains("Closest first"), "{status}");
+    assert_eq!(
+        window.imp().state.borrow().library.selected_index,
+        Some(0),
+        "ranked results start at the top"
+    );
+    let (_, _, more) = window.imp().search_status.borrow().clone().unwrap();
+    assert!(!more.is_visible());
+
+    entry.set_text("red");
+    pump_until(|| paths().first() == Some(&root.join("one.png")));
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
+    screenshot(&window, &root.parent().unwrap().join("visual-search.png"));
+    eprintln!("status: {}", status_text().unwrap());
+    window.close();
+}

@@ -1,7 +1,26 @@
 //! Scoped browsing keeps an immutable candidate set while query results change.
 use super::*;
 
-type BrowseTask = Box<dyn FnOnce(&mut BrowseCaches) -> Result<Vec<PathBuf>, String> + Send>;
+type BrowseTask = Box<dyn FnOnce(&mut BrowseCaches) -> Result<BrowseResult, String> + Send>;
+
+/// Rows for the filmstrip, plus how visual search went when it ran.
+pub(super) struct BrowseResult {
+    paths: Vec<PathBuf>,
+    visual: Option<VisualSummary>,
+}
+
+pub(super) enum VisualSummary {
+    Ranked {
+        name_matches: usize,
+        ranked: crate::visual_search::search::Ranked,
+        limit: usize,
+    },
+    /// Visual search couldn't run; file names were matched instead.
+    Unavailable(String),
+}
+
+/// Fresh fingerprints by path, for one search session.
+type FingerprintCache = (u64, std::collections::HashMap<String, (u64, i64, String)>);
 
 /// State the browse worker keeps between queries.
 #[derive(Default)]
@@ -11,9 +30,26 @@ pub(super) struct BrowseCaches {
     /// library root and disabled folders. Walking the library tree on every
     /// keystroke grows with library size.
     library_paths: Option<(u64, PathBuf, Vec<PathBuf>, Vec<PathBuf>)>,
+    fingerprints: Option<FingerprintCache>,
 }
 
 impl BrowseCaches {
+    fn fingerprints(
+        &mut self,
+        session: u64,
+        index: &crate::library_index::LibraryIndex,
+    ) -> Result<&std::collections::HashMap<String, (u64, i64, String)>, String> {
+        if self
+            .fingerprints
+            .as_ref()
+            .is_none_or(|(s, _)| *s != session)
+        {
+            let map = index.cached_fingerprints().map_err(|e| e.to_string())?;
+            self.fingerprints = Some((session, map));
+        }
+        Ok(&self.fingerprints.as_ref().expect("filled above").1)
+    }
+
     fn library_paths(
         &mut self,
         session: u64,
@@ -49,7 +85,7 @@ impl BrowseCaches {
 struct BrowseJob {
     generation: u64,
     task: BrowseTask,
-    response: async_channel::Sender<Result<Vec<PathBuf>, String>>,
+    response: async_channel::Sender<Result<BrowseResult, String>>,
 }
 pub(super) struct BrowseWorker {
     requests: async_channel::Sender<BrowseJob>,
@@ -75,7 +111,7 @@ impl BrowseWorker {
     fn submit(
         &self,
         generation: u64,
-        response: async_channel::Sender<Result<Vec<PathBuf>, String>>,
+        response: async_channel::Sender<Result<BrowseResult, String>>,
         task: BrowseTask,
     ) {
         let _ = self.requests.try_send(BrowseJob {
@@ -254,8 +290,14 @@ impl SharprWindow {
             .borrow()
             .as_ref()
             .is_some_and(|s| s.is_visible());
+        let has_status = self
+            .imp()
+            .search_status
+            .borrow()
+            .as_ref()
+            .is_some_and(|(status, _, _)| status.is_visible());
         if let Some(bar) = self.imp().search_chip_bar.borrow().as_ref() {
-            bar.set_reveal_child(has_chips || has_suggestions);
+            bar.set_reveal_child(has_chips || has_suggestions || has_status);
         }
     }
 
@@ -379,7 +421,43 @@ impl SharprWindow {
         self.run_browse_query(query, false);
     }
 
+    /// Shows the next page of visual-search results for the current words.
+    pub(super) fn show_more_visual_results(&self) {
+        let limit = self.imp().visual_limit.get() + crate::visual_search::search::PAGE;
+        self.imp().visual_limit.set(limit);
+        let query = self
+            .imp()
+            .inline_search_entry
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+        self.run_browse_query_with_limit(query, false);
+    }
+
+    /// Says how a visual search went, or hides the line.
+    fn show_search_status(&self, summary: Option<&VisualSummary>) {
+        let Some((bar, label, more)) = self.imp().search_status.borrow().clone() else {
+            return;
+        };
+        let text = summary.map(visual_summary_text);
+        bar.set_visible(text.is_some());
+        label.set_text(text.as_deref().unwrap_or_default());
+        more.set_visible(matches!(
+            summary,
+            Some(VisualSummary::Ranked { ranked, limit, .. }) if ranked.indexed > *limit
+        ));
+        self.sync_search_chip_bar();
+    }
+
     pub(super) fn run_browse_query(&self, query: String, sort_only: bool) {
+        self.imp()
+            .visual_limit
+            .set(crate::visual_search::search::PAGE);
+        self.run_browse_query_with_limit(query, sort_only);
+    }
+
+    fn run_browse_query_with_limit(&self, query: String, sort_only: bool) {
         // Until a bucket's members arrive, the filmstrip still holds the previous
         // view; searching it would label those images as the bucket. The bucket
         // open runs the current query when it completes.
@@ -395,11 +473,12 @@ impl SharprWindow {
             .store(generation, std::sync::atomic::Ordering::Relaxed);
         let options = self.imp().browse_options.borrow().clone();
         if query.trim().is_empty() && !options.has_filters() && !sort_only {
+            self.show_search_status(None);
             self.restore_browse_view();
             return;
         }
         self.capture_browse_view();
-        let (candidates, tags, root, disabled, scope, order) = {
+        let (candidates, tags, root, disabled, scope, order, index) = {
             let st = self.imp().state.borrow();
             let snapshot = self.imp().browse_snapshot.borrow();
             let Some(snapshot) = snapshot.as_ref() else {
@@ -416,6 +495,7 @@ impl SharprWindow {
                 st.disabled_folders.clone(),
                 st.scope.clone(),
                 st.sort_order,
+                st.library_index.clone(),
             )
         };
         // Chips already taken out of the box, plus filter words still being typed.
@@ -428,6 +508,8 @@ impl SharprWindow {
         }
         let text = parsed.text;
         let session = self.imp().browse_session.get();
+        let searcher = self.imp().visual_searcher.borrow().clone();
+        let visual_limit = self.imp().visual_limit.get();
         let (tx, rx) = async_channel::bounded(1);
         let expected_query = query.clone();
         let canceled = self.imp().browse_generation.clone();
@@ -435,7 +517,7 @@ impl SharprWindow {
             generation,
             tx,
             Box::new(move |cache| {
-                let result = (|| -> Result<Vec<PathBuf>, String> {
+                let result = (|| -> Result<BrowseResult, String> {
                     let superseded =
                         || canceled.load(std::sync::atomic::Ordering::Relaxed) != generation;
                     if superseded() {
@@ -455,12 +537,33 @@ impl SharprWindow {
                             .filter(|p| !path_is_disabled(p, &disabled))
                             .collect()
                     };
-                    let tag_paths = tags
-                        .as_ref()
-                        .map(|db| db.search_paths_checked(&text))
-                        .transpose()?;
-                    let mut paths =
-                        match_candidates(&candidates, tag_paths.as_deref().unwrap_or(&[]), &text);
+                    // Words go to visual search when it can run; otherwise,
+                    // and for file names, they match names.
+                    let visual = (!search_terms(&text).is_empty())
+                        .then_some(searcher.as_ref())
+                        .flatten()
+                        .map(|searcher| searcher.prepare(&text));
+                    let name_only = !matches!(visual, Some(Ok(_)));
+                    let tag_paths = if name_only {
+                        tags.as_ref()
+                            .map(|db| db.search_paths_checked(&text))
+                            .transpose()?
+                    } else {
+                        None
+                    };
+                    let name_matches: std::collections::HashSet<PathBuf> =
+                        match_candidates(&candidates, tag_paths.as_deref().unwrap_or(&[]), &text)
+                            .into_iter()
+                            .collect();
+                    let mut paths = if name_only {
+                        candidates
+                            .iter()
+                            .filter(|p| name_matches.contains(*p))
+                            .cloned()
+                            .collect()
+                    } else {
+                        candidates
+                    };
                     if !options.tags.is_empty() {
                         let matching: std::collections::HashSet<_> = tags
                             .as_ref()
@@ -478,6 +581,7 @@ impl SharprWindow {
                                 | crate::model::library::SortField::WideScreen
                         );
                     let mut raw = Vec::with_capacity(paths.len());
+                    let mut stamps = Vec::with_capacity(paths.len());
                     for path in paths {
                         if canceled.load(std::sync::atomic::Ordering::Relaxed) != generation {
                             return Err("Search superseded".into());
@@ -497,6 +601,7 @@ impl SharprWindow {
                             continue;
                         }
                         let (width, height) = dimensions.unwrap_or((0, 0));
+                        stamps.push(crate::fingerprint::file_stamp(&metadata));
                         raw.push(RawImageEntry {
                             filename: path
                                 .file_name()
@@ -509,8 +614,50 @@ impl SharprWindow {
                             height,
                         });
                     }
-                    crate::model::library::sort_raw_entries(&mut raw, order);
-                    Ok(raw.into_iter().map(|r| r.path).collect())
+                    let prepared = match visual {
+                        Some(Ok(prepared)) => prepared,
+                        other => {
+                            crate::model::library::sort_raw_entries(&mut raw, order);
+                            return Ok(BrowseResult {
+                                paths: raw.into_iter().map(|r| r.path).collect(),
+                                visual: match other {
+                                    Some(Err(error)) => Some(VisualSummary::Unavailable(error)),
+                                    _ => None,
+                                },
+                            });
+                        }
+                    };
+                    // File-name matches first, in the chosen order, then the
+                    // closest images.
+                    let index = index.as_ref().ok_or("Library index is unavailable")?;
+                    let fingerprints = cache.fingerprints(session, index)?;
+                    let mut by_name = Vec::new();
+                    let mut others = Vec::new();
+                    for (entry, stamp) in raw.into_iter().zip(stamps) {
+                        if name_matches.contains(&entry.path) {
+                            by_name.push(entry);
+                        } else {
+                            let fingerprint = fingerprints
+                                .get(entry.path.to_string_lossy().as_ref())
+                                .filter(|(size, mtime, _)| (*size, *mtime) == stamp)
+                                .map(|(_, _, hash)| hash.clone());
+                            others.push((entry.path, fingerprint));
+                        }
+                    }
+                    crate::model::library::sort_raw_entries(&mut by_name, order);
+                    let ranked =
+                        crate::visual_search::search::rank(&others, &prepared, visual_limit);
+                    let name_count = by_name.len();
+                    let mut paths: Vec<PathBuf> = by_name.into_iter().map(|r| r.path).collect();
+                    paths.extend(ranked.paths.iter().cloned());
+                    Ok(BrowseResult {
+                        paths,
+                        visual: Some(VisualSummary::Ranked {
+                            name_matches: name_count,
+                            ranked,
+                            limit: visual_limit,
+                        }),
+                    })
                 })();
                 result
             }),
@@ -531,7 +678,8 @@ impl SharprWindow {
                 return;
             }
             match result {
-                Ok(paths) => {
+                Ok(BrowseResult { paths, visual }) => {
+                    win.show_search_status(visual.as_ref());
                     let selected = win
                         .imp()
                         .state
@@ -542,6 +690,12 @@ impl SharprWindow {
                         .map(|e| e.path());
                     win.bump_thumbnail_generation("search.apply");
                     win.imp().state.borrow_mut().selected_paths.clear();
+                    // Ranked results start at the closest image.
+                    let selected = if matches!(visual, Some(VisualSummary::Ranked { .. })) {
+                        None
+                    } else {
+                        selected
+                    };
                     load_virtual_async(&win.imp().state, &paths);
                     win.present_browse_paths(selected.as_deref());
                     if sort_only
@@ -562,6 +716,52 @@ impl SharprWindow {
                 }
             }
         });
+    }
+}
+
+fn visual_summary_text(summary: &VisualSummary) -> String {
+    use crate::visual_search::search::Strength;
+    match summary {
+        VisualSummary::Unavailable(reason) => {
+            if reason.starts_with("No images are indexed") {
+                "Matching file names only: no images are indexed for visual search yet".into()
+            } else {
+                "Matching file names only: visual search isn't available \
+                 (Preferences → Library shows why)"
+                    .into()
+            }
+        }
+        VisualSummary::Ranked {
+            name_matches,
+            ranked,
+            ..
+        } => {
+            let mut parts = Vec::new();
+            if *name_matches > 0 {
+                parts.push(format!("{name_matches} by file name first"));
+            }
+            parts.push(
+                match ranked.strength {
+                    Some(Strength::Strong) => "Strong matches",
+                    Some(Strength::Some) => "Some good matches",
+                    Some(Strength::Weak) => {
+                        "Only weak matches: these words may not fit anything here"
+                    }
+                    None if ranked.indexed == 0 => "None of these images are indexed yet",
+                    None => "Closest first",
+                }
+                .to_string(),
+            );
+            if ranked.indexed < ranked.eligible {
+                parts.push(format!(
+                    "{} of {} images indexed",
+                    ranked.indexed, ranked.eligible
+                ));
+            } else {
+                parts.push(format!("all {} images searched", ranked.eligible));
+            }
+            parts.join(" · ")
+        }
     }
 }
 

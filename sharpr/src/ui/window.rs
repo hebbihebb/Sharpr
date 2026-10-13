@@ -496,6 +496,14 @@ mod imp {
         pub refresh_sidebar_collections_cb: RefCell<Option<RefreshCollectionsCallback>>,
         /// Background content fingerprinting (ROADMAP Phase 4).
         pub fingerprints: RefCell<Option<Rc<crate::fingerprint::Service>>>,
+        /// Background visual-search indexing (ROADMAP Phase 5).
+        pub visual_index: RefCell<Option<Arc<crate::visual_search::index::Service>>>,
+        /// Turns search words into a query vector; set with `visual_index`.
+        pub visual_searcher: RefCell<Option<crate::visual_search::search::Searcher>>,
+        /// How many visual-search results to show; "Show More" raises it.
+        pub visual_limit: Cell<usize>,
+        /// Coverage and match strength of the current search, with "Show More".
+        pub search_status: RefCell<Option<(gtk4::Box, gtk4::Label, gtk4::Button)>>,
     }
 
     impl Default for SharprWindow {
@@ -542,6 +550,10 @@ mod imp {
                 open_folder_cb: RefCell::new(None),
                 refresh_sidebar_collections_cb: RefCell::new(None),
                 fingerprints: RefCell::new(None),
+                visual_index: RefCell::new(None),
+                visual_searcher: RefCell::new(None),
+                visual_limit: Cell::new(crate::visual_search::search::PAGE),
+                search_status: RefCell::new(None),
             }
         }
     }
@@ -637,6 +649,15 @@ impl SharprWindow {
             .borrow()
             .as_ref()
             .and_then(|service| service.progress())
+    }
+
+    /// Where visual-search indexing stands, if the service is running.
+    pub fn visual_search_status(&self) -> Option<crate::visual_search::index::Status> {
+        self.imp()
+            .visual_index
+            .borrow()
+            .as_ref()
+            .map(|service| service.status())
     }
 
     /// Asks for a fingerprint pass over the active library. Passes over the
@@ -856,25 +877,42 @@ impl SharprWindow {
             // refresh when fingerprints or members changed.
             let (changed_tx, changed_rx) = async_channel::unbounded::<()>();
             let relink_index = index.clone();
+            // Visual search indexes what the fingerprint pass just covered.
+            let visual_index = Arc::new(crate::visual_search::index::Service::start(
+                index.clone(),
+                crate::visual_search::store::default_path(),
+            ));
+            *self.imp().visual_index.borrow_mut() = Some(visual_index.clone());
+            *self.imp().visual_searcher.borrow_mut() =
+                Some(crate::visual_search::search::Searcher::start(
+                    crate::visual_search::store::default_path(),
+                    visual_index.vectors_version(),
+                ));
             let service = crate::fingerprint::Service::start(
                 index,
-                Box::new(move |_, pass| match crate::buckets::relink(&relink_index) {
-                    Ok(relinked) => {
-                        crate::bench_event!(
-                            "buckets.relink",
-                            serde_json::json!({
-                                "fingerprinted": relinked.fingerprinted,
-                                "relinked": relinked.relinked,
-                            }),
-                        );
-                        if pass.hashed + relinked.fingerprinted + relinked.relinked > 0 {
-                            let _ = changed_tx.send_blocking(());
+                Box::new(move |job, pass| {
+                    visual_index.request(crate::visual_search::index::Job {
+                        root: job.root.clone(),
+                        disabled: job.disabled.clone(),
+                    });
+                    match crate::buckets::relink(&relink_index) {
+                        Ok(relinked) => {
+                            crate::bench_event!(
+                                "buckets.relink",
+                                serde_json::json!({
+                                    "fingerprinted": relinked.fingerprinted,
+                                    "relinked": relinked.relinked,
+                                }),
+                            );
+                            if pass.hashed + relinked.fingerprinted + relinked.relinked > 0 {
+                                let _ = changed_tx.send_blocking(());
+                            }
                         }
+                        Err(error) => crate::bench_warn!(
+                            "buckets.relink.fail",
+                            serde_json::json!({"error": error}),
+                        ),
                     }
-                    Err(error) => crate::bench_warn!(
-                        "buckets.relink.fail",
-                        serde_json::json!({"error": error}),
-                    ),
                 }),
             );
             let weak = self.downgrade();
@@ -2257,9 +2295,38 @@ impl SharprWindow {
         search_suggestions.set_margin_end(12);
         search_suggestions.set_margin_bottom(6);
         search_suggestions.set_visible(false);
+        // How much of the scope visual search covered and how well it matched
+        // (principle 5), with more results on request.
+        let search_status = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        search_status.set_margin_start(12);
+        search_status.set_margin_end(12);
+        search_status.set_margin_bottom(6);
+        search_status.set_visible(false);
+        let search_status_label = gtk4::Label::new(None);
+        search_status_label.add_css_class("dim-label");
+        search_status_label.set_wrap(true);
+        search_status_label.set_xalign(0.0);
+        search_status_label.set_hexpand(true);
+        let search_more = gtk4::Button::with_label("Show More");
+        search_more.add_css_class("flat");
+        search_more.set_valign(gtk4::Align::Center);
+        search_more.set_tooltip_text(Some("Show the next closest images"));
+        {
+            let weak = self.downgrade();
+            search_more.connect_clicked(move |_| {
+                if let Some(win) = weak.upgrade() {
+                    win.show_more_visual_results();
+                }
+            });
+        }
+        search_status.append(&search_status_label);
+        search_status.append(&search_more);
         let chip_bar = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         chip_bar.append(&search_chips);
         chip_bar.append(&search_suggestions);
+        chip_bar.append(&search_status);
+        *self.imp().search_status.borrow_mut() =
+            Some((search_status, search_status_label, search_more));
         let search_chips_revealer = gtk4::Revealer::new();
         search_chips_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideDown);
         search_chips_revealer.set_child(Some(&chip_bar));

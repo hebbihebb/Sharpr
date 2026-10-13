@@ -27,7 +27,12 @@ cargo nextest run <name-filter>       # targeted tests
 ./check.sh                            # fmt, strict clippy, nextest, deny, machete
 ```
 
-`check.sh` runs clippy with `--all-features` for the features present in the current checkout. Unfinished `visual-search-trial` wiring is preserved on the local `visual-search-trial-wip` branch, not enabled on `viewer-reset`. That branch has no `semantic_trial.rs` and is not an all-features checkpoint.
+`check.sh` runs clippy with `--all-features` for the features present in the current checkout.
+
+Visual-search tests that need the real model are ignored by default. Point them at the files with `SHARPR_TEST_MODEL_DIR` (the folder holding both GGUF files) and `SHARPR_LLAMA_SERVER`:
+- `visual_search_ranks_by_content` (GTK): indexes four synthetic images in an isolated library and checks the ranking. Without the variables it checks only the file-name fallback.
+- `service_indexes_a_library_with_the_installed_model`: run with `XDG_DATA_HOME` pointing at a folder that has the model installed under `sharpr-models/embeddinggemma-2/`.
+- `app_pipeline_benchmark_report`: runs the app's own pipeline over the Phase 3 sample (`SHARPR_BENCH_MANIFEST`, `SHARPR_BENCH_OUTPUT`) and writes a report for `tools/benchmark-parity.py` and `tools/benchmark-score.py`. It reads private images; use it for development only.
 
 Most tests live in `#[cfg(test)]` modules next to the code. The main ones cover:
 - `library_index`

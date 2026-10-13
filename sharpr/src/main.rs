@@ -20,6 +20,7 @@ mod quality;
 mod tags;
 mod thumbnails;
 mod ui;
+mod visual_search;
 
 use app::SharprApplication;
 use gtk4::{gio, prelude::*};

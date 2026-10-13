@@ -29,7 +29,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `ops/`, `ui/ops_indicator.rs` | Events for transient background operations. There is no persistent queue. |
 | `config/settings.rs` | GSettings wrapper. Keys for removed features stay declared but are not used. |
 | `bench.rs` | Structured JSONL event log (see `development.md`) |
-| Planned `semantic_trial` | Missing module; unfinished feature wiring is preserved on `visual-search-trial-wip`, not on the default development line |
+| `visual_search/` | Visual search (Phase 5, GTK-free): model files (`files`), `llama-server` children and their loopback client (`runtime`), image preparation (`prepare`), the vector file (`store`), background indexing (`index`), and query ranking (`search`) |
 
 ## Threading
 
@@ -37,6 +37,11 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 - Heavy work runs on `std::thread::spawn` or `rayon::spawn` and sends results back over `async_channel`. Results are drained in `glib::MainContext::spawn_local`. There is no async runtime; do not add Tokio.
 - Every result that can go stale is checked against a generation counter before it is applied. This applies to the viewer, thumbnails, virtual views, search, tag popovers, and Compare.
 - The viewer never hands GTK a very large image to upload on the main thread. An sRGB image with 8-bit channels and more than about 1.15 times the screen in each direction is shown as a screen-sized copy, made on a worker (about 30–70 ms in release for 33–270 megapixels). Zoom math uses the original size, and full resolution loads only when zooming needs more pixels than the copy has.
+- **Visual search** runs EmbeddingGemma 2 in `llama-server` children that listen only on 127.0.0.1 with a random key (D24). They die with the thread that started them (`PR_SET_PDEATHSIG`).
+  - **Indexing:** a `visual-index` thread at nice 19 and idle I/O, requested after every completed fingerprint pass. It embeds each fingerprint without a vector or recorded failure, one image at a time with 2 threads, and writes each vector at once, so passes resume. Its server, with the projector, runs only while a pass has work.
+  - **Queries:** a `visual-search` thread owns a text-only server (identical query vectors, faster start). It starts at the first search and stops after 5 minutes without one. The browse worker blocks on it for the query vector, then ranks the candidates left after scope, disabled folders, and chips. File-name matches come first, then the closest 200 ("Show More" adds 200).
+  - **Match strength:** the fifth-best score after subtracting each image's closeness to generic prompts, calibrated on the judged Phase 3 sample. It isn't judged below 50 indexed candidates. The order itself stays plain closeness.
+  - **Without a model,** or before anything is indexed, words match file names as before, and the status line says so.
 - Content fingerprints are computed by one `fingerprints` thread at nice 19 and idle I/O priority, after launch and after folder opens. Passes over the same library are at least 30 s apart, and a pass is cancelled when the library or its disabled folders change. Hashed pages are dropped from the page cache. The table `file_fingerprints` caches results by path, size, and mtime; it is rebuildable.
 - Folder open runs scanning and reconciliation on a worker. The GTK side fills the store in chunks of 100 rows and yields to the main loop between chunks.
 - Search and browse use a single coalescing worker that keeps only the newest job, with a 150 ms entry delay and a cancellable library walk.
@@ -70,7 +75,9 @@ The thumbnail caches are an unbounded per-view memory cache, a global memory cac
 | `tags.sqlite3` | `~/.local/share/sharpr/` | `file_tags(path, tag)` and `image_quality` (sharpness) | Tags: **no** |
 | GSettings `io.github.hebbihebb.Sharpr` | dconf | libraries, disabled folders, and preferences | No |
 | `~/.config/sharpr/settings.json` | config dir | legacy file; current code does not read it | n/a |
-| Thumbnails and logs | `~/.cache/sharpr/` | disk thumbnails and bench logs | Yes |
+| `visual-search.sqlite` | `~/.local/share/sharpr/` | visual-search vectors and failures, keyed by fingerprint and a model key (model and projector hashes plus `PREPARATION_VERSION`), and cached model-file hashes | Yes: delete it to reindex; nothing else depends on it |
+| Model folder | `~/.local/share/sharpr-models/embeddinggemma-2/` | the two GGUF files and, for native builds, `runtime/llama-server` with its libraries. Installed by the user (D23); Sharpr only reads it | Yes, by reinstalling |
+| Thumbnails and logs | `~/.cache/sharpr/` | disk thumbnails, bench logs, and `logs/llama-server-{images,queries}.log` | Yes |
 
 Rules:
 

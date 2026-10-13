@@ -2,13 +2,26 @@
 
 ## Active Milestone
 
-**Phase 4 (file identity and buckets) is done: committed and verified, not deployed** (`ROADMAP.md`).
-- **Fingerprints** are made in the background at the lowest priority; progress shows in Preferences.
-- **Buckets have their own member lists.** Members follow moved and renamed files and identical copies; missing ones are counted, never dropped.
-- **The one-time migration** was checked on a copy of the live data: all 6 buckets came through identical, and all 7,718 tag rows were unchanged.
-- **Next:**
-  - Deployed in `bf12e07`; the user checks the real library.
-  - Then Phase 5: visual search with EmbeddingGemma, with model delivery and runtime decided (D23, D24).
+**Phase 5: visual search and tag retirement** (`ROADMAP.md`). Started October 13. Phase 4 is deployed in `bf12e07`, not yet checked by the user.
+
+Plan, one commit per unit:
+1. **Runtime and index (GTK-free `src/visual_search/`).** Done with unit 2 in one commit (committed, verified, not deployed).
+   - Model folder `$XDG_DATA_HOME/sharpr-models/embeddinggemma-2/` (D23) with the two GGUF files and `runtime/llama-server`. Flatpak: `/app/bin/llama-server`.
+   - `llama-server` children on `127.0.0.1`, a random port and key (D24), stopped when idle. Indexing runs one with the projector at nice 19 and 2 threads. Queries use a second, text-only one, so a search never waits behind an image.
+   - Images are prepared like the benchmark: oriented, fit within 768×768, RGB PNG.
+   - Vectors go in `$XDG_DATA_HOME/sharpr/visual-search.sqlite`, keyed by fingerprint, model hash, and preprocessing version. Failures are recorded, not retried every pass.
+   - Indexing passes run after each fingerprint pass and are resumable. Preferences shows the coverage or why indexing is off.
+2. **Search.** Done with unit 1. Still open: the in-app parity run over the 1,000-image sample (`app_pipeline_benchmark_report`); a 10-image pilot matched the benchmark vectors at cosine 0.997 or better. Words go to visual search when a model is installed.
+   - Ranking happens after scope, disabled folders, and chips.
+   - Results: the top 200, then "load more".
+   - Coverage and match strength are shown; strength is calibrated on the judged sample.
+   - Name search stays as the fallback.
+   - Check parity with the Phase 3 results inside the app.
+3. **Tag retirement.** Remove the tag popover, Ctrl+T, and tag pills. Offer each manual tag no bucket uses as a new bucket. Tag rows stay.
+4. **Packaging.**
+   - The installer places the model and runtime.
+   - A llama.cpp module goes in the Flatpak manifest, without network features.
+   - Update the docs.
 
 ## State (October 13, 2026)
 
