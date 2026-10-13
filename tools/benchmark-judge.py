@@ -143,7 +143,10 @@ PAGE = r'''<!doctype html>
 <style>
   body { font: 14px system-ui, sans-serif; background: #1e1e1e; color: #eee; margin: 0 16px 80px; }
   header { position: sticky; top: 0; background: #1e1e1e; padding: 12px 0; z-index: 1;
-           display: flex; gap: 16px; align-items: center; border-bottom: 1px solid #444; }
+           display: flex; gap: 16px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid #444; }
+  header p { margin: 0; flex: 1 1 32em; color: #ccc; }
+  .search { color: #fff; }
+  h2 label { font-size: 14px; font-weight: normal; color: #ccc; }
   section { margin: 24px 0; }
   h2 { font-size: 18px; margin: 0 0 8px; display: flex; gap: 12px; align-items: center; }
   .grid { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -153,7 +156,10 @@ PAGE = r'''<!doctype html>
   button { font: inherit; padding: 6px 14px; }
 </style>
 <header>
-  <strong>Click every relevant image, then tick "Judged".</strong>
+  <p><strong>For each search below, click every picture that matches its words.</strong>
+     A green frame marks a match; click again to undo. Then tick "Judged" for that search.
+     Progress is kept in this browser, so you can stop and come back. When all 30 are
+     judged, press "Save judgments" and keep the downloaded file.</p>
   <span id="progress"></span>
   <button id="save">Save judgments</button>
 </header>
@@ -173,7 +179,10 @@ for (const q of data.queries) {
   const e = entry(q);
   const section = document.createElement('section');
   const h = document.createElement('h2');
-  h.textContent = q.text;
+  const words = document.createElement('span');
+  words.className = 'search';
+  words.textContent = `Search: “${q.text}”`;
+  h.append(words);
   const select = document.createElement('select');
   for (const c of data.categories) select.add(new Option(c, c, false, c === e.category));
   select.onchange = () => { e.category = select.value; persist(); };
@@ -182,7 +191,9 @@ for (const q of data.queries) {
   box.type = 'checkbox'; box.checked = e.judged;
   box.onchange = () => { e.judged = box.checked; section.classList.toggle('done', e.judged); persist(); progress(); };
   judged.append(box, ' Judged');
-  h.append(select, judged);
+  const kind = document.createElement('label');
+  kind.append('Kind: ', select);
+  h.append(kind, judged);
   const grid = document.createElement('div');
   grid.className = 'grid';
   for (const img of q.images) {
