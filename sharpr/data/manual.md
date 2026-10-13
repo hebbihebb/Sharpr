@@ -17,6 +17,8 @@ Choose a folder in the Library sidebar to load its images. Thumbnails decode in 
 | Ctrl + T | Open tag editor |
 | Ctrl + F | Search names and tags; filter words such as 4k, png or 16:9 become chips |
 | Ctrl + B | Add the selected images to a bucket |
+| Ctrl + I | Image info: file, folder, camera, resolution score, buckets, tags |
+| Shift + F10 | Image menu: copies, compare, file actions |
 | F9 | Toggle Library sidebar |
 | F11 | Toggle presentation mode |
 | Delete | Move selected images to trash |

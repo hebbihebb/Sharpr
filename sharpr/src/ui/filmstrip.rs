@@ -24,6 +24,7 @@ type SearchDismissedCallback = Box<dyn Fn() + 'static>;
 type TrashRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type AddToCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type CopyRequestedCallback = Box<dyn Fn(CopyKind, PathBuf) + 'static>;
+type InfoRequestedCallback = Box<dyn Fn(PathBuf) + 'static>;
 
 /// Copy dialogs offered on an image's right-click menu (decision D21).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +61,9 @@ fn build_context_menu_model(in_collection: bool, is_multi: bool) -> gio::Menu {
     let menu = gio::Menu::new();
 
     let sec1 = gio::Menu::new();
+    if !is_multi {
+        sec1.append_item(&menu_item("Info", "filmstrip.info", Some("<Control>i")));
+    }
     sec1.append_item(&menu_item(
         "Open in Default Viewer",
         "filmstrip.open",
@@ -243,6 +247,7 @@ mod imp {
         pub trash_requested_cb: RefCell<Option<TrashRequestedCallback>>,
         pub add_to_collection_requested_cb: RefCell<Option<AddToCollectionRequestedCallback>>,
         pub copy_requested_cb: RefCell<Option<CopyRequestedCallback>>,
+        pub info_requested_cb: RefCell<Option<InfoRequestedCallback>>,
         pub action_selection_changed_cb: RefCell<Option<ActionSelectionChangedCallback>>,
         pub remove_from_collection_requested_cb:
             RefCell<Option<RemoveFromCollectionRequestedCallback>>,
@@ -324,6 +329,7 @@ mod imp {
                 trash_requested_cb: RefCell::new(None),
                 add_to_collection_requested_cb: RefCell::new(None),
                 copy_requested_cb: RefCell::new(None),
+                info_requested_cb: RefCell::new(None),
                 action_selection_changed_cb: RefCell::new(None),
                 remove_from_collection_requested_cb: RefCell::new(None),
                 copy_to_folder_requested_cb: RefCell::new(None),
@@ -1118,6 +1124,26 @@ impl FilmstripPane {
             });
         }
         group.add_action(&add_collection);
+
+        let info = gio::SimpleAction::new("info", None);
+        {
+            let w = self.downgrade();
+            info.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let path = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.clicked_path.clone());
+                if let Some(path) = path {
+                    if let Some(cb) = widget.imp().info_requested_cb.borrow().as_ref() {
+                        cb(path);
+                    }
+                }
+            });
+        }
+        group.add_action(&info);
 
         for (name, kind) in [
             ("crop-copy", CopyKind::Crop),
@@ -1916,6 +1942,10 @@ impl FilmstripPane {
             row = current.next_sibling();
         }
         false
+    }
+
+    pub fn connect_info_requested<F: Fn(PathBuf) + 'static>(&self, f: F) {
+        *self.imp().info_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn connect_copy_requested<F: Fn(CopyKind, PathBuf) + 'static>(&self, f: F) {

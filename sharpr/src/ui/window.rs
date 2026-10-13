@@ -2406,6 +2406,20 @@ impl SharprWindow {
         // Alt+Left / Alt+Right — navigate between images.
         // Scoped to the window so it fires regardless of focus position.
         // -----------------------------------------------------------------------
+        // Right-click → Info: show the clicked image, then its Info panel (D18).
+        {
+            let state_c = state.clone();
+            let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
+            filmstrip.connect_info_requested(move |path| {
+                let index = state_c.borrow().library.index_of_path(&path);
+                if let Some(index) = index {
+                    filmstrip_c.navigate_to(index);
+                }
+                viewer_c.show_info();
+            });
+        }
+
         // Crop, WebP and Resize Copy from the right-click menu.
         {
             let window_weak = self.downgrade();
@@ -2873,6 +2887,18 @@ impl SharprWindow {
                     } else {
                         glib::Propagation::Proceed
                     }
+                })),
+            ));
+        }
+
+        // Ctrl+I — the current image's Info panel (decision D18).
+        {
+            let viewer_i = viewer.clone();
+            shortcuts.add_shortcut(gtk4::Shortcut::new(
+                Some(gtk4::ShortcutTrigger::parse_string("<Control>i").unwrap()),
+                Some(gtk4::CallbackAction::new(move |_, _| {
+                    viewer_i.show_info();
+                    glib::Propagation::Stop
                 })),
             ));
         }

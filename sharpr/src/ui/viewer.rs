@@ -188,6 +188,7 @@ mod imp {
         /// result if it no longer matches (i.e. a newer load was requested).
         pub load_gen: Cell<u64>,
         pub tag_refresh_gen: Cell<u64>,
+        pub info_pending: Cell<bool>,
         pub tag_summary_gen: Cell<u64>,
         /// Handle for submitting metadata load requests to the shared metadata worker.
         pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
@@ -404,6 +405,7 @@ mod imp {
                 drag_adjustments: Cell::new((0.0, 0.0)),
                 load_gen: Cell::new(0),
                 tag_refresh_gen: Cell::new(0),
+                info_pending: Cell::new(false),
                 tag_summary_gen: Cell::new(0),
                 metadata_handle: RefCell::new(None),
                 base_quality: RefCell::new(None),
@@ -598,9 +600,21 @@ impl ViewerPane {
                 }
                 imp.metadata_chip.update_metadata(&result.metadata);
                 viewer.update_quality_indicator(&result.metadata);
+                if imp.info_pending.replace(false) {
+                    imp.metadata_chip.show_info();
+                }
                 viewer.refresh_tag_summary();
             }
         });
+    }
+
+    /// Opens the image Info panel, now or as soon as the current image's
+    /// details have loaded (decision D18).
+    pub fn show_info(&self) {
+        let imp = self.imp();
+        if !imp.metadata_chip.show_info() {
+            imp.info_pending.set(imp.current_path.borrow().is_some());
+        }
     }
 
     /// Clear the viewer (called when the folder changes).
@@ -647,6 +661,7 @@ impl ViewerPane {
         imp.spinner.set_visible(true);
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
+        imp.metadata_chip.update_location(&path);
         imp.metadata_chip.update_tags(&[]);
         imp.metadata_chip.update_collections(&[]);
         imp.metadata_chip.update_duplicate_count(0);

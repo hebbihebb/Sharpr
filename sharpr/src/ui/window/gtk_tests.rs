@@ -54,6 +54,21 @@ fn screenshot(window: &SharprWindow, path: &Path) {
         .unwrap();
 }
 
+/// Renders a single widget, such as a popover, with the window's renderer.
+fn screenshot_widget(window: &SharprWindow, widget: &gtk4::Widget, path: &Path) {
+    let paintable = gtk4::WidgetPaintable::new(Some(widget));
+    let snapshot = gtk4::Snapshot::new();
+    paintable.snapshot(&snapshot, widget.width() as f64, widget.height() as f64);
+    let node = snapshot
+        .to_node()
+        .expect("visible widget has a render node");
+    let renderer = window.renderer().expect("realized window has a renderer");
+    renderer
+        .render_texture(&node, None)
+        .save_to_png(path)
+        .unwrap();
+}
+
 #[test]
 #[ignore = "requires isolated GSettings/data directories and a graphical session"]
 fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
@@ -187,6 +202,19 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     let settle = std::time::Instant::now();
     pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
     screenshot(&window, &root.parent().unwrap().join("search-chips.png"));
+    // Ctrl+I's Info panel opens once the image's details are loaded (D18).
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+    viewer.show_info();
+    let info = viewer.imp().metadata_chip.imp().popover.clone();
+    pump_until(|| info.is_visible());
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(300));
+    screenshot_widget(
+        &window,
+        info.upcast_ref(),
+        &root.parent().unwrap().join("info-panel.png"),
+    );
+    info.popdown();
     window
         .imp()
         .browse_options

@@ -139,7 +139,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - Typing anywhere opens search with that text; Ctrl+F also opens it.
    - The scope switch (this folder or bucket, or the whole library) is visible.
    - Space stays free.
-4. **Quiet interface (D18).** Header overflow at 1024×600 is fixed: the Tags page and page switcher were removed on 2026-10-13 (D20), and a screenshot confirms the close button is visible. **Remaining:** the trimmed info chip and the Info panel (D18, confirmed 2026-10-13), and moving image actions to the right-click menu (D21).
+4. **Quiet interface (D18).** Header overflow at 1024×600 is fixed: the Tags page and page switcher were removed on 2026-10-13 (D20), and a screenshot confirms the close button is visible. The trimmed chip and the Info panel (D18) and the right-click image actions (D21) were done on 2026-10-13. **Item 4 is done.**
    - Always visible: resolution and format (with a below-4K hint) and the image's real bucket membership, meaning every effective tag within the active library.
    - Everything else (filename, position, size, dates, EXIF) moves to an Info panel opened from a key or the context menu.
 5. ~~Fast curation from results (D5, D10).~~ Done October 12. The right-click picker (with "New Collection…") and drag-to-sidebar already existed; Ctrl+B now adds the selection.

@@ -146,7 +146,16 @@ The user judged scrolling and switching as "everything works and feels fast". Th
   - The ≡ menu has no Image section; it is an app menu.
   - Shift+F10 and the Menu key open the image menu for the current image.
   - The GTK test covers both the keyboard path and the copy-dialog entry point.
-- **Next:** the D18 info chip and Info panel.
+- **D18, done (committed, not yet deployed):**
+  - The corner chip shows only `W×H · FORMAT`, a yellow "Below 4K" hint, and "In <buckets>".
+  - The Info panel opens by clicking the chip, with Ctrl+I, or with right-click → Info, which first moves to the clicked image. It shows filename, folder, size and megapixels, camera details, the resolution meter, buckets, tags, and similar images.
+  - It waits for the image's details instead of showing stale ones.
+  - GTK screenshots were checked at 1024×600.
+
+**Phase 2 status.** Items 1–9 and 11 are done, and item 10 is deferred. Still open:
+- suggestions while typing (part of item 2)
+- the D20 docs follow-up
+- item 12 (ongoing extraction)
 
 **Item 11, main-thread work: done (committed, not yet deployed).**
 - **Filmstrip badge colours:** binding a row no longer queries SQLite. A worker builds a path → colour map whenever bucket colours change, a viewer tag edit lands, or a tag is deleted. Until the first map is ready, binding falls back to the old query.
