@@ -3,8 +3,8 @@
 ## Active Milestone
 
 Phase 2 follow-ups from the acceptance log (`ROADMAP.md`, Phase 2 status):
-1. Large images in the viewer cause main-loop stalls of 100–434 ms.
-2. One folder open waited 2.9 s on its database read.
+1. **Viewer stalls on large images: fixed** in `f619d64` (committed and verified, not deployed). Very large images are shown as screen-sized copies; full resolution loads on zoom.
+2. **Slow folder-open read (2.9 s once):** cause unknown. `8cb13f5` logs slow database-connection waits (`index.pool_wait`) and the cached-read time. It needs a session log from a deployed build to find the cause.
 
 Phases 1–2 were accepted on October 13. The Phase 0–2 history is in `docs/archive/history.md`.
 
@@ -26,12 +26,13 @@ Phases 1–2 were accepted on October 13. The Phase 0–2 history is in `docs/ar
 - **Archive branches, kept:** `preserve/october-12-wip` and `visual-search-trial-wip`.
 - **Product direction:** `docs/reference/product.md` (D1–D21). Tags are frozen; the Tags page has been removed (D20).
 
-## Next User Check (Build `e9c142f`)
+## Next User Check (Build `e9c142f`, or `f619d64` If Deployed)
 
 1. Scroll fast in Wallpapers and switch between big folders; it should feel as before.
 2. Open a bucket and start typing a search straight away; the results come from that bucket.
 3. Add a visible image to a coloured bucket (Ctrl+B); its number pill takes the colour at once.
 4. Remove an image from Art; the corner chip no longer lists Art › Diffusion.
+5. With `f619d64`: open a very large image (8K or bigger). It appears without a freeze and looks sharp. Zooming in to 100% sharpens it fully, possibly after a short pause.
 
 ## Performance Baseline (Phase 0, Build `5832010`, October 12)
 
