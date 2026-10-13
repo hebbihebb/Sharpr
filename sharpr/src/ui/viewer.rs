@@ -2,7 +2,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Once};
@@ -1355,13 +1355,17 @@ impl ViewerPane {
             }
         };
 
-        let (db, index) = imp
+        let (db, index, library_id) = imp
             .state
             .borrow()
             .as_ref()
             .map(|state| {
                 let st = state.borrow();
-                (st.tags.clone(), st.library_index.clone())
+                (
+                    st.tags.clone(),
+                    st.library_index.clone(),
+                    st.settings.active_library_id.clone(),
+                )
             })
             .unwrap_or_default();
         let generation = imp.tag_summary_gen.get().wrapping_add(1);
@@ -1378,19 +1382,15 @@ impl ViewerPane {
                     .map(|db| db.tags_for_path_checked(&worker_path))
                     .transpose()?
                     .unwrap_or_default();
+                // The active library's buckets, as the sidebar shows them.
                 let collections = index
                     .as_ref()
-                    .map(|index| index.list_collections())
+                    .map(|index| index.list_collections_for_library(library_id.as_deref()))
                     .transpose()
                     .map_err(|e| e.to_string())?
                     .unwrap_or_default();
-                let tag_set: HashSet<&str> = tags.iter().map(String::as_str).collect();
-                let names = collections
+                let names = crate::buckets::buckets_containing(&collections, &tags)
                     .iter()
-                    .filter(|c| {
-                        tag_set.contains(c.primary_tag.as_str())
-                            || c.extra_tags.iter().any(|t| tag_set.contains(t.as_str()))
-                    })
                     .map(|c| c.name.clone())
                     .collect::<Vec<_>>();
                 let duplicates = index

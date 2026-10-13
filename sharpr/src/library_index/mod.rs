@@ -991,26 +991,7 @@ impl LibraryIndex {
     }
 
     pub fn collection_effective_tags(&self, collection_id: i64) -> rusqlite::Result<Vec<String>> {
-        let collections = self.list_collections()?;
-        let by_id: HashMap<i64, Collection> = collections.into_iter().map(|c| (c.id, c)).collect();
-        let mut current_id = Some(collection_id);
-        let mut lineage = Vec::new();
-        while let Some(id) = current_id {
-            let Some(collection) = by_id.get(&id) else {
-                break;
-            };
-            lineage.push(collection.clone());
-            current_id = collection.parent_id;
-        }
-        lineage.reverse();
-        let mut tags = Vec::new();
-        for collection in lineage {
-            push_unique_tag(&mut tags, &collection.primary_tag);
-            for tag in &collection.extra_tags {
-                push_unique_tag(&mut tags, tag);
-            }
-        }
-        Ok(tags)
+        Ok(effective_tags_in(&self.list_collections()?, collection_id))
     }
 
     pub fn touch_collection(&self, collection_id: i64) -> rusqlite::Result<()> {
@@ -1308,6 +1289,34 @@ fn normalize_collection_tags(tags: &[String]) -> Vec<String> {
         }
     }
     normalized
+}
+
+/// The tags an image needs to belong to `collection_id`: its own tags plus all
+/// of its ancestors' tags, from the root down.
+pub fn effective_tags_in(collections: &[Collection], collection_id: i64) -> Vec<String> {
+    let by_id: HashMap<i64, &Collection> = collections.iter().map(|c| (c.id, c)).collect();
+    let mut current_id = Some(collection_id);
+    let mut lineage = Vec::new();
+    while let Some(id) = current_id {
+        let Some(collection) = by_id.get(&id) else {
+            break;
+        };
+        // A corrupt parent cycle must not loop forever.
+        if lineage.iter().any(|c: &&Collection| c.id == id) {
+            break;
+        }
+        lineage.push(*collection);
+        current_id = collection.parent_id;
+    }
+    lineage.reverse();
+    let mut tags = Vec::new();
+    for collection in lineage {
+        push_unique_tag(&mut tags, &collection.primary_tag);
+        for tag in &collection.extra_tags {
+            push_unique_tag(&mut tags, tag);
+        }
+    }
+    tags
 }
 
 fn push_unique_tag(tags: &mut Vec<String>, tag: &str) {

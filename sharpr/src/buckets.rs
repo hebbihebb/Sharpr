@@ -10,9 +10,25 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::library_index::{normalize_collection_tag, Collection, LibraryIndex};
+use crate::library_index::{effective_tags_in, normalize_collection_tag, Collection, LibraryIndex};
 use crate::tags::db::TagChange;
 use crate::tags::TagDatabase;
+
+/// The buckets an image with `tags` belongs to: those whose every effective
+/// tag it carries. This is the same rule that opening a bucket uses.
+pub fn buckets_containing<'a>(
+    collections: &'a [Collection],
+    tags: &[String],
+) -> Vec<&'a Collection> {
+    let tags: HashSet<&str> = tags.iter().map(String::as_str).collect();
+    collections
+        .iter()
+        .filter(|c| {
+            let effective = effective_tags_in(collections, c.id);
+            !effective.is_empty() && effective.iter().all(|t| tags.contains(t.as_str()))
+        })
+        .collect()
+}
 
 fn in_root(paths: Vec<PathBuf>, root: Option<&Path>) -> Vec<PathBuf> {
     paths
@@ -320,6 +336,47 @@ mod tests {
         assert!(f.members(iceland).is_empty());
         assert_eq!(f.members(norway), vec![photo.clone()]);
         assert_eq!(f.members(trips), vec![photo]);
+    }
+
+    #[test]
+    fn buckets_containing_matches_what_opening_each_bucket_shows() {
+        let f = Fixture::new("containing");
+        let art = f.bucket("Art", None);
+        let diffusion = f.bucket("Diffusion", Some(art));
+        let blue = f
+            .index
+            .create_collection("test", None, "Blue", &["sky".into()], None, None)
+            .unwrap()
+            .id;
+        let image = f.image("render.png");
+        let check = |expected: &[i64]| {
+            let collections = f.index.list_collections().unwrap();
+            let tags = f.tags.tags_for_path(&image);
+            let mut found: Vec<i64> = buckets_containing(&collections, &tags)
+                .iter()
+                .map(|c| c.id)
+                .collect();
+            let mut opened: Vec<i64> = collections
+                .iter()
+                .map(|c| c.id)
+                .filter(|id| f.members(*id).contains(&image))
+                .collect();
+            found.sort();
+            opened.sort();
+            assert_eq!(found, opened, "chip and bucket view disagree");
+            assert_eq!(found, expected);
+        };
+
+        add_to_bucket(&f.index, &f.tags, diffusion, std::slice::from_ref(&image)).unwrap();
+        check(&[art, diffusion]);
+        // Removing from Art leaves the `diffusion` tag, but not the membership.
+        remove_from_bucket(&f.index, &f.tags, art, std::slice::from_ref(&image)).unwrap();
+        check(&[]);
+        // One of a bucket's tags alone is not membership.
+        f.tags.add_tag(&image, "sky");
+        check(&[]);
+        add_to_bucket(&f.index, &f.tags, blue, std::slice::from_ref(&image)).unwrap();
+        check(&[blue]);
     }
 
     #[test]
