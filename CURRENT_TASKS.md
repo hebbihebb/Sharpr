@@ -50,7 +50,7 @@ The log is `~/.cache/sharpr/logs/run-1791843839575-1067250.jsonl`.
 - **Phase 3:** judge the search results in `.tmp/search-judge.html` (blind, 908 results), save `search-judgments.json`, then run `tools/benchmark-score.py`. That decides visual search (Phase 4/5) and tag retirement.
 - **Thumbnail memory:** keep whole-folder preload, or cap it. Decide after measuring the deployed build (`ROADMAP.md` Phase 2, item 8).
 - **Phase 4 (fingerprint-keyed buckets):** starts only after Phases 1–2 are accepted, because it migrates bucket data.
-- **Independent audit:** skipped by the user on October 13, after two failed attempts (low memory, then model capacity). The user's acceptance test stands instead.
+- **Independent audit (October 13):** `docs/archive/audit-2026-10-13.md`, by Codex `gpt-6.1-sol`. It found 12 issues: two data-safety gaps (renaming onto a vacated filename drops that name's kept tags; the no-replace fallback on FAT/FUSE drives has a race), a bucket-open/search race, and smaller UI and benchmark-tool defects. Browsing tests can go ahead. Which fixes to make, and when, is the user's decision.
 
 ## Guardrails
 
