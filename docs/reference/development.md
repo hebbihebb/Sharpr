@@ -163,8 +163,9 @@ Phase 3 judging and analysis, run with the benchmark environment `.tmp/search-be
 # blind judging sheet: pools each query's top 20 across reports, then shuffles them
 tools/benchmark-judge.py --manifest .tmp/search-manifest.json \
     --report .tmp/gemma-native.json --report .tmp/siglip-reference.json --output .tmp/search-judge.html
-# after saving search-judgments.json from the sheet:
-tools/benchmark-score.py --judgments ~/Downloads/search-judgments.json \
+# after saving search-judgments.json from the sheet (queries missing from the
+# manifest, the report or the judgments fail; every category needs queries):
+tools/benchmark-score.py --manifest .tmp/search-manifest.json --judgments ~/Downloads/search-judgments.json \
     --report .tmp/gemma-native.json --report .tmp/siglip-reference.json --detail
 # native versus reference agreement of the same model
 tools/benchmark-parity.py --manifest .tmp/search-manifest.json \

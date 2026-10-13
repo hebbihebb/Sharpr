@@ -11,15 +11,16 @@ HTML file in a browser, click the relevant images, mark each query as judged,
 pick its category, then press "Save judgments" to download a JSON file for
 tools/benchmark-score.py. Progress is kept in the browser between visits.
 
-Previews come from the GNOME thumbnail cache or are generated once into
---previews (needs Pillow, e.g. the .tmp/search-benchmark environment). Everything stays
-local; keep the output under .tmp/ because it lists private image paths.
+Previews come from the GNOME thumbnail cache when it is fresh for the current
+file, or are generated once into --previews, keyed by path, size and mtime (needs
+Pillow, e.g. the .tmp/search-benchmark environment). Everything stays local; keep
+the output under .tmp/ because it lists private image paths.
 """
 import argparse
 import hashlib
-import html
 import json
 import random
+import struct
 import subprocess
 from pathlib import Path
 from urllib.parse import quote
@@ -38,16 +39,51 @@ def guess_category(text):
     return 'subject'
 
 
+def png_text(path):
+    """The tEXt chunks of a PNG file as a dict (stops at the image data)."""
+    chunks = {}
+    with open(path, 'rb') as f:
+        if f.read(8) != b'\x89PNG\r\n\x1a\n':
+            return chunks
+        while header := f.read(8):
+            if len(header) < 8:
+                break
+            length, kind = struct.unpack('>I4s', header)
+            if kind in (b'IDAT', b'IEND'):
+                break
+            body = f.read(length)
+            f.seek(4, 1)
+            if kind == b'tEXt' and b'\0' in body:
+                key, value = body.split(b'\0', 1)
+                chunks[key.decode('latin-1')] = value.decode('latin-1')
+    return chunks
+
+
+def fresh_thumbnail(thumb, stat):
+    """A GNOME thumbnail is valid only if it records the source's current mtime
+    (and size, when present), as the freedesktop thumbnail spec requires."""
+    try:
+        text = png_text(thumb)
+    except OSError:
+        return False
+    if text.get('Thumb::MTime') != str(int(stat.st_mtime)):
+        return False
+    return 'Thumb::Size' not in text or text['Thumb::Size'] == str(stat.st_size)
+
+
 def preview(path, previews):
-    """A small browser-friendly preview for `path`: a cached GNOME thumbnail,
-    or a 320 px JPEG generated into `previews` (JPEG XL via ImageMagick)."""
+    """A small browser-friendly preview for `path`: a fresh cached GNOME
+    thumbnail, or a 320 px JPEG generated into `previews` (JPEG XL via
+    ImageMagick). Previews always show the file's current pixels."""
+    stat = Path(path).stat()
     uri = 'file://' + quote(str(Path(path).resolve()))
     digest = hashlib.md5(uri.encode()).hexdigest()
     for size in ('large', 'x-large', 'normal'):
         thumb = Path.home() / '.cache/thumbnails' / size / f'{digest}.png'
-        if thumb.exists():
+        if thumb.exists() and fresh_thumbnail(thumb, stat):
             return thumb.as_uri()
-    target = previews / f'{hashlib.sha256(str(path).encode()).hexdigest()}.jpg'
+    key = f'{path}\0{stat.st_size}\0{stat.st_mtime_ns}'
+    target = previews / f'{hashlib.sha256(key.encode()).hexdigest()}.jpg'
     if not target.exists():
         previews.mkdir(parents=True, exist_ok=True)
         if Path(path).suffix.lower() == '.jxl':
@@ -91,7 +127,10 @@ def main():
 
     data = json.dumps({'key': f"sharpr-judge-{manifest.get('seed', 0)}", 'categories': CATEGORIES,
                        'queries': queries})
-    page = PAGE.replace('__DATA__', html.escape(data, quote=False).replace('</', '<\\/'))
+    # Escape only for the raw-text <script> element; JSON.parse restores every
+    # character, so queries and paths keep their exact identity.
+    safe = data.replace('&', '\\u0026').replace('<', '\\u003c').replace('>', '\\u003e')
+    page = PAGE.replace('__DATA__', safe)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(page)
     total = sum(len(q['images']) for q in queries)
