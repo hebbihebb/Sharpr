@@ -39,7 +39,8 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 
 Known exceptions that still block the GTK thread are tracked in `ROADMAP.md`:
 - synchronous trash, move, copy, and rename (Backlog)
-- unchunked `load_virtual` after a bucket's members arrive
+
+Bucket and search results replace the filmstrip's rows in one `splice`, so the sorted model and list view update once per view, not once per row. Creating the row objects stays on the GTK thread: about 11 ms for 6,000 rows in a debug build.
 
 The per-row tag lookup, bucket membership query, and virtual-view path scans moved off the GTK thread on October 12 (Phase 2 item 11).
 

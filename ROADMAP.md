@@ -168,7 +168,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
     - So the header-read `DimensionCache`s are a correctness guard, not waste. Each path is read once per session, on a worker.
     - Unify only together with an additive migration that marks trusted rows (or re-indexes them), ideally with Phase 4's file identity.
     Original scope: the library index's oriented width and height. Remove the extra `DimensionCache`s and the repeated header reads.
-11. ~~Move the remaining GTK-thread work off it.~~ Done October 12: badge colours, duplicate grouping, bucket open, virtual-view lookups, and the whole-library search cache. Sidebar counts were already on a worker.
+11. ~~Move the remaining GTK-thread work off it.~~ Done October 12: badge colours, duplicate grouping, bucket open, virtual-view lookups, and the whole-library search cache. Sidebar counts were already on a worker. On October 13 (audit) the last bind-time tag query was removed, and bucket and search results fill the store with one `splice` instead of a signal per row; this replaces the planned chunked load.
    Original scope:
    - Fill the tag lookup during filmstrip bind off-thread.
    - Open buckets on a worker with the checked query and a chunked store load.

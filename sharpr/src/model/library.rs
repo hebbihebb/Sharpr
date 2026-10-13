@@ -504,17 +504,19 @@ impl LibraryManager {
         }
     }
 
-    /// Populate the current store with a virtual image set.
+    /// Populate the current store with a virtual image set. The rows replace
+    /// the old ones in one `items-changed` signal, so the sorted model and the
+    /// list view update once instead of once per row.
     pub fn load_virtual(&mut self, paths: &[PathBuf]) -> (u64, Vec<PathBuf>) {
         let generation = focused_image_set::next_generation();
         self.virtual_generation = generation;
-        self.store.remove_all();
         self.path_to_index.clear();
         self.active_thumbnail_cache.clear();
         self.selected_index = None;
         self.current_folder = None;
         let mut metadata_pending = Vec::new();
         let mut repeated = false;
+        let mut entries = Vec::with_capacity(paths.len());
         for (index, path) in paths.iter().enumerate() {
             let entry = ImageEntry::new(path.clone());
             if let Some(cached) = self.metadata_cache.get(path) {
@@ -528,12 +530,13 @@ impl LibraryManager {
             if let Some(texture) = self.thumbnail_cache.get(path) {
                 entry.set_thumbnail(Some(texture.clone()));
             }
-            self.store.append(&entry);
+            entries.push(entry);
             repeated |= self
                 .path_to_index
                 .insert(path.clone(), index as u32)
                 .is_some();
         }
+        self.store.splice(0, self.store.n_items(), &entries);
         self.virtual_has_repeated_paths = repeated;
         (generation, metadata_pending)
     }
@@ -541,16 +544,16 @@ impl LibraryManager {
     /// Restore a captured view without rescanning or decoding on the GTK thread.
     pub fn restore_view(&mut self, entries: &[ImageEntry], folder: Option<PathBuf>) {
         self.virtual_generation = focused_image_set::next_generation();
-        self.store.remove_all();
         self.path_to_index.clear();
         self.active_thumbnail_cache.clear();
         self.current_folder = folder;
         self.selected_index = None;
         let mut repeated = false;
         for (i, entry) in entries.iter().enumerate() {
-            self.store.append(entry);
             repeated |= self.path_to_index.insert(entry.path(), i as u32).is_some();
         }
+        // One signal for the whole view, as in load_virtual.
+        self.store.splice(0, self.store.n_items(), entries);
         self.virtual_has_repeated_paths = repeated;
     }
 
