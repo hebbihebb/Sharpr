@@ -1,5 +1,5 @@
 /*
- * OSD overlay elements (.tag-osd, .zoom-osd, .compare-corner-label, .osd)
+ * OSD overlay elements (.zoom-osd, .compare-corner-label, .osd)
  * float directly over arbitrary image content in the viewer and compare page.
  * Their background colors are intentionally hardcoded dark rather than using
  * Adwaita theme variables (@window_bg_color etc.) because Adwaita variables
@@ -10,35 +10,6 @@
  * GNOME Accessibility Settings → High Contrast.
  */
 
-.tag-osd {
-    padding: 8px 10px;
-    border-radius: 16px;
-    background-color: rgba(30, 30, 30, 0.82);
-    backdrop-filter: blur(12px);
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
-    color: white;
-}
-.tag-osd-pill,
-.tag-osd-add {
-    border-radius: 999px;
-    min-height: 28px;
-    background-color: rgba(255, 255, 255, 0.12);
-    color: white;
-}
-.tag-osd-pill {
-    padding: 0 10px;
-}
-.tag-osd-pill:hover,
-.tag-osd-add:hover {
-    background-color: rgba(255, 255, 255, 0.20);
-}
-.tag-osd-add {
-    min-width: 28px;
-    padding: 0;
-}
-.tag-popover-chip {
-    padding: 4px 8px;
-}
 .zoom-osd {
     padding: 10px 18px;
     border-radius: 18px;

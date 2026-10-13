@@ -26,7 +26,6 @@ type CollectionMoveRequestedCallback = Box<dyn Fn(i64) + 'static>;
 type CollectionReparentRequestedCallback = Box<dyn Fn(i64, i64) + 'static>;
 type CollectionDeleteRequestedCallback = Box<dyn Fn(i64) + 'static>;
 type DropPathsToCollectionCallback = Box<dyn Fn(i64, Vec<std::path::PathBuf>) + 'static>;
-type TagPromotedToCollectionCallback = Box<dyn Fn(String) + 'static>;
 
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "jxl", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
@@ -71,7 +70,6 @@ mod imp {
         pub collection_reparent_requested_cb: RefCell<Option<CollectionReparentRequestedCallback>>,
         pub collection_delete_requested_cb: RefCell<Option<CollectionDeleteRequestedCallback>>,
         pub drop_paths_to_collection_cb: RefCell<Option<DropPathsToCollectionCallback>>,
-        pub tag_promoted_to_collection_cb: RefCell<Option<TagPromotedToCollectionCallback>>,
         pub suppress_folder_signal: Cell<bool>,
         pub suppress_collection_signal: Cell<bool>,
         pub collapsed_folder_paths: RefCell<HashSet<PathBuf>>,
@@ -110,7 +108,6 @@ mod imp {
                 collection_reparent_requested_cb: RefCell::new(None),
                 collection_delete_requested_cb: RefCell::new(None),
                 drop_paths_to_collection_cb: RefCell::new(None),
-                tag_promoted_to_collection_cb: RefCell::new(None),
                 suppress_folder_signal: Cell::new(false),
                 suppress_collection_signal: Cell::new(false),
                 collapsed_folder_paths: RefCell::new(HashSet::new()),
@@ -323,22 +320,6 @@ impl SidebarPane {
         new_collection_btn.set_margin_end(8);
         collections_header.append(&collections_label);
         collections_header.append(&new_collection_btn);
-
-        let drop_target = gtk4::DropTarget::new(glib::Type::STRING, gdk4::DragAction::COPY);
-        let widget_weak = self.downgrade();
-        drop_target.connect_drop(move |_, value, _, _| {
-            let Ok(s) = value.get::<String>() else {
-                return false;
-            };
-            if let Some(tag) = s.strip_prefix("tag:") {
-                if let Some(widget) = widget_weak.upgrade() {
-                    widget.emit_tag_promoted_to_collection(tag.to_string());
-                }
-                return true;
-            }
-            false
-        });
-        collections_header.add_controller(drop_target);
 
         imp.collection_list.add_css_class("navigation-sidebar");
         imp.collection_list
@@ -641,10 +622,6 @@ impl SidebarPane {
         *self.imp().collection_delete_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_tag_promoted_to_collection<F: Fn(String) + 'static>(&self, f: F) {
-        *self.imp().tag_promoted_to_collection_cb.borrow_mut() = Some(Box::new(f));
-    }
-
     pub fn clear_collection_selection(&self) {
         self.imp().suppress_collection_signal.set(true);
         self.imp().collection_list.unselect_all();
@@ -907,7 +884,7 @@ impl SidebarPane {
             let id = row.collection_id();
             let name = row.collection_name();
             let body = format!(
-                "\u{201c}{name}\u{201d} and any child collections will be removed from the sidebar. Image tags are left unchanged."
+                "\u{201c}{name}\u{201d} and any child collections will be removed from the sidebar. The images themselves are not touched."
             );
             let dialog = libadwaita::AlertDialog::new(Some("Delete Collection?"), Some(&body));
             dialog.add_response("cancel", "Cancel");
@@ -1000,12 +977,6 @@ impl SidebarPane {
     fn emit_collection_delete_requested(&self, id: i64) {
         if let Some(cb) = self.imp().collection_delete_requested_cb.borrow().as_ref() {
             cb(id);
-        }
-    }
-
-    fn emit_tag_promoted_to_collection(&self, tag: String) {
-        if let Some(cb) = self.imp().tag_promoted_to_collection_cb.borrow().as_ref() {
-            cb(tag);
         }
     }
 
@@ -1690,7 +1661,7 @@ impl CollectionRow {
         count_label.add_css_class("dim-label");
         count_label.add_css_class("caption");
         count_label.set_tooltip_text(Some(&format!(
-            "{} tag-matched image{}",
+            "{} image{}",
             collection.item_count,
             if collection.item_count == 1 { "" } else { "s" }
         )));

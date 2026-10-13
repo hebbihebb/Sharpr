@@ -747,3 +747,113 @@ fn visual_search_ranks_by_content() {
     eprintln!("status: {}", status_text().unwrap());
     window.close();
 }
+
+/// Retiring tags (Phase 5): unused manual tags are offered as buckets, and a
+/// chosen one becomes a bucket with the same images; tag rows stay.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn unused_tags_are_offered_as_buckets() {
+    let root = isolated_fixture("tag-offers");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut images = Vec::new();
+    for name in ["a.png", "b.png", "c.png"] {
+        image::RgbImage::from_pixel(64, 48, image::Rgb([90, 120, 150]))
+            .save(root.join(name))
+            .unwrap();
+        images.push(root.join(name));
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 3 && window.is_mapped());
+    let tags = window.imp().state.borrow().tags.clone().unwrap();
+    for path in &images {
+        tags.add_tag(path, "mountain");
+    }
+    tags.add_tag(&images[0], "comics");
+    let rows_before = {
+        let mut rows = tags.stored_rows().unwrap();
+        rows.sort();
+        rows
+    };
+
+    window.offer_tags_as_buckets(false);
+    pump_until(|| window.visible_dialog().is_some());
+    let dialog = window
+        .visible_dialog()
+        .unwrap()
+        .downcast::<libadwaita::AlertDialog>()
+        .unwrap();
+    let list = dialog
+        .extra_child()
+        .unwrap()
+        .downcast::<gtk4::ScrolledWindow>()
+        .unwrap()
+        .child()
+        .and_then(|c| c.first_child().or(Some(c)))
+        .unwrap();
+    let list = if let Ok(list) = list.clone().downcast::<gtk4::ListBox>() {
+        list
+    } else {
+        list.parent().unwrap().downcast::<gtk4::ListBox>().unwrap()
+    };
+    let first = list
+        .row_at_index(0)
+        .unwrap()
+        .downcast::<libadwaita::ActionRow>()
+        .unwrap();
+    assert_eq!(first.title().as_str(), "mountain", "most images first");
+    assert_eq!(first.subtitle().unwrap().as_str(), "3 images");
+    assert!(!dialog.is_response_enabled("create"), "nothing chosen yet");
+    libadwaita::prelude::ActionRowExt::activate(&first);
+    pump_until(|| dialog.is_response_enabled("create"));
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
+    screenshot(&window, &root.parent().unwrap().join("tag-offers.png"));
+    dialog.emit_by_name::<()>("response", &[&"create"]);
+    dialog.close();
+    let index = window.imp().state.borrow().library_index.clone().unwrap();
+    pump_until(|| {
+        index
+            .list_collections()
+            .unwrap()
+            .iter()
+            .any(|c| c.name == "mountain")
+    });
+    let bucket = index
+        .list_collections()
+        .unwrap()
+        .into_iter()
+        .find(|c| c.name == "mountain")
+        .unwrap();
+    assert_eq!(
+        crate::buckets::view(&index, bucket.id, Some(&root), &[])
+            .unwrap()
+            .paths
+            .len(),
+        3
+    );
+    assert!(index
+        .list_collections()
+        .unwrap()
+        .iter()
+        .all(|c| c.name != "comics"));
+    let mut rows_after = tags.stored_rows().unwrap();
+    rows_after.sort();
+    assert_eq!(rows_after, rows_before, "tag rows are untouched");
+    window.close();
+}

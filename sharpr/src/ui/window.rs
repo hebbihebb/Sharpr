@@ -19,8 +19,8 @@ use crate::model::{ImageEntry, LibraryManager};
 use crate::thumbnails::worker::ThumbnailWorkerResponse;
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::collection_dialogs::{
-    parse_collection_tags_input, show_change_color_dialog, show_new_collection_dialog,
-    show_new_library_dialog, show_rename_collection_dialog, switch_active_library,
+    show_change_color_dialog, show_new_collection_dialog, show_new_library_dialog,
+    show_rename_collection_dialog, switch_active_library,
 };
 use crate::ui::compare_item::{ordered_selected_paths, CompareItem};
 use crate::ui::filmstrip::FilmstripPane;
@@ -936,6 +936,13 @@ impl SharprWindow {
                     win.request_fingerprints();
                 }
             });
+            // Tags are retired (Phase 5): point once to turning them into buckets.
+            let weak = self.downgrade();
+            glib::timeout_add_seconds_local_once(3, move || {
+                if let Some(win) = weak.upgrade() {
+                    win.offer_tags_as_buckets(true);
+                }
+            });
         }
 
         let state = self.imp().state.clone();
@@ -1807,6 +1814,14 @@ impl SharprWindow {
                 }
             });
             self.add_action(&cleanup);
+            let window_weak = self.downgrade();
+            let offer = gio::SimpleAction::new("tags-to-buckets", None);
+            offer.connect_activate(move |_, _| {
+                if let Some(win) = window_weak.upgrade() {
+                    win.offer_tags_as_buckets(false);
+                }
+            });
+            self.add_action(&offer);
         }
 
         // Populate sidebar collections on startup.
@@ -1825,47 +1840,9 @@ impl SharprWindow {
                 show_new_collection_dialog(
                     win.upcast(),
                     String::new(),
-                    String::new(),
                     state_c.clone(),
                     toast_overlay_c.clone(),
                     refresh_c.clone(),
-                );
-            });
-        }
-
-        {
-            let state_c = state.clone();
-            let toast_c = toast_overlay.clone();
-            let refresh_c = refresh_sidebar_collections.clone();
-            sidebar.connect_tag_promoted_to_collection(move |tag| {
-                let Some(idx) = state_c.borrow().library_index.clone() else {
-                    return;
-                };
-                let library_id = state_c
-                    .borrow()
-                    .settings
-                    .active_library()
-                    .map(|l| l.id.clone())
-                    .unwrap_or_default();
-                let refresh = refresh_c.clone();
-                let toast = toast_c.clone();
-                crate::ui::collection_dialogs::run_collection_write(
-                    move || {
-                        idx.create_collection(&library_id, None, &tag, &[], None, None)
-                            .map_err(|e| e.to_string())
-                    },
-                    move |result| match result {
-                        Ok(collection) => {
-                            refresh();
-                            toast.add_toast(libadwaita::Toast::new(&format!(
-                                "Created collection {}",
-                                collection.name
-                            )));
-                        }
-                        Err(error) => toast.add_toast(libadwaita::Toast::new(&format!(
-                            "Could not create collection: {error}"
-                        ))),
-                    },
                 );
             });
         }
@@ -2490,7 +2467,7 @@ impl SharprWindow {
 
         {
             let weak = self.downgrade();
-            preview_search_entry.set_placeholder_text(Some("Search names, tags, or 4k png 16:9…"));
+            preview_search_entry.set_placeholder_text(Some("Describe images, or 4k png 16:9…"));
             preview_search_entry.set_search_delay(150);
             preview_search_entry.connect_search_changed(move |entry| {
                 let Some(win) = weak.upgrade() else { return };
@@ -2581,16 +2558,13 @@ impl SharprWindow {
                 let Some(win) = win_w.upgrade() else {
                     return;
                 };
-                let mut words: Vec<&str> = query.split_whitespace().collect();
-                if words.is_empty() {
+                let name = query.trim().to_string();
+                if name.is_empty() {
                     return;
                 }
-                let name = words.remove(0).to_string();
-                let extra = words.join(", ");
                 show_new_collection_dialog(
                     win.upcast(),
                     name,
-                    extra,
                     state_c.clone(),
                     toast_c.clone(),
                     refresh_c.clone(),
@@ -2723,27 +2697,17 @@ impl SharprWindow {
                         );
                         let entry = gtk4::Entry::new();
                         entry.set_placeholder_text(Some("Collection name"));
-                        let tags_entry = gtk4::Entry::new();
-                        tags_entry.set_placeholder_text(Some("Extra tags, comma separated"));
-                        let info =
-                            gtk4::Label::new(Some("The collection name is also used as a tag."));
-                        info.add_css_class("dim-label");
-                        info.set_wrap(true);
-                        info.set_halign(gtk4::Align::Start);
                         let eb = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
                         eb.set_margin_top(6);
                         eb.append(&entry);
-                        eb.append(&info);
-                        eb.append(&tags_entry);
                         new_dialog.set_extra_child(Some(&eb));
                         let paths_cc = paths_c.clone();
                         let window_weak = win2.downgrade();
-                        let tags_entry_c = tags_entry.clone();
                         let create_collection = Rc::new(move |name: String| {
                             if let Some(window) = window_weak.upgrade() {
                                 window.create_collection_with_paths(
                                     name,
-                                    parse_collection_tags_input(tags_entry_c.text().as_str()),
+                                    Vec::new(),
                                     paths_cc.clone(),
                                 );
                             }
@@ -3461,32 +3425,6 @@ impl SharprWindow {
             });
         }
 
-        // Ctrl+T — open the tag editor for the selected image.
-        {
-            let state_t = state.clone();
-            let viewer_t = viewer.clone();
-            shortcuts.add_shortcut(gtk4::Shortcut::new(
-                Some(gtk4::ShortcutTrigger::parse_string("<Control>T").unwrap()),
-                Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if text_input_has_focus(widget) {
-                        return glib::Propagation::Proceed;
-                    }
-
-                    let has_selection = state_t
-                        .try_borrow()
-                        .ok()
-                        .and_then(|state| state.library.selected_index)
-                        .is_some();
-                    if !has_selection {
-                        return glib::Propagation::Stop;
-                    }
-
-                    viewer_t.open_tag_popover();
-                    glib::Propagation::Stop
-                })),
-            ));
-        }
-
         self.add_controller(shortcuts);
     }
 
@@ -3530,7 +3468,7 @@ impl SharprWindow {
         self.imp().inline_search_suppressed.set(true);
         if let Some(entry) = self.imp().inline_search_entry.borrow().as_ref() {
             entry.set_text("");
-            entry.set_placeholder_text(Some("Search names, tags, or 4k png 16:9…"));
+            entry.set_placeholder_text(Some("Describe images, or 4k png 16:9…"));
         }
         self.imp().inline_search_suppressed.set(false);
         if hide {
@@ -3737,6 +3675,7 @@ impl SharprWindow {
 
         let library_section = gio::Menu::new();
         library_section.append(Some("Find Duplicates"), Some("win.find-duplicates"));
+        library_section.append(Some("Turn Tags into Buckets…"), Some("win.tags-to-buckets"));
         library_section.append(
             Some("Remove Old Automatic Tags…"),
             Some("win.remove-automatic-tags"),
@@ -3882,7 +3821,7 @@ impl SharprWindow {
         header.set_title_widget(Some(&gtk4::Box::new(gtk4::Orientation::Horizontal, 0)));
 
         let preview_search_entry = gtk4::SearchEntry::new();
-        preview_search_entry.set_placeholder_text(Some("Search photos by tag…"));
+        preview_search_entry.set_placeholder_text(Some("Describe images, or 4k png 16:9…"));
         preview_search_entry.set_hexpand(true);
         preview_search_entry.set_width_request(300);
 

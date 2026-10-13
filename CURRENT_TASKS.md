@@ -17,7 +17,7 @@ Plan, one commit per unit:
    - Coverage and match strength are shown; strength is calibrated on the judged sample.
    - Name search stays as the fallback.
    - Check parity with the Phase 3 results inside the app.
-3. **Tag retirement.** Remove the tag popover, Ctrl+T, and tag pills. Offer each manual tag no bucket uses as a new bucket. Tag rows stay.
+3. **Tag retirement.** Done (committed, verified, not deployed). The tag popover, Ctrl+T, on-image pills, tag search, and the extra-tags field are gone. Main menu → Library → "Turn Tags into Buckets…" offers each unused manual tag, none ticked; a one-time toast points to it. On the live data that is 11 tags (`nsfw` 88, `nude` 88, `mountain` 8, `nature` 8, and smaller ones). Tag rows stay.
 4. **Packaging.**
    - The installer places the model and runtime.
    - A llama.cpp module goes in the Flatpak manifest, without network features.

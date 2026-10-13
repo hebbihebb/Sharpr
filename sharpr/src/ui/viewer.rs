@@ -2,129 +2,13 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Once};
+use std::sync::Once;
 
 use crate::quality::{scorer, QualityScore};
-use crate::tags::TagDatabase;
 use crate::ui::metadata_chip::MetadataChip;
 use crate::ui::state::AppState;
-
-const TAG_CHIP_COLOR_PALETTE: &[&str] = &[
-    "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
-];
-
-fn fallback_collection_color(collection_id: i64) -> &'static str {
-    TAG_CHIP_COLOR_PALETTE[(collection_id as usize) % TAG_CHIP_COLOR_PALETTE.len()]
-}
-
-fn root_collection_id(collection_id: i64, parent_by_id: &HashMap<i64, Option<i64>>) -> i64 {
-    let mut root_id = collection_id;
-    let mut current = parent_by_id.get(&collection_id).copied().flatten();
-    while let Some(parent_id) = current {
-        root_id = parent_id;
-        current = parent_by_id.get(&parent_id).copied().flatten();
-    }
-    root_id
-}
-
-fn collection_tag_color_map(
-    collections: &[crate::library_index::Collection],
-) -> HashMap<String, String> {
-    let parent_by_id: HashMap<i64, Option<i64>> = collections
-        .iter()
-        .map(|collection| (collection.id, collection.parent_id))
-        .collect();
-    let collection_by_id: HashMap<i64, &crate::library_index::Collection> = collections
-        .iter()
-        .map(|collection| (collection.id, collection))
-        .collect();
-    let mut tag_to_color = HashMap::new();
-
-    for collection in collections {
-        let root_id = root_collection_id(collection.id, &parent_by_id);
-        let resolved_color = collection_by_id
-            .get(&root_id)
-            .and_then(|root| root.color.clone())
-            .unwrap_or_else(|| fallback_collection_color(root_id).to_string());
-
-        tag_to_color.insert(collection.primary_tag.clone(), resolved_color.clone());
-        for tag in &collection.extra_tags {
-            tag_to_color.insert(tag.clone(), resolved_color.clone());
-        }
-    }
-
-    tag_to_color
-}
-
-fn apply_tag_icon_tint(icon: &gtk4::Image, color: &str) {
-    use std::sync::{LazyLock, Mutex};
-
-    static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
-        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
-
-    let key = color
-        .replace([' ', '(', ')', ',', '#', '.'], "_")
-        .to_lowercase();
-    let class_name = format!("tag-icon-color-{key}");
-
-    if let Ok(mut registered) = REGISTERED.lock() {
-        if registered.insert(key) {
-            let provider = gtk4::CssProvider::new();
-            provider.load_from_string(&format!(".{class_name} {{ color: {color}; }}"));
-            if let Some(display) = gtk4::gdk::Display::default() {
-                gtk4::style_context_add_provider_for_display(
-                    &display,
-                    &provider,
-                    gtk4::STYLE_PROVIDER_PRIORITY_USER,
-                );
-            }
-        }
-    }
-
-    icon.add_css_class(&class_name);
-}
-
-fn apply_tag_osd_chip_tint(btn: &gtk4::Button, color: &str) {
-    use std::sync::{LazyLock, Mutex};
-
-    static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
-        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
-
-    let hex = color.trim_start_matches('#');
-    if hex.len() != 6 {
-        return;
-    }
-    let (Ok(r), Ok(g), Ok(b)) = (
-        u8::from_str_radix(&hex[0..2], 16),
-        u8::from_str_radix(&hex[2..4], 16),
-        u8::from_str_radix(&hex[4..6], 16),
-    ) else {
-        return;
-    };
-
-    let key = hex.to_lowercase();
-    let class_name = format!("tag-osd-chip-color-{key}");
-
-    if let Ok(mut registered) = REGISTERED.lock() {
-        if registered.insert(key) {
-            let provider = gtk4::CssProvider::new();
-            provider.load_from_string(&format!(
-                ".{class_name} {{ background-color: rgba({r},{g},{b},0.35); }}"
-            ));
-            if let Some(display) = gtk4::gdk::Display::default() {
-                gtk4::style_context_add_provider_for_display(
-                    &display,
-                    &provider,
-                    gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-                );
-            }
-        }
-    }
-    btn.add_css_class(&class_name);
-}
 
 // ---------------------------------------------------------------------------
 // ViewerPane
@@ -136,12 +20,6 @@ pub enum ZoomMode {
     OneToOne,
 }
 
-#[derive(Default)]
-struct TagPopoverState {
-    db: Option<Arc<TagDatabase>>,
-    path: Option<PathBuf>,
-}
-
 mod imp {
     use super::*;
 
@@ -151,25 +29,11 @@ mod imp {
         pub scrolled_window: gtk4::ScrolledWindow,
         pub picture: gtk4::Picture,
         pub metadata_chip: MetadataChip,
-        pub tag_osd: gtk4::Box,
-        pub tag_chips_box: gtk4::Box,
-        pub tag_label: gtk4::Label,
-        pub tag_button: gtk4::Button,
-        pub tag_add_button: gtk4::Button,
         pub spinner: gtk4::Spinner,
         /// Shown briefly when a decode error prevents the image from loading.
         pub error_label: gtk4::Label,
         pub zoom_label: gtk4::Label,
         pub zoom_hide_source: RefCell<Option<glib::SourceId>>,
-        pub tag_popover: gtk4::Popover,
-        pub tag_entry: gtk4::SearchEntry,
-        pub selected_list: gtk4::ListBox,
-        pub all_tags_list: gtk4::ListBox,
-        pub new_tag_btn: gtk4::Button,
-        pub new_tag_entry: gtk4::Entry,
-        pub new_tag_create_btn: gtk4::Button,
-        pub new_tag_cancel_btn: gtk4::Button,
-        pub(super) tag_state: Rc<RefCell<TagPopoverState>>,
         /// Path of the image currently displayed — set by load_image(), cleared by clear().
         pub current_path: RefCell<Option<PathBuf>>,
         /// Zoom/Fit toggle button in the header — stored so mode changes can
@@ -178,7 +42,6 @@ mod imp {
         pub zoom: Cell<f64>,
         pub zoom_mode: Cell<super::ZoomMode>,
         pub metadata_visible: Cell<bool>,
-        pub tag_chips_expanded: Cell<bool>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub pointer_pos: Cell<(f64, f64)>,
         pub drag_origin: Cell<Option<(f64, f64)>>,
@@ -192,12 +55,10 @@ mod imp {
         pub full_size: Cell<Option<(i32, i32)>>,
         /// A full-resolution load for zooming in has been started.
         pub full_res_requested: Cell<bool>,
-        pub tag_refresh_gen: Cell<u64>,
         pub info_pending: Cell<bool>,
-        pub tag_summary_gen: Cell<u64>,
+        pub membership_gen: Cell<u64>,
         /// Handle for submitting metadata load requests to the shared metadata worker.
         pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
-        /// Called when the "Manage tags" button in the popover is clicked.
         /// Last metadata-only quality score set for the displayed image, kept so
         /// `apply_sharpness` can blend without re-reading metadata.
         pub base_quality: RefCell<Option<crate::quality::QualityScore>>,
@@ -239,37 +100,6 @@ mod imp {
             metadata_chip.set_margin_end(16);
             metadata_chip.set_margin_bottom(4);
 
-            let tag_osd = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-            tag_osd.add_css_class("osd");
-            tag_osd.add_css_class("tag-osd");
-            tag_osd.set_halign(gtk4::Align::Start);
-            tag_osd.set_valign(gtk4::Align::End);
-            tag_osd.set_margin_start(16);
-            tag_osd.set_margin_bottom(16);
-            tag_osd.set_visible(false);
-
-            let tag_chips_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-
-            let tag_button = gtk4::Button::new();
-            tag_button.add_css_class("flat");
-            tag_button.add_css_class("tag-osd-pill");
-            tag_button.set_focus_on_click(false);
-
-            let tag_label = gtk4::Label::new(Some("Tags"));
-            tag_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-            tag_label.set_max_width_chars(18);
-            tag_label.set_xalign(0.0);
-            tag_button.set_child(Some(&tag_label));
-
-            let tag_add_button = gtk4::Button::from_icon_name("list-add-symbolic");
-            tag_add_button.add_css_class("flat");
-            tag_add_button.add_css_class("tag-osd-add");
-            tag_add_button.set_focus_on_click(false);
-            tag_add_button.set_tooltip_text(Some("Add or edit tags"));
-
-            tag_osd.append(&tag_chips_box);
-            tag_osd.append(&tag_add_button);
-
             let zoom_label = gtk4::Label::new(None);
             zoom_label.add_css_class("osd");
             zoom_label.add_css_class("title-2");
@@ -282,91 +112,8 @@ mod imp {
             zoom_label.set_margin_bottom(16);
             zoom_label.set_visible(false);
 
-            let tag_popover = gtk4::Popover::new();
-            tag_popover.set_has_arrow(true);
-            tag_popover.set_autohide(true);
-            tag_popover.set_position(gtk4::PositionType::Top);
-            tag_popover.set_parent(&tag_add_button);
-            tag_popover.add_css_class("tag-popover");
-
-            let popover_vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-            popover_vbox.set_margin_start(12);
-            popover_vbox.set_margin_end(12);
-            popover_vbox.set_margin_top(12);
-            popover_vbox.set_margin_bottom(12);
-            popover_vbox.set_width_request(260);
-
-            let tag_entry = gtk4::SearchEntry::new();
-            tag_entry.set_placeholder_text(Some("Search tags…"));
-            tag_entry.set_hexpand(true);
-            popover_vbox.append(&tag_entry);
-
-            let popover_scroll = gtk4::ScrolledWindow::new();
-            popover_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-            popover_scroll.set_min_content_height(200);
-            popover_scroll.set_max_content_height(400);
-
-            let lists_vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-            popover_scroll.set_child(Some(&lists_vbox));
-            popover_vbox.append(&popover_scroll);
-
-            let selected_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-            let selected_header = gtk4::Label::new(Some("SELECTED"));
-            selected_header.set_halign(gtk4::Align::Start);
-            selected_header.add_css_class("dim-label");
-            selected_header.add_css_class("caption-heading");
-            let selected_list = gtk4::ListBox::new();
-            selected_list.set_selection_mode(gtk4::SelectionMode::None);
-            selected_list.add_css_class("rich-list");
-            selected_box.append(&selected_header);
-            selected_box.append(&selected_list);
-            lists_vbox.append(&selected_box);
-
-            let all_tags_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-            let all_tags_header = gtk4::Label::new(Some("ALL TAGS"));
-            all_tags_header.set_halign(gtk4::Align::Start);
-            all_tags_header.add_css_class("dim-label");
-            all_tags_header.add_css_class("caption-heading");
-            let all_tags_list = gtk4::ListBox::new();
-            all_tags_list.set_selection_mode(gtk4::SelectionMode::None);
-            all_tags_list.add_css_class("rich-list");
-            all_tags_box.append(&all_tags_header);
-            all_tags_box.append(&all_tags_list);
-            lists_vbox.append(&all_tags_box);
-
-            let action_bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-            action_bar.set_margin_top(4);
-
-            let new_tag_btn = gtk4::Button::with_label("+ New tag");
-            new_tag_btn.add_css_class("flat");
-            new_tag_btn.set_halign(gtk4::Align::Start);
-
-            let new_tag_entry = gtk4::Entry::new();
-            new_tag_entry.set_placeholder_text(Some("Tag name"));
-            new_tag_entry.set_visible(false);
-            new_tag_entry.set_hexpand(true);
-
-            let new_tag_create_btn = gtk4::Button::with_label("Create");
-            new_tag_create_btn.add_css_class("suggested-action");
-            new_tag_create_btn.set_visible(false);
-
-            let new_tag_cancel_btn = gtk4::Button::with_label("Cancel");
-            new_tag_cancel_btn.add_css_class("flat");
-            new_tag_cancel_btn.set_visible(false);
-
-            action_bar.append(&new_tag_btn);
-            action_bar.append(&new_tag_entry);
-            action_bar.append(&new_tag_cancel_btn);
-            action_bar.append(&new_tag_create_btn);
-
-            popover_vbox.append(&action_bar);
-            tag_popover.set_child(Some(&popover_vbox));
-
-            let tag_state = Rc::new(RefCell::new(TagPopoverState::default()));
-
             let overlay = gtk4::Overlay::new();
             overlay.set_child(Some(&scrolled_window));
-            overlay.add_overlay(&tag_osd);
             overlay.add_overlay(&metadata_chip);
             overlay.add_overlay(&spinner);
             overlay.add_overlay(&error_label);
@@ -380,30 +127,15 @@ mod imp {
                 scrolled_window,
                 picture,
                 metadata_chip,
-                tag_osd,
-                tag_chips_box,
-                tag_label,
-                tag_button,
-                tag_add_button,
                 spinner,
                 error_label,
                 zoom_label,
                 zoom_hide_source: RefCell::new(None),
-                tag_popover,
-                tag_entry,
-                selected_list,
-                all_tags_list,
-                new_tag_btn,
-                new_tag_entry,
-                new_tag_create_btn,
-                new_tag_cancel_btn,
-                tag_state,
                 current_path: RefCell::new(None),
                 zoom_btn: std::cell::RefCell::new(None),
                 zoom: Cell::new(1.0),
                 zoom_mode: Cell::new(super::ZoomMode::Fit),
                 metadata_visible: Cell::new(true),
-                tag_chips_expanded: Cell::new(false),
                 state: RefCell::new(None),
                 pointer_pos: Cell::new((0.0, 0.0)),
                 drag_origin: Cell::new(None),
@@ -411,9 +143,8 @@ mod imp {
                 load_gen: Cell::new(0),
                 full_size: Cell::new(None),
                 full_res_requested: Cell::new(false),
-                tag_refresh_gen: Cell::new(0),
                 info_pending: Cell::new(false),
-                tag_summary_gen: Cell::new(0),
+                membership_gen: Cell::new(0),
                 metadata_handle: RefCell::new(None),
                 base_quality: RefCell::new(None),
             }
@@ -462,7 +193,6 @@ impl ViewerPane {
         let imp = self.imp();
         imp.content_box.set_parent(self);
         install_viewer_osd_css();
-        self.build_tag_popover();
 
         let motion = gtk4::EventControllerMotion::new();
         let w = self.downgrade();
@@ -566,20 +296,6 @@ impl ViewerPane {
                 viewer.ensure_fit_on_layout();
             }
         });
-
-        let viewer_weak = self.downgrade();
-        imp.tag_button.connect_clicked(move |_| {
-            if let Some(viewer) = viewer_weak.upgrade() {
-                viewer.open_tag_popover();
-            }
-        });
-
-        let viewer_weak = self.downgrade();
-        imp.tag_add_button.connect_clicked(move |_| {
-            if let Some(viewer) = viewer_weak.upgrade() {
-                viewer.open_tag_popover();
-            }
-        });
     }
 
     // -----------------------------------------------------------------------
@@ -610,7 +326,7 @@ impl ViewerPane {
                 if imp.info_pending.replace(false) {
                     imp.metadata_chip.show_info();
                 }
-                viewer.refresh_tag_summary();
+                viewer.refresh_membership();
             }
         });
     }
@@ -628,13 +344,10 @@ impl ViewerPane {
     pub fn clear(&self) {
         let imp = self.imp();
         imp.load_gen.set(imp.load_gen.get().wrapping_add(1));
-        imp.tag_popover.popdown();
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
-        imp.metadata_chip.update_tags(&[]);
         imp.metadata_chip.update_collections(&[]);
         imp.metadata_chip.update_duplicate_count(0);
-        imp.tag_osd.set_visible(false);
         self.set_quality_score(None);
         imp.spinner.stop();
         imp.spinner.set_visible(false);
@@ -663,21 +376,17 @@ impl ViewerPane {
         imp.load_gen.set(load_gen);
         imp.full_size.set(None);
         imp.full_res_requested.set(false);
-        imp.tag_chips_expanded.set(false);
-        imp.tag_popover.popdown();
         *imp.current_path.borrow_mut() = Some(path.clone());
         imp.spinner.start();
         imp.spinner.set_visible(true);
         imp.picture.set_paintable(None::<&gdk4::Paintable>);
         imp.metadata_chip.clear();
         imp.metadata_chip.update_location(&path);
-        imp.metadata_chip.update_tags(&[]);
         imp.metadata_chip.update_collections(&[]);
         imp.metadata_chip.update_duplicate_count(0);
-        imp.tag_osd.set_visible(false);
         imp.error_label.set_visible(false);
         self.set_quality_score(None);
-        self.refresh_tag_summary();
+        self.refresh_membership();
 
         let picture = imp.picture.clone();
         let spinner = imp.spinner.clone();
@@ -1075,9 +784,7 @@ impl ViewerPane {
         imp.metadata_visible.set(visible);
         imp.metadata_chip.set_enabled(visible);
         if visible {
-            self.refresh_tag_summary();
-        } else {
-            imp.tag_osd.set_visible(false);
+            self.refresh_membership();
         }
     }
 
@@ -1119,406 +826,37 @@ impl ViewerPane {
         self.set_metadata_visible(!self.metadata_visible());
     }
 
-    pub fn open_tag_popover(&self) {
-        let imp = self.imp();
-        let path = match imp.current_path.borrow().clone() {
-            Some(path) => path,
-            None => return,
-        };
-        let db = imp
-            .state
-            .borrow()
-            .as_ref()
-            .and_then(|state| state.borrow().tags.clone());
-        if db.is_none() {
-            return;
-        }
-
-        {
-            let mut tag_state = imp.tag_state.borrow_mut();
-            tag_state.db = db;
-            tag_state.path = Some(path);
-        }
-
-        imp.tag_entry.set_text("");
-        imp.new_tag_entry.set_text("");
-        imp.new_tag_entry.set_visible(false);
-        imp.new_tag_create_btn.set_visible(false);
-        imp.new_tag_cancel_btn.set_visible(false);
-        imp.new_tag_btn.set_visible(true);
-        self.refresh_tag_chips();
-        self.refresh_tag_summary();
-        imp.tag_popover.popup();
-    }
-
-    fn change_tag(
-        &self,
-        db: std::sync::Arc<crate::tags::TagDatabase>,
-        path: PathBuf,
-        tag: String,
-        remove: bool,
-    ) {
-        let (tx, rx) = async_channel::bounded(1);
-        let changed_path = path.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send_blocking(db.change_tags_checked(&[path], &[tag], remove));
-        });
-        let weak = self.downgrade();
-        glib::MainContext::default().spawn_local(async move {
-            let Ok(result) = rx.recv().await else { return };
-            let Some(viewer) = weak.upgrade() else { return };
-            match result {
-                Ok(_) => {
-                    if viewer.imp().current_path.borrow().as_ref() == Some(&changed_path) {
-                        viewer.refresh_tag_chips();
-                        viewer.refresh_tag_summary();
-                    }
-                    if let Some(window) = viewer
-                        .root()
-                        .and_then(|r| r.downcast::<crate::ui::window::SharprWindow>().ok())
-                    {
-                        window.tags_changed();
-                    }
-                }
-                Err(error) => {
-                    if let Some(window) = viewer
-                        .root()
-                        .and_then(|r| r.downcast::<crate::ui::window::SharprWindow>().ok())
-                    {
-                        window.add_toast(libadwaita::Toast::new(&format!(
-                            "Could not save tag: {error}"
-                        )));
-                    }
-                }
-            }
-        });
-    }
-
-    fn build_tag_popover(&self) {
-        let imp = self.imp();
-
-        let entry = imp.tag_entry.clone();
-        imp.tag_popover.connect_show(move |_| {
-            entry.grab_focus();
-        });
-
-        let key = gtk4::EventControllerKey::new();
-        let popover = imp.tag_popover.clone();
-        key.connect_key_pressed(move |_, key, _, _| {
-            if key == gdk4::Key::Escape {
-                popover.popdown();
-                return glib::Propagation::Stop;
-            }
-            glib::Propagation::Proceed
-        });
-        imp.tag_entry.add_controller(key);
-
-        let viewer_weak = self.downgrade();
-        imp.tag_entry.connect_search_changed(move |entry| {
-            if let Some(viewer) = viewer_weak.upgrade() {
-                viewer.filter_tag_lists(entry.text().as_str());
-            }
-        });
-
-        let new_tag_entry = imp.new_tag_entry.clone();
-        let new_tag_btn = imp.new_tag_btn.clone();
-        let new_tag_create_btn = imp.new_tag_create_btn.clone();
-        let new_tag_cancel_btn = imp.new_tag_cancel_btn.clone();
-
-        imp.new_tag_btn.connect_clicked({
-            let entry = new_tag_entry.clone();
-            let btn = new_tag_btn.clone();
-            let create_btn = new_tag_create_btn.clone();
-            let cancel_btn = new_tag_cancel_btn.clone();
-            move |_| {
-                btn.set_visible(false);
-                entry.set_visible(true);
-                create_btn.set_visible(true);
-                cancel_btn.set_visible(true);
-                entry.grab_focus();
-            }
-        });
-
-        let hide_new_tag_flow = {
-            let entry = new_tag_entry.clone();
-            let btn = new_tag_btn.clone();
-            let create_btn = new_tag_create_btn.clone();
-            let cancel_btn = new_tag_cancel_btn.clone();
-            move || {
-                entry.set_text("");
-                entry.set_visible(false);
-                create_btn.set_visible(false);
-                cancel_btn.set_visible(false);
-                btn.set_visible(true);
-            }
-        };
-
-        imp.new_tag_cancel_btn.connect_clicked({
-            let hide = hide_new_tag_flow.clone();
-            move |_| hide()
-        });
-
-        let handle_create_tag = move |viewer: &ViewerPane, text: &str| {
-            let tag = text.trim();
-            if tag.is_empty() {
-                return;
-            }
-            let state = viewer.imp().tag_state.borrow();
-            if let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) {
-                viewer.change_tag(db, path, tag.to_string(), false);
-            }
-            drop(state);
-            viewer.refresh_tag_chips();
-            viewer.refresh_tag_summary();
-        };
-
-        let viewer_weak_create = self.downgrade();
-        let hide_clone1 = hide_new_tag_flow.clone();
-        let entry_clone = imp.new_tag_entry.clone();
-        imp.new_tag_create_btn.connect_clicked(move |_| {
-            if let Some(viewer) = viewer_weak_create.upgrade() {
-                handle_create_tag(&viewer, entry_clone.text().as_str());
-                hide_clone1();
-            }
-        });
-
-        let viewer_weak_activate = self.downgrade();
-        let hide_clone2 = hide_new_tag_flow.clone();
-        imp.new_tag_entry.connect_activate(move |entry| {
-            if let Some(viewer) = viewer_weak_activate.upgrade() {
-                handle_create_tag(&viewer, entry.text().as_str());
-                hide_clone2();
-            }
-        });
-    }
-
-    fn filter_tag_lists(&self, query: &str) {
-        let query = query.to_lowercase();
-        let imp = self.imp();
-
-        let q1 = query.clone();
-        imp.selected_list.set_filter_func(move |row| {
-            if q1.is_empty() {
-                return true;
-            }
-            if let Some(box_container) = row.child().and_then(|w| w.downcast::<gtk4::Box>().ok()) {
-                if let Some(label) = box_container
-                    .last_child()
-                    .and_then(|w| w.downcast::<gtk4::Label>().ok())
-                {
-                    return label.text().to_lowercase().contains(&q1);
-                }
-            }
-            true
-        });
-
-        let show_all = !query.is_empty();
-        if let Some(all_tags_box) = imp
-            .all_tags_list
-            .parent()
-            .and_then(|w| w.downcast::<gtk4::Box>().ok())
-        {
-            all_tags_box.set_visible(show_all);
-        }
-
-        let q2 = query.clone();
-        imp.all_tags_list.set_filter_func(move |row| {
-            if let Some(box_container) = row.child().and_then(|w| w.downcast::<gtk4::Box>().ok()) {
-                if let Some(label) = box_container
-                    .last_child()
-                    .and_then(|w| w.downcast::<gtk4::Label>().ok())
-                {
-                    return label.text().to_lowercase().contains(&q2);
-                }
-            }
-            true
-        });
-    }
-
-    fn refresh_tag_chips(&self) {
-        let imp = self.imp();
-        let tag_generation = imp.tag_refresh_gen.get().wrapping_add(1);
-        imp.tag_refresh_gen.set(tag_generation);
-        while let Some(child) = imp.selected_list.first_child() {
-            imp.selected_list.remove(&child);
-        }
-        while let Some(child) = imp.all_tags_list.first_child() {
-            imp.all_tags_list.remove(&child);
-        }
-
-        let state = imp.tag_state.borrow();
-        let (Some(db), Some(path)) = (state.db.clone(), state.path.clone()) else {
-            return;
-        };
-        drop(state);
-
-        let generation = imp.load_gen.get();
-        let (tx, rx) = async_channel::bounded(1);
-        let worker_db = db.clone();
-        let worker_path = path.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send_blocking(worker_db.tag_choices_checked(&worker_path));
-        });
-        let weak = self.downgrade();
-        glib::MainContext::default().spawn_local(async move {
-            let Ok(result) = rx.recv().await else { return };
-            let Some(viewer) = weak.upgrade() else { return };
-            let imp = viewer.imp();
-            if imp.load_gen.get() != generation
-                || imp.tag_refresh_gen.get() != tag_generation
-                || imp.current_path.borrow().as_ref() != Some(&path)
-            {
-                return;
-            }
-            let (active_tags, all_tags) = match result {
-                Ok(result) => (result.active, result.available),
-                Err(error) => {
-                    if let Some(window) = viewer
-                        .root()
-                        .and_then(|r| r.downcast::<crate::ui::window::SharprWindow>().ok())
-                    {
-                        window.add_toast(libadwaita::Toast::new(&format!(
-                            "Could not read tags: {error}"
-                        )));
-                    }
-                    return;
-                }
-            };
-            while let Some(child) = imp.selected_list.first_child() {
-                imp.selected_list.remove(&child);
-            }
-            while let Some(child) = imp.all_tags_list.first_child() {
-                imp.all_tags_list.remove(&child);
-            }
-
-            let mut active_set = std::collections::HashSet::new();
-            for tag in active_tags {
-                active_set.insert(tag.clone());
-                viewer.create_tag_row(&imp.selected_list, &tag, true, &db, &path);
-            }
-
-            if let Some(parent) = imp
-                .selected_list
-                .parent()
-                .and_then(|w| w.downcast::<gtk4::Box>().ok())
-            {
-                parent.set_visible(!active_set.is_empty());
-            }
-
-            for tag in all_tags {
-                if !active_set.contains(&tag.0) {
-                    viewer.create_tag_row(&imp.all_tags_list, &tag.0, false, &db, &path);
-                }
-            }
-
-            if let Some(parent) = imp
-                .all_tags_list
-                .parent()
-                .and_then(|w| w.downcast::<gtk4::Box>().ok())
-            {
-                parent.set_visible(false);
-            }
-            viewer.filter_tag_lists(imp.tag_entry.text().as_str());
-        });
-    }
-
-    fn create_tag_row(
-        &self,
-        list: &gtk4::ListBox,
-        tag: &str,
-        selected: bool,
-        db: &std::sync::Arc<crate::tags::TagDatabase>,
-        path: &std::path::Path,
-    ) {
-        let row = gtk4::ListBoxRow::new();
-        row.set_selectable(false);
-        row.add_css_class("tag-popover-row");
-
-        let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-        hbox.set_margin_top(6);
-        hbox.set_margin_bottom(6);
-        hbox.set_margin_start(8);
-        hbox.set_margin_end(8);
-
-        let icon_name = if selected {
-            "object-select-symbolic"
-        } else {
-            "radio-mixed-symbolic"
-        };
-        let icon = gtk4::Image::from_icon_name(icon_name);
-        if selected {
-            icon.add_css_class("accent");
-        } else {
-            icon.add_css_class("dim-label");
-        }
-        hbox.append(&icon);
-
-        let label = gtk4::Label::new(Some(tag));
-        label.set_halign(gtk4::Align::Start);
-        label.set_hexpand(true);
-        hbox.append(&label);
-
-        row.set_child(Some(&hbox));
-
-        let viewer_weak = self.downgrade();
-        let tag_clone = tag.to_string();
-        let db_clone = db.clone();
-        let path_clone = path.to_path_buf();
-
-        row.connect_activate(move |_| {
-            if let Some(viewer) = viewer_weak.upgrade() {
-                viewer.change_tag(
-                    db_clone.clone(),
-                    path_clone.clone(),
-                    tag_clone.clone(),
-                    selected,
-                );
-            }
-        });
-
-        list.append(&row);
-    }
-
-    fn refresh_tag_summary(&self) {
+    fn refresh_membership(&self) {
         let imp = self.imp();
         let path = match imp.current_path.borrow().clone() {
             Some(path) => path,
             None => {
-                imp.metadata_chip.update_tags(&[]);
                 imp.metadata_chip.update_collections(&[]);
                 imp.metadata_chip.update_duplicate_count(0);
-                imp.tag_osd.set_visible(false);
                 return;
             }
         };
 
-        let (db, index, library_id) = imp
+        let (index, library_id) = imp
             .state
             .borrow()
             .as_ref()
             .map(|state| {
                 let st = state.borrow();
                 (
-                    st.tags.clone(),
                     st.library_index.clone(),
                     st.settings.active_library_id.clone(),
                 )
             })
             .unwrap_or_default();
-        let generation = imp.tag_summary_gen.get().wrapping_add(1);
-        imp.tag_summary_gen.set(generation);
-        imp.metadata_chip.update_tags(&[]);
+        let generation = imp.membership_gen.get().wrapping_add(1);
+        imp.membership_gen.set(generation);
         imp.metadata_chip.update_collections(&[]);
         imp.metadata_chip.update_duplicate_count(0);
-        imp.tag_osd.set_visible(false);
         let worker_path = path.clone();
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = (|| -> Result<_, String> {
-                let tags = db
-                    .map(|db| db.tags_for_path_checked(&worker_path))
-                    .transpose()?
-                    .unwrap_or_default();
                 // The active library's buckets, as the sidebar shows them.
                 let collections = index
                     .as_ref()
@@ -1545,12 +883,7 @@ impl ViewerPane {
                     .find(|g| g.contains(&worker_path))
                     .map(|g| g.len().saturating_sub(1))
                     .unwrap_or(0);
-                Ok((
-                    tags,
-                    collection_tag_color_map(&collections),
-                    names,
-                    duplicates,
-                ))
+                Ok((names, duplicates))
             })();
             let _ = tx.send_blocking(result);
         });
@@ -1559,90 +892,21 @@ impl ViewerPane {
             let Ok(result) = rx.recv().await else { return };
             let Some(viewer) = weak.upgrade() else { return };
             let imp = viewer.imp();
-            if imp.tag_summary_gen.get() != generation
+            if imp.membership_gen.get() != generation
                 || imp.current_path.borrow().as_ref() != Some(&path)
             {
                 return;
             }
             match result {
-                Ok((tags, colors, names, duplicates)) => {
-                    imp.metadata_chip.update_tags(&tags);
+                Ok((names, duplicates)) => {
                     imp.metadata_chip.update_collections(&names);
                     imp.metadata_chip.update_duplicate_count(duplicates);
-                    viewer.render_tag_summary(&tags, &colors);
                 }
-                Err(error) => crate::bench_warn!(
-                    "viewer.tags.summary.fail",
-                    serde_json::json!({"error":error})
-                ),
+                Err(error) => {
+                    crate::bench_warn!("viewer.membership.fail", serde_json::json!({"error":error}))
+                }
             }
         });
-    }
-
-    fn render_tag_summary(&self, tags: &[String], tag_to_color: &HashMap<String, String>) {
-        let imp = self.imp();
-        while let Some(child) = imp.tag_chips_box.first_child() {
-            imp.tag_chips_box.remove(&child);
-        }
-        const MAX_CHIPS: usize = 4;
-        let expanded = imp.tag_chips_expanded.get();
-        let shown = if expanded {
-            tags.len()
-        } else {
-            tags.len().min(MAX_CHIPS)
-        };
-
-        for tag in &tags[..shown] {
-            let chip = gtk4::Button::new();
-            chip.add_css_class("flat");
-            chip.add_css_class("tag-osd-pill");
-            chip.set_focus_on_click(false);
-            chip.set_tooltip_text(Some(tag.as_str()));
-
-            let chip_inner = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-            let icon = gtk4::Image::from_icon_name("bookmark-new-symbolic");
-            icon.set_pixel_size(12);
-            let label = gtk4::Label::new(Some(tag.as_str()));
-            label.set_max_width_chars(12);
-            label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-            chip_inner.append(&icon);
-            chip_inner.append(&label);
-            chip.set_child(Some(&chip_inner));
-
-            if let Some(color) = tag_to_color.get(tag.as_str()) {
-                apply_tag_osd_chip_tint(&chip, color);
-                apply_tag_icon_tint(&icon, color);
-            }
-
-            imp.tag_chips_box.append(&chip);
-
-            let viewer_weak = self.downgrade();
-            chip.connect_clicked(move |_| {
-                if let Some(viewer) = viewer_weak.upgrade() {
-                    viewer.open_tag_popover();
-                }
-            });
-        }
-
-        if !expanded && tags.len() > MAX_CHIPS {
-            let overflow = gtk4::Button::new();
-            overflow.add_css_class("flat");
-            overflow.add_css_class("tag-osd-pill");
-            overflow.set_focus_on_click(false);
-            overflow.set_tooltip_text(Some("Show all tags"));
-            let overflow_label = gtk4::Label::new(Some(&format!("+{}", tags.len() - MAX_CHIPS)));
-            overflow.set_child(Some(&overflow_label));
-            let viewer_weak = self.downgrade();
-            overflow.connect_clicked(move |_| {
-                if let Some(viewer) = viewer_weak.upgrade() {
-                    viewer.imp().tag_chips_expanded.set(true);
-                    viewer.refresh_tag_summary();
-                }
-            });
-            imp.tag_chips_box.append(&overflow);
-        }
-
-        imp.tag_osd.set_visible(imp.metadata_visible.get());
     }
 
     fn pan_drag(&self, offset_x: f64, offset_y: f64) {

@@ -8,7 +8,6 @@ use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 
 use crate::config::FolderMode;
-use crate::library_index::normalize_collection_tag;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::sidebar::SidebarPane;
 use crate::ui::state::{AppState, ViewScope};
@@ -28,17 +27,6 @@ pub(super) fn run_collection_write<T: Send + 'static>(
             complete(result);
         }
     });
-}
-
-pub(super) fn parse_collection_tags_input(input: &str) -> Vec<String> {
-    let mut tags = Vec::new();
-    for tag in input.split(',') {
-        let tag = normalize_collection_tag(tag);
-        if !tag.is_empty() && !tags.contains(&tag) {
-            tags.push(tag);
-        }
-    }
-    tags
 }
 
 const SWATCH_PALETTE: &[&str] = &[
@@ -160,7 +148,6 @@ pub(super) fn build_color_swatch_row(
 pub(super) fn show_new_collection_dialog<F>(
     window: gtk4::Window,
     initial_name: String,
-    initial_extra_tags: String,
     state: Rc<RefCell<AppState>>,
     toast_overlay: libadwaita::ToastOverlay,
     refresh: F,
@@ -176,32 +163,21 @@ pub(super) fn show_new_collection_dialog<F>(
     name_entry.set_placeholder_text(Some("Collection name"));
     name_entry.set_text(&initial_name);
     let (color_swatch_row, selected_color) = build_color_swatch_row(None);
-    let tags_entry = gtk4::Entry::new();
-    tags_entry.set_placeholder_text(Some("Extra tags, comma separated"));
-    tags_entry.set_text(&initial_extra_tags);
-    let info = gtk4::Label::new(Some("The collection name is also used as a tag."));
-    info.add_css_class("dim-label");
-    info.set_wrap(true);
-    info.set_halign(gtk4::Align::Start);
     let entry_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
     entry_box.set_margin_top(6);
     entry_box.append(&name_entry);
     entry_box.append(&color_swatch_row);
-    entry_box.append(&info);
-    entry_box.append(&tags_entry);
     dialog.set_extra_child(Some(&entry_box));
     let state_d = state.clone();
     let toast_d = toast_overlay.clone();
     let refresh_d = refresh.clone();
     let name_clone = name_entry.clone();
-    let tags_clone = tags_entry.clone();
     let selected_color_clone = selected_color.clone();
     dialog.connect_response(None, move |_, response| {
         if response != "create" {
             return;
         }
         let name = name_clone.text().to_string();
-        let extra_tags = parse_collection_tags_input(tags_clone.text().as_str());
         let selected_color = selected_color_clone.borrow().clone();
         let idx = state_d.borrow().library_index.clone();
         if let Some(idx) = idx {
@@ -219,7 +195,7 @@ pub(super) fn show_new_collection_dialog<F>(
                         &library_id,
                         None,
                         &name,
-                        &extra_tags,
+                        &[],
                         selected_color.as_deref(),
                         None,
                     )

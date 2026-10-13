@@ -99,23 +99,6 @@
     </child>
     <child>
       <object class="GtkShortcutsSection">
-        <property name="title">Tags</property>
-        <property name="section-name">tags</property>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Tag Editor</property>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Open tag editor for selected image</property>
-                <property name="accelerator">&lt;Control&gt;t</property>
-              </object>
-            </child>
-          </object>
-        </child>
-      </object>
-    </child>
-    <child>
-      <object class="GtkShortcutsSection">
         <property name="title">Viewer</property>
         <property name="section-name">viewer</property>
         <child>

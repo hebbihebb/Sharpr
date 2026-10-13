@@ -136,17 +136,13 @@ pub(crate) struct BrowseSnapshot {
 #[derive(Clone, Default)]
 pub(crate) struct BrowseOptions {
     pub dimensions: crate::model::browse::DimensionFilters,
-    pub tags: Vec<String>,
     pub whole_library: bool,
     /// Chips taken out of the search box (decision D16).
     pub chips: crate::model::search_query::ChipFilters,
 }
 impl BrowseOptions {
     pub(super) fn has_filters(&self) -> bool {
-        self.whole_library
-            || !self.chips.is_empty()
-            || !self.dimensions.is_empty()
-            || !self.tags.is_empty()
+        self.whole_library || !self.chips.is_empty() || !self.dimensions.is_empty()
     }
 }
 
@@ -478,7 +474,7 @@ impl SharprWindow {
             return;
         }
         self.capture_browse_view();
-        let (candidates, tags, root, disabled, scope, order, index) = {
+        let (candidates, root, disabled, scope, order, index) = {
             let st = self.imp().state.borrow();
             let snapshot = self.imp().browse_snapshot.borrow();
             let Some(snapshot) = snapshot.as_ref() else {
@@ -490,7 +486,6 @@ impl SharprWindow {
                     .iter()
                     .map(|e| e.path())
                     .collect::<Vec<_>>(),
-                st.tags.clone(),
                 st.settings.active_library().map(|l| l.root.clone()),
                 st.disabled_folders.clone(),
                 st.scope.clone(),
@@ -544,18 +539,9 @@ impl SharprWindow {
                         .flatten()
                         .map(|searcher| searcher.prepare(&text));
                     let name_only = !matches!(visual, Some(Ok(_)));
-                    let tag_paths = if name_only {
-                        tags.as_ref()
-                            .map(|db| db.search_paths_checked(&text))
-                            .transpose()?
-                    } else {
-                        None
-                    };
                     let name_matches: std::collections::HashSet<PathBuf> =
-                        match_candidates(&candidates, tag_paths.as_deref().unwrap_or(&[]), &text)
-                            .into_iter()
-                            .collect();
-                    let mut paths = if name_only {
+                        match_candidates(&candidates, &text).into_iter().collect();
+                    let paths = if name_only {
                         candidates
                             .iter()
                             .filter(|p| name_matches.contains(*p))
@@ -564,15 +550,6 @@ impl SharprWindow {
                     } else {
                         candidates
                     };
-                    if !options.tags.is_empty() {
-                        let matching: std::collections::HashSet<_> = tags
-                            .as_ref()
-                            .ok_or("Tag database is unavailable")?
-                            .paths_for_all_tags_checked(&options.tags)?
-                            .into_iter()
-                            .collect();
-                        paths.retain(|p| matching.contains(p));
-                    }
                     let needs_dimensions = !options.dimensions.is_empty()
                         || chips.needs_dimensions()
                         || matches!(
@@ -765,17 +742,15 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
     }
 }
 
-fn match_candidates(candidates: &[PathBuf], tag_paths: &[PathBuf], query: &str) -> Vec<PathBuf> {
+fn match_candidates(candidates: &[PathBuf], query: &str) -> Vec<PathBuf> {
     let terms = search_terms(query);
-    let tags: std::collections::HashSet<_> = tag_paths.iter().collect();
     candidates
         .iter()
         .filter(|p| {
-            tags.contains(p)
-                || p.file_name().and_then(|n| n.to_str()).is_some_and(|name| {
-                    let name = name.to_lowercase();
-                    terms.iter().all(|term| name.contains(term))
-                })
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|name| {
+                let name = name.to_lowercase();
+                terms.iter().all(|term| name.contains(term))
+            })
         })
         .cloned()
         .collect()
@@ -825,12 +800,8 @@ mod tests {
             PathBuf::from("/folder/mountain.jpg"),
             PathBuf::from("/folder/sea.jpg"),
         ];
-        let tagged = vec![PathBuf::from("/other/mountain.jpg")];
-        assert_eq!(
-            match_candidates(&paths, &tagged, "mountain"),
-            vec![paths[0].clone()]
-        );
-        assert_eq!(match_candidates(&paths, &[], "sea"), vec![paths[1].clone()]);
-        assert_eq!(match_candidates(&paths, &[], ""), paths);
+        assert_eq!(match_candidates(&paths, "mountain"), vec![paths[0].clone()]);
+        assert_eq!(match_candidates(&paths, "sea"), vec![paths[1].clone()]);
+        assert_eq!(match_candidates(&paths, ""), paths);
     }
 }

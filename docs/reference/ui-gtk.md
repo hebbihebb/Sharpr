@@ -21,7 +21,7 @@ This file covers how to build them in GTK.
 - Open search by typing anywhere or pressing Ctrl+F (D7). Keep Space free for viewing and Compare.
 - Recognized filter words in the search box become removable chips in a wrapping bar under the header (D16). The bar wraps so it never widens the window. Chips combine with the filmstrip filter popover (both must match). Clicking a chip's label turns it back into a quoted search word. Filter words that complete the word being typed are offered as flat buttons in the same bar, rather than in a popover, which would take focus from the entry.
 - Words in the search box go to visual search when its model is installed (Phase 5). File-name matches come first, then the closest images, 200 at a time. A status line under the header always says what happened: match strength and coverage ("4,210 of 5,812 images indexed"), or that only file names were matched and why. Never show weak matches as if they were good ones (principle 5).
-- Tags are frozen (D1). Add no new tag UI.
+- Tags are retired (D1, Phase 5). Add no tag UI; buckets are how images are gathered.
 - Keep the interface quiet. Only resolution with format, and bucket membership, are always visible; everything else belongs in the Info panel (D18).
 - Destructive or broad actions need confirmation that states their effect. These include deleting a tag, deleting a bucket, trashing files, and bulk tag removal. When an action affects buckets, name them.
 - Every background failure surfaces as a toast or dialog. Never let a failed read look like an empty result.

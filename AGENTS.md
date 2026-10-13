@@ -35,9 +35,7 @@ Images will be found through visual search and typed filters, not manual tags, a
 ## Scope
 
 - **Established:** viewer, filmstrip, folders, buckets, search, filters, Compare, duplicates, Crop/WebP Copy, and explicit trash.
-- **Frozen:** manual tags (D1). Do no tagging improvements; data-safety fixes are allowed.
-  - The Tags page and page switcher were removed on 2026-10-13 (D20).
-  - The tag popover (Ctrl+T) stays until Phase 5 retires tags. Tags no longer decide bucket membership (Phase 4).
+- **Retired:** manual tags (D1). Phase 5 removed the last tag UI (the tag popover, Ctrl+T, on-image pills, tag search, and the extra-tags field in bucket dialogs). Main menu → Library → "Turn Tags into Buckets…" offers each unused manual tag as a bucket. Tag rows stay in `tags.sqlite3`, unused; renames and moves still carry them along. Add no tag UI.
 - **Being replaced:**
   - Quality views give way to resolution filters (Phase 2).
   - Resize Copy and non-WebP output give way to batch WebP export (Phase 6).

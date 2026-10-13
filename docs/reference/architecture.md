@@ -10,9 +10,9 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | --- | --- |
 | `app.rs`, `main.rs` | Application startup, resources, and the gexiv2 shim |
 | `ui/window.rs` | Main shell and cross-pane wiring. `setup()` is one function of more than 2,000 lines. Do not add features to it. |
-| `ui/window/` | Controllers extracted from `window.rs`: `compare_controller`, `search_controller`, `tag_controller`, and `gtk_tests` |
+| `ui/window/` | Controllers extracted from `window.rs`: `compare_controller`, `search_controller`, `tag_controller` (bucket writes, the automatic-tag cleanup, and turning tags into buckets), and `gtk_tests` |
 | `ui/filmstrip.rs` | Filmstrip list, factory and bind callbacks, and the thumbnail scheduler (visible range, buffer, trickle) |
-| `ui/viewer.rs` | Full-image viewer (glycin decoding), tag popover, and info chips |
+| `ui/viewer.rs` | Full-image viewer (glycin decoding) and the info chip |
 | `display_scale.rs` | Screen-sized copies of very large images for the viewer (GTK-free) |
 | `fingerprint.rs` | Content fingerprints (xxh3-128) and the background pass service (GTK-free) |
 | `ui/sidebar.rs` | Folder tree and buckets (the Tags page was removed on 2026-10-13, D20) |
@@ -35,7 +35,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 
 - GTK objects and `AppState` live only on the main thread. Never put GTK objects behind `Arc` or `Mutex`.
 - Heavy work runs on `std::thread::spawn` or `rayon::spawn` and sends results back over `async_channel`. Results are drained in `glib::MainContext::spawn_local`. There is no async runtime; do not add Tokio.
-- Every result that can go stale is checked against a generation counter before it is applied. This applies to the viewer, thumbnails, virtual views, search, tag popovers, and Compare.
+- Every result that can go stale is checked against a generation counter before it is applied. This applies to the viewer, thumbnails, virtual views, search, the viewer's bucket summary, and Compare.
 - The viewer never hands GTK a very large image to upload on the main thread. An sRGB image with 8-bit channels and more than about 1.15 times the screen in each direction is shown as a screen-sized copy, made on a worker (about 30–70 ms in release for 33–270 megapixels). Zoom math uses the original size, and full resolution loads only when zooming needs more pixels than the copy has.
 - **Visual search** runs EmbeddingGemma 2 in `llama-server` children that listen only on 127.0.0.1 with a random key (D24). They die with the thread that started them (`PR_SET_PDEATHSIG`).
   - **Indexing:** a `visual-index` thread at nice 19 and idle I/O, requested after every completed fingerprint pass. It embeds each fingerprint without a vector or recorded failure, one image at a time with 2 threads, and writes each vector at once, so passes resume. Its server, with the projector, runs only while a pass has work.

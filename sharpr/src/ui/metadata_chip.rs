@@ -34,7 +34,6 @@ mod imp {
         pub quality_class_label: gtk4::Label,
         pub quality_segments: [gtk4::Box; 5],
         pub popover_quality_label: gtk4::Label,
-        pub popover_tags_label: gtk4::Label,
         pub popover_collections_label: gtk4::Label,
         pub popover_duplicates_label: gtk4::Label,
         pub duplicate_count: std::cell::Cell<usize>,
@@ -128,8 +127,6 @@ mod imp {
             info_camera.set_visible(false);
             let popover_quality_label = info_label(Some("dim-label"));
             popover_quality_label.set_text("Quality: Not available");
-            let popover_tags_label = info_label(None);
-            popover_tags_label.set_text("No tags");
             let popover_collections_label = info_label(None);
             popover_collections_label.set_text("In no buckets");
             let popover_duplicates_label = info_label(None);
@@ -147,7 +144,6 @@ mod imp {
                 info_camera.upcast_ref(),
                 quality_row.upcast_ref(),
                 popover_collections_label.upcast_ref(),
-                popover_tags_label.upcast_ref(),
                 popover_duplicates_label.upcast_ref(),
             ] {
                 popover_box.append(widget);
@@ -180,7 +176,6 @@ mod imp {
                 quality_class_label,
                 quality_segments,
                 popover_quality_label,
-                popover_tags_label,
                 popover_collections_label,
                 popover_duplicates_label,
                 duplicate_count: std::cell::Cell::new(0),
@@ -352,15 +347,6 @@ impl MetadataChip {
         }
     }
 
-    pub fn update_tags(&self, tags: &[String]) {
-        let label = if tags.is_empty() {
-            "No tags".to_string()
-        } else {
-            format!("Tags: {}", tags.join(", "))
-        };
-        self.imp().popover_tags_label.set_text(&label);
-    }
-
     /// Buckets the image belongs to: always visible on the chip (D18).
     pub fn update_collections(&self, names: &[String]) {
         let imp = self.imp();
@@ -403,7 +389,6 @@ impl MetadataChip {
         imp.info_file.set_text("");
         imp.info_camera.set_visible(false);
         self.update_quality(None);
-        self.update_tags(&[]);
         self.update_collections(&[]);
         self.update_duplicate_count(0);
         imp.card.set_visible(false);

@@ -35,6 +35,23 @@ fn placeholders(n: usize) -> String {
 }
 
 impl LibraryIndex {
+    /// Whether the one-time notice `key` was shown (kept in `schema_meta`).
+    pub fn notice_shown(&self, key: &str) -> rusqlite::Result<bool> {
+        self.conn()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_meta WHERE key = ?1)",
+            params![key],
+            |row| row.get(0),
+        )
+    }
+
+    pub fn mark_notice_shown(&self, key: &str) -> rusqlite::Result<()> {
+        self.conn()?.execute(
+            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES (?1, ?2)",
+            params![key, now_secs().to_string()],
+        )?;
+        Ok(())
+    }
+
     /// Every cached fingerprint as `path → (size, mtime_ns, hash)`.
     pub fn cached_fingerprints(&self) -> rusqlite::Result<HashMap<String, (u64, i64, String)>> {
         let conn = self.conn()?;

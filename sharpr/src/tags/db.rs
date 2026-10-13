@@ -435,6 +435,19 @@ impl TagDatabase {
         tx.commit().map_err(|e| e.to_string())
     }
 
+    /// Every `(path, tag)` row, including rows for missing files.
+    pub fn stored_rows(&self) -> Result<Vec<(String, String)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT path, tag FROM file_tags")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|e| e.to_string())
+    }
+
     pub fn paths_for_all_tags(&self, tags: &[String]) -> Vec<PathBuf> {
         self.paths_for_all_tags_checked(tags)
             .unwrap_or_else(|error| {

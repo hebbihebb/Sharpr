@@ -477,6 +477,79 @@ fn verify_backup(dir: &Path, collections: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// A manual tag that no bucket uses, offered as a new bucket now that tags
+/// are retired (`ROADMAP.md` Phase 5, decisions D1 and D2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagOffer {
+    pub tag: String,
+    /// Images under `root` carrying the tag, including missing files.
+    pub images: usize,
+}
+
+/// Tags that could become buckets: every tag except those buckets use
+/// (their names and extra tags) and the old automatic format and
+/// resolution rows (D17). Only images under `root` count.
+pub fn tag_offers(
+    index: &LibraryIndex,
+    tags: &TagDatabase,
+    root: &Path,
+) -> Result<Vec<TagOffer>, String> {
+    let protected: HashSet<String> = index
+        .list_collections()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .flat_map(|c| std::iter::once(c.primary_tag).chain(c.extra_tags))
+        .collect();
+    let automatic: HashSet<(String, String)> =
+        tags.automatic_tag_rows(&protected)?.into_iter().collect();
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    for (path, tag) in tags.stored_rows()? {
+        if protected.contains(&tag)
+            || !Path::new(&path).starts_with(root)
+            || automatic.contains(&(path, tag.clone()))
+        {
+            continue;
+        }
+        *counts.entry(tag).or_default() += 1;
+    }
+    let mut offers: Vec<TagOffer> = counts
+        .into_iter()
+        .map(|(tag, images)| TagOffer { tag, images })
+        .collect();
+    offers.sort_by(|a, b| b.images.cmp(&a.images).then_with(|| a.tag.cmp(&b.tag)));
+    Ok(offers)
+}
+
+/// Makes a bucket named `tag` whose members are the tag's images under
+/// `root`, missing ones included. The tag rows are not touched. Returns the
+/// bucket and its member count; on failure nothing is created.
+pub fn bucket_from_tag(
+    index: &LibraryIndex,
+    tags: &TagDatabase,
+    library_id: &str,
+    root: &Path,
+    tag: &str,
+) -> Result<(Collection, usize), String> {
+    require_migrated(index)?;
+    let paths: Vec<PathBuf> = tags
+        .stored_paths_for_all_tags_checked(&[tag.to_string()])?
+        .into_iter()
+        .filter(|path| path.starts_with(root))
+        .collect();
+    let bucket = index
+        .create_collection(library_id, None, tag, &[], None, None)
+        .map_err(|e| e.to_string())?;
+    if let Err(error) = add_to_bucket(index, bucket.id, &paths) {
+        return match index.delete_collection(bucket.id) {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!(
+                "{error}; removing the new bucket failed: {rollback}"
+            )),
+        };
+    }
+    Ok((bucket, paths.len()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -776,5 +849,70 @@ mod tests {
         // It runs once.
         assert_eq!(migrate(&f.index, &f.tags, &backups).unwrap(), None);
         assert_eq!(f.index.bucket_members(&[art]).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn unused_manual_tags_become_buckets_and_tag_rows_stay() {
+        let f = Fixture::migrated("tag-offers");
+        let a = f.image("a.png");
+        let b = f.image("b.jpg");
+        let missing = f.root.join("gone.jpg");
+        let outside = PathBuf::from("/elsewhere/c.jpg");
+        let art = f.bucket("Art", None);
+        add_to_bucket(&f.index, art, std::slice::from_ref(&a)).unwrap();
+        for (path, tag) in [
+            (&a, "nature"),
+            (&b, "nature"),
+            (&missing, "nature"),
+            (&outside, "nature"),
+            (&a, "art"), // a bucket's own tag
+            (&a, "png"), // automatic: the file's own format
+            (&b, "png"), // hand-made: a JPEG tagged png
+            (&b, "4k"),  // automatic resolution tag
+        ] {
+            f.tags.add_tag(path, tag);
+        }
+        let rows_before = {
+            let mut rows = f.tags.stored_rows().unwrap();
+            rows.sort();
+            rows
+        };
+
+        let offers = tag_offers(&f.index, &f.tags, &f.root).unwrap();
+        assert_eq!(
+            offers,
+            vec![
+                TagOffer {
+                    tag: "nature".into(),
+                    images: 3
+                },
+                TagOffer {
+                    tag: "png".into(),
+                    images: 1
+                },
+            ],
+            "bucket tags, automatic rows, and images outside the library are left out"
+        );
+
+        let (bucket, members) =
+            bucket_from_tag(&f.index, &f.tags, "test", &f.root, "nature").unwrap();
+        assert_eq!((bucket.name.as_str(), members), ("nature", 3));
+        let view = view(&f.index, bucket.id, Some(&f.root), &[]).unwrap();
+        assert_eq!(view.paths, vec![a.clone(), b.clone()]);
+        assert_eq!(view.missing, 1, "the missing file is kept as a member");
+        let mut rows_after = f.tags.stored_rows().unwrap();
+        rows_after.sort();
+        assert_eq!(rows_after, rows_before, "tag rows are untouched");
+        assert!(
+            tag_offers(&f.index, &f.tags, &f.root)
+                .unwrap()
+                .iter()
+                .all(|o| o.tag != "nature"),
+            "a converted tag is no longer offered"
+        );
+        assert!(
+            bucket_from_tag(&f.index, &f.tags, "test", &f.root, "Nature").is_err(),
+            "no second bucket with the same name"
+        );
     }
 }

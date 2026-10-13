@@ -351,4 +351,217 @@ impl SharprWindow {
         });
         dialog.present(Some(self));
     }
+
+    /// Looks for manual tags no bucket uses and offers them as buckets
+    /// (`ROADMAP.md` Phase 5). With `once`, it only shows a toast pointing to
+    /// the offer, and only the first time there is something to offer.
+    pub(super) fn offer_tags_as_buckets(&self, once: bool) {
+        const NOTICE: &str = "tag_bucket_offer_shown_at";
+        let (index, tags, root) = {
+            let st = self.imp().state.borrow();
+            (
+                st.library_index.clone(),
+                st.tags.clone(),
+                st.settings.active_library().map(|l| l.root.clone()),
+            )
+        };
+        let (Some(index), Some(tags), Some(root)) = (index, tags, root) else {
+            if !once {
+                self.add_toast(libadwaita::Toast::new(
+                    "Tag database or library index is unavailable",
+                ));
+            }
+            return;
+        };
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = (|| -> Result<_, String> {
+                if once && index.notice_shown(NOTICE).map_err(|e| e.to_string())? {
+                    return Ok(None);
+                }
+                let offers = crate::buckets::tag_offers(&index, &tags, &root)?;
+                if once && !offers.is_empty() {
+                    index.mark_notice_shown(NOTICE).map_err(|e| e.to_string())?;
+                }
+                Ok(Some(offers))
+            })();
+            let _ = tx.send_blocking(result);
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(result) = rx.recv().await else { return };
+            let Some(win) = weak.upgrade() else { return };
+            match result {
+                Ok(None) => {}
+                Ok(Some(offers)) if offers.is_empty() => {
+                    if !once {
+                        win.add_toast(libadwaita::Toast::new(
+                            "No tags are left to turn into buckets",
+                        ));
+                    }
+                }
+                Ok(Some(offers)) if once => {
+                    let toast = libadwaita::Toast::new(&format!(
+                        "Tags are retired. {} of your tags can become buckets",
+                        offers.len()
+                    ));
+                    toast.set_button_label(Some("Review…"));
+                    toast.set_timeout(0);
+                    let weak = win.downgrade();
+                    toast.connect_button_clicked(move |_| {
+                        if let Some(win) = weak.upgrade() {
+                            win.present_tag_offers(offers.clone());
+                        }
+                    });
+                    win.add_toast(toast);
+                }
+                Ok(Some(offers)) => win.present_tag_offers(offers),
+                Err(error) => crate::bench_warn!(
+                    "tags.bucket_offer.fail",
+                    serde_json::json!({"error": error})
+                ),
+            }
+        });
+    }
+
+    fn present_tag_offers(&self, offers: Vec<crate::buckets::TagOffer>) {
+        let dialog = libadwaita::AlertDialog::new(
+            Some("Turn Tags into Buckets"),
+            Some(
+                "Tags are retired. Pick the tags to keep as buckets: each becomes a bucket \
+                 with the same images. The tags themselves are kept, unused.",
+            ),
+        );
+        dialog.add_response("cancel", "Not Now");
+        dialog.add_response("create", "Create Buckets");
+        dialog.set_response_appearance("create", libadwaita::ResponseAppearance::Suggested);
+        dialog.set_response_enabled("create", false);
+        dialog.set_default_response(Some("create"));
+        dialog.set_close_response("cancel");
+
+        let list = gtk4::ListBox::new();
+        list.set_selection_mode(gtk4::SelectionMode::None);
+        list.add_css_class("boxed-list");
+        let checks: Rc<Vec<(String, gtk4::CheckButton)>> = Rc::new(
+            offers
+                .iter()
+                .map(|offer| {
+                    let row = libadwaita::ActionRow::new();
+                    row.set_title(&offer.tag);
+                    row.set_subtitle(&format!(
+                        "{} {}",
+                        offer.images,
+                        if offer.images == 1 { "image" } else { "images" }
+                    ));
+                    let check = gtk4::CheckButton::new();
+                    check.set_valign(gtk4::Align::Center);
+                    row.add_prefix(&check);
+                    row.set_activatable_widget(Some(&check));
+                    list.append(&row);
+                    (offer.tag.clone(), check)
+                })
+                .collect(),
+        );
+        for (_, check) in checks.iter() {
+            let dialog = dialog.downgrade();
+            let all = Rc::downgrade(&checks);
+            check.connect_toggled(move |_| {
+                let (Some(dialog), Some(all)) = (dialog.upgrade(), all.upgrade()) else {
+                    return;
+                };
+                dialog.set_response_enabled("create", all.iter().any(|(_, c)| c.is_active()));
+            });
+        }
+        let scroller = gtk4::ScrolledWindow::new();
+        scroller.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        scroller.set_propagate_natural_height(true);
+        scroller.set_max_content_height(360);
+        scroller.set_child(Some(&list));
+        dialog.set_extra_child(Some(&scroller));
+
+        let weak = self.downgrade();
+        dialog.connect_response(None, move |_, response| {
+            if response != "create" {
+                return;
+            }
+            let chosen: Vec<String> = checks
+                .iter()
+                .filter(|(_, check)| check.is_active())
+                .map(|(tag, _)| tag.clone())
+                .collect();
+            if let Some(win) = weak.upgrade() {
+                win.create_buckets_from_tags(chosen);
+            }
+        });
+        dialog.present(Some(self));
+    }
+
+    fn create_buckets_from_tags(&self, chosen: Vec<String>) {
+        let (index, tags, library, root) = {
+            let st = self.imp().state.borrow();
+            (
+                st.library_index.clone(),
+                st.tags.clone(),
+                st.settings.active_library_id.clone(),
+                st.settings.active_library().map(|l| l.root.clone()),
+            )
+        };
+        let (Some(index), Some(tags), Some(library), Some(root)) = (index, tags, library, root)
+        else {
+            self.add_toast(libadwaita::Toast::new(
+                "Tag database or library index is unavailable",
+            ));
+            return;
+        };
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let results: Vec<(String, Result<usize, String>)> = chosen
+                .into_iter()
+                .map(|tag| {
+                    let result =
+                        crate::buckets::bucket_from_tag(&index, &tags, &library, &root, &tag)
+                            .map(|(_, members)| members);
+                    (tag, result)
+                })
+                .collect();
+            let _ = tx.send_blocking(results);
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(results) = rx.recv().await else { return };
+            let Some(win) = weak.upgrade() else { return };
+            let created = results.iter().filter(|(_, r)| r.is_ok()).count();
+            for (tag, result) in &results {
+                match result {
+                    Ok(members) => crate::bench_event!(
+                        "tags.bucket_created",
+                        serde_json::json!({"tag": tag, "members": members})
+                    ),
+                    Err(error) => crate::bench_warn!(
+                        "tags.bucket_create.fail",
+                        serde_json::json!({"tag": tag, "error": error})
+                    ),
+                }
+            }
+            if let Some(refresh) = win.imp().refresh_sidebar_collections_cb.borrow().as_ref() {
+                refresh();
+            }
+            if let Some(filmstrip) = win.imp().filmstrip.borrow().as_ref() {
+                filmstrip.rebuild_path_colors();
+            }
+            let failed: Vec<String> = results
+                .into_iter()
+                .filter_map(|(tag, r)| r.err().map(|e| format!("{tag}: {e}")))
+                .collect();
+            let message = if failed.is_empty() {
+                format!(
+                    "Created {created} {}",
+                    if created == 1 { "bucket" } else { "buckets" }
+                )
+            } else {
+                format!("Created {created}; could not create {}", failed.join("; "))
+            };
+            win.add_toast(libadwaita::Toast::new(&message));
+        });
+    }
 }
