@@ -29,7 +29,7 @@ Images will be found through visual search and typed filters, not manual tags, a
 - **The filmstrip stays responsive.** Never block the GTK main thread with decoding, scanning, header reads, hashing, SQLite bulk work, model calls, or exports. Keep visible-thumbnail priority and generation counters. Wrap or extend the thumbnail scheduler; do not rewrite it.
 - **Disabled folders are excluded** from every scan, index, search, view, and write path.
 - **Folders are the source of truth.** Caches, thumbnails, dimensions, hashes, and vectors are rebuildable. Tags and bucket membership are user data.
-- **The app is offline.** It makes no runtime network calls, downloads no models, and calls no external inference services. The only exception is the experimental visual-search trial, which may talk over loopback to a child process the app manages.
+- **The app is offline.** It makes no runtime network calls, downloads no models, and calls no external inference services. The only exception is visual search (D24, and the experimental trial before it), which may talk over loopback to a `llama-server` child process the app manages. Model files are installed by the user, never downloaded by the app (D23).
 - **No generated tags.** The app creates no descriptive, format, or resolution tags. Existing assignments stay intact.
 
 ## Scope

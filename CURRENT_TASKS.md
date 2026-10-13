@@ -7,9 +7,8 @@
 - **Buckets have their own member lists.** Members follow moved and renamed files and identical copies; missing ones are counted, never dropped.
 - **The one-time migration** was checked on a copy of the live data: all 6 buckets came through identical, and all 7,718 tag rows were unchanged.
 - **Next:**
-  - The user decides on deployment (backup first; older builds can't open the upgraded index).
-  - The user checks the real library.
-  - Then Phase 5: visual search with EmbeddingGemma, with its two packaging choices (Phase 3 item 5).
+  - Deployed in `bf12e07`; the user checks the real library.
+  - Then Phase 5: visual search with EmbeddingGemma, with model delivery and runtime decided (D23, D24).
 
 ## State (October 13, 2026)
 
@@ -17,17 +16,22 @@
   - `main` is at `1924346`: the accepted build `66f3d94` plus its notes.
   - `viewer-reset` continues from there with the audit fixes and later work.
   - Nothing is pushed. Pushing is the user's call.
-- **Deployed:** `e9c142f` (accepted work plus the audit fixes) at `~/.local/opt/sharpr/e9c142f`, with `current` pointing to it. Not yet tested by the user.
-  - **Smoke test:** run on a copy of the live data, with identical tags, buckets, and image list afterwards.
-  - **Rollback:** `ln -sfn ~/.local/opt/sharpr/66f3d94 ~/.local/opt/sharpr/current`.
+- **Deployed:** `bf12e07` (Phases 1–4, the audit fixes, and the large-image viewer fix) at `~/.local/opt/sharpr/bf12e07`, with `current` pointing to it. Installed on October 13 at 11:11 with the user's approval; not yet tested by the user.
+  - **First launch** upgrades bucket membership after its own backup (`~/.local/share/sharpr/backups/before-bucket-membership-*`). After that, older builds refuse the index.
+  - **Smoke test:** run on a copy of the live data. The upgrade gave every bucket identical members, and all 7,718 tag rows were byte-identical.
+  - **Rollback:**
+    1. Close Sharpr.
+    2. Restore `~/.local/share/sharpr.backup-20261013-111041/`.
+    3. Run `ln -sfn ~/.local/opt/sharpr/e9c142f ~/.local/opt/sharpr/current`.
   - Redeploy only with approval, via `python3 tools/install-native-launcher.py`.
 - **Backups**, each byte-verified and integrity-checked:
+  - `~/.local/share/sharpr.backup-20261013-111041/`, taken before `bf12e07`: 7,718 tag rows, 6 buckets.
   - `~/.local/share/sharpr.backup-20261013-090919/`, taken before `e9c142f`: 7,718 tag rows, 6 buckets.
   - `~/.local/share/sharpr.backup-20261013-042010/`
   - `~/.local/share/sharpr.backup-20261012-221640/`
 - **Live data:** 6 buckets (Model, Art › Diffusion, upgrade?, CSR, Trash?). Of the 7,718 tag rows, 7,346 are old automatic tags; the cleanup is ready but not run.
 - **Archive branches, kept:** `preserve/october-12-wip` and `visual-search-trial-wip`.
-- **Product direction:** `docs/reference/product.md` (D1–D22). Tags are frozen; the Tags page has been removed (D20). Visual search goes ahead with EmbeddingGemma 2 (D22).
+- **Product direction:** `docs/reference/product.md` (D1–D24). Tags are frozen; the Tags page has been removed (D20). Visual search goes ahead with EmbeddingGemma 2 (D22).
 
 ## Next User Check (Build `e9c142f`, or `f619d64` If Deployed)
 

@@ -264,9 +264,9 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
      - Runtime: 44 MB as prebuilt (`llama-server` and its libraries, 20 MB of which are 14 CPU-specific variants).
      - Server memory while indexing: 1.3–1.4 GB RSS. Warm query p95: 32 ms.
    - **Flatpak:** llama.cpp is a CMake project with no required dependencies beyond the C/C++ runtime, so it can be a standard `cmake-ninja` module in the manifest, built CPU-only. Build it without network features (`LLAMA_CURL`/OpenSSL off; the prebuilt links OpenSSL only for model downloads), which keeps the offline invariant. Not native-only.
-   - **Two open choices for Phase 5, the user's:**
-     - **Model delivery:** the app downloads nothing, so either bundle the 826 MB model with the app, or have the user install the model files once into a folder Sharpr checks.
-     - **Runtime connection:** either keep `llama-server` as a managed child process on loopback (as the benchmark and trial did; this needs the offline invariant's trial exception extended), or link llama.cpp's libraries into Sharpr.
+   - **Decided October 13 (the user deferred to Claude):**
+     - **Model delivery:** the model files are installed once into a folder Sharpr checks, not bundled (D23).
+     - **Runtime:** `llama-server` runs as a managed child process on loopback, started on demand and stopped when idle (D24).
    - SigLIP 2 was not evaluated further: Gemma won relevance.
 
 **Decision rule:**
