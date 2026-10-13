@@ -422,6 +422,8 @@ Optional and unordered. Pick something up only when a phase touches that area, o
 - Add a folder-load token so two loads of the same folder cannot both append.
 - Support non-UTF-8 paths.
 - Make Flatpak `home` access writable for move and rename, if the user needs it.
+- Guard the startup legacy-bucket migration (`migrate_legacy_collections_to_tags`) with a backup and count check, or retire it, before old databases are treated as a supported upgrade (audit finding 12).
+- Keep thumbnail generations through to completion: a failure or success from an old request must not mark a newer view's row (audit finding 7).
 
 ## Out Of Scope
 
