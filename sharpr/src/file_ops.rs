@@ -72,11 +72,36 @@ pub fn rename_within_dir(src: &Path, new_name: &str) -> Result<PathBuf, String> 
 /// Renames `src` to `dest` unless `dest` exists, in which case it fails with
 /// `ErrorKind::AlreadyExists` and leaves both files untouched.
 ///
-/// A hard link fails atomically when the target exists, so linking and then
-/// removing the old name cannot overwrite anything. Filesystems without hard
-/// links (FAT, some FUSE mounts) fall back to an existence check plus rename;
-/// moves across filesystems fail as with `std::fs::rename`.
+/// Uses `renameat2(RENAME_NOREPLACE)`, which the kernel performs atomically.
+/// Filesystems without that flag fall back to a hard link, which also fails
+/// atomically when the target exists, followed by removing the old name. When
+/// neither is available (some FUSE mounts), the rename is refused rather than
+/// risk replacing a file another program creates at the same moment. Moves
+/// across filesystems fail as with `std::fs::rename`.
 pub fn rename_no_replace(src: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = |p: &Path| {
+        std::ffi::CString::new(p.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+    };
+    let (c_src, c_dest) = (c_path(src)?, c_path(dest)?);
+    // SAFETY: both pointers are valid NUL-terminated strings for the call.
+    let rc = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            c_src.as_ptr(),
+            libc::AT_FDCWD,
+            c_dest.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if rc == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if !matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOSYS)) {
+        return Err(error);
+    }
     match std::fs::hard_link(src, dest) {
         Ok(()) => {
             if let Err(e) = std::fs::remove_file(src) {
@@ -87,12 +112,10 @@ pub fn rename_no_replace(src: &Path, dest: &Path) -> std::io::Result<()> {
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
-        Err(_) => {
-            if dest.symlink_metadata().is_ok() {
-                return Err(std::io::ErrorKind::AlreadyExists.into());
-            }
-            std::fs::rename(src, dest)
-        }
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this drive cannot rename without risking an overwrite",
+        )),
     }
 }
 
@@ -174,6 +197,30 @@ mod tests {
         assert!(err.contains("already exists"), "{err}");
         assert_eq!(std::fs::read(&src).unwrap(), b"original a");
         assert_eq!(std::fs::read(&other).unwrap(), b"original b");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rename_no_replace_moves_between_folders_but_never_onto_a_name() {
+        let dir = temp_dir("no-replace-move");
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let src = dir.join("a.jpg");
+        std::fs::write(&src, b"original a").unwrap();
+        // Even a dangling symlink occupies the name.
+        let link = sub.join("taken.jpg");
+        std::os::unix::fs::symlink(dir.join("missing.jpg"), &link).unwrap();
+
+        let err = rename_no_replace(&src, &link).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&src).unwrap(), b"original a");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+
+        let dest = sub.join("a.jpg");
+        rename_no_replace(&src, &dest).unwrap();
+        assert!(!src.exists());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"original a");
 
         std::fs::remove_dir_all(dir).unwrap();
     }

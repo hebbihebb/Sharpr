@@ -2082,6 +2082,7 @@ dependencies = [
  "jpegxl-rs",
  "jpegxl-sys",
  "libadwaita",
+ "libc",
  "libwebp-sys",
  "memmap2",
  "r2d2",
