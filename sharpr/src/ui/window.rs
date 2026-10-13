@@ -1015,6 +1015,7 @@ impl SharprWindow {
                                         serde_json::json!({
                                             "path": scan_path.display().to_string(),
                                             "row_count": cached.len(),
+                                            "duration_ms": crate::bench::duration_ms(started),
                                         }),
                                     );
                                     let _ =

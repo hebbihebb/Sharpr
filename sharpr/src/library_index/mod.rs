@@ -1107,7 +1107,24 @@ impl LibraryIndex {
     // ---- Pipeline CRUD ----
 
     fn conn(&self) -> rusqlite::Result<PooledConnection<SqliteConnectionManager>> {
-        self.pool.get().map_err(|_| rusqlite::Error::InvalidQuery)
+        let started = std::time::Instant::now();
+        let conn = self.pool.get().map_err(|_| rusqlite::Error::InvalidQuery);
+        // A folder open once waited 2.9 s on a plain read; record slow waits
+        // with the pool's state so the cause can be found.
+        let waited = started.elapsed();
+        if waited >= std::time::Duration::from_millis(50) {
+            let state = self.pool.state();
+            crate::bench_warn!(
+                "index.pool_wait",
+                serde_json::json!({
+                    "duration_ms": crate::bench::duration_ms(started),
+                    "connections": state.connections,
+                    "idle": state.idle_connections,
+                    "thread": std::thread::current().name().unwrap_or("unnamed"),
+                }),
+            );
+        }
+        conn
     }
 }
 
