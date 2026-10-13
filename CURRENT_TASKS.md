@@ -29,6 +29,14 @@ Phase 2 and Phase 9 compare against these numbers, from release build `5832010` 
 
 The user judged scrolling and switching as "everything works and feels fast". There is no stall probe yet; it comes in Phase 2.
 
+## Deployment (October 13, 04:21)
+
+With the user's approval, release build **`66f3d94`** (Phases 1–2 and the Phase 3 tools) is installed at `~/.local/opt/sharpr/66f3d94`, and `current` points to it.
+- **Rollback:** `ln -sfn ~/.local/opt/sharpr/5832010 ~/.local/opt/sharpr/current`. The older build ignores the new `user_version` stamp, so rolling back is safe.
+- **Backup:** taken before deployment, with Sharpr closed, at `~/.local/share/sharpr.backup-20261013-042010/`. It is byte-verified and passes the integrity check (7,718 tag rows, 6 buckets).
+- **Smoke test:** the installed binary ran against copies of the live databases. Tag rows, buckets, and the image list were identical afterwards (SHA-256), both databases were stamped version 1, and the stall probe was running.
+- **The user tests on October 13.** After that, read the new session log with `python3 tools/bench-summary.py` and compare it with the Phase 0 baseline. Then comes acceptance, and the user's decision on fast-forwarding `main`.
+
 ## Phase 1 Progress
 
 **Item 1: done (committed, verified, not yet deployed).**
