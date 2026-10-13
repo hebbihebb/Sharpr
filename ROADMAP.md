@@ -71,6 +71,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 ## Phase 1: Data-Safety Repairs
 
+**Status:** accepted by the user on October 13, 2026 (build `66f3d94`); `main` is at `1924346`. The audit fixes of October 13 (`e9c142f`) are deployed for the next test.
+
 **Outcome:** No Sharpr action can silently lose tags, bucket membership, or image files. Every defect below is verified in the code and exists at committed `HEAD`.
 
 **Scope:**
@@ -111,6 +113,18 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 **Not in scope:** merging the two databases, and crash-atomic bucket edits. Phase 4 removes buckets' dependence on tags, which closes that window.
 
 ## Phase 2: Finding
+
+**Status:** accepted by the user on October 13, 2026 (build `66f3d94`; no issues in the manual check). The acceptance log (`run-1791881444880-10141.jsonl`, 823 s) did not meet two measured criteria, and the user chose to accept and fix them as follow-ups:
+- **Startup:** 381 ms (baseline 498 ms).
+- **Folder opens:** 2,216 images in 104–169 ms (baseline 116–162 ms).
+- **Main-loop stalls:** 17 over 100 ms while browsing, the longest 434 ms. All but one came 0.1–1.1 s after the viewer opened an image, with RSS jumping by about 1.2 GB on very large images. That is the viewer's full-resolution texture reaching GTK. It predates Phase 2, which the baseline couldn't show (no stall probe then).
+- **One Wallpapers open took 3,043 ms.** Its `images_in_folder` read on the dedicated folder-open thread took 2.9 s, at low CPU. So the October 12 outlier was not rayon queueing; the cause is still unknown.
+- **RSS peak:** 3,383 MB (baseline 2,345 MB). The session applied 14,608 thumbnails (baseline about 8,000), plus the viewer jumps above.
+
+**Follow-ups (next):**
+- Show large images in the viewer at screen size first, with full resolution only when zooming in, so opening one causes no stall over 100 ms.
+- Time the pool wait and the query separately in the folder-open read. Fix the cause of the multi-second wait.
+- Re-measure on a release build and compare with both logs.
 
 **Outcome:** In a library of 5,000–50,000 images, the user finds images quickly with one search box, typed filters, and a quiet interface, without stalling the filmstrip. Decisions: D5–D7, D12, D16–D18.
 
