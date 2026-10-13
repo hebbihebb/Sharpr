@@ -15,7 +15,7 @@ The authoritative instructions for every coding agent working on this repository
 
 ## Product
 
-Sharpr is a fast, offline Linux app for finding, curating, and preparing wallpaper-grade images (Rust, GTK4, Libadwaita, SQLite). Its strengths are the viewer, filmstrip navigation, folders, and buckets. Buckets are hand-curated collections, currently backed by tags. Preserve all of these.
+Sharpr is a fast, offline Linux app for finding, curating, and preparing wallpaper-grade images (Rust, GTK4, Libadwaita, SQLite). Its strengths are the viewer, filmstrip navigation, folders, and buckets. Buckets are hand-curated collections with their own member lists, keyed by content fingerprint (since Phase 4). Preserve all of these.
 
 Images will be found through visual search and typed filters, not manual tags, and preparation is crop plus batch WebP export. Details are in `docs/reference/product.md`.
 
@@ -37,7 +37,7 @@ Images will be found through visual search and typed filters, not manual tags, a
 - **Established:** viewer, filmstrip, folders, buckets, search, filters, Compare, duplicates, Crop/WebP Copy, and explicit trash.
 - **Frozen:** manual tags (D1). Do no tagging improvements; data-safety fixes are allowed.
   - The Tags page and page switcher were removed on 2026-10-13 (D20).
-  - The tag popover (Ctrl+T), tag-backed buckets, and bucket colours stay until visual search passes `ROADMAP.md` Phase 3.
+  - The tag popover (Ctrl+T) stays until Phase 5 retires tags. Tags no longer decide bucket membership (Phase 4).
 - **Being replaced:**
   - Quality views give way to resolution filters (Phase 2).
   - Resize Copy and non-WebP output give way to batch WebP export (Phase 6).

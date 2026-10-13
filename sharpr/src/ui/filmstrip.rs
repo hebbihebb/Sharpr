@@ -143,24 +143,6 @@ const FALLBACK_VISIBLE_ROWS: u32 = 12;
 const MAX_PRELOAD_ENQUEUE_PER_PASS: usize = 1024;
 const THUMBNAIL_RESCHEDULE_DEBOUNCE_MS: u64 = 30;
 const PRELOAD_CHAIN_DELAY_MS: u64 = 10;
-const COLLECTION_COLOR_PALETTE: &[&str] = &[
-    "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
-];
-
-fn fallback_collection_color(collection_id: i64) -> &'static str {
-    COLLECTION_COLOR_PALETTE[(collection_id as usize) % COLLECTION_COLOR_PALETTE.len()]
-}
-
-fn root_collection_id(id: i64, parent_by_id: &HashMap<i64, Option<i64>>) -> i64 {
-    let mut root_id = id;
-    let mut current = parent_by_id.get(&id).copied().flatten();
-    while let Some(parent_id) = current {
-        root_id = parent_id;
-        current = parent_by_id.get(&parent_id).copied().flatten();
-    }
-    root_id
-}
-
 fn register_pill_color(color: &str) -> String {
     use std::sync::{LazyLock, Mutex};
     static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
@@ -192,35 +174,6 @@ fn register_pill_color(color: &str) -> String {
         }
     }
     class_name
-}
-
-fn collection_tag_color_map(
-    collections: &[crate::library_index::Collection],
-) -> HashMap<String, String> {
-    let parent_by_id: HashMap<i64, Option<i64>> = collections
-        .iter()
-        .map(|collection| (collection.id, collection.parent_id))
-        .collect();
-    let collection_by_id: HashMap<i64, &crate::library_index::Collection> = collections
-        .iter()
-        .map(|collection| (collection.id, collection))
-        .collect();
-    let mut tag_to_color = HashMap::new();
-
-    for collection in collections {
-        let root_id = root_collection_id(collection.id, &parent_by_id);
-        let resolved_color = collection_by_id
-            .get(&root_id)
-            .and_then(|root| root.color.clone())
-            .unwrap_or_else(|| fallback_collection_color(root_id).to_string());
-
-        tag_to_color.insert(collection.primary_tag.clone(), resolved_color.clone());
-        for tag in &collection.extra_tags {
-            tag_to_color.insert(tag.clone(), resolved_color.clone());
-        }
-    }
-
-    tag_to_color
 }
 
 mod imp {
@@ -275,12 +228,13 @@ mod imp {
         pub pending_thumbnails: RefCell<Option<Arc<Mutex<std::collections::HashSet<PathBuf>>>>>,
         pub pending_notify_count: std::sync::atomic::AtomicU32,
         pub refresh_schedule_pending: Cell<bool>,
-        pub tag_root_color: RefCell<HashMap<String, String>>,
-        /// Badge colour per path, built off the GTK thread from
-        /// `tag_root_color` so binding a row needs no database query.
+        /// The active library's buckets, for badge colours.
+        pub bucket_collections: RefCell<Vec<crate::library_index::Collection>>,
+        /// Badge colour per path, built off the GTK thread from bucket
+        /// membership so binding a row needs no database query.
         pub path_colors: RefCell<Option<HashMap<PathBuf, String>>>,
         pub path_colors_generation: Cell<u64>,
-        pub cached_tags: RefCell<Option<std::sync::Arc<crate::tags::TagDatabase>>>,
+        pub cached_index: RefCell<Option<Arc<crate::library_index::LibraryIndex>>>,
         pub last_scroll_value: Cell<f64>,
         pub last_buffer_scan_time: Cell<Option<std::time::Instant>>,
         pub action_group: RefCell<Option<gio::SimpleActionGroup>>,
@@ -353,10 +307,10 @@ mod imp {
                 pending_thumbnails: RefCell::new(None),
                 pending_notify_count: std::sync::atomic::AtomicU32::new(0),
                 refresh_schedule_pending: Cell::new(false),
-                tag_root_color: RefCell::new(HashMap::new()),
+                bucket_collections: RefCell::new(Vec::new()),
                 path_colors: RefCell::new(None),
                 path_colors_generation: Cell::new(0),
-                cached_tags: RefCell::new(None),
+                cached_index: RefCell::new(None),
                 last_scroll_value: Cell::new(0.0),
                 last_buffer_scan_time: Cell::new(None),
                 action_group: RefCell::new(None),
@@ -1394,47 +1348,38 @@ impl FilmstripPane {
     }
 
     pub fn refresh_collection_colors(&self, collections: &[crate::library_index::Collection]) {
-        *self.imp().tag_root_color.borrow_mut() = collection_tag_color_map(collections);
+        *self.imp().bucket_collections.borrow_mut() = collections.to_vec();
         self.rebuild_path_colors();
         self.imp().list_view.queue_draw();
     }
 
-    pub fn set_cached_tags(&self, tags: std::sync::Arc<crate::tags::TagDatabase>) {
-        *self.imp().cached_tags.borrow_mut() = Some(tags);
+    pub fn set_library_index(&self, index: Arc<crate::library_index::LibraryIndex>) {
+        *self.imp().cached_index.borrow_mut() = Some(index);
         self.rebuild_path_colors();
     }
 
-    /// Rebuilds the path → badge colour map on a worker. A path takes the
-    /// colour of its alphabetically first coloured tag, as the per-row query
-    /// did. Stale builds are dropped by generation.
+    /// Rebuilds the path → badge colour map on a worker from bucket
+    /// membership (`buckets::path_colors`). Stale builds are dropped by
+    /// generation.
     pub fn rebuild_path_colors(&self) {
-        let Some(tags) = self.imp().cached_tags.borrow().clone() else {
+        let Some(index) = self.imp().cached_index.borrow().clone() else {
             return;
         };
-        let mut tag_colors: Vec<(String, String)> = self
-            .imp()
-            .tag_root_color
-            .borrow()
-            .iter()
-            .map(|(tag, color)| (tag.clone(), color.clone()))
-            .collect();
-        tag_colors.sort();
+        let collections = self.imp().bucket_collections.borrow().clone();
         let generation = self.imp().path_colors_generation.get().wrapping_add(1);
         self.imp().path_colors_generation.set(generation);
         let (tx, rx) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let mut colors: HashMap<PathBuf, String> = HashMap::new();
-            for (tag, color) in tag_colors {
-                let Ok(paths) = tags.stored_paths_for_all_tags_checked(std::slice::from_ref(&tag))
-                else {
-                    continue;
-                };
-                for path in paths {
-                    colors.entry(path).or_insert_with(|| color.clone());
+        std::thread::spawn(
+            move || match crate::buckets::path_colors(&index, &collections) {
+                Ok(colors) => {
+                    let _ = tx.send_blocking(colors);
                 }
-            }
-            let _ = tx.send_blocking(colors);
-        });
+                Err(error) => crate::bench_warn!(
+                    "filmstrip.path_colors.fail",
+                    serde_json::json!({"error": error})
+                ),
+            },
+        );
         let weak = self.downgrade();
         glib::MainContext::default().spawn_local(async move {
             let Ok(colors) = rx.recv().await else { return };

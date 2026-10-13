@@ -73,28 +73,27 @@ fn pill_has_class(widget: &gtk4::Widget, path: &Path, class: &str) -> bool {
     false
 }
 
+/// The widget's render node, once it has drawn: right after mapping, or
+/// while the desktop is busy, a frame can take a moment.
+fn render_node(widget: &gtk4::Widget) -> gtk4::gsk::RenderNode {
+    let mut node = None;
+    pump_until(|| {
+        let paintable = gtk4::WidgetPaintable::new(Some(widget));
+        let snapshot = gtk4::Snapshot::new();
+        paintable.snapshot(&snapshot, widget.width() as f64, widget.height() as f64);
+        node = snapshot.to_node();
+        node.is_some()
+    });
+    node.unwrap()
+}
+
 fn screenshot(window: &SharprWindow, path: &Path) {
-    let paintable = gtk4::WidgetPaintable::new(Some(window));
-    let snapshot = gtk4::Snapshot::new();
-    paintable.snapshot(&snapshot, window.width() as f64, window.height() as f64);
-    let node = snapshot
-        .to_node()
-        .expect("realized window has a render node");
-    let renderer = window.renderer().expect("realized window has a renderer");
-    renderer
-        .render_texture(&node, None)
-        .save_to_png(path)
-        .unwrap();
+    screenshot_widget(window, window.upcast_ref(), path);
 }
 
 /// Renders a single widget, such as a popover, with the window's renderer.
 fn screenshot_widget(window: &SharprWindow, widget: &gtk4::Widget, path: &Path) {
-    let paintable = gtk4::WidgetPaintable::new(Some(widget));
-    let snapshot = gtk4::Snapshot::new();
-    paintable.snapshot(&snapshot, widget.width() as f64, widget.height() as f64);
-    let node = snapshot
-        .to_node()
-        .expect("visible widget has a render node");
+    let node = render_node(widget);
     let renderer = window.renderer().expect("realized window has a renderer");
     renderer
         .render_texture(&node, None)
@@ -295,15 +294,12 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
                 None,
             )
             .unwrap();
-        st.tags
-            .as_ref()
-            .unwrap()
-            .change_tags_checked(
-                &[root.join("mountain.png"), sea.clone()],
-                std::slice::from_ref(&bucket.primary_tag),
-                false,
-            )
-            .unwrap();
+        crate::buckets::add_to_bucket(
+            st.library_index.as_ref().unwrap(),
+            bucket.id,
+            &[root.join("mountain.png"), sea.clone()],
+        )
+        .unwrap();
         bucket.id
     };
     // Open the bucket the way a sidebar click does: membership loads on a
@@ -349,15 +345,12 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
                 None,
             )
             .unwrap();
-        st.tags
-            .as_ref()
-            .unwrap()
-            .change_tags_checked(
-                &[root.join("mountain.png")],
-                std::slice::from_ref(&second.primary_tag),
-                false,
-            )
-            .unwrap();
+        crate::buckets::add_to_bucket(
+            st.library_index.as_ref().unwrap(),
+            second.id,
+            &[root.join("mountain.png")],
+        )
+        .unwrap();
         second.id
     };
     let sidebar = window.imp().sidebar.borrow().clone().unwrap();
@@ -405,15 +398,12 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
                 None,
             )
             .unwrap();
-        st.tags
-            .as_ref()
-            .unwrap()
-            .change_tags_checked(
-                &[root.join("mountain.png")],
-                std::slice::from_ref(&red.primary_tag),
-                false,
-            )
-            .unwrap();
+        crate::buckets::add_to_bucket(
+            st.library_index.as_ref().unwrap(),
+            red.id,
+            &[root.join("mountain.png")],
+        )
+        .unwrap();
         let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
         filmstrip.refresh_collection_colors(&index.list_collections().unwrap());
     }

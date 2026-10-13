@@ -74,17 +74,23 @@ The thumbnail caches are an unbounded per-view memory cache, a global memory cac
 
 Rules:
 
-- **Buckets are tag-backed.** A bucket stores only its name, primary tag, extra tags, and parent. Its members are the paths that carry *every* effective tag, meaning the bucket's own tags plus all of its ancestors' tags. Membership is never stored separately. `ROADMAP.md` Phase 4 changes this. Each bucket gets its own membership list, keyed by content fingerprint and keeping the image's last known path. Inheritance is computed at display time. Tag rows are left in place, unused.
+- **Buckets store their own members** (`bucket_members`, since Phase 4). Each row holds a bucket, a file's last known path, and its content fingerprint once known.
+  - **Who is a member:** the file at that path, or any file whose cached fingerprint matches and whose size and mtime are unchanged. Identical copies are all members.
+  - **Missing members:** a member found nowhere is missing. It is counted ("N images in this bucket can't be found") and never dropped.
+  - **Inheritance is computed at display time:** a bucket shows its own members plus its sub-buckets'. Hidden members in disabled folders don't count as missing.
+  - **Edits:**
+    - Adding to a sub-bucket doesn't touch the parent's list.
+    - Removing removes from the bucket and its sub-buckets, by path and by fingerprint.
+    - Rename and reparent change no members.
+    - Deleting a bucket deletes its rows (`ON DELETE CASCADE`).
+  - **Tags no longer decide membership.** Until the one-time migration, buckets were tag-backed: a member carried every effective tag. Those rows stay in the tag database, untouched.
+  - **Migration:** `buckets::migrate` runs at startup until it succeeds. It backs up both databases to `~/.local/share/sharpr/backups/before-bucket-membership-<time>/` and verifies the backup. It writes each bucket's stored effective-tag members, missing ones included, as that bucket's own members. In the same transaction it checks every bucket's count, marks `schema_meta.bucket_membership_migrated_at`, and stamps `user_version` 2. On failure nothing is written; the app reports it, and bucket edits are refused.
 - **Tags are keyed by path string.** Renames and moves made inside Sharpr call `rename_path`. Changes made outside Sharpr leave orphaned rows, which are kept. `rename_path` never overwrites them: Rename refuses a name whose missing file still has tags, and Move picks the next free name.
-- **Schema versions** live in `PRAGMA user_version` (`src/db_version.rs`), currently 1 for both databases. Before any setup, a database is opened read-only, and refused untouched if its version is newer than the build supports. Schema changes stay additive. Bump the version for any change an older build must not write to, and add a migration that runs only when the stored version is lower. `schema_meta.schema_version` is legacy, written but never read.
+- **Schema versions** live in `PRAGMA user_version` (`src/db_version.rs`): 2 for the library index once bucket membership is migrated (1 before), 1 for the tag database. Older builds refuse a version-2 index; rolling back means restoring the pre-migration backup. Before any setup, a database is opened read-only, and refused untouched if its version is newer than the build supports. Schema changes stay additive. Bump the version for any change an older build must not write to, and add a migration that runs only when the stored version is lower. `schema_meta.schema_version` is legacy, written but never read.
 - **Legacy tables and settings keys** (`pipelines`, `pipeline_steps`, `collection_items`, and removed-feature GSettings keys) are never dropped. The code that used them was deleted on October 12, 2026; the tables and keys remain.
   - One runtime migration still reads a legacy table. At startup, `migrate_legacy_collections_to_tags` gives the members in `collection_items` the primary tag of every bucket not yet marked `tag_migrated_at`, then marks it. It is additive: it never deletes rows. It takes no backup and does not verify counts, so it is not a verified upgrade path for old databases (see the `ROADMAP.md` Backlog).
-- **Bucket create, rename, and reparent touch both databases.** Each database commits separately, with a compensating rollback if the second fails. A crash between the two commits can leave them inconsistent; this window is accepted, and recorded in the roadmap backlog.
 - **Reads never delete.** Tag rows for missing or trashed files are kept and hidden: `paths_for_tag()`, `all_tags()`, and `paths_for_all_tags_checked()` filter missing paths, and `stored_paths_for_all_tags_checked()` includes them. The tags come back if the file does.
-- **Bucket edits go through `src/buckets.rs`.**
-  - Removal strips only the bucket's primary tag.
-  - Rename and reparent update every stored member under the library root, including disabled folders and missing files.
-  - Reparent keeps tags that other buckets still need.
+- **Bucket reads and edits go through `src/buckets.rs`** (GTK-free). They touch only the library index, so the two-database crash window for buckets is gone.
 
 ## Output Files
 

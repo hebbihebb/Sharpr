@@ -11,13 +11,17 @@ use crate::model::library::SortOrder;
 use crate::quality::QualityClass;
 
 mod identity;
+pub use identity::MemberRow;
 mod schema;
 use schema::initialize_schema;
 
 const SCHEMA_VERSION: &str = "3";
 /// Version recorded in `PRAGMA user_version`; see `crate::db_version`. The
 /// older `schema_meta.schema_version` value is still written but never read.
-const USER_VERSION: i64 = 1;
+const USER_VERSION: i64 = 2;
+/// Stamped until bucket membership has moved to its own table. Version 2
+/// keeps older builds, which edit buckets through tags, from writing to it.
+const PRE_MEMBERSHIP_VERSION: i64 = 1;
 
 #[derive(Clone, Debug)]
 pub struct Collection {
@@ -116,7 +120,12 @@ impl LibraryIndex {
             initialize_schema(&conn)?;
             invalidate_legacy_quality_labels(&conn)?;
             ensure_collection_schema(&conn)?;
-            crate::db_version::stamp(&conn, USER_VERSION)?;
+            let version = if identity::membership_migrated(&conn)? {
+                USER_VERSION
+            } else {
+                PRE_MEMBERSHIP_VERSION
+            };
+            crate::db_version::stamp(&conn, version)?;
             0
         };
         crate::bench_event!(
@@ -1846,7 +1855,7 @@ mod tests {
             let version: i64 = conn
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, USER_VERSION);
+            assert_eq!(version, PRE_MEMBERSHIP_VERSION);
         }
         let conn = Connection::open(&path).unwrap();
         conn.pragma_update(None, "user_version", USER_VERSION + 1)

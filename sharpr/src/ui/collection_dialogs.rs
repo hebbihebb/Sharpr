@@ -294,33 +294,25 @@ pub(super) fn show_rename_collection_dialog<F>(
         if response != "save" {
             return;
         }
-        let (index, tags, root, disabled, library_id) = {
+        let (index, root, disabled, library_id) = {
             let st = state_d.borrow();
             (
                 st.library_index.clone(),
-                st.tags.clone(),
                 st.settings.active_library().map(|l| l.root.clone()),
                 st.disabled_folders.clone(),
                 st.settings.active_library_id.clone(),
             )
         };
-        let (Some(index), Some(tags)) = (index, tags) else {
+        let Some(index) = index else {
             return;
         };
         let new_name = name_clone.text().to_string();
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = (|| -> Result<Vec<PathBuf>, String> {
-                crate::buckets::rename_bucket(&index, &tags, id, &new_name, root.as_deref())?;
+                crate::buckets::rename_bucket(&index, id, &new_name)?;
                 crate::bench_event!("collection.rename.finish", serde_json::json!({"id":id}));
-                let effective = index
-                    .collection_effective_tags(id)
-                    .map_err(|e| e.to_string())?;
-                Ok(super::window::filter_paths_for_library(
-                    tags.paths_for_all_tags_checked(&effective)?,
-                    root.as_deref(),
-                    &disabled,
-                ))
+                Ok(crate::buckets::view(&index, id, root.as_deref(), &disabled)?.paths)
             })();
             let _ = tx.send_blocking(result);
         });

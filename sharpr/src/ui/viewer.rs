@@ -1526,10 +1526,15 @@ impl ViewerPane {
                     .transpose()
                     .map_err(|e| e.to_string())?
                     .unwrap_or_default();
-                let names = crate::buckets::buckets_containing(&collections, &tags)
-                    .iter()
-                    .map(|c| c.name.clone())
-                    .collect::<Vec<_>>();
+                let names = match index.as_ref() {
+                    Some(index) => {
+                        crate::buckets::buckets_for_path(index, &collections, &worker_path)?
+                            .iter()
+                            .map(|c| c.name.clone())
+                            .collect::<Vec<_>>()
+                    }
+                    None => Vec::new(),
+                };
                 let duplicates = index
                     .as_ref()
                     .map(|index| index.duplicate_groups())

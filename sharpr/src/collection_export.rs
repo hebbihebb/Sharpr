@@ -5,7 +5,6 @@ use glib::DateTime;
 use serde::{Deserialize, Serialize};
 
 use crate::library_index::{Collection, LibraryIndex};
-use crate::tags::TagDatabase;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CollectionNode {
@@ -17,10 +16,15 @@ pub struct CollectionNode {
     pub children: Vec<CollectionNode>,
 }
 
+/// One image and the buckets it belongs to, named by their primary tags.
+/// Version 1 files listed every tag of the image instead; both import.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TagAssignment {
     pub path: PathBuf,
     pub tags: Vec<String>,
+    /// Content fingerprint, so an import can find the image if it moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -35,57 +39,52 @@ pub struct CollectionExport {
 
 pub struct ImportSummary {
     pub collections_added: usize,
-    pub paths_tagged: usize,
+    pub paths_added: usize,
 }
 
 pub fn export_collections(
     index: &LibraryIndex,
-    tags_db: &TagDatabase,
     library_id: &str,
 ) -> Result<CollectionExport, Box<dyn std::error::Error>> {
     let collections = index.list_collections_for_library(Some(library_id))?;
+    let tag_of: HashMap<i64, &str> = collections
+        .iter()
+        .map(|c| (c.id, c.primary_tag.as_str()))
+        .collect();
+    let ids: Vec<i64> = collections.iter().map(|c| c.id).collect();
 
-    // 1. Collect all collection-owned tags
-    let mut collection_tags = HashSet::new();
-    for c in &collections {
-        collection_tags.insert(c.primary_tag.clone());
-        for t in &c.extra_tags {
-            collection_tags.insert(t.clone());
+    // Each stored member, missing ones included, with its own buckets.
+    let mut by_path: HashMap<PathBuf, (HashSet<String>, Option<String>)> = HashMap::new();
+    for row in index.bucket_members(&ids)? {
+        let entry = by_path.entry(row.last_path).or_default();
+        if let Some(tag) = tag_of.get(&row.collection_id) {
+            entry.0.insert((*tag).to_string());
+        }
+        if entry.1.is_none() {
+            entry.1 = row.fingerprint;
         }
     }
-
-    // 2. Build set of all paths that have any collection tag
-    let mut path_to_tags: HashMap<PathBuf, HashSet<String>> = HashMap::new();
-    for tag in &collection_tags {
-        let paths = tags_db.paths_for_tag(tag);
-        for path in paths {
-            path_to_tags.entry(path).or_default().insert(tag.clone());
-        }
-    }
-
-    let mut tag_assignments: Vec<TagAssignment> = path_to_tags
+    let mut tag_assignments: Vec<TagAssignment> = by_path
         .into_iter()
-        .map(|(path, tags)| TagAssignment {
-            path,
-            tags: {
-                let mut v: Vec<_> = tags.into_iter().collect();
-                v.sort();
-                v
-            },
+        .map(|(path, (tags, fingerprint))| {
+            let mut tags: Vec<_> = tags.into_iter().collect();
+            tags.sort();
+            TagAssignment {
+                path,
+                tags,
+                fingerprint,
+            }
         })
         .collect();
     tag_assignments.sort_by(|a, b| a.path.cmp(&b.path));
 
-    // 3. Build collection tree
     let tree = build_collection_tree(&collections, None);
-
     let exported_at = DateTime::now_utc()
         .and_then(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ"))
         .map(|s| s.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
-
     Ok(CollectionExport {
-        version: 1,
+        version: 2,
         app: "sharpr".to_string(),
         exported_at,
         library_id: library_id.to_string(),
@@ -114,10 +113,12 @@ fn build_collection_tree(
 
 pub fn import_collections(
     index: &LibraryIndex,
-    tags_db: &TagDatabase,
     data: &CollectionExport,
     library_id: &str,
 ) -> Result<ImportSummary, Box<dyn std::error::Error>> {
+    if !index.is_membership_migrated()? {
+        return Err("buckets have not been upgraded yet; restart Sharpr and try again".into());
+    }
     let existing_collections = index.list_collections_for_library(Some(library_id))?;
     let mut tag_to_id: HashMap<String, i64> = existing_collections
         .into_iter()
@@ -136,22 +137,28 @@ pub fn import_collections(
         library_id,
     )?;
 
-    // 2. Apply tag assignments
-    let batches: Vec<_> = data
-        .tag_assignments
-        .iter()
-        .map(|assignment| crate::tags::db::TagChange {
-            paths: vec![assignment.path.clone()],
-            tags: assignment.tags.clone(),
-            remove: false,
-        })
-        .collect();
-    tags_db.change_tag_batches_checked(&batches)?;
-    let paths_tagged = batches.len();
+    // 2. Add each image to the buckets named by its tags; other tags are
+    // ignored, and no tags are written.
+    let mut members: HashMap<i64, Vec<(PathBuf, Option<String>)>> = HashMap::new();
+    let mut paths = HashSet::new();
+    for assignment in &data.tag_assignments {
+        for tag in &assignment.tags {
+            if let Some(id) = tag_to_id.get(tag) {
+                members
+                    .entry(*id)
+                    .or_default()
+                    .push((assignment.path.clone(), assignment.fingerprint.clone()));
+                paths.insert(assignment.path.clone());
+            }
+        }
+    }
+    for (id, members) in members {
+        index.add_bucket_members(id, &members)?;
+    }
 
     Ok(ImportSummary {
         collections_added,
-        paths_tagged,
+        paths_added: paths.len(),
     })
 }
 

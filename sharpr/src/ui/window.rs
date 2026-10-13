@@ -676,10 +676,9 @@ impl SharprWindow {
     pub fn handle_collection_export_requested(&self) {
         let state = self.app_state();
         let index = state.borrow().library_index.clone();
-        let tags_db = state.borrow().tags.clone();
         let library_id = state.borrow().settings.active_library_id.clone();
 
-        let (Some(index), Some(tags_db), Some(library_id)) = (index, tags_db, library_id) else {
+        let (Some(index), Some(library_id)) = (index, library_id) else {
             self.add_toast(libadwaita::Toast::new("Cannot export: Library not ready"));
             return;
         };
@@ -705,11 +704,7 @@ impl SharprWindow {
                 };
                 if let Ok(file) = result {
                     if let Some(path) = file.path() {
-                        match crate::collection_export::export_collections(
-                            &index,
-                            &tags_db,
-                            &library_id,
-                        ) {
+                        match crate::collection_export::export_collections(&index, &library_id) {
                             Ok(export) => match serde_json::to_string_pretty(&export) {
                                 Ok(json) => {
                                     if let Err(e) = std::fs::write(&path, json) {
@@ -743,10 +738,9 @@ impl SharprWindow {
     pub fn handle_collection_import_requested(&self) {
         let state = self.app_state();
         let index = state.borrow().library_index.clone();
-        let tags_db = state.borrow().tags.clone();
         let library_id = state.borrow().settings.active_library_id.clone();
 
-        let (Some(index), Some(tags_db), Some(library_id)) = (index, tags_db, library_id) else {
+        let (Some(index), Some(library_id)) = (index, library_id) else {
             self.add_toast(libadwaita::Toast::new("Cannot import: Library not ready"));
             return;
         };
@@ -781,7 +775,6 @@ impl SharprWindow {
                                     Ok(export) => {
                                         match crate::collection_export::import_collections(
                                             &index,
-                                            &tags_db,
                                             &export,
                                             &library_id,
                                         ) {
@@ -798,8 +791,8 @@ impl SharprWindow {
                                                     }
                                                 }
                                                 window.add_toast(libadwaita::Toast::new(&format!(
-                                                    "Imported {} collections, {} images tagged",
-                                                    summary.collections_added, summary.paths_tagged
+                                                    "Imported {} collections, {} images added",
+                                                    summary.collections_added, summary.paths_added
                                                 )));
                                             }
                                             Err(e) => {
@@ -937,8 +930,8 @@ impl SharprWindow {
             );
         }
 
-        if let Some(tags) = state.borrow().tags.clone() {
-            filmstrip.set_cached_tags(tags);
+        if let Some(index) = state.borrow().library_index.clone() {
+            filmstrip.set_library_index(index);
         }
 
         if let Some(worker) = self.imp().metadata_worker.borrow().as_ref() {
@@ -962,6 +955,13 @@ impl SharprWindow {
         if let Some(error) = self.imp().state.borrow().tags_error.clone() {
             let toast =
                 libadwaita::Toast::new(&format!("Tags and buckets are unavailable: {error}"));
+            toast.set_timeout(0);
+            toast_overlay.add_toast(toast);
+        }
+        if let Some(error) = self.imp().state.borrow().bucket_migration_error.clone() {
+            let toast = libadwaita::Toast::new(&format!(
+                "Buckets could not be upgraded, so they can’t be changed yet. Nothing was lost: {error}"
+            ));
             toast.set_timeout(0);
             toast_overlay.add_toast(toast);
         }
@@ -1431,11 +1431,10 @@ impl SharprWindow {
             move || {
                 let next = generation.get().wrapping_add(1);
                 generation.set(next);
-                let (index, tags, library, root, disabled) = {
+                let (index, library, root, disabled) = {
                     let st = state_c.borrow();
                     (
                         st.library_index.clone(),
-                        st.tags.clone(),
                         st.settings.active_library_id.clone(),
                         st.settings.active_library().map(|l| l.root.clone()),
                         st.disabled_folders.clone(),
@@ -1452,18 +1451,15 @@ impl SharprWindow {
                         let mut collections = index
                             .list_collections_for_library(library.as_deref())
                             .map_err(|e| e.to_string())?;
-                        if let Some(tags) = tags {
-                            for collection in &mut collections {
-                                let effective = index
-                                    .collection_effective_tags(collection.id)
-                                    .map_err(|e| e.to_string())?;
-                                collection.item_count = filter_paths_for_library(
-                                    tags.paths_for_all_tags_checked(&effective)?,
-                                    root.as_deref(),
-                                    &disabled,
-                                )
-                                .len();
-                            }
+                        for collection in &mut collections {
+                            collection.item_count = crate::buckets::view(
+                                &index,
+                                collection.id,
+                                root.as_deref(),
+                                &disabled,
+                            )?
+                            .paths
+                            .len();
                         }
                         Ok(collections)
                     },
@@ -1821,11 +1817,10 @@ impl SharprWindow {
                 win.imp().bucket_open_pending.set(Some(generation));
                 state_c.borrow_mut().scope = ViewScope::Collection(id);
                 apply_scope_to_sidebar(&ViewScope::Collection(id), &sidebar_c);
-                let (index, tags, active_root, disabled) = {
+                let (index, active_root, disabled) = {
                     let state = state_c.borrow();
                     (
                         state.library_index.clone(),
-                        state.tags.clone(),
                         state.settings.active_library().map(|lib| lib.root.clone()),
                         state.disabled_folders.clone(),
                     )
@@ -1835,21 +1830,11 @@ impl SharprWindow {
                 // so it runs on a worker instead of the GTK thread.
                 let (tx, rx) = async_channel::bounded(1);
                 std::thread::spawn(move || {
-                    let result = (|| -> Result<Vec<PathBuf>, String> {
-                        let (Some(index), Some(tags)) = (index, tags) else {
+                    let result = (|| -> Result<crate::buckets::BucketView, String> {
+                        let Some(index) = index else {
                             return Err("the bucket database is unavailable".into());
                         };
-                        let effective = index
-                            .collection_effective_tags(id)
-                            .map_err(|e| e.to_string())?;
-                        if effective.is_empty() {
-                            return Ok(Vec::new());
-                        }
-                        Ok(filter_paths_for_library(
-                            tags.paths_for_all_tags_checked(&effective)?,
-                            active_root.as_deref(),
-                            &disabled,
-                        ))
+                        crate::buckets::view(&index, id, active_root.as_deref(), &disabled)
                     })();
                     let _ = tx.send_blocking(result);
                 });
@@ -1872,7 +1857,17 @@ impl SharprWindow {
                         return;
                     }
                     let paths = match result {
-                        Ok(paths) => paths,
+                        Ok(view) => {
+                            if view.missing > 0 {
+                                // Missing members are kept; say so, never drop them.
+                                toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
+                                    "{} image{} in this bucket can’t be found",
+                                    view.missing,
+                                    if view.missing == 1 { "" } else { "s" }
+                                )));
+                            }
+                            view.paths
+                        }
                         Err(error) => {
                             toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
                                 "Could not open bucket: {error}"

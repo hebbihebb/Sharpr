@@ -67,6 +67,21 @@ pub(super) fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_file_fingerprints_hash
             ON file_fingerprints(hash);
+
+        -- Bucket membership (ROADMAP Phase 4): user data. A member is the
+        -- file at last_path or any file with the same fingerprint. Rows go
+        -- with their bucket when the user deletes it.
+        CREATE TABLE IF NOT EXISTS bucket_members (
+            collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+            last_path TEXT NOT NULL,
+            fingerprint TEXT,
+            added_at INTEGER NOT NULL,
+            PRIMARY KEY (collection_id, last_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_bucket_members_fingerprint
+            ON bucket_members(fingerprint);
+        CREATE INDEX IF NOT EXISTS idx_bucket_members_path
+            ON bucket_members(last_path);
         ",
     )?;
     conn.execute(

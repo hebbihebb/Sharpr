@@ -8,17 +8,16 @@ impl SharprWindow {
         extra: Vec<String>,
         paths: Vec<PathBuf>,
     ) {
-        let (index, tags, library, root, disabled) = {
+        let (index, library, root, disabled) = {
             let st = self.imp().state.borrow();
             (
                 st.library_index.clone(),
-                st.tags.clone(),
                 st.settings.active_library_id.clone().unwrap_or_default(),
                 st.settings.active_library().map(|l| l.root.clone()),
                 st.disabled_folders.clone(),
             )
         };
-        let (Some(index), Some(tags)) = (index, tags) else {
+        let Some(index) = index else {
             self.add_toast(libadwaita::Toast::new("Collection database is unavailable"));
             return;
         };
@@ -35,14 +34,8 @@ impl SharprWindow {
                 let collection = index
                     .create_collection(&library, None, &name, &extra, None, None)
                     .map_err(|e| e.to_string())?;
-                let write = (|| -> Result<(), String> {
-                    let effective = index
-                        .collection_effective_tags(collection.id)
-                        .map_err(|e| e.to_string())?;
-                    tags.change_tags_checked(&filtered, &effective, false)?;
-                    Ok(())
-                })();
-                if let Err(error) = write {
+                if let Err(error) = crate::buckets::add_to_bucket(&index, collection.id, &filtered)
+                {
                     if let Err(rollback) = index.delete_collection(collection.id) {
                         crate::bench_error!(
                             "collection.create.rollback.fail",
@@ -72,7 +65,7 @@ impl SharprWindow {
                         refresh();
                     }
                     win.add_toast(libadwaita::Toast::new(&format!(
-                        "Tagged {count} images for {}",
+                        "Added {count} images to {}",
                         collection.name
                     )));
                 }
@@ -84,17 +77,16 @@ impl SharprWindow {
     }
 
     pub(super) fn reparent_collection(&self, id: i64, parent: Option<i64>) {
-        let (index, tags, root, disabled, scope) = {
+        let (index, root, disabled, scope) = {
             let state = self.imp().state.borrow();
             (
                 state.library_index.clone(),
-                state.tags.clone(),
                 state.settings.active_library().map(|l| l.root.clone()),
                 state.disabled_folders.clone(),
                 state.scope.clone(),
             )
         };
-        let (Some(index), Some(tags)) = (index, tags) else {
+        let Some(index) = index else {
             self.add_toast(libadwaita::Toast::new("Collection database is unavailable"));
             return;
         };
@@ -102,17 +94,9 @@ impl SharprWindow {
         let worker_scope = scope.clone();
         std::thread::spawn(move || {
             let result = (|| -> Result<_, String> {
-                let name =
-                    crate::buckets::reparent_bucket(&index, &tags, id, parent, root.as_deref())?;
+                let name = crate::buckets::reparent_bucket(&index, id, parent)?;
                 let remaining = if let ViewScope::Collection(active) = worker_scope {
-                    let effective = index
-                        .collection_effective_tags(active)
-                        .map_err(|e| e.to_string())?;
-                    Some(filter_paths_for_library(
-                        tags.paths_for_all_tags_checked(&effective)?,
-                        root.as_deref(),
-                        &disabled,
-                    ))
+                    Some(crate::buckets::view(&index, active, root.as_deref(), &disabled)?.paths)
                 } else {
                     None
                 };
@@ -152,29 +136,23 @@ impl SharprWindow {
     }
 
     pub(super) fn change_collection_tags(&self, id: i64, paths: Vec<PathBuf>, remove: bool) {
-        let (index, tags, root, disabled, scope) = {
+        let (index, root, disabled, scope) = {
             let st = self.imp().state.borrow();
             (
                 st.library_index.clone(),
-                st.tags.clone(),
                 st.settings.active_library().map(|l| l.root.clone()),
                 st.disabled_folders.clone(),
                 st.scope.clone(),
             )
         };
-        let (Some(index), Some(tags)) = (index, tags) else {
-            self.add_toast(libadwaita::Toast::new(
-                "Tag database or library index is unavailable",
-            ));
+        let Some(index) = index else {
+            self.add_toast(libadwaita::Toast::new("Library index is unavailable"));
             return;
         };
         let count = paths.len();
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = (|| -> Result<_, String> {
-                let effective = index
-                    .collection_effective_tags(id)
-                    .map_err(|e| e.to_string())?;
                 let paths = filter_paths_for_library(paths, root.as_deref(), &disabled);
                 if paths.len() != count {
                     return Err(
@@ -182,9 +160,9 @@ impl SharprWindow {
                     );
                 }
                 let changed = if remove {
-                    crate::buckets::remove_from_bucket(&index, &tags, id, &paths)?
+                    crate::buckets::remove_from_bucket(&index, id, &paths)?
                 } else {
-                    crate::buckets::add_to_bucket(&index, &tags, id, &paths)?
+                    crate::buckets::add_to_bucket(&index, id, &paths)?
                 };
                 if let Err(error) = index.touch_collection(id) {
                     crate::bench_warn!(
@@ -197,11 +175,7 @@ impl SharprWindow {
                     .map_err(|e| e.to_string())?
                     .map(|c| c.name)
                     .unwrap_or_else(|| "collection".into());
-                let remaining = filter_paths_for_library(
-                    tags.paths_for_all_tags_checked(&effective)?,
-                    root.as_deref(),
-                    &disabled,
-                );
+                let remaining = crate::buckets::view(&index, id, root.as_deref(), &disabled)?.paths;
                 Ok((name, changed, remaining))
             })();
             let _ = tx.send_blocking(result);
@@ -229,8 +203,8 @@ impl SharprWindow {
                     }
                     win.add_toast(libadwaita::Toast::new(&format!(
                         "{} {count} images {} {name}",
-                        if remove { "Removed" } else { "Tagged" },
-                        if remove { "from" } else { "for" }
+                        if remove { "Removed" } else { "Added" },
+                        if remove { "from" } else { "to" }
                     )));
                 }
                 Err(error) => win.add_toast(libadwaita::Toast::new(&format!(

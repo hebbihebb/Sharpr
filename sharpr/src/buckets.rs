@@ -1,114 +1,300 @@
-//! Bucket membership edits, independent of GTK.
+//! Bucket membership, independent of GTK (`ROADMAP.md` Phase 4).
 //!
-//! Buckets are tag-backed until `ROADMAP.md` Phase 4: an image belongs to a
-//! bucket when it carries every effective tag, meaning the bucket's own tags
-//! plus all of its ancestors' tags. Rename and reparent update every stored
-//! member under the library root, including images in disabled folders and
-//! files that are temporarily missing, so membership survives re-enabling a
-//! folder or a file reappearing.
+//! Each bucket stores its own members in `bucket_members`: a file's last
+//! known path and, once known, its content fingerprint. A member is the file
+//! at that path or any file with the same fingerprint, so moved, renamed,
+//! and identical copies all count. Members found nowhere are missing; they
+//! are counted and never dropped.
+//!
+//! A bucket shows its own members plus every member of its sub-buckets.
+//! Adding to a sub-bucket doesn't add to the parent's own list; removing
+//! from a bucket removes from it and its sub-buckets. Tags are no longer
+//! written. Until the one-time migration (`migrate`), membership lived in
+//! tags, and those rows are kept untouched.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::library_index::{effective_tags_in, normalize_collection_tag, Collection, LibraryIndex};
-use crate::tags::db::TagChange;
+use crate::library_index::{effective_tags_in, Collection, LibraryIndex, MemberRow};
 use crate::tags::TagDatabase;
 
-/// The buckets an image with `tags` belongs to: those whose every effective
-/// tag it carries. This is the same rule that opening a bucket uses.
-pub fn buckets_containing<'a>(
-    collections: &'a [Collection],
-    tags: &[String],
-) -> Vec<&'a Collection> {
-    let tags: HashSet<&str> = tags.iter().map(String::as_str).collect();
-    collections
-        .iter()
-        .filter(|c| {
-            let effective = effective_tags_in(collections, c.id);
-            !effective.is_empty() && effective.iter().all(|t| tags.contains(t.as_str()))
-        })
-        .collect()
-}
+/// Colours for buckets without one, chosen by their root bucket's id.
+const FALLBACK_COLORS: &[&str] = &[
+    "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
+];
 
-fn in_root(paths: Vec<PathBuf>, root: Option<&Path>) -> Vec<PathBuf> {
-    paths
-        .into_iter()
-        .filter(|path| root.is_none_or(|root| path.starts_with(root)))
-        .collect()
-}
-
-fn local_tags(collection: &Collection) -> Vec<String> {
-    let mut tags = vec![collection.primary_tag.clone()];
-    for tag in &collection.extra_tags {
-        if !tags.contains(tag) {
-            tags.push(tag.clone());
-        }
-    }
-    tags
+/// What opening a bucket shows: its visible members (own and sub-buckets'),
+/// and how many members exist nowhere.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct BucketView {
+    pub paths: Vec<PathBuf>,
+    pub missing: usize,
 }
 
 fn collection(index: &LibraryIndex, id: i64) -> Result<Collection, String> {
     index
         .collection(id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Collection no longer exists".to_string())
+        .ok_or_else(|| "Bucket no longer exists".to_string())
 }
 
-/// Every stored member of bucket `id` under `root`, whether or not the file
-/// currently exists or sits in a disabled folder.
-fn stored_members(
+fn require_migrated(index: &LibraryIndex) -> Result<(), String> {
+    if index.is_membership_migrated().map_err(|e| e.to_string())? {
+        Ok(())
+    } else {
+        Err("buckets have not been upgraded yet; restart Sharpr and try again".into())
+    }
+}
+
+/// `id` and all of its descendants.
+pub fn subtree_ids(collections: &[Collection], id: i64) -> Vec<i64> {
+    let mut ids = vec![id];
+    let mut cursor = 0;
+    while cursor < ids.len() {
+        let current = ids[cursor];
+        for child in collections.iter().filter(|c| c.parent_id == Some(current)) {
+            if !ids.contains(&child.id) {
+                ids.push(child.id);
+            }
+        }
+        cursor += 1;
+    }
+    ids
+}
+
+fn ancestors(collections: &[Collection], id: i64) -> Vec<i64> {
+    let mut found = Vec::new();
+    let mut next = collections
+        .iter()
+        .find(|c| c.id == id)
+        .and_then(|c| c.parent_id);
+    while let Some(parent) = next.filter(|p| !found.contains(p) && *p != id) {
+        found.push(parent);
+        next = collections
+            .iter()
+            .find(|c| c.id == parent)
+            .and_then(|c| c.parent_id);
+    }
+    found
+}
+
+/// The colour a bucket's images show: its root bucket's colour.
+pub fn bucket_color(collections: &[Collection], id: i64) -> String {
+    let root = ancestors(collections, id).last().copied().unwrap_or(id);
+    collections
+        .iter()
+        .find(|c| c.id == root)
+        .and_then(|c| c.color.clone())
+        .unwrap_or_else(|| {
+            FALLBACK_COLORS[root.rem_euclid(FALLBACK_COLORS.len() as i64) as usize].into()
+        })
+}
+
+fn stamp(path: &Path) -> Option<(u64, i64)> {
+    std::fs::metadata(path)
+        .ok()
+        .filter(|m| m.is_file())
+        .map(|m| crate::fingerprint::file_stamp(&m))
+}
+
+/// The fingerprint of the file at `path`: cached if still fresh, otherwise
+/// computed now and cached. `None` when the file doesn't exist.
+pub fn current_fingerprint(index: &LibraryIndex, path: &Path) -> Option<String> {
+    let (size, mtime) = stamp(path)?;
+    if let Ok(Some(hash)) = index.fresh_fingerprint(path, size, mtime) {
+        return Some(hash);
+    }
+    let hash = crate::fingerprint::hash_file(path).ok()?;
+    let _ = index.store_fingerprints(&[(path.to_path_buf(), size, mtime, hash.clone())]);
+    Some(hash)
+}
+
+fn visible(path: &Path, root: Option<&Path>, disabled: &[PathBuf]) -> bool {
+    root.is_none_or(|root| path.starts_with(root)) && !disabled.iter().any(|d| path.starts_with(d))
+}
+
+/// Resolves stored member rows to the files they mean now.
+fn resolve(
     index: &LibraryIndex,
-    tags: &TagDatabase,
+    rows: &[MemberRow],
+    root: Option<&Path>,
+    disabled: &[PathBuf],
+) -> Result<BucketView, String> {
+    let hashes: Vec<String> = rows
+        .iter()
+        .filter_map(|r| r.fingerprint.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let by_hash = index
+        .files_with_fingerprints(&hashes)
+        .map_err(|e| e.to_string())?;
+    let mut stamps: HashMap<PathBuf, Option<(u64, i64)>> = HashMap::new();
+    let mut stamp_of = |path: &Path| {
+        *stamps
+            .entry(path.to_path_buf())
+            .or_insert_with(|| stamp(path))
+    };
+    let mut paths = BTreeSet::new();
+    let (mut found, mut lost) = (HashSet::new(), HashSet::new());
+    for row in rows {
+        let key = row
+            .fingerprint
+            .clone()
+            .unwrap_or_else(|| row.last_path.to_string_lossy().into_owned());
+        let mut exists = false;
+        if stamp_of(&row.last_path).is_some() {
+            exists = true;
+            if visible(&row.last_path, root, disabled) {
+                paths.insert(row.last_path.clone());
+            }
+        }
+        for (path, size, mtime) in row
+            .fingerprint
+            .as_ref()
+            .and_then(|hash| by_hash.get(hash))
+            .into_iter()
+            .flatten()
+        {
+            // A cached fingerprint counts only while the file is unchanged.
+            if stamp_of(path) == Some((*size, *mtime)) {
+                exists = true;
+                if visible(path, root, disabled) {
+                    paths.insert(path.clone());
+                }
+            }
+        }
+        if exists {
+            found.insert(key);
+        } else {
+            lost.insert(key);
+        }
+    }
+    Ok(BucketView {
+        paths: paths.into_iter().collect(),
+        missing: lost.difference(&found).count(),
+    })
+}
+
+/// What opening bucket `id` shows under `root`, outside `disabled` folders.
+pub fn view(
+    index: &LibraryIndex,
     id: i64,
     root: Option<&Path>,
-) -> Result<Vec<PathBuf>, String> {
-    let effective = index
-        .collection_effective_tags(id)
+    disabled: &[PathBuf],
+) -> Result<BucketView, String> {
+    let collections = index.list_collections().map_err(|e| e.to_string())?;
+    let rows = index
+        .bucket_members(&subtree_ids(&collections, id))
         .map_err(|e| e.to_string())?;
-    Ok(in_root(
-        tags.stored_paths_for_all_tags_checked(&effective)?,
-        root,
-    ))
+    resolve(index, &rows, root, disabled)
 }
 
-/// Adds `paths` to bucket `id` by giving them every effective tag.
-pub fn add_to_bucket(
+/// The buckets among `collections` whose view contains the file at `path`:
+/// those it is a member of, and their ancestors.
+pub fn buckets_for_path<'a>(
     index: &LibraryIndex,
-    tags: &TagDatabase,
-    id: i64,
-    paths: &[PathBuf],
-) -> Result<usize, String> {
-    let effective = index
-        .collection_effective_tags(id)
-        .map_err(|e| e.to_string())?;
-    tags.change_tags_checked(paths, &effective, false)
+    collections: &'a [Collection],
+    path: &Path,
+) -> Result<Vec<&'a Collection>, String> {
+    let fingerprint = current_fingerprint(index, path);
+    let ids: Vec<i64> = collections.iter().map(|c| c.id).collect();
+    let mut direct = HashSet::new();
+    for row in index.bucket_members(&ids).map_err(|e| e.to_string())? {
+        if row.last_path == path || (fingerprint.is_some() && row.fingerprint == fingerprint) {
+            direct.insert(row.collection_id);
+        }
+    }
+    let mut shown: HashSet<i64> = direct.clone();
+    for id in &direct {
+        shown.extend(ancestors(collections, *id));
+    }
+    Ok(collections
+        .iter()
+        .filter(|c| shown.contains(&c.id))
+        .collect())
 }
 
-/// Removes `paths` from bucket `id` and its sub-buckets by removing only the
-/// bucket's primary tag. Ancestor and extra tags stay, so the images keep
-/// their place in parent and sibling buckets.
+/// Badge colour per file for the filmstrip: each member file takes the
+/// colour of its bucket's root. With several buckets, the one whose primary
+/// tag sorts first wins, as when buckets were tags. Cached
+/// fingerprints are trusted without checking files, which is fine for a
+/// colour hint.
+pub fn path_colors(
+    index: &LibraryIndex,
+    collections: &[Collection],
+) -> Result<HashMap<PathBuf, String>, String> {
+    let ids: Vec<i64> = collections.iter().map(|c| c.id).collect();
+    let mut rows = index.bucket_members(&ids).map_err(|e| e.to_string())?;
+    let tag_of: HashMap<i64, &str> = collections
+        .iter()
+        .map(|c| (c.id, c.primary_tag.as_str()))
+        .collect();
+    rows.sort_by_key(|r| (tag_of.get(&r.collection_id).copied(), r.collection_id));
+    let hashes: Vec<String> = rows
+        .iter()
+        .filter_map(|r| r.fingerprint.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let by_hash = index
+        .files_with_fingerprints(&hashes)
+        .map_err(|e| e.to_string())?;
+    let mut colors = HashMap::new();
+    for row in rows {
+        let color = bucket_color(collections, row.collection_id);
+        colors
+            .entry(row.last_path.clone())
+            .or_insert_with(|| color.clone());
+        for (path, _, _) in row
+            .fingerprint
+            .as_ref()
+            .and_then(|hash| by_hash.get(hash))
+            .into_iter()
+            .flatten()
+        {
+            colors.entry(path.clone()).or_insert_with(|| color.clone());
+        }
+    }
+    Ok(colors)
+}
+
+/// Adds `paths` to bucket `id` (not to its parents, which show them anyway).
+/// Returns how many were new.
+pub fn add_to_bucket(index: &LibraryIndex, id: i64, paths: &[PathBuf]) -> Result<usize, String> {
+    require_migrated(index)?;
+    collection(index, id)?;
+    let members: Vec<(PathBuf, Option<String>)> = paths
+        .iter()
+        .map(|path| (path.clone(), current_fingerprint(index, path)))
+        .collect();
+    index
+        .add_bucket_members(id, &members)
+        .map_err(|e| e.to_string())
+}
+
+/// Removes `paths`, and identical copies of them, from bucket `id` and its
+/// sub-buckets. Parents keep their own members.
 pub fn remove_from_bucket(
     index: &LibraryIndex,
-    tags: &TagDatabase,
     id: i64,
     paths: &[PathBuf],
 ) -> Result<usize, String> {
-    let bucket = collection(index, id)?;
-    tags.change_tags_checked(paths, &[bucket.primary_tag], true)
+    require_migrated(index)?;
+    let collections = index.list_collections().map_err(|e| e.to_string())?;
+    let fingerprints: Vec<String> = paths
+        .iter()
+        .filter_map(|path| current_fingerprint(index, path))
+        .collect();
+    index
+        .remove_bucket_members(&subtree_ids(&collections, id), paths, &fingerprints)
+        .map_err(|e| e.to_string())
 }
 
-/// Renames bucket `id`, moving its primary tag on every stored member. The
-/// index change is rolled back if the tag update fails.
-pub fn rename_bucket(
-    index: &LibraryIndex,
-    tags: &TagDatabase,
-    id: i64,
-    new_name: &str,
-    root: Option<&Path>,
-) -> Result<(), String> {
+/// Renames bucket `id`. Membership is unaffected.
+pub fn rename_bucket(index: &LibraryIndex, id: i64, new_name: &str) -> Result<(), String> {
+    require_migrated(index)?;
     let before = collection(index, id)?;
-    let members = stored_members(index, tags, id, root)?;
-    let new_primary = normalize_collection_tag(new_name);
     index
         .update_collection(
             id,
@@ -117,155 +303,107 @@ pub fn rename_bucket(
             before.color.as_deref(),
             before.icon_name.as_deref(),
         )
-        .map_err(|e| e.to_string())?;
-    if let Err(error) =
-        tags.replace_tag_in_paths_checked(&members, &before.primary_tag, &new_primary)
-    {
-        if let Err(rollback) = index.update_collection(
-            id,
-            &before.name,
-            &before.extra_tags,
-            before.color.as_deref(),
-            before.icon_name.as_deref(),
-        ) {
-            crate::bench_error!(
-                "collection.rename.rollback.fail",
-                serde_json::json!({"error":rollback.to_string()})
-            );
-            return Err(format!("{error}; collection rollback failed: {rollback}"));
-        }
-        return Err(error);
-    }
-    Ok(())
+        .map_err(|e| e.to_string())
 }
 
-/// Moves bucket `id` (with its sub-buckets) under `parent`, updating the
-/// inherited tags of every stored member. Images leave the old ancestors, but
-/// keep any tag that a sibling or unrelated bucket still needs for them.
-/// Returns the bucket's name.
+/// Moves bucket `id` (with its sub-buckets) under `parent`. Its members go
+/// with it: old ancestors stop showing them unless they are their own
+/// members too. Returns the bucket's name.
 pub fn reparent_bucket(
     index: &LibraryIndex,
-    tags: &TagDatabase,
     id: i64,
     parent: Option<i64>,
-    root: Option<&Path>,
 ) -> Result<String, String> {
-    let collections = index.list_collections().map_err(|e| e.to_string())?;
-    let source = collections
-        .iter()
-        .find(|c| c.id == id)
-        .ok_or("Collection no longer exists")?;
-    let old_parent = source.parent_id;
-    let name = source.name.clone();
-
-    let mut subtree = vec![id];
-    let mut cursor = 0;
-    while cursor < subtree.len() {
-        let current = subtree[cursor];
-        for child in collections.iter().filter(|c| c.parent_id == Some(current)) {
-            if !subtree.contains(&child.id) {
-                subtree.push(child.id);
-            }
-        }
-        cursor += 1;
-    }
-
-    // The old ancestors lose these images by design. With tag-backed buckets
-    // a direct member of an ancestor is indistinguishable from a member of
-    // the moved bucket; Phase 4's explicit membership removes that ambiguity.
-    let mut old_ancestors = Vec::new();
-    let mut next = old_parent;
-    while let Some(ancestor) = next.filter(|a| !old_ancestors.contains(a)) {
-        old_ancestors.push(ancestor);
-        next = collections
-            .iter()
-            .find(|c| c.id == ancestor)
-            .and_then(|c| c.parent_id);
-    }
-
-    // Tags each image still needs for other buckets, such as siblings.
-    let mut needed: HashMap<PathBuf, HashSet<String>> = HashMap::new();
-    for other in collections
-        .iter()
-        .filter(|c| !subtree.contains(&c.id) && !old_ancestors.contains(&c.id))
-    {
-        let effective = index
-            .collection_effective_tags(other.id)
-            .map_err(|e| e.to_string())?;
-        for path in stored_members(index, tags, other.id, root)? {
-            needed
-                .entry(path)
-                .or_default()
-                .extend(effective.iter().cloned());
-        }
-    }
-
-    let mut before = Vec::new();
-    for member_id in &subtree {
-        let bucket = collections
-            .iter()
-            .find(|c| c.id == *member_id)
-            .ok_or("Collection no longer exists")?;
-        let effective = index
-            .collection_effective_tags(*member_id)
-            .map_err(|e| e.to_string())?;
-        let members = stored_members(index, tags, *member_id, root)?;
-        before.push((*member_id, effective, local_tags(bucket), members));
-    }
-
+    require_migrated(index)?;
+    let name = collection(index, id)?.name;
     index
         .reparent_collection(id, parent)
         .map_err(|e| e.to_string())?;
-    let update = (|| -> Result<(), String> {
-        let mut batches = Vec::new();
-        for (member_id, old, local, members) in before {
-            let new = index
-                .collection_effective_tags(member_id)
-                .map_err(|e| e.to_string())?;
-            let add: Vec<String> = new
-                .iter()
-                .filter(|t| !local.contains(t) && !old.contains(t))
-                .cloned()
-                .collect();
-            let dropped: Vec<&String> = old
-                .iter()
-                .filter(|t| !local.contains(t) && !new.contains(t))
-                .collect();
-            for path in &members {
-                let keep = needed.get(path);
-                let remove: Vec<String> = dropped
-                    .iter()
-                    .filter(|t| keep.is_none_or(|keep| !keep.contains(**t)))
-                    .map(|t| (*t).clone())
-                    .collect();
-                if !remove.is_empty() {
-                    batches.push(TagChange {
-                        paths: vec![path.clone()],
-                        tags: remove,
-                        remove: true,
-                    });
+    Ok(name)
+}
+
+/// Moves bucket membership out of tags, once. Backs up both databases to a
+/// new folder under `backups` first, and builds each bucket's own members
+/// from every stored effective-tag member, including missing files, so
+/// every bucket keeps exactly its members. Tag rows are left untouched.
+/// Returns the backup folder when a migration ran.
+pub fn migrate(
+    index: &LibraryIndex,
+    tags: &TagDatabase,
+    backups: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if index.is_membership_migrated().map_err(|e| e.to_string())? {
+        return Ok(None);
+    }
+    let collections = index.list_collections().map_err(|e| e.to_string())?;
+    let backup = if collections.is_empty() {
+        None
+    } else {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        let dir = backups.join(format!("before-bucket-membership-{stamp}"));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        index.backup_to(&dir.join("library-index.sqlite"))?;
+        tags.backup_to(&dir.join("tags.sqlite3"))?;
+        verify_backup(&dir, collections.len())?;
+        Some(dir)
+    };
+    let mut members = Vec::new();
+    let mut fingerprints = HashMap::new();
+    for bucket in &collections {
+        let effective = effective_tags_in(&collections, bucket.id);
+        let paths = if effective.is_empty() {
+            Vec::new()
+        } else {
+            tags.stored_paths_for_all_tags_checked(&effective)?
+        };
+        for path in &paths {
+            // Only cached fingerprints: hashing waits for the background pass.
+            if let Some((size, mtime)) = stamp(path) {
+                if let Ok(Some(hash)) = index.fresh_fingerprint(path, size, mtime) {
+                    fingerprints.insert(path.clone(), hash);
                 }
             }
-            batches.push(TagChange {
-                paths: members,
-                tags: add,
-                remove: false,
-            });
         }
-        tags.change_tag_batches_checked(&batches)?;
-        Ok(())
-    })();
-    if let Err(error) = update {
-        if let Err(rollback) = index.reparent_collection(id, old_parent) {
-            crate::bench_error!(
-                "collection.reparent.rollback.fail",
-                serde_json::json!({"error":rollback.to_string()})
-            );
-            return Err(format!("{error}; hierarchy rollback failed: {rollback}"));
-        }
-        return Err(error);
+        members.push((bucket.id, paths));
     }
-    Ok(name)
+    index.migrate_bucket_membership(&members, &fingerprints)?;
+    crate::bench_event!(
+        "buckets.migrated",
+        serde_json::json!({
+            "buckets": members.len(),
+            "members": members.iter().map(|(_, p)| p.len()).sum::<usize>(),
+            "backup": backup.as_ref().map(|d| d.display().to_string()),
+        }),
+    );
+    Ok(backup)
+}
+
+fn verify_backup(dir: &Path, collections: usize) -> Result<(), String> {
+    let open = |name: &str| {
+        rusqlite::Connection::open_with_flags(
+            dir.join(name),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|e| format!("backup {name} unreadable: {e}"))
+    };
+    let index = open("library-index.sqlite")?;
+    let stored: i64 = index
+        .query_row("SELECT COUNT(*) FROM collections", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if stored as usize != collections {
+        return Err(format!(
+            "backup has {stored} buckets instead of {collections}"
+        ));
+    }
+    open("tags.sqlite3")?
+        .query_row("SELECT COUNT(*) FROM file_tags", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|e| format!("backup tags unreadable: {e}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -289,16 +427,24 @@ mod tests {
                     .as_nanos()
             ));
             std::fs::create_dir_all(&root).unwrap();
-            Self {
-                index: LibraryIndex::open_in_memory().unwrap(),
-                tags: TagDatabase::open_in_memory().unwrap(),
-                root,
-            }
+            let index = LibraryIndex::open_in_memory().unwrap();
+            let tags = TagDatabase::open_in_memory().unwrap();
+            Self { index, tags, root }
+        }
+
+        /// A fixture already past the migration, as every new library is.
+        fn migrated(name: &str) -> Self {
+            let f = Self::new(name);
+            migrate(&f.index, &f.tags, &f.root.join("backups")).unwrap();
+            f
         }
 
         fn image(&self, name: &str) -> PathBuf {
             let path = self.root.join(name);
-            std::fs::write(&path, b"image").unwrap();
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, format!("image {name}")).unwrap();
             path
         }
 
@@ -309,9 +455,8 @@ mod tests {
                 .id
         }
 
-        fn members(&self, id: i64) -> Vec<PathBuf> {
-            let effective = self.index.collection_effective_tags(id).unwrap();
-            self.tags.paths_for_all_tags_checked(&effective).unwrap()
+        fn shows(&self, id: i64) -> Vec<PathBuf> {
+            view(&self.index, id, Some(&self.root), &[]).unwrap().paths
         }
     }
 
@@ -322,139 +467,174 @@ mod tests {
     }
 
     #[test]
-    fn removing_from_a_child_keeps_parent_and_sibling_membership() {
-        let f = Fixture::new("remove-child");
-        let trips = f.bucket("Trips", None);
-        let iceland = f.bucket("Iceland", Some(trips));
-        let norway = f.bucket("Norway", Some(trips));
-        let photo = f.image("fjord.jpg");
-        add_to_bucket(&f.index, &f.tags, iceland, std::slice::from_ref(&photo)).unwrap();
-        add_to_bucket(&f.index, &f.tags, norway, std::slice::from_ref(&photo)).unwrap();
+    fn parents_show_sub_bucket_members_and_keep_their_own_on_child_removal() {
+        let f = Fixture::migrated("inherit");
+        let art = f.bucket("Art", None);
+        let diffusion = f.bucket("Diffusion", Some(art));
+        let render = f.image("render.png");
+        let sketch = f.image("sketch.png");
+        add_to_bucket(&f.index, diffusion, &[render.clone(), sketch.clone()]).unwrap();
+        add_to_bucket(&f.index, art, std::slice::from_ref(&render)).unwrap();
+        assert_eq!(f.shows(art), vec![render.clone(), sketch.clone()]);
 
-        remove_from_bucket(&f.index, &f.tags, iceland, std::slice::from_ref(&photo)).unwrap();
+        // Removing from Diffusion keeps Art's own member, drops the other.
+        remove_from_bucket(&f.index, diffusion, &[render.clone(), sketch.clone()]).unwrap();
+        assert!(f.shows(diffusion).is_empty());
+        assert_eq!(f.shows(art), vec![render.clone()]);
 
-        assert!(f.members(iceland).is_empty());
-        assert_eq!(f.members(norway), vec![photo.clone()]);
-        assert_eq!(f.members(trips), vec![photo]);
+        // Removing from a parent also removes from its sub-buckets.
+        add_to_bucket(&f.index, diffusion, std::slice::from_ref(&render)).unwrap();
+        remove_from_bucket(&f.index, art, std::slice::from_ref(&render)).unwrap();
+        assert!(f.shows(art).is_empty());
+        assert!(f.shows(diffusion).is_empty());
     }
 
     #[test]
-    fn buckets_containing_matches_what_opening_each_bucket_shows() {
-        let f = Fixture::new("containing");
+    fn members_follow_moves_and_copies_and_missing_ones_are_counted() {
+        let f = Fixture::migrated("identity");
+        let bucket = f.bucket("Wallpapers", None);
+        let a = f.image("a.jpg");
+        let gone = f.image("gone.jpg");
+        add_to_bucket(&f.index, bucket, &[a.clone(), gone.clone()]).unwrap();
+
+        // Moved and renamed outside Sharpr; a fingerprint pass sees the new file.
+        let moved = f.root.join("sub/renamed.jpg");
+        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        std::fs::rename(&a, &moved).unwrap();
+        let copy = f.root.join("copy.jpg");
+        std::fs::copy(&moved, &copy).unwrap();
+        std::fs::remove_file(&gone).unwrap();
+        let never = || false;
+        crate::fingerprint::run_pass(&f.index, &f.root, &[], &[], &never, &|_| {}).unwrap();
+
+        let shown = view(&f.index, bucket, Some(&f.root), &[]).unwrap();
+        assert_eq!(shown.paths, vec![copy.clone(), moved.clone()]);
+        assert_eq!(shown.missing, 1, "the deleted file is missing, not dropped");
+
+        // A member in a disabled folder is hidden, not missing.
+        let hidden = view(&f.index, bucket, Some(&f.root), &[f.root.join("sub")]).unwrap();
+        assert_eq!((hidden.paths, hidden.missing), (vec![copy], 1));
+    }
+
+    #[test]
+    fn rename_reparent_and_delete_handle_members() {
+        let f = Fixture::migrated("edits");
+        let trips = f.bucket("Trips", None);
+        let iceland = f.bucket("Iceland", Some(trips));
+        let other = f.bucket("Other", None);
+        let photo = f.image("fjord.jpg");
+        add_to_bucket(&f.index, iceland, std::slice::from_ref(&photo)).unwrap();
+
+        rename_bucket(&f.index, iceland, "Iceland 2026").unwrap();
+        assert_eq!(f.shows(iceland), vec![photo.clone()]);
+
+        assert_eq!(
+            reparent_bucket(&f.index, iceland, Some(other)).unwrap(),
+            "Iceland 2026"
+        );
+        assert!(
+            f.shows(trips).is_empty(),
+            "the old parent no longer shows it"
+        );
+        assert_eq!(f.shows(other), vec![photo.clone()]);
+
+        f.index.delete_collection(other).unwrap();
+        assert!(f
+            .index
+            .bucket_members(&[other, iceland])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn info_chip_buckets_match_what_opening_each_bucket_shows() {
+        let f = Fixture::migrated("chip");
         let art = f.bucket("Art", None);
         let diffusion = f.bucket("Diffusion", Some(art));
-        let blue = f
-            .index
-            .create_collection("test", None, "Blue", &["sky".into()], None, None)
-            .unwrap()
-            .id;
+        let blue = f.bucket("Blue", None);
         let image = f.image("render.png");
         let check = |expected: &[i64]| {
             let collections = f.index.list_collections().unwrap();
-            let tags = f.tags.tags_for_path(&image);
-            let mut found: Vec<i64> = buckets_containing(&collections, &tags)
+            let mut chip: Vec<i64> = buckets_for_path(&f.index, &collections, &image)
+                .unwrap()
                 .iter()
                 .map(|c| c.id)
                 .collect();
             let mut opened: Vec<i64> = collections
                 .iter()
                 .map(|c| c.id)
-                .filter(|id| f.members(*id).contains(&image))
+                .filter(|id| f.shows(*id).contains(&image))
                 .collect();
-            found.sort();
+            chip.sort();
             opened.sort();
-            assert_eq!(found, opened, "chip and bucket view disagree");
-            assert_eq!(found, expected);
+            assert_eq!(chip, opened, "chip and bucket view disagree");
+            assert_eq!(chip, expected);
         };
-
-        add_to_bucket(&f.index, &f.tags, diffusion, std::slice::from_ref(&image)).unwrap();
+        add_to_bucket(&f.index, diffusion, std::slice::from_ref(&image)).unwrap();
         check(&[art, diffusion]);
-        // Removing from Art leaves the `diffusion` tag, but not the membership.
-        remove_from_bucket(&f.index, &f.tags, art, std::slice::from_ref(&image)).unwrap();
+        remove_from_bucket(&f.index, diffusion, std::slice::from_ref(&image)).unwrap();
         check(&[]);
-        // One of a bucket's tags alone is not membership.
-        f.tags.add_tag(&image, "sky");
-        check(&[]);
-        add_to_bucket(&f.index, &f.tags, blue, std::slice::from_ref(&image)).unwrap();
+        add_to_bucket(&f.index, blue, std::slice::from_ref(&image)).unwrap();
         check(&[blue]);
     }
 
     #[test]
-    fn removing_from_a_parent_also_removes_from_its_sub_buckets() {
-        let f = Fixture::new("remove-parent");
+    fn migration_keeps_every_member_and_leaves_tags_untouched() {
+        let f = Fixture::new("migrate");
         let art = f.bucket("Art", None);
         let diffusion = f.bucket("Diffusion", Some(art));
-        let image = f.image("render.png");
-        add_to_bucket(&f.index, &f.tags, diffusion, std::slice::from_ref(&image)).unwrap();
+        let render = f.image("render.png");
+        let photo = f.image("photo.jpg");
+        let missing = f.root.join("missing.png");
+        // Tag-backed membership as older builds stored it.
+        let art_tag = f.index.collection(art).unwrap().unwrap().primary_tag;
+        let diffusion_tag = f.index.collection(diffusion).unwrap().unwrap().primary_tag;
+        f.tags
+            .change_tags_checked(
+                &[render.clone(), missing.clone()],
+                &[art_tag.clone(), diffusion_tag.clone()],
+                false,
+            )
+            .unwrap();
+        f.tags
+            .change_tags_checked(
+                std::slice::from_ref(&photo),
+                std::slice::from_ref(&art_tag),
+                false,
+            )
+            .unwrap();
+        f.tags.add_tag(&photo, "landscape");
+        let tag_rows = |db: &TagDatabase| {
+            let mut rows: Vec<(PathBuf, Vec<String>)> = [&render, &photo, &missing]
+                .iter()
+                .map(|p| ((*p).clone(), db.tags_for_path(p)))
+                .collect();
+            rows.sort();
+            rows
+        };
+        let before = tag_rows(&f.tags);
+        assert!(add_to_bucket(&f.index, art, std::slice::from_ref(&photo)).is_err());
 
-        remove_from_bucket(&f.index, &f.tags, art, std::slice::from_ref(&image)).unwrap();
+        let backups = f.root.join("backups");
+        let backup = migrate(&f.index, &f.tags, &backups).unwrap().unwrap();
+        assert!(backup.join("library-index.sqlite").is_file());
+        assert!(backup.join("tags.sqlite3").is_file());
+        assert_eq!(tag_rows(&f.tags), before, "tag rows are untouched");
 
-        assert!(f.members(art).is_empty());
-        assert!(f.members(diffusion).is_empty());
-        assert_eq!(f.tags.tags_for_path(&image), vec!["diffusion".to_string()]);
-    }
-
-    #[test]
-    fn reparent_keeps_tags_that_sibling_buckets_still_need() {
-        let f = Fixture::new("reparent-sibling");
-        let trips = f.bucket("Trips", None);
-        let iceland = f.bucket("Iceland", Some(trips));
-        let norway = f.bucket("Norway", Some(trips));
-        let art = f.bucket("Art", None);
-        let photo = f.image("fjord.jpg");
-        let only_iceland = f.image("geyser.jpg");
-        add_to_bucket(&f.index, &f.tags, iceland, std::slice::from_ref(&photo)).unwrap();
-        add_to_bucket(&f.index, &f.tags, norway, std::slice::from_ref(&photo)).unwrap();
-        add_to_bucket(
-            &f.index,
-            &f.tags,
-            iceland,
-            std::slice::from_ref(&only_iceland),
-        )
-        .unwrap();
-
-        reparent_bucket(&f.index, &f.tags, iceland, Some(art), Some(&f.root)).unwrap();
-
-        assert_eq!(f.members(norway), vec![photo.clone()]);
-        assert_eq!(f.members(trips), vec![photo.clone()]);
-        let mut moved = f.members(iceland);
-        moved.sort();
-        let mut expected = vec![photo, only_iceland.clone()];
-        expected.sort();
-        assert_eq!(moved, expected);
-        assert!(!f
-            .tags
-            .tags_for_path(&only_iceland)
-            .contains(&"trips".to_string()));
-    }
-
-    #[test]
-    fn rename_and_reparent_carry_members_whose_files_are_missing() {
-        let f = Fixture::new("missing-members");
-        let trips = f.bucket("Trips", None);
-        let iceland = f.bucket("Iceland", Some(trips));
-        let art = f.bucket("Art", None);
-        let present = f.image("present.jpg");
-        let away = f.image("away.jpg");
-        add_to_bucket(&f.index, &f.tags, iceland, &[present.clone(), away.clone()]).unwrap();
-        // Unplugged drive, disabled folder or a file moved out for a while.
-        std::fs::remove_file(&away).unwrap();
-
-        rename_bucket(&f.index, &f.tags, trips, "Travel", Some(&f.root)).unwrap();
-        reparent_bucket(&f.index, &f.tags, iceland, Some(art), Some(&f.root)).unwrap();
-        std::fs::write(&away, b"image").unwrap();
-
-        let mut members = f.members(iceland);
-        members.sort();
-        let mut expected = vec![present, away.clone()];
-        expected.sort();
-        assert_eq!(members, expected);
-        assert!(
-            f.members(trips).is_empty(),
-            "moved images leave the old parent"
+        // Same members as the tag rules gave, the missing file included.
+        let art_view = view(&f.index, art, Some(&f.root), &[]).unwrap();
+        assert_eq!(
+            (art_view.paths, art_view.missing),
+            (vec![photo.clone(), render.clone()], 1)
         );
-        let mut tags = f.tags.tags_for_path(&away);
-        tags.sort();
-        assert_eq!(tags, vec!["art".to_string(), "iceland".to_string()]);
+        let diffusion_view = view(&f.index, diffusion, Some(&f.root), &[]).unwrap();
+        assert_eq!(
+            (diffusion_view.paths, diffusion_view.missing),
+            (vec![render.clone()], 1)
+        );
+
+        // It runs once.
+        assert_eq!(migrate(&f.index, &f.tags, &backups).unwrap(), None);
+        assert_eq!(f.index.bucket_members(&[art]).unwrap().len(), 3);
     }
 }

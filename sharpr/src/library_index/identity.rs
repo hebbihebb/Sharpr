@@ -1,12 +1,38 @@
-//! File identity in the library index: cached content fingerprints
-//! (`ROADMAP.md` Phase 4).
+//! File identity in the library index: cached content fingerprints and
+//! bucket membership (`ROADMAP.md` Phase 4).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use rusqlite::params;
+use rusqlite::{params, params_from_iter, Connection};
 
 use super::{now_secs, path_to_string, LibraryIndex};
+
+const MIGRATED_KEY: &str = "bucket_membership_migrated_at";
+
+/// Whether bucket membership has moved from tags to `bucket_members`.
+pub(super) fn membership_migrated(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_meta WHERE key = ?1)",
+        params![MIGRATED_KEY],
+        |row| row.get(0),
+    )
+}
+
+/// One stored bucket member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberRow {
+    pub collection_id: i64,
+    pub last_path: PathBuf,
+    pub fingerprint: Option<String>,
+}
+
+/// Files cached with a fingerprint: `hash → [(path, size, mtime_ns)]`.
+pub type FilesByFingerprint = HashMap<String, Vec<(PathBuf, u64, i64)>>;
+
+fn placeholders(n: usize) -> String {
+    std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",")
+}
 
 impl LibraryIndex {
     /// Every cached fingerprint as `path → (size, mtime_ns, hash)`.
@@ -47,6 +73,202 @@ impl LibraryIndex {
             }
         }
         tx.commit()
+    }
+
+    /// Whether bucket membership has been migrated from tags.
+    pub fn is_membership_migrated(&self) -> rusqlite::Result<bool> {
+        let conn = self.conn()?;
+        membership_migrated(&conn)
+    }
+
+    /// Moves bucket membership out of tags in one transaction: `members`
+    /// holds each bucket's stored members, `fingerprints` what is known of
+    /// them. Fails, writing nothing, unless every bucket ends up with exactly
+    /// as many members as it had; then stamps schema version 2.
+    pub fn migrate_bucket_membership(
+        &self,
+        members: &[(i64, Vec<PathBuf>)],
+        fingerprints: &HashMap<PathBuf, String>,
+    ) -> Result<(), String> {
+        let mut conn = self.conn().map_err(|e| e.to_string())?;
+        if membership_migrated(&conn).map_err(|e| e.to_string())? {
+            return Ok(());
+        }
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let now = now_secs();
+        {
+            let mut insert = tx
+                .prepare(
+                    "INSERT OR IGNORE INTO bucket_members (collection_id, last_path, fingerprint, added_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut count = tx
+                .prepare("SELECT COUNT(*) FROM bucket_members WHERE collection_id = ?1")
+                .map_err(|e| e.to_string())?;
+            for (id, paths) in members {
+                for path in paths {
+                    insert
+                        .execute(params![
+                            id,
+                            path_to_string(path),
+                            fingerprints.get(path),
+                            now
+                        ])
+                        .map_err(|e| e.to_string())?;
+                }
+                let expected = paths.iter().collect::<std::collections::HashSet<_>>().len();
+                let stored: i64 = count
+                    .query_row(params![id], |row| row.get(0))
+                    .map_err(|e| e.to_string())?;
+                if stored as usize != expected {
+                    return Err(format!(
+                        "bucket {id} would have {stored} members instead of {expected}"
+                    ));
+                }
+            }
+        }
+        tx.execute(
+            "INSERT INTO schema_meta (key, value) VALUES (?1, ?2)",
+            params![MIGRATED_KEY, now.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+        crate::db_version::stamp(&tx, super::USER_VERSION).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Stored members of the buckets `ids`.
+    pub fn bucket_members(&self, ids: &[i64]) -> rusqlite::Result<Vec<MemberRow>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT collection_id, last_path, fingerprint FROM bucket_members
+             WHERE collection_id IN ({}) ORDER BY last_path",
+            placeholders(ids.len())
+        ))?;
+        let rows = stmt.query_map(params_from_iter(ids), |row| {
+            Ok(MemberRow {
+                collection_id: row.get(0)?,
+                last_path: PathBuf::from(row.get::<_, String>(1)?),
+                fingerprint: row.get(2)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Adds `(path, fingerprint)` members to bucket `id`; returns how many
+    /// were new. A known fingerprint fills in one that was missing.
+    pub fn add_bucket_members(
+        &self,
+        id: i64,
+        members: &[(PathBuf, Option<String>)],
+    ) -> rusqlite::Result<usize> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let mut added = 0;
+        {
+            let mut insert = tx.prepare(
+                "INSERT OR IGNORE INTO bucket_members (collection_id, last_path, fingerprint, added_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            let mut fill = tx.prepare(
+                "UPDATE bucket_members SET fingerprint = ?3
+                 WHERE collection_id = ?1 AND last_path = ?2 AND fingerprint IS NULL",
+            )?;
+            let now = now_secs();
+            for (path, fingerprint) in members {
+                let path = path_to_string(path);
+                added += insert.execute(params![id, path, fingerprint, now])?;
+                if fingerprint.is_some() {
+                    fill.execute(params![id, path, fingerprint])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(added)
+    }
+
+    /// Removes from the buckets `ids` every member stored at one of `paths`
+    /// or carrying one of `fingerprints`; returns how many rows went.
+    pub fn remove_bucket_members(
+        &self,
+        ids: &[i64],
+        paths: &[PathBuf],
+        fingerprints: &[String],
+    ) -> rusqlite::Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let mut removed = 0;
+        {
+            let ids_sql = placeholders(ids.len());
+            let mut by_path = tx.prepare(&format!(
+                "DELETE FROM bucket_members WHERE last_path = ? AND collection_id IN ({ids_sql})"
+            ))?;
+            let mut by_fingerprint = tx.prepare(&format!(
+                "DELETE FROM bucket_members WHERE fingerprint = ? AND collection_id IN ({ids_sql})"
+            ))?;
+            for path in paths {
+                let mut args: Vec<rusqlite::types::Value> = vec![path_to_string(path).into()];
+                args.extend(ids.iter().map(|id| (*id).into()));
+                removed += by_path.execute(params_from_iter(args))?;
+            }
+            for fingerprint in fingerprints {
+                let mut args: Vec<rusqlite::types::Value> = vec![fingerprint.clone().into()];
+                args.extend(ids.iter().map(|id| (*id).into()));
+                removed += by_fingerprint.execute(params_from_iter(args))?;
+            }
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    /// Cached files with each of `hashes`: `hash → [(path, size, mtime_ns)]`.
+    /// Callers check that a file still matches before trusting it.
+    pub fn files_with_fingerprints(
+        &self,
+        hashes: &[String],
+    ) -> rusqlite::Result<FilesByFingerprint> {
+        let mut found = FilesByFingerprint::new();
+        let conn = self.conn()?;
+        for chunk in hashes.chunks(500) {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT hash, path, size, mtime_ns FROM file_fingerprints WHERE hash IN ({})",
+                placeholders(chunk.len())
+            ))?;
+            let rows = stmt.query_map(params_from_iter(chunk), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (
+                        PathBuf::from(row.get::<_, String>(1)?),
+                        row.get::<_, i64>(2)? as u64,
+                        row.get::<_, i64>(3)?,
+                    ),
+                ))
+            })?;
+            for row in rows {
+                let (hash, file) = row?;
+                found.entry(hash).or_default().push(file);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Copies the whole index to `dest` (which must not exist), for a
+    /// backup before a migration.
+    pub fn backup_to(&self, dest: &Path) -> Result<(), String> {
+        if dest.exists() {
+            return Err(format!("{} already exists", dest.display()));
+        }
+        self.conn()
+            .map_err(|e| e.to_string())?
+            .execute("VACUUM INTO ?1", params![path_to_string(dest)])
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// The cached fingerprint of `path`, if it is still fresh for a file of
