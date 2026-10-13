@@ -10,7 +10,5 @@ pub mod preferences;
 pub mod resize_dialog;
 pub mod sidebar;
 pub mod state;
-pub mod tag_browser;
-pub mod tag_card;
 pub mod viewer;
 pub mod window;

@@ -137,6 +137,12 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 - Index sizes are trustworthy (oriented) only for rows written since October 12.
 - Header reads guard correctness and cost one read per image per session, off the GTK thread.
 
+**User decisions on October 13: D20, D21, and confirmed D18 (see `product.md`).**
+- **D20, done (committed, not yet deployed):** the Tags page, the "< View >" page switcher, Ctrl+1/2, `[`/`]`, the "Browse Tags" menu item, and the viewer's "Manage tags ↗" link are removed. So are `ui/tag_browser.rs` and `ui/tag_card.rs`, and the orphaned `delete_tag_globally` and `autocomplete`.
+  - Tag data, the tag popover (Ctrl+T), bucket colours, and the old-tag cleanup are untouched.
+  - The header now fits at 1024×600, close button included (GTK screenshot).
+- **Next:** D21 (image actions move to the right-click menu, reachable from the keyboard), then the D18 info chip and Info panel.
+
 **Item 11, main-thread work: done (committed, not yet deployed).**
 - **Filmstrip badge colours:** binding a row no longer queries SQLite. A worker builds a path → colour map whenever bucket colours change, a viewer tag edit lands, or a tag is deleted. Until the first map is ready, binding falls back to the old query.
 - **Manual check at deployment:** the coloured position badges of bucket members still appear, and update after adding an image to a bucket.

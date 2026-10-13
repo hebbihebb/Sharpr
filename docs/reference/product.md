@@ -97,5 +97,7 @@ Removed features listed in `AGENTS.md` stay removed.
 | D15 | 2026-10-12 | Visual-search evaluation queries must cover subjects, style, mood and colour, and people or adult content. |
 | D16 | 2026-10-12 | Filters are typed into the search box. `4k` means at least 3840×2160. |
 | D17 | 2026-10-12 | The backed-up, confirm-first cleanup of automatic tags stays approved. |
-| D18 | 2026-10-12 | Always visible: resolution and format, and the image's buckets. Everything else moves to the Info panel. |
+| D18 | 2026-10-12 | Always visible: resolution and format, and the image's buckets. Everything else moves to the Info panel. Confirmed on 2026-10-13: the corner chip is trimmed to resolution, format with a below-4K hint, and buckets; file size, the quality meter, and the rest go to an Info panel (i key or right-click → Info). |
 | D19 | 2026-10-12 | After the data-safety work, finding comes first. Then come visual-search evaluation, file identity and buckets, visual search, wallpaper output, cleanup, and Compare. |
+| D20 | 2026-10-13 | The Tags page and the page switcher are removed now, ahead of D1, to calm the header. The tag popover (Ctrl+T), tag-backed buckets, bucket colours, and the automatic-tag cleanup remain until visual search ships. No tag data is deleted. |
+| D21 | 2026-10-13 | Image actions (Resize, Crop, and WebP Copy; Compare) live in the right-click menu and shortcuts, not in the ≡ main menu. ≡ is an app menu (View, Library, Preferences, Shortcuts, Manual, About). Right-click actions must also be reachable from the keyboard. |

@@ -243,7 +243,7 @@ impl SharprWindow {
     /// Finds the tags the old automatic tagger added (decision D17) and, after
     /// confirmation and a backup, removes them. Manual tags and every tag a
     /// bucket uses are kept.
-    pub(super) fn start_automatic_tag_cleanup(&self, tag_browser: Option<TagBrowser>) {
+    pub(super) fn start_automatic_tag_cleanup(&self) {
         let (index, tags) = {
             let st = self.imp().state.borrow();
             (st.library_index.clone(), st.tags.clone())
@@ -276,7 +276,7 @@ impl SharprWindow {
                 Ok(rows) if rows.is_empty() => {
                     win.add_toast(libadwaita::Toast::new("No old automatic tags found"));
                 }
-                Ok(rows) => win.confirm_automatic_tag_cleanup(rows, tags, tag_browser),
+                Ok(rows) => win.confirm_automatic_tag_cleanup(rows, tags),
                 Err(error) => win.add_toast(libadwaita::Toast::new(&format!(
                     "Could not look for automatic tags: {error}"
                 ))),
@@ -288,7 +288,6 @@ impl SharprWindow {
         &self,
         rows: Vec<(String, String)>,
         tags: Arc<crate::tags::TagDatabase>,
-        tag_browser: Option<TagBrowser>,
     ) {
         let mut counts: Vec<(String, usize)> = Vec::new();
         for (_, tag) in &rows {
@@ -345,7 +344,6 @@ impl SharprWindow {
                 let _ = tx.send_blocking(result);
             });
             let weak = weak.clone();
-            let tag_browser = tag_browser.clone();
             glib::MainContext::default().spawn_local(async move {
                 let Ok(result) = rx.recv().await else { return };
                 let Some(win) = weak.upgrade() else { return };
@@ -361,9 +359,7 @@ impl SharprWindow {
                         win.add_toast(libadwaita::Toast::new(&format!(
                             "Removed {removed} automatic tags; a backup was saved first"
                         )));
-                        if let Some(browser) = tag_browser.as_ref() {
-                            browser.refresh();
-                        }
+                        win.tags_changed();
                     }
                     Err(error) => {
                         crate::bench_error!(

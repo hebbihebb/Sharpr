@@ -48,7 +48,6 @@ GSETTINGS_SCHEMA_DIR=data cargo run
 | Ctrl+Scroll | Zoom |
 | Ctrl+0 | Fit image |
 | Ctrl+T | Open tag editor |
-| Ctrl+1 / Ctrl+2 | Viewer / Tags |
 | F9 | Toggle library sidebar |
 | F11 | Toggle presentation mode |
 | Delete | Move selected images to trash |

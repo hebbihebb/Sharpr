@@ -13,7 +13,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `ui/window/` | Controllers extracted from `window.rs`: `compare_controller`, `search_controller`, `tag_controller`, and `gtk_tests` |
 | `ui/filmstrip.rs` | Filmstrip list, factory and bind callbacks, and the thumbnail scheduler (visible range, buffer, trickle) |
 | `ui/viewer.rs` | Full-image viewer (glycin decoding), tag popover, and info chips |
-| `ui/sidebar.rs`, `ui/tag_browser.rs` | Folder tree and buckets; Tags page |
+| `ui/sidebar.rs` | Folder tree and buckets (the Tags page was removed on 2026-10-13, D20) |
 | `ui/resize_dialog.rs`, `ui/crop_dialog.rs` | Resize Copy, and Crop/WebP Copy dialogs |
 | `ui/state.rs` | `AppState` (`Rc<RefCell<_>>`, GTK thread only) and `ViewScope` |
 | `model/library.rs` | `LibraryManager`: list store, path index, selection, and metadata caches |
@@ -38,11 +38,10 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 - Search and browse use a single coalescing worker that keeps only the newest job, with a 150 ms entry delay and a cancellable library walk.
 
 Known exceptions that still block the GTK thread are tracked in `ROADMAP.md`:
-- per-row `tags_for_path` during filmstrip bind
-- synchronous bucket open and unchunked `load_virtual`
-- linear `entries_for_path` lookups in virtual views
-- synchronous trash, move, copy, and rename
-- the Tags page's delete-tag action
+- synchronous trash, move, copy, and rename (Backlog)
+- unchunked `load_virtual` after a bucket's members arrive
+
+The per-row tag lookup, bucket membership query, and virtual-view path scans moved off the GTK thread on October 12 (Phase 2 item 11).
 
 ## Filmstrip And Thumbnail Invariants
 

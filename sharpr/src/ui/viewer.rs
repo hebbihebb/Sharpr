@@ -169,7 +169,6 @@ mod imp {
         pub new_tag_entry: gtk4::Entry,
         pub new_tag_create_btn: gtk4::Button,
         pub new_tag_cancel_btn: gtk4::Button,
-        pub manage_tags_btn: gtk4::Button,
         pub(super) tag_state: Rc<RefCell<TagPopoverState>>,
         /// Path of the image currently displayed — set by load_image(), cleared by clear().
         pub current_path: RefCell<Option<PathBuf>>,
@@ -193,7 +192,6 @@ mod imp {
         /// Handle for submitting metadata load requests to the shared metadata worker.
         pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
         /// Called when the "Manage tags" button in the popover is clicked.
-        pub manage_tags_cb: RefCell<Option<Box<dyn Fn()>>>,
         /// Last metadata-only quality score set for the displayed image, kept so
         /// `apply_sharpness` can blend without re-reading metadata.
         pub base_quality: RefCell<Option<crate::quality::QualityScore>>,
@@ -337,11 +335,6 @@ mod imp {
             new_tag_btn.add_css_class("flat");
             new_tag_btn.set_halign(gtk4::Align::Start);
 
-            let manage_tags_btn = gtk4::Button::with_label("Manage tags \u{2197}"); // Unicode arrow
-            manage_tags_btn.add_css_class("flat");
-            manage_tags_btn.set_halign(gtk4::Align::End);
-            manage_tags_btn.set_hexpand(true);
-
             let new_tag_entry = gtk4::Entry::new();
             new_tag_entry.set_placeholder_text(Some("Tag name"));
             new_tag_entry.set_visible(false);
@@ -359,7 +352,6 @@ mod imp {
             action_bar.append(&new_tag_entry);
             action_bar.append(&new_tag_cancel_btn);
             action_bar.append(&new_tag_create_btn);
-            action_bar.append(&manage_tags_btn);
 
             popover_vbox.append(&action_bar);
             tag_popover.set_child(Some(&popover_vbox));
@@ -399,7 +391,6 @@ mod imp {
                 new_tag_entry,
                 new_tag_create_btn,
                 new_tag_cancel_btn,
-                manage_tags_btn,
                 tag_state,
                 current_path: RefCell::new(None),
                 zoom_btn: std::cell::RefCell::new(None),
@@ -415,7 +406,6 @@ mod imp {
                 tag_refresh_gen: Cell::new(0),
                 tag_summary_gen: Cell::new(0),
                 metadata_handle: RefCell::new(None),
-                manage_tags_cb: RefCell::new(None),
                 base_quality: RefCell::new(None),
             }
         }
@@ -611,11 +601,6 @@ impl ViewerPane {
                 viewer.refresh_tag_summary();
             }
         });
-    }
-
-    /// Register a callback invoked when "Manage tags" is clicked in the popover.
-    pub fn connect_manage_tags(&self, cb: impl Fn() + 'static) {
-        *self.imp().manage_tags_cb.borrow_mut() = Some(Box::new(cb));
     }
 
     /// Clear the viewer (called when the folder changes).
@@ -1009,7 +994,6 @@ impl ViewerPane {
         imp.new_tag_create_btn.set_visible(false);
         imp.new_tag_cancel_btn.set_visible(false);
         imp.new_tag_btn.set_visible(true);
-        imp.manage_tags_btn.set_visible(true);
         self.refresh_tag_chips();
         self.refresh_tag_summary();
         imp.tag_popover.popup();
@@ -1088,31 +1072,18 @@ impl ViewerPane {
         let new_tag_btn = imp.new_tag_btn.clone();
         let new_tag_create_btn = imp.new_tag_create_btn.clone();
         let new_tag_cancel_btn = imp.new_tag_cancel_btn.clone();
-        let manage_tags_btn = imp.manage_tags_btn.clone();
 
         imp.new_tag_btn.connect_clicked({
             let entry = new_tag_entry.clone();
             let btn = new_tag_btn.clone();
             let create_btn = new_tag_create_btn.clone();
             let cancel_btn = new_tag_cancel_btn.clone();
-            let manage_btn = manage_tags_btn.clone();
             move |_| {
                 btn.set_visible(false);
-                manage_btn.set_visible(false);
                 entry.set_visible(true);
                 create_btn.set_visible(true);
                 cancel_btn.set_visible(true);
                 entry.grab_focus();
-            }
-        });
-
-        let viewer_weak_manage = self.downgrade();
-        imp.manage_tags_btn.connect_clicked(move |_| {
-            if let Some(viewer) = viewer_weak_manage.upgrade() {
-                if let Some(cb) = viewer.imp().manage_tags_cb.borrow().as_ref() {
-                    cb();
-                }
-                viewer.imp().tag_popover.popdown();
             }
         });
 
@@ -1121,14 +1092,12 @@ impl ViewerPane {
             let btn = new_tag_btn.clone();
             let create_btn = new_tag_create_btn.clone();
             let cancel_btn = new_tag_cancel_btn.clone();
-            let manage_btn = manage_tags_btn.clone();
             move || {
                 entry.set_text("");
                 entry.set_visible(false);
                 create_btn.set_visible(false);
                 cancel_btn.set_visible(false);
                 btn.set_visible(true);
-                manage_btn.set_visible(true);
             }
         };
 

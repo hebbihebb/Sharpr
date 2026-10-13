@@ -65,18 +65,6 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
-                <property name="title">Cycle pages forward / back</property>
-                <property name="accelerator">bracketright bracketleft</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Go to Viewer / Tags</property>
-                <property name="accelerator">&lt;Control&gt;1 &lt;Control&gt;2</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
                 <property name="title">Toggle fullscreen / Exit presentation</property>
                 <property name="accelerator">F11</property>
               </object>

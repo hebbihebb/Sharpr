@@ -16,7 +16,7 @@ use crate::duplicates::phash;
 use crate::library_index::{BasicImageInfo, Collection, IndexedImage, LibraryIndex};
 use crate::model::library::{CachedImageData, RawImageEntry};
 use crate::model::{ImageEntry, LibraryManager};
-use crate::thumbnails::worker::{ThumbnailWorkerResponse, WorkerRequest};
+use crate::thumbnails::worker::ThumbnailWorkerResponse;
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::collection_dialogs::{
     parse_collection_tags_input, show_change_color_dialog, show_new_collection_dialog,
@@ -28,7 +28,6 @@ use crate::ui::ops_indicator::OpsIndicator;
 use crate::ui::preferences::build_preferences_window;
 use crate::ui::sidebar::SidebarPane;
 use crate::ui::state::{AppState, ViewScope};
-use crate::ui::tag_browser::TagBrowser;
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 
 mod compare_controller;
@@ -566,8 +565,6 @@ glib::wrapper! {
 }
 
 impl SharprWindow {
-    const PAGE_ORDER: &[(&str, &str)] = &[("viewer", "View"), ("tags", "Tags")];
-
     pub fn new(app: &libadwaita::Application) -> Self {
         glib::Object::builder().property("application", app).build()
     }
@@ -873,13 +870,6 @@ impl SharprWindow {
             .build();
         content_stack.add_named(&welcome_page, Some("welcome"));
 
-        {
-            let content_stack_c = content_stack.clone();
-            viewer.connect_manage_tags(move || {
-                content_stack_c.set_visible_child_name("tags");
-            });
-        }
-
         let toast_overlay = libadwaita::ToastOverlay::new();
         *self.imp().toast_overlay.borrow_mut() = Some(toast_overlay.clone());
         if let Some(error) = self.imp().state.borrow().tags_error.clone() {
@@ -887,48 +877,6 @@ impl SharprWindow {
                 libadwaita::Toast::new(&format!("Tags and buckets are unavailable: {error}"));
             toast.set_timeout(0);
             toast_overlay.add_toast(toast);
-        }
-        let tag_browser = state.borrow().tags.clone().map(TagBrowser::new);
-        if let Some(tag_browser) = tag_browser.as_ref() {
-            let collections = collections_for_sidebar(&state.borrow());
-            tag_browser.set_collections(collections);
-            if let Some(worker) = self.imp().thumbnail_worker.borrow().as_ref() {
-                let state_c = state.clone();
-                let visible_tx = worker.visible_sender();
-                let pending_set = worker.pending_set();
-                let generation = worker.generation_arc();
-                tag_browser.set_preview_hooks(
-                    move |path| state_c.borrow().library.cached_thumbnail(path),
-                    move |path| {
-                        if let Ok(pending) = pending_set.lock() {
-                            if pending.contains(path) {
-                                return;
-                            }
-                        }
-                        let path = path.to_path_buf();
-                        let should_enqueue = {
-                            let Ok(mut pending) = pending_set.lock() else {
-                                return;
-                            };
-                            pending.insert(path.clone())
-                        };
-                        if !should_enqueue {
-                            return;
-                        }
-                        if visible_tx
-                            .try_send(WorkerRequest::Thumbnail {
-                                path: path.clone(),
-                                gen: generation.load(std::sync::atomic::Ordering::Relaxed),
-                            })
-                            .is_err()
-                        {
-                            if let Ok(mut pending) = pending_set.lock() {
-                                pending.remove(&path);
-                            }
-                        }
-                    },
-                );
-            }
         }
         let outer_split = libadwaita::OverlaySplitView::new();
         *self.imp().presentation_outer_split.borrow_mut() = Some(outer_split.clone());
@@ -1384,7 +1332,6 @@ impl SharprWindow {
             let sidebar_c = sidebar.clone();
             let filmstrip_c = filmstrip.clone();
             let state_c = state.clone();
-            let tag_browser_c = tag_browser.clone();
             let generation = Rc::new(Cell::new(0u64));
             move || {
                 let next = generation.get().wrapping_add(1);
@@ -1403,7 +1350,6 @@ impl SharprWindow {
                 let state = state_c.clone();
                 let sidebar = sidebar_c.clone();
                 let filmstrip = filmstrip_c.clone();
-                let tag_browser = tag_browser_c.clone();
                 let current_generation = generation.clone();
                 let expected_library = library.clone();
                 crate::ui::collection_dialogs::run_collection_write(
@@ -1437,9 +1383,6 @@ impl SharprWindow {
                                 state.borrow_mut().collections = collections.clone();
                                 filmstrip.refresh_collection_colors(&collections);
                                 sidebar.refresh_collections(&collections);
-                                if let Some(browser) = tag_browser {
-                                    browser.set_collections(collections);
-                                }
                                 apply_scope_to_sidebar(&state.borrow().scope, &sidebar);
                             }
                             Err(error) => crate::bench_warn!(
@@ -1689,23 +1632,12 @@ impl SharprWindow {
             self.add_action(&dupe_action);
         }
 
-        if let Some(tag_browser) = tag_browser.clone() {
-            let content_stack_c = content_stack.clone();
-            let tags_action = gio::SimpleAction::new("show-tags", None);
-            tags_action.connect_activate(move |_, _| {
-                content_stack_c.set_visible_child_name("tags");
-                tag_browser.refresh();
-            });
-            self.add_action(&tags_action);
-        }
-
         {
             let window_weak = self.downgrade();
-            let tag_browser = tag_browser.clone();
             let cleanup = gio::SimpleAction::new("remove-automatic-tags", None);
             cleanup.connect_activate(move |_, _| {
                 if let Some(win) = window_weak.upgrade() {
-                    win.start_automatic_tag_cleanup(tag_browser.clone());
+                    win.start_automatic_tag_cleanup();
                 }
             });
             self.add_action(&cleanup);
@@ -1730,26 +1662,6 @@ impl SharprWindow {
                     String::new(),
                     state_c.clone(),
                     toast_overlay_c.clone(),
-                    refresh_c.clone(),
-                );
-            });
-        }
-
-        if let Some(tag_browser) = tag_browser.as_ref() {
-            let win_w = self.downgrade();
-            let state_c = state.clone();
-            let toast_c = toast_overlay.clone();
-            let refresh_c = refresh_sidebar_collections.clone();
-            tag_browser.connect_tag_create_collection_requested(move |tag| {
-                let Some(win) = win_w.upgrade() else {
-                    return;
-                };
-                show_new_collection_dialog(
-                    win.upcast(),
-                    tag.to_string(),
-                    String::new(),
-                    state_c.clone(),
-                    toast_c.clone(),
                     refresh_c.clone(),
                 );
             });
@@ -2139,7 +2051,7 @@ impl SharprWindow {
         }
 
         // Start draining thumbnail results.
-        self.start_thumbnail_poll(state.clone(), filmstrip.clone(), tag_browser.clone());
+        self.start_thumbnail_poll(state.clone(), filmstrip.clone());
         self.start_hash_poll(state.clone());
         self.start_sharpness_poll(state.clone(), viewer.clone());
 
@@ -2165,9 +2077,6 @@ impl SharprWindow {
         let (
             viewer_header,
             sidebar_toggle,
-            page_prev_btn,
-            page_label_btn,
-            page_next_btn,
             ops_indicator,
             preview_search_revealer,
             preview_search_entry,
@@ -2205,9 +2114,6 @@ impl SharprWindow {
         let compare_page = ComparePage::new();
         *self.imp().compare_page.borrow_mut() = Some(compare_page.clone());
         content_stack.add_named(&viewer, Some("viewer"));
-        if let Some(tb) = tag_browser.as_ref() {
-            content_stack.add_named(tb, Some("tags"));
-        }
         content_stack.add_named(&compare_page, Some("compare"));
 
         {
@@ -2251,72 +2157,8 @@ impl SharprWindow {
         viewer_toolbar.set_content(Some(&content_stack));
         viewer_toolbar.set_top_bar_style(libadwaita::ToolbarStyle::Raised);
 
-        for (page_name, _page_label) in Self::PAGE_ORDER {
-            let action_name = format!("go-to-{}", page_name);
-            let content_stack_c = content_stack.clone();
-            let name = *page_name;
-            let action = gio::SimpleAction::new(&action_name, None);
-            action.connect_activate(move |_, _| {
-                content_stack_c.set_visible_child_name(name);
-            });
-            self.add_action(&action);
-        }
-
-        let page_nav_menu = gio::Menu::new();
-        for (page_name, page_label) in Self::PAGE_ORDER {
-            page_nav_menu.append(Some(page_label), Some(&format!("win.go-to-{}", page_name)));
-        }
-        page_label_btn.set_menu_model(Some(&page_nav_menu));
-
-        let cycle_prev_action = gio::SimpleAction::new("cycle-page-prev", None);
-        {
-            let content_stack_c = content_stack.clone();
-            cycle_prev_action.connect_activate(move |_, _| {
-                let current = content_stack_c
-                    .visible_child_name()
-                    .unwrap_or_default()
-                    .to_string();
-                let idx = Self::PAGE_ORDER
-                    .iter()
-                    .position(|(name, _)| *name == current)
-                    .unwrap_or(0);
-                let prev_idx = if idx == 0 {
-                    Self::PAGE_ORDER.len() - 1
-                } else {
-                    idx - 1
-                };
-                content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideRight);
-                let name = Self::PAGE_ORDER[prev_idx].0;
-                content_stack_c.set_visible_child_name(name);
-            });
-        }
-        self.add_action(&cycle_prev_action);
-
-        let cycle_next_action = gio::SimpleAction::new("cycle-page-next", None);
-        {
-            let content_stack_c = content_stack.clone();
-            cycle_next_action.connect_activate(move |_, _| {
-                let current = content_stack_c
-                    .visible_child_name()
-                    .unwrap_or_default()
-                    .to_string();
-                let idx = Self::PAGE_ORDER
-                    .iter()
-                    .position(|(name, _)| *name == current)
-                    .unwrap_or(0);
-                let next_idx = (idx + 1) % Self::PAGE_ORDER.len();
-                content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideLeft);
-                let name = Self::PAGE_ORDER[next_idx].0;
-                content_stack_c.set_visible_child_name(name);
-            });
-        }
-        self.add_action(&cycle_next_action);
-
-        page_prev_btn.set_action_name(Some("win.cycle-page-prev"));
-        page_next_btn.set_action_name(Some("win.cycle-page-next"));
-
         let viewer_page = libadwaita::NavigationPage::builder()
-            .title("Preview")
+            .title("View")
             .tag("viewer")
             .child(&viewer_toolbar)
             .build();
@@ -2324,22 +2166,9 @@ impl SharprWindow {
 
         // Update the NavigationPage title to reflect which panel is active.
         {
-            let viewer_page_c = viewer_page.clone();
-            let page_label_btn_c = page_label_btn.clone();
             let preview_search_revealer_c = preview_search_revealer.clone();
             content_stack.connect_visible_child_notify(move |stack| {
                 let name = stack.visible_child_name().unwrap_or_default();
-                let display = SharprWindow::PAGE_ORDER
-                    .iter()
-                    .find(|(n, _)| *n == name.as_str())
-                    .map(|(_, label)| *label)
-                    .unwrap_or("View");
-                if let Some(child) = page_label_btn_c.child() {
-                    if let Ok(label) = child.downcast::<gtk4::Label>() {
-                        label.set_label(display);
-                    }
-                }
-                viewer_page_c.set_title(display);
                 if name != "viewer" {
                     preview_search_revealer_c.set_reveal_child(false);
                 }
@@ -2482,9 +2311,8 @@ impl SharprWindow {
                 let Some(ch) = key.to_unicode() else {
                     return glib::Propagation::Proceed;
                 };
-                // Space stays free for viewing and Compare (decision D7), and
-                // [ and ] keep cycling pages.
-                if ch.is_control() || ch.is_whitespace() || matches!(ch, '[' | ']') {
+                // Space stays free for viewing and Compare (decision D7).
+                if ch.is_control() || ch.is_whitespace() {
                     return glib::Propagation::Proceed;
                 }
                 let Some(win) = window_weak.upgrade() else {
@@ -2511,34 +2339,6 @@ impl SharprWindow {
                 glib::Propagation::Stop
             });
             self.add_controller(type_to_search);
-        }
-
-        if let Some(tag_browser) = tag_browser.as_ref() {
-            let content_stack_c = content_stack.clone();
-            let window_weak = self.downgrade();
-            tag_browser.connect_tags_activated(move |activation| {
-                if activation.tags.is_empty() {
-                    return;
-                }
-                let Some(win) = window_weak.upgrade() else {
-                    return;
-                };
-                win.imp().inline_search_suppressed.set(true);
-                if let Some(entry) = win.imp().inline_search_entry.borrow().as_ref() {
-                    entry.set_text("");
-                    entry.set_placeholder_text(Some(&format!(
-                        "Tags: {} · type to narrow…",
-                        activation.tags.join(", ")
-                    )));
-                }
-                win.imp().inline_search_suppressed.set(false);
-                win.imp().browse_options.borrow_mut().tags = activation.tags.clone();
-                win.show_inline_search();
-                win.run_scoped_search(String::new());
-                if activation.focus_viewer {
-                    content_stack_c.set_visible_child_name("viewer");
-                }
-            });
         }
 
         {
@@ -2976,71 +2776,6 @@ impl SharprWindow {
             })),
         ));
 
-        // [ and ] — Cycle through pages.
-        {
-            let content_stack_c = content_stack.clone();
-            shortcuts.add_shortcut(gtk4::Shortcut::new(
-                Some(gtk4::ShortcutTrigger::parse_string("bracketleft").unwrap()),
-                Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if text_input_has_focus(widget) {
-                        return glib::Propagation::Proceed;
-                    }
-                    let current = content_stack_c
-                        .visible_child_name()
-                        .unwrap_or_default()
-                        .to_string();
-                    let idx = Self::PAGE_ORDER
-                        .iter()
-                        .position(|(name, _)| *name == current)
-                        .unwrap_or(0);
-                    let prev_idx = if idx == 0 {
-                        Self::PAGE_ORDER.len() - 1
-                    } else {
-                        idx - 1
-                    };
-                    content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideRight);
-                    content_stack_c.set_visible_child_name(Self::PAGE_ORDER[prev_idx].0);
-                    glib::Propagation::Stop
-                })),
-            ));
-        }
-        {
-            let content_stack_c = content_stack.clone();
-            shortcuts.add_shortcut(gtk4::Shortcut::new(
-                Some(gtk4::ShortcutTrigger::parse_string("bracketright").unwrap()),
-                Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if text_input_has_focus(widget) {
-                        return glib::Propagation::Proceed;
-                    }
-                    let current = content_stack_c
-                        .visible_child_name()
-                        .unwrap_or_default()
-                        .to_string();
-                    let idx = Self::PAGE_ORDER
-                        .iter()
-                        .position(|(name, _)| *name == current)
-                        .unwrap_or(0);
-                    let next_idx = (idx + 1) % Self::PAGE_ORDER.len();
-                    content_stack_c.set_transition_type(gtk4::StackTransitionType::SlideLeft);
-                    content_stack_c.set_visible_child_name(Self::PAGE_ORDER[next_idx].0);
-                    glib::Propagation::Stop
-                })),
-            ));
-        }
-
-        // Ctrl+1..4 — Direct page access.
-        for (i, (page_name, _)) in Self::PAGE_ORDER.iter().enumerate() {
-            let content_stack_c = content_stack.clone();
-            let name = *page_name;
-            shortcuts.add_shortcut(gtk4::Shortcut::new(
-                Some(gtk4::ShortcutTrigger::parse_string(&format!("<Control>{}", i + 1)).unwrap()),
-                Some(gtk4::CallbackAction::new(move |_, _| {
-                    content_stack_c.set_visible_child_name(name);
-                    glib::Propagation::Stop
-                })),
-            ));
-        }
-
         // Ctrl+F — reveal and focus inline search.
         shortcuts.add_shortcut(gtk4::Shortcut::new(
             Some(gtk4::ShortcutTrigger::parse_string("<Control>F").unwrap()),
@@ -3451,47 +3186,6 @@ impl SharprWindow {
             ));
         }
 
-        // [ / ] cycle through View → Tags → View
-        {
-            let win_weak = self.downgrade();
-            let sc_prev = gtk4::Shortcut::new(
-                Some(gtk4::ShortcutTrigger::parse_string("bracketleft").unwrap()),
-                Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if text_input_has_focus(widget) {
-                        return glib::Propagation::Proceed;
-                    }
-                    if let Some(win) = win_weak.upgrade() {
-                        gio::prelude::ActionGroupExt::activate_action(
-                            &win,
-                            "cycle-page-prev",
-                            None,
-                        );
-                    }
-                    glib::Propagation::Stop
-                })),
-            );
-            shortcuts.add_shortcut(sc_prev);
-
-            let win_weak = self.downgrade();
-            let sc_next = gtk4::Shortcut::new(
-                Some(gtk4::ShortcutTrigger::parse_string("bracketright").unwrap()),
-                Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if text_input_has_focus(widget) {
-                        return glib::Propagation::Proceed;
-                    }
-                    if let Some(win) = win_weak.upgrade() {
-                        gio::prelude::ActionGroupExt::activate_action(
-                            &win,
-                            "cycle-page-next",
-                            None,
-                        );
-                    }
-                    glib::Propagation::Stop
-                })),
-            );
-            shortcuts.add_shortcut(sc_next);
-        }
-
         self.add_controller(shortcuts);
     }
 
@@ -3579,12 +3273,7 @@ impl SharprWindow {
         }
     }
 
-    fn start_thumbnail_poll(
-        &self,
-        state: Rc<RefCell<AppState>>,
-        filmstrip: FilmstripPane,
-        tag_browser: Option<TagBrowser>,
-    ) {
+    fn start_thumbnail_poll(&self, state: Rc<RefCell<AppState>>, filmstrip: FilmstripPane) {
         let result_rx = self.imp().result_rx.borrow().clone();
         let Some(rx) = result_rx else { return };
         let window_weak = self.downgrade();
@@ -3669,9 +3358,6 @@ impl SharprWindow {
                 }
 
                 filmstrip.mark_thumbnail_ready(&result_path);
-                if let Some(tag_browser) = tag_browser.as_ref() {
-                    tag_browser.refresh_preview_for_path(&result_path);
-                }
             }
 
             if let Some(window) = window_weak.upgrade() {
@@ -3755,7 +3441,6 @@ impl SharprWindow {
 
         let library_section = gio::Menu::new();
         library_section.append(Some("Find Duplicates"), Some("win.find-duplicates"));
-        library_section.append(Some("Browse Tags"), Some("win.show-tags"));
         library_section.append(
             Some("Remove Old Automatic Tags…"),
             Some("win.remove-automatic-tags"),
@@ -3789,10 +3474,6 @@ impl SharprWindow {
         // ───────────────────────────────────────────────────────────────────────────────────────────────────
         // win.find-duplicates      Find Duplicates               —                                always
         // win.show-tags            Browse Tags                   —                                always
-        // win.go-to-viewer         Go to View Page               <Ctrl>1 (ShortcutController)     always
-        // win.go-to-tags           Go to Tags Page               <Ctrl>2 (ShortcutController)     always
-        // win.cycle-page-prev      Previous Page                 [ (ShortcutController)           always
-        // win.cycle-page-next      Next Page                     ] (ShortcutController)           always
         // win.show-help-overlay    Keyboard Shortcuts            —                                always (built-in)
         // win.toggle-presentation  Toggle Presentation Mode      F11 (ShortcutController)         always
         // win.zoom-mode            Zoom Mode (stateful: fit/1:1) <Ctrl>0 fit (ShortcutController) always
@@ -3953,16 +3634,13 @@ impl SharprWindow {
     }
 
     /// Build the viewer header bar.
-    /// Returns `(header, sidebar_toggle, page_prev_btn, page_label_btn, page_next_btn, ops_indicator, preview_search_revealer, preview_search_entry)`.
+    /// Returns `(header, sidebar_toggle, ops_indicator, preview_search_revealer, preview_search_entry)`.
     fn build_viewer_header(
         &self,
         menu_btn: &gtk4::MenuButton,
     ) -> (
         libadwaita::HeaderBar,
         gtk4::ToggleButton,
-        gtk4::Button,     // page_prev_btn
-        gtk4::MenuButton, // page_label_btn
-        gtk4::Button,     // page_next_btn
         OpsIndicator,
         gtk4::Revealer,    // preview_search_revealer
         gtk4::SearchEntry, // preview_search_entry
@@ -3975,29 +3653,8 @@ impl SharprWindow {
         sidebar_toggle.add_css_class("flat");
         header.pack_start(&sidebar_toggle);
 
-        let page_prev_btn = gtk4::Button::new();
-        page_prev_btn.set_icon_name("pan-start-symbolic");
-        page_prev_btn.set_tooltip_text(Some("Previous page"));
-        page_prev_btn.add_css_class("flat");
-
-        let page_label_btn = gtk4::MenuButton::new();
-        let page_label = gtk4::Label::new(Some("View"));
-        page_label.set_width_request(100);
-        page_label_btn.set_child(Some(&page_label));
-        page_label_btn.add_css_class("flat");
-        page_label_btn.set_always_show_arrow(false);
-
-        let page_next_btn = gtk4::Button::new();
-        page_next_btn.set_icon_name("pan-end-symbolic");
-        page_next_btn.set_tooltip_text(Some("Next page"));
-        page_next_btn.add_css_class("flat");
-
-        let nav_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-        nav_box.append(&page_prev_btn);
-        nav_box.append(&page_label_btn);
-        nav_box.append(&page_next_btn);
-
-        header.set_title_widget(Some(&nav_box));
+        // No page title: the viewer is the only page, and the header stays quiet.
+        header.set_title_widget(Some(&gtk4::Box::new(gtk4::Orientation::Horizontal, 0)));
 
         let preview_search_entry = gtk4::SearchEntry::new();
         preview_search_entry.set_placeholder_text(Some("Search photos by tag…"));
@@ -4040,9 +3697,6 @@ impl SharprWindow {
         (
             header,
             sidebar_toggle,
-            page_prev_btn,
-            page_label_btn,
-            page_next_btn,
             ops_indicator,
             preview_search_revealer,
             preview_search_entry,

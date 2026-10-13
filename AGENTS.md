@@ -35,7 +35,9 @@ Images will be found through visual search and typed filters, not manual tags, a
 ## Scope
 
 - **Established:** viewer, filmstrip, folders, buckets, search, filters, Compare, duplicates, Crop/WebP Copy, and explicit trash.
-- **Frozen:** manual tags (D1). Do no tagging improvements. Data-safety fixes are allowed. Tags are retired from the UI only after visual search passes `ROADMAP.md` Phase 3.
+- **Frozen:** manual tags (D1). Do no tagging improvements; data-safety fixes are allowed.
+  - The Tags page and page switcher were removed on 2026-10-13 (D20).
+  - The tag popover (Ctrl+T), tag-backed buckets, and bucket colours stay until visual search passes `ROADMAP.md` Phase 3.
 - **Being replaced:**
   - Quality views give way to resolution filters (Phase 2).
   - Resize Copy and non-WebP output give way to batch WebP export (Phase 6).

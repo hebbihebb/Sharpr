@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -184,29 +185,10 @@ impl TagDatabase {
             .collect())
     }
 
-    pub fn autocomplete(&self, prefix: &str, limit: usize) -> Vec<String> {
-        let Ok(conn) = self.conn.lock() else {
-            return vec![];
-        };
-        let pattern = format!("%{}%", prefix.to_lowercase());
-        let mut stmt = match conn
-            .prepare("SELECT DISTINCT tag FROM file_tags WHERE tag LIKE ?1 ORDER BY tag LIMIT ?2")
-        {
-            Ok(stmt) => stmt,
-            Err(_) => return vec![],
-        };
-        let rows = match stmt.query_map(params![pattern, limit as i64], |row| {
-            row.get::<_, String>(0)
-        }) {
-            Ok(rows) => rows,
-            Err(_) => return vec![],
-        };
-        rows.filter_map(|r| r.ok()).collect()
-    }
-
     /// Tags with the number of their paths that exist on disk. Rows for
     /// missing paths are kept but not counted; tags with no existing path
     /// are omitted.
+    #[cfg(test)]
     pub fn all_tags(&self) -> Vec<(String, usize)> {
         let rows: Vec<(String, String)> = {
             let Ok(conn) = self.conn.lock() else {
@@ -404,17 +386,6 @@ impl TagDatabase {
         conn.execute("VACUUM INTO ?1", params![dest.to_string_lossy().as_ref()])
             .map_err(|e| e.to_string())?;
         Ok(())
-    }
-
-    /// Removes `tag` from every image. Returns the number of rows deleted.
-    pub fn delete_tag_globally(&self, tag: &str) -> Result<usize, String> {
-        let tag = tag.trim().to_lowercase();
-        if tag.is_empty() {
-            return Ok(0);
-        }
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM file_tags WHERE tag = ?1", params![tag])
-            .map_err(|e| e.to_string())
     }
 
     /// Moves tags and sharpness from `old_path` to `new_path` after a file
