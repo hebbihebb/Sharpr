@@ -307,9 +307,11 @@ impl SharprWindow {
             .join("sharpr")
             .join("backups");
         let body = format!(
-            "{} tags that Sharpr once added automatically will be removed: {summary}.\n\n\
-             Tags you added yourself and tags used by buckets are kept. The tag database \
-             is backed up first, to {}.",
+            "{} tags with the names Sharpr once added automatically will be removed: \
+             {summary}.\n\nThey are matched by name: a resolution tag (720p, 1080p, 4k), or a \
+             format tag equal to the file’s own type, such as png on a PNG file. If you \
+             added one of these yourself, it is removed too. Tags used by buckets and all \
+             other tags are kept. The tag database is backed up first, to {}.",
             rows.len(),
             backups.display()
         );
