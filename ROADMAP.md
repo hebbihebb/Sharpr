@@ -218,7 +218,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - Weakest Gemma queries: "woman wearing a bikini" (11/20), "watercolor" and "pool" (14/20). They still pass.
 - The user's own rating: about 85 out of 100 for accuracy, "very good".
 - The user reported tiring after about 25 queries, but the saved file marks all 30 as judged. The verdict holds either way: with five unjudged queries counted as fails, Gemma would still pass 25/30.
-- **Still open before Phase 5:** item 4 (filmstrip impact while indexing) and item 5 (packaging llama.cpp, footprint).
+- Items 4 and 5 were completed on the same day; Phase 3 is done. Phase 5 starts after Phase 4, with the two packaging choices in item 5 settled by the user.
 
 **Evidence so far:** recorded October 12 on a CPU, using 1,000 images sampled from `~/Pictures` and 30 predefined queries.
 
@@ -251,11 +251,23 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - thread count
 
    Add a parity script that computes cosine agreement and top-20 overlap between native and reference vectors.
-4. **Measure filmstrip impact while indexing** with the Phase 2 probe. The limit is a 10% slowdown.
-5. **Check packaging.**
-   - Can llama.cpp ship as a Flatpak module, or will this be native-only?
-   - Record the disk and memory footprint.
-   - SigLIP 2 also needs a shippable native runtime. ONNX Runtime was removed in July for its size. Evaluate one only if SigLIP clearly wins relevance or Gemma fails.
+4. ~~Measure filmstrip impact while indexing.~~ Done October 13: **passes**, with a 5–7% slowdown against the 10% limit.
+   - **Method:** a temporary release-build GTK test stepped through 119 images of a 200-image folder of synthetic 2560×1440 JPEGs. Each run was measured idle, and again while `llama-server` (b11457, EmbeddingGemma Q8_0) indexed in the background with 2 threads at `nice 19`. Each run was done twice.
+   - Typical next-image time: 30.0 → 32.2 ms (+7%).
+   - Slowest 5%: 32.9 → 34.8 ms (+6%).
+   - Folder ready: 742 → 778 ms (+5%).
+   - The longest main-loop step was 85–97 ms in both conditions, so indexing did not cause it.
+   - Indexing ran at about 0.41 images/s with 2 threads, about 4 hours for 5,850 images.
+5. ~~Check packaging.~~ Done October 13 (assessed; the Flatpak build itself is verified in Phase 5).
+   - **Footprint:**
+     - Model: 296 MB (`embeddinggemma-2-Q8_0.gguf`) plus the 530 MB projector, 826 MB total.
+     - Runtime: 44 MB as prebuilt (`llama-server` and its libraries, 20 MB of which are 14 CPU-specific variants).
+     - Server memory while indexing: 1.3–1.4 GB RSS. Warm query p95: 32 ms.
+   - **Flatpak:** llama.cpp is a CMake project with no required dependencies beyond the C/C++ runtime, so it can be a standard `cmake-ninja` module in the manifest, built CPU-only. Build it without network features (`LLAMA_CURL`/OpenSSL off; the prebuilt links OpenSSL only for model downloads), which keeps the offline invariant. Not native-only.
+   - **Two open choices for Phase 5, the user's:**
+     - **Model delivery:** the app downloads nothing, so either bundle the 826 MB model with the app, or have the user install the model files once into a folder Sharpr checks.
+     - **Runtime connection:** either keep `llama-server` as a managed child process on loopback (as the benchmark and trial did; this needs the offline invariant's trial exception extended), or link llama.cpp's libraries into Sharpr.
+   - SigLIP 2 was not evaluated further: Gemma won relevance.
 
 **Decision rule:**
 - Choose the candidate that passes relevance, in every category, with the simplest runtime that can ship.
