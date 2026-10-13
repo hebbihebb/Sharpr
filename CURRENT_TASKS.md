@@ -122,6 +122,12 @@ The user judged scrolling and switching as "everything works and feels fast". Th
   - 18 `png` tags on non-PNG files are conservatively kept.
 - The dead `tags/indexer.rs` and the test-only `insert_auto_tags` were deleted.
 
+**Item 5: done (committed, not yet deployed).**
+- Ctrl+B opens the bucket picker for the current selection; the picker can also create a new bucket.
+- Dragging a selection onto a sidebar bucket already worked.
+- The shortcuts window and manual are updated. The manual no longer claims Sharpr adds format tags.
+- **Manual check at deployment:** select several images, press Ctrl+B, and pick a bucket.
+
 **Item 11, main-thread work: done (committed, not yet deployed).**
 - **Filmstrip badge colours:** binding a row no longer queries SQLite. A worker builds a path → colour map whenever bucket colours change, a viewer tag edit lands, or a tag is deleted. Until the first map is ready, binding falls back to the old query.
 - **Manual check at deployment:** the coloured position badges of bucket members still appear, and update after adding an image to a bucket.

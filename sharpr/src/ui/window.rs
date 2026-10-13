@@ -3271,6 +3271,21 @@ impl SharprWindow {
             ));
         }
 
+        // Ctrl+B — add the selected images to a bucket (decision D5).
+        {
+            let filmstrip_b = filmstrip.clone();
+            shortcuts.add_shortcut(gtk4::Shortcut::new(
+                Some(gtk4::ShortcutTrigger::parse_string("<Control>b").unwrap()),
+                Some(gtk4::CallbackAction::new(move |_, _| {
+                    if filmstrip_b.request_add_selection_to_bucket() {
+                        glib::Propagation::Stop
+                    } else {
+                        glib::Propagation::Proceed
+                    }
+                })),
+            ));
+        }
+
         // F2 — Rename selected image (single-select only; ignored when text entry has focus).
         {
             let filmstrip_f2 = filmstrip.clone();

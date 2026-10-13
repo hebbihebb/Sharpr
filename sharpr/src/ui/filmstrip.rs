@@ -1967,6 +1967,16 @@ impl FilmstripPane {
     /// Returns the paths that should be acted on from a keyboard shortcut: the
     /// full multi-selection if more than one item is selected, otherwise the
     /// single currently focused image.
+    /// Opens the bucket picker for the current selection (Ctrl+B).
+    pub fn request_add_selection_to_bucket(&self) -> bool {
+        let paths = self.selected_paths_for_action();
+        if paths.is_empty() {
+            return false;
+        }
+        self.emit_add_to_collection_requested(paths);
+        true
+    }
+
     pub fn selected_paths_for_action(&self) -> Vec<PathBuf> {
         self.imp()
             .state

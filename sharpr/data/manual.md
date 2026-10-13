@@ -15,7 +15,8 @@ Choose a folder in the Library sidebar to load its images. Thumbnails decode in 
 | Ctrl + 0 | Fit image to the viewer |
 | Alt + Return | Toggle metadata overlay |
 | Ctrl + T | Open tag editor |
-| Ctrl + F | Inline filename search |
+| Ctrl + F | Search names and tags; filter words such as 4k, png or 16:9 become chips |
+| Ctrl + B | Add the selected images to a bucket |
 | Ctrl + 1 / 2 | Viewer / Tags |
 | [ / ] | Cycle Viewer and Tags |
 | F9 | Toggle Library sidebar |
@@ -24,7 +25,7 @@ Choose a folder in the Library sidebar to load its images. Thumbnails decode in 
 
 ## Tags And Collections
 
-The tag editor adds and removes manual tags. Sharpr also adds format and resolution tags such as `jpg` and `1080p`. Collections are virtual groupings backed by tags; source files stay in their folders.
+The tag editor adds and removes manual tags. Sharpr no longer adds format or resolution tags: type `png`, `4k` or `below 4k` in search instead, and use Main Menu → Library → Remove Old Automatic Tags… to clear the ones added in the past (a backup is made first). Collections are virtual groupings backed by tags; source files stay in their folders.
 
 ## Duplicates And Quality
 

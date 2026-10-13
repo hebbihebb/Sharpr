@@ -142,7 +142,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 4. **Quiet interface (D18).** Also observed October 12 in a GTK screenshot at 1024×600: the viewer header is too crowded, and the window's close button is pushed partly off-screen. This predates the chip work.
    - Always visible: resolution and format (with a below-4K hint) and the image's real bucket membership, meaning every effective tag within the active library.
    - Everything else (filename, position, size, dates, EXIF) moves to an Info panel opened from a key or the context menu.
-5. **Fast curation from results (D5, D10):** add the selection to a bucket by shortcut or by dragging onto a sidebar bucket, and create a new bucket from the selection.
+5. ~~Fast curation from results (D5, D10).~~ Done October 12. The right-click picker (with "New Collection…") and drag-to-sidebar already existed; Ctrl+B now adds the selection.
+   Original scope: add the selection to a bucket by shortcut or by dragging onto a sidebar bucket, and create a new bucket from the selection.
 6. **Retire quality views (D12).** Resolution filters replace them.
 7. ~~Clean up legacy automatic tags (D17).~~ Implemented October 12 as main menu → Library → "Remove Old Automatic Tags…". It backs up with `VACUUM INTO`, previews counts, and asks for confirmation. A preview on the live data showed 7,346 rows to remove and 372 manual rows kept. **The user runs it after deployment.**
    Original scope: 7,565 of the 7,925 live tag rows are format and resolution tags, and no bucket uses them.
