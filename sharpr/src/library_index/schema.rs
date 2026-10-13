@@ -55,6 +55,18 @@ pub(super) fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
             ON collection_items(image_path);
         CREATE INDEX IF NOT EXISTS idx_collection_items_collection_added
             ON collection_items(collection_id, added_at);
+
+        -- Content fingerprints (ROADMAP Phase 4), reused while size and
+        -- modification time match. Rebuildable, like every cache here.
+        CREATE TABLE IF NOT EXISTS file_fingerprints (
+            path TEXT PRIMARY KEY,
+            size INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            hash TEXT NOT NULL,
+            hashed_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_file_fingerprints_hash
+            ON file_fingerprints(hash);
         ",
     )?;
     conn.execute(

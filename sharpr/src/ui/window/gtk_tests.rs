@@ -527,6 +527,26 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     viewer.set_zoom_mode(crate::ui::viewer::ZoomMode::OneToOne);
     pump_until(|| shown_width() == 6000);
     assert_eq!(viewer.imp().full_size.get(), None);
+    // A fingerprint pass covers the library, and the index caches the result.
+    window.request_fingerprints();
+    pump_until(|| {
+        window
+            .fingerprint_progress()
+            .is_some_and(|p| p.total > 0 && p.done == p.total)
+    });
+    let cached = window
+        .imp()
+        .state
+        .borrow()
+        .library_index
+        .as_ref()
+        .unwrap()
+        .cached_fingerprints()
+        .unwrap();
+    assert_eq!(
+        cached[sea.to_str().unwrap()].2,
+        crate::fingerprint::hash_file(&sea).unwrap()
+    );
     window.close();
 }
 

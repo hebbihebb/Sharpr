@@ -494,6 +494,8 @@ mod imp {
         pub content_stack: RefCell<Option<gtk4::Stack>>,
         pub open_folder_cb: RefCell<Option<OpenFolderCallback>>,
         pub refresh_sidebar_collections_cb: RefCell<Option<RefreshCollectionsCallback>>,
+        /// Background content fingerprinting (ROADMAP Phase 4).
+        pub fingerprints: RefCell<Option<Rc<crate::fingerprint::Service>>>,
     }
 
     impl Default for SharprWindow {
@@ -539,6 +541,7 @@ mod imp {
                 content_stack: RefCell::new(None),
                 open_folder_cb: RefCell::new(None),
                 refresh_sidebar_collections_cb: RefCell::new(None),
+                fingerprints: RefCell::new(None),
             }
         }
     }
@@ -625,6 +628,35 @@ impl SharprWindow {
                 crate::ui::resize_dialog::present_resize_dialog(self, source, state, refresh);
             }
         }
+    }
+
+    /// Progress of the latest fingerprint pass, if one has started.
+    pub fn fingerprint_progress(&self) -> Option<crate::fingerprint::Progress> {
+        self.imp()
+            .fingerprints
+            .borrow()
+            .as_ref()
+            .and_then(|service| service.progress())
+    }
+
+    /// Asks for a fingerprint pass over the active library. Passes over the
+    /// same library are coalesced and spaced out by the service.
+    pub fn request_fingerprints(&self) {
+        let Some(service) = self.imp().fingerprints.borrow().clone() else {
+            return;
+        };
+        let job = {
+            let st = self.imp().state.borrow();
+            let Some(library) = st.settings.active_library() else {
+                return;
+            };
+            crate::fingerprint::Job {
+                root: library.root.clone(),
+                disabled: st.disabled_folders.clone(),
+                first: Vec::new(),
+            }
+        };
+        service.request(job);
     }
 
     /// Called after tags change outside a bucket edit, so filmstrip badge
@@ -825,6 +857,18 @@ impl SharprWindow {
         let (metadata_worker, metadata_result_rx) =
             crate::image_pipeline::worker::MetadataWorker::spawn();
         *self.imp().metadata_worker.borrow_mut() = Some(metadata_worker);
+
+        // Fingerprints start once startup has settled, at the lowest priority.
+        if let Some(index) = self.imp().state.borrow().library_index.clone() {
+            let service = crate::fingerprint::Service::start(index, Box::new(|_, _| {}));
+            *self.imp().fingerprints.borrow_mut() = Some(Rc::new(service));
+            let weak = self.downgrade();
+            glib::timeout_add_seconds_local_once(10, move || {
+                if let Some(win) = weak.upgrade() {
+                    win.request_fingerprints();
+                }
+            });
+        }
 
         let state = self.imp().state.clone();
         let (ops_queue, ops_rx) = crate::ops::queue::new_queue();
@@ -1240,6 +1284,10 @@ impl SharprWindow {
                             "image_count": thumb_total,
                         }),
                     );
+                    // New or changed files may need fingerprints.
+                    if let Some(win) = created_window.upgrade() {
+                        win.request_fingerprints();
+                    }
 
                     let target_index = {
                         let st = state_rx.borrow();

@@ -8,6 +8,7 @@ mod display_scale;
 mod duplicates;
 mod export;
 mod file_ops;
+mod fingerprint;
 pub mod focused_image_set;
 mod image_pipeline;
 mod jxl;

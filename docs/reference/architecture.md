@@ -14,6 +14,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `ui/filmstrip.rs` | Filmstrip list, factory and bind callbacks, and the thumbnail scheduler (visible range, buffer, trickle) |
 | `ui/viewer.rs` | Full-image viewer (glycin decoding), tag popover, and info chips |
 | `display_scale.rs` | Screen-sized copies of very large images for the viewer (GTK-free) |
+| `fingerprint.rs` | Content fingerprints (xxh3-128) and the background pass service (GTK-free) |
 | `ui/sidebar.rs` | Folder tree and buckets (the Tags page was removed on 2026-10-13, D20) |
 | `ui/resize_dialog.rs`, `ui/crop_dialog.rs` | Resize Copy, and Crop/WebP Copy dialogs |
 | `ui/state.rs` | `AppState` (`Rc<RefCell<_>>`, GTK thread only) and `ViewScope` |
@@ -36,6 +37,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 - Heavy work runs on `std::thread::spawn` or `rayon::spawn` and sends results back over `async_channel`. Results are drained in `glib::MainContext::spawn_local`. There is no async runtime; do not add Tokio.
 - Every result that can go stale is checked against a generation counter before it is applied. This applies to the viewer, thumbnails, virtual views, search, tag popovers, and Compare.
 - The viewer never hands GTK a very large image to upload on the main thread. An sRGB image with 8-bit channels and more than about 1.15 times the screen in each direction is shown as a screen-sized copy, made on a worker (about 30–70 ms in release for 33–270 megapixels). Zoom math uses the original size, and full resolution loads only when zooming needs more pixels than the copy has.
+- Content fingerprints are computed by one `fingerprints` thread at nice 19 and idle I/O priority, after launch and after folder opens. Passes over the same library are at least 30 s apart, and a pass is cancelled when the library or its disabled folders change. Hashed pages are dropped from the page cache. The table `file_fingerprints` caches results by path, size, and mtime; it is rebuildable.
 - Folder open runs scanning and reconciliation on a worker. The GTK side fills the store in chunks of 100 rows and yields to the main loop between chunks.
 - Search and browse use a single coalescing worker that keeps only the newest job, with a 150 ms entry delay and a cancellable library walk.
 

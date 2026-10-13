@@ -78,6 +78,23 @@ pub fn build_preferences_window(
 
     collections_group.add(&coll_export_row);
     collections_group.add(&coll_import_row);
+
+    // Fingerprints let buckets follow images moved or renamed outside Sharpr.
+    let fingerprint_row = libadwaita::ActionRow::new();
+    fingerprint_row.set_title("Image Fingerprints");
+    fingerprint_row.set_subtitle(&fingerprint_status(parent));
+    collections_group.add(&fingerprint_row);
+    {
+        let row = fingerprint_row.downgrade();
+        let parent = parent.downgrade();
+        gtk4::glib::timeout_add_seconds_local(1, move || {
+            let (Some(row), Some(parent)) = (row.upgrade(), parent.upgrade()) else {
+                return gtk4::glib::ControlFlow::Break;
+            };
+            row.set_subtitle(&fingerprint_status(&parent));
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
     library_page.add(&collections_group);
 
     window.add(&library_page);
@@ -133,6 +150,14 @@ pub fn build_preferences_window(
     window.add(&appearance_page);
 
     window
+}
+
+fn fingerprint_status(window: &SharprWindow) -> String {
+    match window.fingerprint_progress() {
+        None => "Starts shortly after launch, in the background".into(),
+        Some(p) if p.done < p.total => format!("Fingerprinting {} of {} images…", p.done, p.total),
+        Some(p) => format!("All {} images have fingerprints", p.total),
+    }
 }
 
 fn build_library_row(

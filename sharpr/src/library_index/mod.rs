@@ -10,6 +10,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::model::library::SortOrder;
 use crate::quality::QualityClass;
 
+mod identity;
 mod schema;
 use schema::initialize_schema;
 

@@ -3005,6 +3005,19 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/twox-hash/twox-hash-2.1.4.crate",
+        "sha256": "5283634e518fe9e82c7b20520bb4bc209009fd16c82077c802f8111ecbb0117a",
+        "dest": "cargo/vendor/twox-hash-2.1.4"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"5283634e518fe9e82c7b20520bb4bc209009fd16c82077c802f8111ecbb0117a\", \"files\": {}}",
+        "dest": "cargo/vendor/twox-hash-2.1.4",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/uds_windows/uds_windows-1.2.1.crate",
         "sha256": "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e",
         "dest": "cargo/vendor/uds_windows-1.2.1"

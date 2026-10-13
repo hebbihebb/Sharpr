@@ -49,6 +49,9 @@ r2d2_sqlite = "0.24"
 rusqlite = { version = "0.31", features = ["bundled"] }
 rayon = "1"
 itoa = "1"
+# Content fingerprints for file identity (ROADMAP Phase 4): xxh3-128, MIT,
+# no dependencies with these features
+twox-hash = { version = "2.1.4", default-features = false, features = ["std", "xxhash3_128"] }
 
 [build-dependencies]
 glib-build-tools = "0.22"

@@ -2094,6 +2094,7 @@ dependencies = [
  "serde",
  "serde_json",
  "turbojpeg",
+ "twox-hash",
  "webp",
 ]
 
@@ -2345,6 +2346,12 @@ dependencies = [
  "libc",
  "pkg-config",
 ]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5283634e518fe9e82c7b20520bb4bc209009fd16c82077c802f8111ecbb0117a"
 
 [[package]]
 name = "uds_windows"
