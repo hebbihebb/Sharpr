@@ -2,11 +2,25 @@
 
 ## Active Milestone
 
-Phase 2 follow-ups from the acceptance log (`ROADMAP.md`, Phase 2 status):
-1. **Viewer stalls on large images: fixed** in `f619d64` (committed and verified, not deployed). Very large images are shown as screen-sized copies; full resolution loads on zoom.
-2. **Slow folder-open read (2.9 s once):** cause unknown. `8cb13f5` logs slow database-connection waits (`index.pool_wait`) and the cached-read time. It needs a session log from a deployed build to find the cause.
+**Phase 4: file identity and buckets** (`ROADMAP.md`). Phase 3 finished on October 13 (go with EmbeddingGemma, D22). The Phase 2 follow-ups are in the roadmap; the slow-folder-open logging awaits a session log from a deployed build.
 
-Phases 1–2 were accepted on October 13. The Phase 0–2 history is in `docs/archive/history.md`.
+Plan, one commit per testable unit:
+1. **Fingerprints.**
+   - New table `file_fingerprints(path, size, mtime_ns, hash)`, keyed by path and checked against size and mtime. The hash is xxh3-128 from the new MIT dependency `twox-hash`.
+   - A background worker walks the active library, skipping disabled folders, at nice 19 and idle I/O priority. It drops page cache after each file.
+   - Progress shows in Preferences.
+   - Library index `user_version` 2: older builds refuse it, so rolling back means restoring the backup.
+2. **Membership.**
+   - New table `bucket_members(collection_id, last_path, fingerprint)`, deleted together with its bucket.
+   - A member is any file at `last_path`, or any file with the same fingerprint, so identical copies all count. Members found nowhere count as missing.
+   - **Inheritance:** a bucket shows its own members and its descendants'.
+   - **Edits:** adding to a child doesn't add to the parent. Removing from a bucket removes from it and its sub-buckets. Rename and reparent change no members. No tag writes.
+   - **Migration:** backup first. Each bucket's direct members become every stored effective-tag member, missing files included. Visible counts must match before commit. Tag rows are untouched.
+   - Every reader switches over: bucket open, sidebar counts, Info chip, badge colours, Ctrl+B, the menus, create, export, and import.
+3. **Re-link and missing.**
+   - After fingerprinting, a member whose path is gone moves to a file with its fingerprint.
+   - A member whose file changed gets the new fingerprint.
+   - Opening a bucket says how many members are missing.
 
 ## State (October 13, 2026)
 
