@@ -106,7 +106,7 @@ pub(crate) struct BrowseOptions {
     pub chips: crate::model::search_query::ChipFilters,
 }
 impl BrowseOptions {
-    fn has_filters(&self) -> bool {
+    pub(super) fn has_filters(&self) -> bool {
         self.whole_library
             || !self.chips.is_empty()
             || !self.dimensions.is_empty()
@@ -380,6 +380,14 @@ impl SharprWindow {
     }
 
     pub(super) fn run_browse_query(&self, query: String, sort_only: bool) {
+        // Until a bucket's members arrive, the filmstrip still holds the previous
+        // view; searching it would label those images as the bucket. The bucket
+        // open runs the current query when it completes.
+        if self.imp().bucket_open_pending.get().is_some()
+            && matches!(self.imp().state.borrow().scope, ViewScope::Collection(_))
+        {
+            return;
+        }
         let generation = self.imp().inline_search_generation.get().wrapping_add(1);
         self.imp().inline_search_generation.set(generation);
         self.imp()

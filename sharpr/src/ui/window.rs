@@ -473,6 +473,9 @@ mod imp {
         pub search_suggestions: RefCell<Option<gtk4::FlowBox>>,
         pub search_chip_bar: RefCell<Option<gtk4::Revealer>>,
         pub bucket_open_generation: Cell<u64>,
+        /// The bucket open whose membership is still loading. Searching then
+        /// waits, because the filmstrip still shows the previous view.
+        pub bucket_open_pending: Cell<Option<u64>>,
         /// Increases whenever a search session starts (a browse snapshot is taken).
         pub browse_session: Cell<u64>,
         pub inline_search_generation: Cell<u64>,
@@ -518,6 +521,7 @@ mod imp {
                 search_suggestions: RefCell::new(None),
                 search_chip_bar: RefCell::new(None),
                 bucket_open_generation: Cell::new(0),
+                bucket_open_pending: Cell::new(None),
                 browse_session: Cell::new(0),
                 inline_search_generation: Cell::new(0),
                 browse_generation,
@@ -1765,6 +1769,7 @@ impl SharprWindow {
                 content_stack.set_visible_child_name("viewer");
                 let generation = win.imp().bucket_open_generation.get().wrapping_add(1);
                 win.imp().bucket_open_generation.set(generation);
+                win.imp().bucket_open_pending.set(Some(generation));
                 state_c.borrow_mut().scope = ViewScope::Collection(id);
                 apply_scope_to_sidebar(&ViewScope::Collection(id), &sidebar_c);
                 let (index, tags, active_root, disabled) = {
@@ -1809,6 +1814,9 @@ impl SharprWindow {
                     let Some(win) = window_weak.upgrade() else {
                         return;
                     };
+                    if win.imp().bucket_open_pending.get() == Some(generation) {
+                        win.imp().bucket_open_pending.set(None);
+                    }
                     if win.imp().bucket_open_generation.get() != generation
                         || state_c.borrow().scope != ViewScope::Collection(id)
                     {
@@ -1843,6 +1851,17 @@ impl SharprWindow {
                         viewer_c.clear();
                         toast_overlay_c
                             .add_toast(libadwaita::Toast::new("No images in collection"));
+                    }
+                    // Run what was typed while the bucket was loading.
+                    let query = win
+                        .imp()
+                        .inline_search_entry
+                        .borrow()
+                        .as_ref()
+                        .map(|e| e.text().to_string())
+                        .unwrap_or_default();
+                    if !query.trim().is_empty() || win.imp().browse_options.borrow().has_filters() {
+                        win.run_scoped_search(query);
                     }
                 });
             });

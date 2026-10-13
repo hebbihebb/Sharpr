@@ -299,6 +299,65 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
         window.imp().state.borrow().scope,
         ViewScope::Collection(bucket)
     );
+    // Searching before a bucket's members arrive must search that bucket, not
+    // the view still on screen, and clearing must show the bucket.
+    let second = {
+        let st = window.imp().state.borrow();
+        let second = st
+            .library_index
+            .as_ref()
+            .unwrap()
+            .create_collection(
+                st.settings.active_library_id.as_deref().unwrap(),
+                None,
+                "Second bucket",
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+        st.tags
+            .as_ref()
+            .unwrap()
+            .change_tags_checked(
+                &[root.join("mountain.png")],
+                std::slice::from_ref(&second.primary_tag),
+                false,
+            )
+            .unwrap();
+        second.id
+    };
+    let sidebar = window.imp().sidebar.borrow().clone().unwrap();
+    sidebar.emit_collection_selected(second);
+    window.show_inline_search();
+    entry.set_text("sea");
+    window.run_scoped_search("sea".into());
+    pump_until(|| {
+        let st = window.imp().state.borrow();
+        window.imp().bucket_open_pending.get().is_none()
+            && window.imp().browse_snapshot.borrow().is_some()
+            && st.library.image_count() == 0
+    });
+    let ready = std::time::Instant::now() + std::time::Duration::from_millis(300);
+    pump_until(|| std::time::Instant::now() > ready);
+    assert_eq!(window.imp().state.borrow().library.image_count(), 0);
+    entry.set_text("");
+    pump_until(|| window.imp().state.borrow().library.image_count() == 1);
+    {
+        let st = window.imp().state.borrow();
+        assert_eq!(st.scope, ViewScope::Collection(second));
+        assert!(st
+            .library
+            .entry_at(0)
+            .unwrap()
+            .path()
+            .ends_with("mountain.png"));
+    }
+    sidebar.emit_collection_selected(bucket);
+    pump_until(|| {
+        let st = window.imp().state.borrow();
+        st.scope == ViewScope::Collection(bucket) && st.library.image_count() == 2
+    });
     window.imp().state.borrow_mut().scope = ViewScope::Folder(root.clone());
     window.imp().browse_options.borrow_mut().dimensions = crate::model::browse::DimensionFilters {
         aspect: crate::model::browse::AspectFilter::WideScreen,
