@@ -40,6 +40,39 @@ fn pump_until(mut condition: impl FnMut() -> bool) {
     }
 }
 
+/// Whether the bound row for `path` shows its index pill with `class`.
+fn pill_has_class(widget: &gtk4::Widget, path: &Path, class: &str) -> bool {
+    fn has_pill(widget: &gtk4::Widget, class: &str) -> bool {
+        if widget.has_css_class("filmstrip-index-label") {
+            return widget.has_css_class(class);
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            if has_pill(&current, class) {
+                return true;
+            }
+            child = current.next_sibling();
+        }
+        false
+    }
+    let row_path = unsafe {
+        widget
+            .data::<PathBuf>("fs-path")
+            .map(|p| p.as_ref().clone())
+    };
+    if row_path.as_deref() == Some(path) {
+        return has_pill(widget, class);
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if pill_has_class(&current, path, class) {
+            return true;
+        }
+        child = current.next_sibling();
+    }
+    false
+}
+
 fn screenshot(window: &SharprWindow, path: &Path) {
     let paintable = gtk4::WidgetPaintable::new(Some(window));
     let snapshot = gtk4::Snapshot::new();
@@ -357,6 +390,48 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     pump_until(|| {
         let st = window.imp().state.borrow();
         st.scope == ViewScope::Collection(bucket) && st.library.image_count() == 2
+    });
+    // A visible row takes a new bucket colour without being scrolled away.
+    {
+        let st = window.imp().state.borrow();
+        let index = st.library_index.as_ref().unwrap();
+        let red = index
+            .create_collection(
+                st.settings.active_library_id.as_deref().unwrap(),
+                None,
+                "Red bucket",
+                &[],
+                Some("#e01b24"),
+                None,
+            )
+            .unwrap();
+        st.tags
+            .as_ref()
+            .unwrap()
+            .change_tags_checked(
+                &[root.join("mountain.png")],
+                std::slice::from_ref(&red.primary_tag),
+                false,
+            )
+            .unwrap();
+        let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
+        filmstrip.refresh_collection_colors(&index.list_collections().unwrap());
+    }
+    let list_view = window
+        .imp()
+        .filmstrip
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .imp()
+        .list_view
+        .clone();
+    pump_until(|| {
+        pill_has_class(
+            list_view.upcast_ref(),
+            &root.join("mountain.png"),
+            "filmstrip-pill-color-e01b24",
+        )
     });
     window.imp().state.borrow_mut().scope = ViewScope::Folder(root.clone());
     window.imp().browse_options.borrow_mut().dimensions = crate::model::browse::DimensionFilters {

@@ -839,32 +839,16 @@ impl FilmstripPane {
             // Always hide the separate badge dot; collection color lives in the pill instead.
             badge.set_visible(false);
 
+            // Binding never queries the database: until the worker's colour
+            // map arrives, rows show no colour, and its arrival recolours them.
             let badge_color = widget_weak_bind.upgrade().and_then(|w| {
-                let path = entry.path();
-                if let Some(colors) = w.imp().path_colors.borrow().as_ref() {
-                    return colors.get(&path).cloned();
-                }
-                // Until the first colour map is ready, ask the database.
-                let tags = w.imp().cached_tags.borrow().clone()?;
-                let tag_root_color = w.imp().tag_root_color.borrow();
-                tags.tags_for_path(&path)
-                    .into_iter()
-                    .find_map(|tag| tag_root_color.get(&tag).cloned())
+                w.imp()
+                    .path_colors
+                    .borrow()
+                    .as_ref()
+                    .and_then(|colors| colors.get(&entry.path()).cloned())
             });
-
-            // Remove any previously applied color class from this recycled label.
-            let old_class: Option<String> = unsafe { list_item.steal_data("fs-pill-class") };
-            if let Some(ref cls) = old_class {
-                index_label.remove_css_class(cls);
-            }
-
-            if let Some(color) = badge_color {
-                let class_name = register_pill_color(&color);
-                index_label.add_css_class(&class_name);
-                unsafe {
-                    list_item.set_data("fs-pill-class", class_name);
-                }
-            }
+            apply_pill_color(&index_label, badge_color.as_deref());
 
             match entry.thumbnail() {
                 Some(ref texture) => picture.set_paintable(Some(texture.upcast_ref::<Paintable>())),
@@ -1458,6 +1442,7 @@ impl FilmstripPane {
                 return;
             };
             if filmstrip.imp().path_colors_generation.get() == generation {
+                sync_visible_pill_colors(filmstrip.imp().list_view.upcast_ref(), &colors);
                 *filmstrip.imp().path_colors.borrow_mut() = Some(colors);
             }
         });
@@ -2145,6 +2130,54 @@ fn list_item_path(list_item: &gtk4::ListItem) -> Option<PathBuf> {
         .item()
         .and_downcast::<ImageEntry>()
         .map(|entry| entry.path())
+}
+
+/// Sets the bucket colour class of a row's index pill, replacing the class a
+/// recycled row had before.
+fn apply_pill_color(label: &gtk4::Label, color: Option<&str>) {
+    let old: Option<String> = unsafe { label.steal_data("fs-pill-class") };
+    if let Some(class) = old {
+        label.remove_css_class(&class);
+    }
+    if let Some(color) = color {
+        let class = register_pill_color(color);
+        label.add_css_class(&class);
+        unsafe { label.set_data("fs-pill-class", class) };
+    }
+}
+
+/// Recolours the pills of rows already bound, e.g. after a bucket edit
+/// changes a visible image's colour.
+fn sync_visible_pill_colors(widget: &gtk4::Widget, colors: &HashMap<PathBuf, String>) {
+    fn find_pill(widget: &gtk4::Widget) -> Option<gtk4::Label> {
+        if widget.has_css_class("filmstrip-index-label") {
+            return widget.downcast_ref::<gtk4::Label>().cloned();
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            if let Some(label) = find_pill(&current) {
+                return Some(label);
+            }
+            child = current.next_sibling();
+        }
+        None
+    }
+    let path = unsafe {
+        widget
+            .data::<PathBuf>("fs-path")
+            .map(|p| p.as_ref().clone())
+    };
+    if let Some(path) = path {
+        if let Some(label) = find_pill(widget) {
+            apply_pill_color(&label, colors.get(&path).map(String::as_str));
+        }
+        return;
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        sync_visible_pill_colors(&current, colors);
+        child = current.next_sibling();
+    }
 }
 
 fn sync_visible_selection_classes(
