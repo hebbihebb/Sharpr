@@ -206,6 +206,20 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 **Outcome:** A recorded go/no-go decision and model/runtime choice based on evidence. A go also triggers tag retirement (D1). No production integration happens in this phase.
 
+**Relevance decision (October 13): go, with EmbeddingGemma 2 through native llama.cpp (D22).**
+- The user judged all 30 queries blind (908 pooled results; judgments saved as `.tmp/search-judgments-2026-10-13.json`). Scored with `tools/benchmark-score.py`:
+
+| Candidate | Queries passing | Subject | Style | Mood & colour | People | Relevant in top 20 | Relevant in top 5 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| EmbeddingGemma 2, llama.cpp native | **30/30** | 8/8 | 5/5 | 7/7 | 10/10 | **88.2%** (529/600) | **95.3%** (143/150) |
+| SigLIP 2 base, PyTorch reference | 30/30 | 8/8 | 5/5 | 7/7 | 10/10 | 85.3% (512/600) | 90.7% (136/150) |
+
+- Both pass every category. Gemma is ahead overall and is the user's choice; its native runtime is already proven (decision rule).
+- Weakest Gemma queries: "woman wearing a bikini" (11/20), "watercolor" and "pool" (14/20). They still pass.
+- The user's own rating: about 85 out of 100 for accuracy, "very good".
+- The user reported tiring after about 25 queries, but the saved file marks all 30 as judged. The verdict holds either way: with five unjudged queries counted as fails, Gemma would still pass 25/30.
+- **Still open before Phase 5:** item 4 (filmstrip impact while indexing) and item 5 (packaging llama.cpp, footprint).
+
 **Evidence so far:** recorded October 12 on a CPU, using 1,000 images sampled from `~/Pictures` and 30 predefined queries.
 
 | Candidate | Runtime | Indexing | Warm p95 query | Expected image in top 20* |

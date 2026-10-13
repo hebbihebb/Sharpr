@@ -24,7 +24,7 @@ Phases 1–2 were accepted on October 13. The Phase 0–2 history is in `docs/ar
   - `~/.local/share/sharpr.backup-20261012-221640/`
 - **Live data:** 6 buckets (Model, Art › Diffusion, upgrade?, CSR, Trash?). Of the 7,718 tag rows, 7,346 are old automatic tags; the cleanup is ready but not run.
 - **Archive branches, kept:** `preserve/october-12-wip` and `visual-search-trial-wip`.
-- **Product direction:** `docs/reference/product.md` (D1–D21). Tags are frozen; the Tags page has been removed (D20).
+- **Product direction:** `docs/reference/product.md` (D1–D22). Tags are frozen; the Tags page has been removed (D20). Visual search goes ahead with EmbeddingGemma 2 (D22).
 
 ## Next User Check (Build `e9c142f`, or `f619d64` If Deployed)
 
@@ -48,7 +48,7 @@ The log is `~/.cache/sharpr/logs/run-1791843839575-1067250.jsonl`.
 
 ## Waiting On The User
 
-- **Phase 3:** judge the search results in `.tmp/search-judge.html` (blind, 908 results), save `search-judgments.json`, then run `tools/benchmark-score.py` (command in `docs/reference/development.md`). That decides visual search (Phase 4/5) and tag retirement.
+- **Phase 3:** relevance judged on October 13. Gemma passed 30/30 and was chosen (D22); see `ROADMAP.md`. Still open: the indexing-impact check and the llama.cpp packaging check (Phase 3, items 4–5). Then come Phase 4 (fingerprints) and Phase 5 (visual search, tag retirement).
 - **Thumbnail memory:** keep whole-folder preload, or cap it. Decide after measuring the deployed build (`ROADMAP.md` Phase 2, item 8).
 - **Phase 4 (fingerprint-keyed buckets):** starts only after Phases 1–2 are accepted, because it migrates bucket data.
 - **Independent audit (October 13):** `docs/archive/audit-2026-10-13.md` (Codex `gpt-6.1-sol`, 12 findings).
