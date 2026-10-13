@@ -3083,6 +3083,12 @@ impl SharprWindow {
                         let mut moved = 0usize;
                         let mut errors = 0usize;
                         let mut tag_errors = 0usize;
+                        let tags_db = state_c.borrow().tags.clone();
+                        // A name whose missing file still has tags counts as taken.
+                        let taken = |p: &std::path::Path| {
+                            p.symlink_metadata().is_ok()
+                                || tags_db.as_ref().is_some_and(|t| !t.tags_for_path(p).is_empty())
+                        };
                         for src in &paths {
                             let stem = src
                                 .file_stem()
@@ -3098,7 +3104,7 @@ impl SharprWindow {
                                     &dest_dir,
                                     &stem,
                                     ext,
-                                    |p| p.symlink_metadata().is_ok(),
+                                    taken,
                                 );
                                 result = crate::file_ops::rename_no_replace(src, &dest);
                                 if !matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
@@ -3107,7 +3113,7 @@ impl SharprWindow {
                             }
                             match result {
                                 Ok(()) => {
-                                    if let Some(tags) = state_c.borrow().tags.clone() {
+                                    if let Some(tags) = &tags_db {
                                         if let Err(error) = tags.rename_path(src, &dest) {
                                             tag_errors += 1;
                                             crate::bench_warn!(
@@ -3205,7 +3211,18 @@ impl SharprWindow {
                     if new_name == current_name {
                         return;
                     }
-                    let msg = match crate::file_ops::rename_within_dir(&path, &new_name) {
+                    let tags_db = state_d.borrow().tags.clone();
+                    let retained = path.parent().is_some_and(|dir| {
+                        tags_db.as_ref().is_some_and(|t| {
+                            !t.tags_for_path(&dir.join(&new_name)).is_empty()
+                        })
+                    });
+                    let msg = if retained {
+                        format!(
+                            "Sharpr still keeps tags for a missing file named “{new_name}”. Choose another name."
+                        )
+                    } else {
+                        match crate::file_ops::rename_within_dir(&path, &new_name) {
                         Ok(new_path) => {
                             let tag_error = state_d
                                 .borrow()
@@ -3246,6 +3263,7 @@ impl SharprWindow {
                             }
                         }
                         Err(e) => e,
+                        }
                     };
                     if let Some(w) = win_weak.upgrade() {
                         w.add_toast(libadwaita::Toast::new(&msg));

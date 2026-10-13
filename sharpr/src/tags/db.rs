@@ -402,8 +402,21 @@ impl TagDatabase {
         let new_path_str = new_path.to_string_lossy();
         let old = old_path_str.as_ref();
         let new = new_path_str.as_ref();
+        // Rows at the new path belong to a file that vanished from there; they
+        // are kept user data, so never merge into or overwrite them.
+        let retained: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM file_tags WHERE path = ?1)",
+                params![new],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if retained {
+            return Err(format!(
+                "tags are still kept for a missing file at {new}; they were left in place"
+            ));
+        }
         for (sql, args) in [
-            ("DELETE FROM file_tags WHERE path = ?1", vec![new]),
             (
                 "INSERT INTO file_tags (path, tag) SELECT ?2, tag FROM file_tags WHERE path = ?1",
                 vec![old, new],
@@ -1004,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    fn rename_path_replaces_stale_rows_of_a_vanished_file() {
+    fn rename_path_keeps_retained_rows_of_a_vanished_file() {
         let db = TagDatabase::open_in_memory().unwrap();
         let root = temp_path("rename-stale");
         std::fs::create_dir_all(&root).unwrap();
@@ -1016,10 +1029,11 @@ mod tests {
         db.add_tag(&new, "nsfw");
 
         std::fs::rename(&old, &new).unwrap();
-        db.rename_path(&old, &new).unwrap();
+        assert!(db.rename_path(&old, &new).is_err());
 
-        assert_eq!(db.tags_for_path(&new), vec!["art".to_string()]);
-        assert!(db.tags_for_path(&old).is_empty());
+        // Nothing is lost: both files' tags stay where they were.
+        assert_eq!(db.tags_for_path(&new), vec!["nsfw".to_string()]);
+        assert_eq!(db.tags_for_path(&old), vec!["art".to_string()]);
 
         std::fs::remove_dir_all(root).unwrap();
     }
