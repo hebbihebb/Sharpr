@@ -154,8 +154,16 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 
 **Phase 2 status.** Items 1–9 and 11 are done, and item 10 is deferred. Still open:
 - suggestions while typing (part of item 2)
-- the D20 docs follow-up
-- item 12 (ongoing extraction)
+- item 12: window.rs extraction, done opportunistically
+
+The remaining acceptance step is measuring a deployed release build on the real library with `tools/bench-summary.py`, then the user's manual check:
+- the Phase 1 check plan above
+- typing filter words
+- Ctrl+B
+- right-click → Crop/WebP/Resize/Info
+- Shift+F10
+- the quiet chip
+- "Remove Old Automatic Tags…"
 
 **Item 11, main-thread work: done (committed, not yet deployed).**
 - **Filmstrip badge colours:** binding a row no longer queries SQLite. A worker builds a path → colour map whenever bucket colours change, a viewer tag edit lands, or a tag is deleted. Until the first map is ready, binding falls back to the old query.
