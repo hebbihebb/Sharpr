@@ -1308,6 +1308,12 @@ impl FilmstripPane {
         }
     }
 
+    /// Title of the empty state, so an empty search result does not read
+    /// like an empty folder.
+    pub fn set_empty_title(&self, title: &str) {
+        self.imp().empty_status.set_title(title);
+    }
+
     pub fn refresh(&self) {
         let imp = self.imp();
         let state_opt = imp.state.borrow();

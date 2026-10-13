@@ -126,7 +126,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 **Scope:**
 
 1. ~~Add a measuring tool first.~~ Done October 12: `mainloop.stall` probe plus `tools/bench-summary.py`. The first debug-build run showed startup stalls up to 639 ms. Add a main-loop stall probe to `bench.rs`, such as a lateness measurement on a periodic timer, plus a small log-summary script. This makes "doesn't stall" testable.
-2. ~~Typed filter chips (D16).~~ Done October 12 (`model/search_query.rs`; the chips sit in a bar under the header). Chips combine (AND) with the filter popover rather than sharing its state. **Still open:** suggestions while typing; the placeholder hints at filter words meanwhile.
+2. ~~Typed filter chips (D16).~~ Done October 12 (`model/search_query.rs`; the chips sit in a bar under the header). Chips combine (AND) with the filter popover rather than sharing its state. Suggestions while typing were added October 13 as a row under the search box (typing `4` offers `4k` and `4:3`; clicking one completes it into a chip).
    Original scope: Recognized words in the search box become removable chips, sharing state with the existing filter controls:
    - formats: `jpg`/`jpeg`, `png`, `webp`, `jxl`, `gif`, `tiff`, `bmp`
    - resolutions, meaning *at least*: `720p`, `1080p`, `1440p`, `4k`, `5k`, `8k`

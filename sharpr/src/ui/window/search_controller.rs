@@ -185,7 +185,24 @@ impl SharprWindow {
         }
     }
 
+    /// Picks the filmstrip's empty-state title for what is being shown.
+    pub(super) fn update_empty_title(&self) {
+        let title = if self.imp().browse_snapshot.borrow().is_some() {
+            "No matching images"
+        } else {
+            match self.imp().state.borrow().scope {
+                ViewScope::Folder(_) => "No images in this folder",
+                ViewScope::Collection(_) => "No images in this bucket",
+                _ => "No images",
+            }
+        };
+        if let Some(filmstrip) = self.imp().filmstrip.borrow().as_ref() {
+            filmstrip.set_empty_title(title);
+        }
+    }
+
     pub(super) fn present_browse_paths(&self, preferred: Option<&Path>) {
+        self.update_empty_title();
         let Some(filmstrip) = self.imp().filmstrip.borrow().clone() else {
             return;
         };
@@ -228,6 +245,58 @@ impl SharprWindow {
         self.rebuild_search_chips();
     }
 
+    /// Shows the chip bar while it has chips or suggestions to offer.
+    fn sync_search_chip_bar(&self) {
+        let has_chips = !self.imp().browse_options.borrow().chips.is_empty();
+        let has_suggestions = self
+            .imp()
+            .search_suggestions
+            .borrow()
+            .as_ref()
+            .is_some_and(|s| s.is_visible());
+        if let Some(bar) = self.imp().search_chip_bar.borrow().as_ref() {
+            bar.set_reveal_child(has_chips || has_suggestions);
+        }
+    }
+
+    /// Offers filter words that complete the word being typed (D16). Clicking
+    /// one completes it with a space, so the search turns it into a chip.
+    pub(super) fn rebuild_search_suggestions(&self, text: &str) {
+        let Some(container) = self.imp().search_suggestions.borrow().clone() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            container.remove(&child);
+        }
+        let suggestions = crate::model::search_query::filter_suggestions(text);
+        container.set_visible(!suggestions.is_empty());
+        for suggestion in suggestions {
+            let button = gtk4::Button::with_label(suggestion);
+            button.add_css_class("flat");
+            button.set_tooltip_text(Some("Use this filter"));
+            let weak = self.downgrade();
+            button.connect_clicked(move |_| {
+                let Some(win) = weak.upgrade() else { return };
+                let entry = win.imp().inline_search_entry.borrow().clone();
+                if let Some(entry) = entry {
+                    let completed = crate::model::search_query::apply_suggestion(
+                        entry.text().as_str(),
+                        suggestion,
+                    );
+                    entry.set_text(&completed);
+                    // Focusing selects all text; move the cursor afterwards.
+                    entry.grab_focus();
+                    entry.set_position(-1);
+                }
+            });
+            container.append(&button);
+            if let Some(child) = button.parent() {
+                child.set_focusable(false);
+            }
+        }
+        self.sync_search_chip_bar();
+    }
+
     /// Shows one chip per typed filter. The label turns the chip back into a
     /// search word; the close button removes the filter.
     pub(super) fn rebuild_search_chips(&self) {
@@ -238,9 +307,8 @@ impl SharprWindow {
             container.remove(&child);
         }
         let chips = self.imp().browse_options.borrow().chips.chips.clone();
-        if let Some(revealer) = container.parent().and_downcast::<gtk4::Revealer>() {
-            revealer.set_reveal_child(!chips.is_empty());
-        }
+        container.set_visible(!chips.is_empty());
+        self.sync_search_chip_bar();
         for chip in chips {
             let pill = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             pill.add_css_class("linked");

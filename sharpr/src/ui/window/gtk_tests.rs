@@ -186,6 +186,25 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
                 .entry_at(0)
                 .is_some_and(|e| e.path().ends_with("mountain.png"))
     });
+    // Typing part of a filter word offers completions (decision D16).
+    window.show_inline_search();
+    entry.set_text("4");
+    pump_until(|| {
+        window
+            .imp()
+            .search_suggestions
+            .borrow()
+            .as_ref()
+            .is_some_and(|s| s.is_visible() && s.first_child().is_some())
+    });
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
+    screenshot(
+        &window,
+        &root.parent().unwrap().join("search-suggestions.png"),
+    );
+    entry.set_text("");
+    pump_until(|| window.imp().state.borrow().library.image_count() == 2);
     // Finished filter words become chips and narrow the view (decision D16).
     window.show_inline_search();
     entry.set_text("png 16:9 ");

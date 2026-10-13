@@ -19,7 +19,7 @@ This file covers how to build them in GTK.
 - Compare currently needs exactly two selected images. Phase 8 extends it to N images in pairwise knockout (D8).
 - Search, filters, and sort apply to the current folder or bucket unless the user explicitly picks the whole library. Clearing a search restores the scope, selection, scroll position, and current sort.
 - Open search by typing anywhere or pressing Ctrl+F (D7). Keep Space free for viewing and Compare.
-- Recognized filter words in the search box become removable chips in a wrapping bar under the header (D16). The bar wraps so it never widens the window. Chips combine with the filmstrip filter popover (both must match). Clicking a chip's label turns it back into a quoted search word.
+- Recognized filter words in the search box become removable chips in a wrapping bar under the header (D16). The bar wraps so it never widens the window. Chips combine with the filmstrip filter popover (both must match). Clicking a chip's label turns it back into a quoted search word. Filter words that complete the word being typed are offered as flat buttons in the same bar, rather than in a popover, which would take focus from the entry.
 - Until Phase 5 ships, name search is the default. Experimental visual search never becomes the default early.
 - Tags are frozen (D1). Add no new tag UI.
 - Keep the interface quiet. Only resolution with format, and bucket membership, are always visible; everything else belongs in the Info panel (D18).

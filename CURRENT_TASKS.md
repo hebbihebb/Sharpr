@@ -157,13 +157,12 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 - **User's step:** open the sheet in Firefox, click the relevant images, tick "Judged" per query, check the categories, and press "Save judgments". Then run `tools/benchmark-score.py` (`docs/reference/development.md`).
 - Parity and provenance tools are in place.
 
-**Phase 2 status.** Items 1–9 and 11 are done, and item 10 is deferred. Still open:
-- suggestions while typing (part of item 2)
-- item 12: window.rs extraction, done opportunistically
+**Phase 2 status.** Items 1–9 and 11 are done, item 10 is deferred, and item 12 (window.rs extraction) is done opportunistically.
+- Suggestions while typing were added October 13. An empty search now reads "No matching images", and an empty bucket "No images in this bucket".
 
 The remaining acceptance step is measuring a deployed release build on the real library with `tools/bench-summary.py`, then the user's manual check:
 - the Phase 1 check plan above
-- typing filter words
+- typing filter words and clicking suggestions
 - Ctrl+B
 - right-click → Crop/WebP/Resize/Info
 - Shift+F10

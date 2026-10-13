@@ -349,6 +349,78 @@ pub fn take_completed_chips(input: &str) -> (Vec<Chip>, String) {
     (chips, remaining)
 }
 
+/// Filter words offered while typing, in display order.
+const SUGGESTED_WORDS: &[&str] = &[
+    "4k",
+    "1080p",
+    "1440p",
+    "5k",
+    "8k",
+    "720p",
+    "below 4k",
+    "below 1440p",
+    "below 1080p",
+    "16:9",
+    "21:9",
+    "16:10",
+    "4:3",
+    "3:2",
+    "landscape",
+    "portrait",
+    "square",
+    "png",
+    "jpg",
+    "webp",
+    "jxl",
+    "tiff",
+    "gif",
+    "bmp",
+];
+
+/// Filter words that complete the word being typed (the last word, when the
+/// input does not end in a space), most useful first.
+pub fn filter_suggestions(input: &str) -> Vec<&'static str> {
+    if input.ends_with(char::is_whitespace) {
+        return Vec::new();
+    }
+    let words: Vec<String> = input.split_whitespace().map(str::to_lowercase).collect();
+    let Some(partial) = words.last() else {
+        return Vec::new();
+    };
+    // "below" or "under" followed by the start of a resolution.
+    let after_below =
+        words.len() >= 2 && matches!(words[words.len() - 2].as_str(), "below" | "under");
+    SUGGESTED_WORDS
+        .iter()
+        .copied()
+        .filter(|word| {
+            if after_below {
+                word.strip_prefix("below ")
+                    .is_some_and(|r| r.starts_with(partial.as_str()))
+            } else {
+                word.starts_with(partial.as_str()) && *word != partial.as_str()
+            }
+        })
+        .take(6)
+        .collect()
+}
+
+/// Replaces the word being typed with `suggestion` and a trailing space, so
+/// the next search turns it into a chip.
+pub fn apply_suggestion(input: &str, suggestion: &str) -> String {
+    let mut words: Vec<&str> = input.split_whitespace().collect();
+    words.pop();
+    if suggestion.starts_with("below ")
+        && words
+            .last()
+            .is_some_and(|w| matches!(w.to_lowercase().as_str(), "below" | "under"))
+    {
+        words.pop();
+    }
+    words.push(suggestion);
+    format!("{} ", words.join(" "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +503,34 @@ mod tests {
         assert!(!below.matches(p, Some((2160, 3840))));
         assert!(below.matches(p, Some((1920, 1080))));
         assert!(!below.matches(p, None));
+    }
+
+    #[test]
+    fn suggestions_complete_the_word_being_typed() {
+        assert_eq!(filter_suggestions("mountains 4"), vec!["4k", "4:3"]);
+        assert_eq!(
+            filter_suggestions("be"),
+            vec!["below 4k", "below 1440p", "below 1080p"]
+        );
+        assert_eq!(
+            filter_suggestions("sea below 1"),
+            vec!["below 1440p", "below 1080p"]
+        );
+        assert!(
+            filter_suggestions("mountains 4k ").is_empty(),
+            "a finished word is done"
+        );
+        assert!(filter_suggestions("zebra").is_empty());
+        assert!(filter_suggestions("").is_empty());
+
+        assert_eq!(apply_suggestion("mountains 4", "4k"), "mountains 4k ");
+        assert_eq!(
+            apply_suggestion("sea below 1", "below 1080p"),
+            "sea below 1080p "
+        );
+        let (chips, rest) = take_completed_chips(&apply_suggestion("sea be", "below 4k"));
+        assert_eq!(chips, vec![Chip::Below(four_k())]);
+        assert_eq!(rest, "sea ");
     }
 
     #[test]
