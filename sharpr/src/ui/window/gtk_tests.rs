@@ -505,6 +505,28 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
             .and_then(|i| st.library.entry_at(i))
             .is_some_and(|e| e.path() == output)
     });
+    // A very large image is shown as a screen-sized copy at its original size;
+    // zooming to 1:1 loads full resolution.
+    let large = root.parent().unwrap().join("large-6000x4000.bmp");
+    image::RgbImage::from_pixel(6000, 4000, image::Rgb([40, 90, 160]))
+        .save(&large)
+        .unwrap();
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+    viewer.load_image(large.clone());
+    let shown_width = || {
+        viewer
+            .imp()
+            .picture
+            .paintable()
+            .map(|p| p.intrinsic_width())
+            .unwrap_or(0)
+    };
+    pump_until(|| shown_width() > 0);
+    assert!(shown_width() < 6000, "copy expected, got {}", shown_width());
+    assert_eq!(viewer.imp().full_size.get(), Some((6000, 4000)));
+    viewer.set_zoom_mode(crate::ui::viewer::ZoomMode::OneToOne);
+    pump_until(|| shown_width() == 6000);
+    assert_eq!(viewer.imp().full_size.get(), None);
     window.close();
 }
 

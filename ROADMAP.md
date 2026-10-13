@@ -122,7 +122,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - **RSS peak:** 3,383 MB (baseline 2,345 MB). The session applied 14,608 thumbnails (baseline about 8,000), plus the viewer jumps above.
 
 **Follow-ups (next):**
-- Show large images in the viewer at screen size first, with full resolution only when zooming in, so opening one causes no stall over 100 ms.
+- ~~Show large images in the viewer at screen size first, with full resolution only when zooming in.~~ Done October 13 (committed, not deployed). For a 12,000 × 8,000 JPEG, the longest main-loop step fell from 0.8–2.2 s to under 40 ms.
 - Time the pool wait and the query separately in the folder-open read. Fix the cause of the multi-second wait.
 - Re-measure on a release build and compare with both logs.
 

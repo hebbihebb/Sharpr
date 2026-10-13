@@ -187,6 +187,11 @@ mod imp {
         /// Async callbacks capture the value at dispatch time and discard their
         /// result if it no longer matches (i.e. a newer load was requested).
         pub load_gen: Cell<u64>,
+        /// The original size while a screen-sized copy of a very large image
+        /// is shown (`crate::display_scale`); zoom math uses this size.
+        pub full_size: Cell<Option<(i32, i32)>>,
+        /// A full-resolution load for zooming in has been started.
+        pub full_res_requested: Cell<bool>,
         pub tag_refresh_gen: Cell<u64>,
         pub info_pending: Cell<bool>,
         pub tag_summary_gen: Cell<u64>,
@@ -404,6 +409,8 @@ mod imp {
                 drag_origin: Cell::new(None),
                 drag_adjustments: Cell::new((0.0, 0.0)),
                 load_gen: Cell::new(0),
+                full_size: Cell::new(None),
+                full_res_requested: Cell::new(false),
                 tag_refresh_gen: Cell::new(0),
                 info_pending: Cell::new(false),
                 tag_summary_gen: Cell::new(0),
@@ -654,6 +661,8 @@ impl ViewerPane {
         let imp = self.imp();
         let load_gen = imp.load_gen.get().wrapping_add(1);
         imp.load_gen.set(load_gen);
+        imp.full_size.set(None);
+        imp.full_res_requested.set(false);
         imp.tag_chips_expanded.set(false);
         imp.tag_popover.popdown();
         *imp.current_path.borrow_mut() = Some(path.clone());
@@ -675,14 +684,47 @@ impl ViewerPane {
         let error_label = imp.error_label.clone();
         let path_clone = path.clone();
         let viewer = self.clone();
+        let screen = self.screen_pixels();
 
         glib::MainContext::default().spawn_local(async move {
+            let started = std::time::Instant::now();
             let file = gio::File::for_path(&path_clone);
             let result = async {
                 let loader = glycin::Loader::new(file);
                 let image = loader.load().await.map_err(|e| e.to_string())?;
                 let frame = image.next_frame().await.map_err(|e| e.to_string())?;
-                Ok::<_, String>(frame.texture())
+                let (width, height) = (frame.width(), frame.height());
+                // sRGB only: other colour states would need glycin's private
+                // conversion, and are rare enough to show as they are.
+                let copy_plan = crate::display_scale::bytes_per_pixel(frame.memory_format())
+                    .zip(crate::display_scale::display_size(width, height, screen))
+                    .filter(|_| matches!(frame.color_state(), glycin::ColorState::Srgb));
+                let Some((bpp, target)) = copy_plan else {
+                    return Ok::<_, String>((frame.texture(), None));
+                };
+                // Very large: show a screen-sized copy made on a worker, so GTK
+                // never builds or uploads the full image unless the user zooms in.
+                let format = glycin::gdk_memory_format(frame.memory_format());
+                let color_state = gdk4::ColorState::srgb();
+                let bytes = frame.buf_bytes();
+                let stride = frame.stride() as usize;
+                drop(frame);
+                let (tx, rx) = async_channel::bounded(1);
+                std::thread::spawn(move || {
+                    let pixels =
+                        crate::display_scale::downscale(&bytes, width, height, stride, bpp, target);
+                    let _ = tx.send_blocking(pixels);
+                });
+                let pixels = rx.recv().await.map_err(|e| e.to_string())?;
+                let copy = gdk4::MemoryTextureBuilder::new()
+                    .set_bytes(Some(&glib::Bytes::from_owned(pixels)))
+                    .set_width(target.0 as i32)
+                    .set_height(target.1 as i32)
+                    .set_stride(target.0 as usize * bpp)
+                    .set_format(format)
+                    .set_color_state(&color_state)
+                    .build();
+                Ok((copy, Some((width as i32, height as i32))))
             }
             .await;
 
@@ -694,7 +736,19 @@ impl ViewerPane {
             spinner.set_visible(false);
 
             match result {
-                Ok(texture) => {
+                Ok((texture, full_size)) => {
+                    let (width, height) = full_size.unwrap_or((texture.width(), texture.height()));
+                    crate::bench_event!(
+                        "viewer.load.ready",
+                        serde_json::json!({
+                            "width": width,
+                            "height": height,
+                            "shown_width": texture.width(),
+                            "shown_height": texture.height(),
+                            "duration_ms": crate::bench::duration_ms(started),
+                        }),
+                    );
+                    viewer.imp().full_size.set(full_size);
                     picture.set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
                     viewer.reset_zoom();
                     viewer.ensure_fit_on_layout();
@@ -736,12 +790,12 @@ impl ViewerPane {
         let content_focus_y = vadj.value() + focus_y;
         imp.zoom.set(new_zoom);
 
-        let base_width = paintable.intrinsic_width().max(1);
-        let base_height = paintable.intrinsic_height().max(1);
-        let scaled_width = (base_width as f64 * fit_scale * new_zoom).round().max(1.0) as i32;
-        let scaled_height = (base_height as f64 * fit_scale * new_zoom).round().max(1.0) as i32;
+        let (base_width, base_height) = self.image_size(&paintable);
+        let scaled_width = (base_width * fit_scale * new_zoom).round().max(1.0) as i32;
+        let scaled_height = (base_height * fit_scale * new_zoom).round().max(1.0) as i32;
 
         imp.picture.set_size_request(scaled_width, scaled_height);
+        self.ensure_resolution_for(&paintable, scaled_width);
 
         let scale_ratio = new_zoom / old_zoom;
         self.set_adjustment_value(&hadj, content_focus_x * scale_ratio - focus_x);
@@ -854,9 +908,94 @@ impl ViewerPane {
         self.sync_zoom_button();
     }
 
+    /// The image's size in pixels: the original's, even while a screen-sized
+    /// copy is shown, so zoom levels and 1:1 keep their meaning.
+    fn image_size(&self, paintable: &gdk4::Paintable) -> (f64, f64) {
+        match self.imp().full_size.get() {
+            Some((width, height)) => (width.max(1) as f64, height.max(1) as f64),
+            None => (
+                paintable.intrinsic_width().max(1) as f64,
+                paintable.intrinsic_height().max(1) as f64,
+            ),
+        }
+    }
+
+    /// The device pixels of the monitor the viewer is on (a 4K screen until
+    /// the window is mapped).
+    fn screen_pixels(&self) -> (u32, u32) {
+        let monitor = self
+            .native()
+            .and_then(|native| native.surface())
+            .and_then(|surface| self.display().monitor_at_surface(&surface));
+        match monitor {
+            Some(monitor) => {
+                let geometry = monitor.geometry();
+                let scale = monitor.scale_factor().max(1);
+                (
+                    (geometry.width() * scale).max(1) as u32,
+                    (geometry.height() * scale).max(1) as u32,
+                )
+            }
+            None => (3840, 2160),
+        }
+    }
+
+    /// Loads full resolution once the picture, at `shown_width` logical pixels,
+    /// needs more pixels than the screen-sized copy has. The slow upload then
+    /// happens only because the user zoomed in.
+    fn ensure_resolution_for(&self, paintable: &gdk4::Paintable, shown_width: i32) {
+        let imp = self.imp();
+        if imp.full_size.get().is_none() || imp.full_res_requested.get() {
+            return;
+        }
+        let needed = shown_width as f64 * self.scale_factor().max(1) as f64;
+        if needed <= paintable.intrinsic_width() as f64 * 1.02 {
+            return;
+        }
+        let Some(path) = imp.current_path.borrow().clone() else {
+            return;
+        };
+        imp.full_res_requested.set(true);
+        let load_gen = imp.load_gen.get();
+        let viewer = self.clone();
+        glib::MainContext::default().spawn_local(async move {
+            let started = std::time::Instant::now();
+            let result = async {
+                let loader = glycin::Loader::new(gio::File::for_path(&path));
+                let image = loader.load().await.map_err(|e| e.to_string())?;
+                let frame = image.next_frame().await.map_err(|e| e.to_string())?;
+                Ok::<_, String>(frame.texture())
+            }
+            .await;
+            let imp = viewer.imp();
+            if imp.load_gen.get() != load_gen {
+                return;
+            }
+            match result {
+                Ok(texture) => {
+                    crate::bench_event!(
+                        "viewer.full_resolution",
+                        serde_json::json!({
+                            "width": texture.width(),
+                            "height": texture.height(),
+                            "duration_ms": crate::bench::duration_ms(started),
+                        }),
+                    );
+                    // Same size as `full_size`, so the zoom and scroll stay put.
+                    imp.full_size.set(None);
+                    imp.picture
+                        .set_paintable(Some(texture.upcast_ref::<gdk4::Paintable>()));
+                }
+                Err(error) => crate::bench_warn!(
+                    "viewer.full_resolution.fail",
+                    serde_json::json!({"error": error}),
+                ),
+            }
+        });
+    }
+
     fn fit_scale_for_paintable(&self, paintable: &gdk4::Paintable) -> f64 {
-        let base_width = paintable.intrinsic_width().max(1) as f64;
-        let base_height = paintable.intrinsic_height().max(1) as f64;
+        let (base_width, base_height) = self.image_size(paintable);
         let imp = self.imp();
         let hadj = imp.scrolled_window.hadjustment();
         let vadj = imp.scrolled_window.vadjustment();
@@ -885,13 +1024,11 @@ impl ViewerPane {
         };
         let fit_scale = self.fit_scale_for_paintable(&paintable);
         let render_scale = (fit_scale * imp.zoom.get()).max(0.01);
-        let width = (paintable.intrinsic_width().max(1) as f64 * render_scale)
-            .round()
-            .max(1.0) as i32;
-        let height = (paintable.intrinsic_height().max(1) as f64 * render_scale)
-            .round()
-            .max(1.0) as i32;
+        let (base_width, base_height) = self.image_size(&paintable);
+        let width = (base_width * render_scale).round().max(1.0) as i32;
+        let height = (base_height * render_scale).round().max(1.0) as i32;
         imp.picture.set_size_request(width, height);
+        self.ensure_resolution_for(&paintable, width);
     }
 
     fn show_zoom_osd(&self, text: &str) {
