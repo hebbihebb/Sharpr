@@ -56,3 +56,37 @@ Phase 0 finished on October 12.
 - **Acceptance:** the user tested the build ("everything works and feels fast"), and a release baseline was recorded. Startup took 498 ms, a 2,216-image folder opened in 116–162 ms, and memory peaked at 2.3 GB.
 - **Branches:** `main` was fast-forwarded to `viewer-reset`. Six merged legacy branches, `docs-realignment`, and `viewer-base` were deleted along with their worktrees.
 - **Findings carried into Phase 2:** the aspect popover's click-away, the idle gear, the overlap between the "…" and right-click menus, the 2.3 s pool wait, and thumbnail memory.
+
+## October 12–13: Phases 1 and 2
+
+The detailed per-item log lived in `CURRENT_TASKS.md` until October 13; the commits hold the rest.
+
+- **Phase 1, data safety:**
+  - Tags of missing or trashed files are kept and hidden, never deleted (81 paths had lost tags in real use on October 12).
+  - Rename and Move can no longer overwrite a file.
+  - Bucket edits keep parent and sibling membership (`src/buckets.rs`).
+  - Thumbnail workers can no longer deadlock on their own queue; a stress test reproduces the old freeze.
+  - Both databases carry `user_version` 1, and an older build refuses newer data without touching it.
+  - 1,304 lines of compiled-out pipeline code were deleted.
+  - Delete Tag confirms first; bucket names that differ only by case are rejected; single-key shortcuts are ignored while typing; trash failures are reported.
+- **Phase 2, finding:**
+  - A main-loop stall probe and `tools/bench-summary.py`.
+  - Typed filter chips with suggestions; `below 4k` replaces the quality views.
+  - Ctrl+B adds the selection to a bucket.
+  - A backed-up, confirm-first cleanup of old automatic tags. A preview on the live data showed 7,346 rows to remove and 372 manual rows kept; it has not been run yet.
+  - Main-thread work removed:
+    - per-row tag queries
+    - per-navigation duplicate grouping
+    - synchronous bucket opening
+    - linear virtual-view lookups
+    - per-keystroke library walks
+  - The 2.3 s folder-open wait is gone: hash writes are batched and folder scans run on their own thread.
+  - Thumbnail memory was analysed but left as a decision for the user.
+  - Item 10, one dimension source, was deferred for a correctness reason.
+- **User decisions D20 and D21 (October 13):**
+  - The Tags page and page switcher were removed.
+  - Image actions moved to the right-click menu, which Shift+F10 also opens.
+  - D18 was implemented: a quiet corner chip, plus an Info panel opened with Ctrl+I.
+- **Phase 3 tooling:** blind judging sheet, scorer, parity, and provenance.
+- **Deployment:** release build `66f3d94` was installed on October 13 for the user's acceptance test.
+- **Independent audit:** a Codex `gpt-6.1-sol` (high effort) audit was attempted twice. The first run was stopped by low system memory; the second hit "model at capacity" after running the 157-test suite (all passed). It flagged only that `CURRENT_TASKS.md` contradicted itself about what was deployed, which was corrected.
