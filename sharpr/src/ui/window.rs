@@ -584,6 +584,41 @@ impl SharprWindow {
         }
     }
 
+    /// Opens Crop, WebP or Resize Copy for `source`, the image the user
+    /// right-clicked (decision D21).
+    pub fn present_copy_dialog(&self, kind: crate::ui::filmstrip::CopyKind, source: PathBuf) {
+        use crate::ui::filmstrip::CopyKind;
+        let state = self.imp().state.clone();
+        match kind {
+            CopyKind::Crop => crate::ui::crop_dialog::present_crop_dialog(self, source, state),
+            CopyKind::Webp => {
+                let weak = self.downgrade();
+                let refresh = Rc::new(move |path| {
+                    if let Some(window) = weak.upgrade() {
+                        window.show_created_copy(path);
+                    }
+                });
+                crate::ui::resize_dialog::present_webp_dialog(self, source, state, refresh);
+            }
+            CopyKind::Resize => {
+                let weak = self.downgrade();
+                let state_for_refresh = state.clone();
+                let refresh = Rc::new(move |output: PathBuf| {
+                    let folder = output.parent().map(Path::to_path_buf);
+                    let current = state_for_refresh.borrow().library.current_folder.clone();
+                    if folder == current {
+                        if let (Some(window), Some(folder)) = (weak.upgrade(), folder) {
+                            if let Some(callback) = window.imp().open_folder_cb.borrow().as_ref() {
+                                callback(folder);
+                            }
+                        }
+                    }
+                });
+                crate::ui::resize_dialog::present_resize_dialog(self, source, state, refresh);
+            }
+        }
+    }
+
     /// Called after tags change outside a bucket edit, so filmstrip badge
     /// colours follow.
     pub fn tags_changed(&self) {
@@ -2371,6 +2406,16 @@ impl SharprWindow {
         // Alt+Left / Alt+Right — navigate between images.
         // Scoped to the window so it fires regardless of focus position.
         // -----------------------------------------------------------------------
+        // Crop, WebP and Resize Copy from the right-click menu.
+        {
+            let window_weak = self.downgrade();
+            filmstrip.connect_copy_requested(move |kind, source| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.present_copy_dialog(kind, source);
+                }
+            });
+        }
+
         // "Add to Collection…" context menu → pick / create collection → add paths.
         {
             let state_c = state.clone();
@@ -2812,6 +2857,22 @@ impl SharprWindow {
                         &paths,
                     );
                     glib::Propagation::Stop
+                })),
+            ));
+        }
+
+        // Shift+F10 / Menu — the current image's right-click menu (decision D21).
+        {
+            let filmstrip_m = filmstrip.clone();
+            shortcuts.add_shortcut(gtk4::Shortcut::new(
+                Some(gtk4::ShortcutTrigger::parse_string("<Shift>F10|Menu").unwrap()),
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if !text_input_has_focus(widget) && filmstrip_m.open_context_menu_for_current()
+                    {
+                        glib::Propagation::Stop
+                    } else {
+                        glib::Propagation::Proceed
+                    }
                 })),
             ));
         }
@@ -3432,12 +3493,7 @@ impl SharprWindow {
         view_section.append(Some("Show Overlay"), Some("win.show-metadata"));
         menu.append_section(Some("View"), &view_section);
 
-        let image_section = gio::Menu::new();
-        image_section.append(Some("Resize Copy…"), Some("win.resize-copy"));
-        image_section.append(Some("Crop Copy…"), Some("win.crop-copy"));
-        image_section.append(Some("WebP Copy…"), Some("win.webp-copy"));
-        image_section.append(Some("Compare Selected Images"), Some("win.compare"));
-        menu.append_section(Some("Image"), &image_section);
+        // Image actions live on the filmstrip's right-click menu (decision D21).
 
         let library_section = gio::Menu::new();
         library_section.append(Some("Find Duplicates"), Some("win.find-duplicates"));
@@ -3560,77 +3616,6 @@ impl SharprWindow {
             });
         }
         self.add_action(&pref_action);
-
-        for (name, crop) in [("crop-copy", true), ("webp-copy", false)] {
-            let action = gio::SimpleAction::new(name, None);
-            let weak = self.downgrade();
-            let viewer_weak = viewer.downgrade();
-            let state = state.clone();
-            action.connect_activate(move |_, _| {
-                let (Some(window), Some(viewer)) = (weak.upgrade(), viewer_weak.upgrade()) else {
-                    return;
-                };
-                let Some(source) = viewer.current_path() else {
-                    window.add_toast(libadwaita::Toast::new("Select an image first"));
-                    return;
-                };
-                if crop {
-                    crate::ui::crop_dialog::present_crop_dialog(&window, source, state.clone());
-                } else {
-                    let weak = window.downgrade();
-                    let refresh = Rc::new(move |path| {
-                        if let Some(window) = weak.upgrade() {
-                            window.show_created_copy(path);
-                        }
-                    });
-                    crate::ui::resize_dialog::present_webp_dialog(
-                        &window,
-                        source,
-                        state.clone(),
-                        refresh,
-                    );
-                }
-            });
-            self.add_action(&action);
-        }
-
-        let resize_action = gio::SimpleAction::new("resize-copy", None);
-        {
-            let viewer_weak = viewer.downgrade();
-            let window_weak = self.downgrade();
-            let state_c = state.clone();
-            resize_action.connect_activate(move |_, _| {
-                let (Some(viewer), Some(window)) = (viewer_weak.upgrade(), window_weak.upgrade())
-                else {
-                    return;
-                };
-                let Some(source) = viewer.current_path() else {
-                    window.add_toast(libadwaita::Toast::new("Select an image to resize"));
-                    return;
-                };
-                let window_for_refresh = window.downgrade();
-                let state_for_refresh = state_c.clone();
-                let refresh = Rc::new(move |output: PathBuf| {
-                    let folder = output.parent().map(Path::to_path_buf);
-                    let current = state_for_refresh.borrow().library.current_folder.clone();
-                    if folder == current {
-                        if let (Some(window), Some(folder)) = (window_for_refresh.upgrade(), folder)
-                        {
-                            if let Some(callback) = window.imp().open_folder_cb.borrow().as_ref() {
-                                callback(folder);
-                            }
-                        }
-                    }
-                });
-                crate::ui::resize_dialog::present_resize_dialog(
-                    &window,
-                    source,
-                    state_c.clone(),
-                    refresh,
-                );
-            });
-        }
-        self.add_action(&resize_action);
     }
 
     /// Build the viewer header bar.

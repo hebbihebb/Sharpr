@@ -159,7 +159,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
      - Thumbnails average about 0.5 MB, because landscape system x-large thumbnails (512×288) are kept at full size. On the user's 2× display that keeps the filmstrip sharp, so shrinking them is not a free win.
      - The machine has 14 GB of RAM, about 4.5 GB free in use. The current folders are fine; folders of 10,000+ images would not be.
      - Options: cap the background preload to a window around the viewport and release far textures, or keep whole-folder preload and accept the cost.
-9. **Decide with the user where image actions live.** Today the viewer's "…" menu and the filmstrip right-click menu overlap.
+9. ~~Decide with the user where image actions live.~~ Decided D21 (2026-10-13) and done. Image actions moved from ≡ to the filmstrip right-click menu, acting on the clicked image; Shift+F10 and Menu open it from the keyboard.
+   Original note: Today the viewer's "…" menu and the filmstrip right-click menu overlap.
    - Recommendation: build both from one action model, so they cannot drift apart. "…" lists every action for the current image or selection; right-click offers the same actions for the clicked item. Shortcuts cover the frequent actions.
    - GNOME guidance is that context menus should not be the only way to reach an action. Removing "…" therefore needs another visible path, and that choice belongs to the user.
 10. **Deferred (October 12): one source for dimensions.**

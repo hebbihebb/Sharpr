@@ -23,6 +23,15 @@ type SearchActivateCallback = Box<dyn Fn(&str) + 'static>;
 type SearchDismissedCallback = Box<dyn Fn() + 'static>;
 type TrashRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type AddToCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
+type CopyRequestedCallback = Box<dyn Fn(CopyKind, PathBuf) + 'static>;
+
+/// Copy dialogs offered on an image's right-click menu (decision D21).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyKind {
+    Crop,
+    Webp,
+    Resize,
+}
 type ActionSelectionChangedCallback = Box<dyn Fn(usize) + 'static>;
 type RemoveFromCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type CopyToFolderRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
@@ -63,6 +72,20 @@ fn build_context_menu_model(in_collection: bool, is_multi: bool) -> gio::Menu {
         Some("<Control>c"),
     ));
     menu.append_section(None, &sec1);
+
+    let image = gio::Menu::new();
+    if is_multi {
+        image.append_item(&menu_item("Compare Selected Images", "win.compare", None));
+    } else {
+        image.append_item(&menu_item("Crop Copy\u{2026}", "filmstrip.crop-copy", None));
+        image.append_item(&menu_item("WebP Copy\u{2026}", "filmstrip.webp-copy", None));
+        image.append_item(&menu_item(
+            "Resize Copy\u{2026}",
+            "filmstrip.resize-copy",
+            None,
+        ));
+    }
+    menu.append_section(None, &image);
 
     let sec2 = gio::Menu::new();
     sec2.append_item(&menu_item(
@@ -219,6 +242,7 @@ mod imp {
         pub search_dismissed_cb: RefCell<Option<SearchDismissedCallback>>,
         pub trash_requested_cb: RefCell<Option<TrashRequestedCallback>>,
         pub add_to_collection_requested_cb: RefCell<Option<AddToCollectionRequestedCallback>>,
+        pub copy_requested_cb: RefCell<Option<CopyRequestedCallback>>,
         pub action_selection_changed_cb: RefCell<Option<ActionSelectionChangedCallback>>,
         pub remove_from_collection_requested_cb:
             RefCell<Option<RemoveFromCollectionRequestedCallback>>,
@@ -299,6 +323,7 @@ mod imp {
                 search_dismissed_cb: RefCell::new(None),
                 trash_requested_cb: RefCell::new(None),
                 add_to_collection_requested_cb: RefCell::new(None),
+                copy_requested_cb: RefCell::new(None),
                 action_selection_changed_cb: RefCell::new(None),
                 remove_from_collection_requested_cb: RefCell::new(None),
                 copy_to_folder_requested_cb: RefCell::new(None),
@@ -633,6 +658,10 @@ impl FilmstripPane {
             popover.set_autohide(true);
             popover.set_position(gtk4::PositionType::Bottom);
             popover.set_parent(&item_box);
+            // Shift+F10 finds a row's menu through this (decision D21).
+            unsafe {
+                item_box.set_data("fs-popover", popover.clone());
+            }
 
             // Store widget refs by key so bind/unbind don't rely on child ordering.
             unsafe {
@@ -728,41 +757,13 @@ impl FilmstripPane {
                 if list_item.item().is_none() {
                     return;
                 }
-                let Some(widget) = widget_weak_gesture.upgrade() else {
+                let (Some(widget), Some(popover)) =
+                    (widget_weak_gesture.upgrade(), popover_weak.upgrade())
+                else {
                     return;
                 };
-                let Some(clicked_path) = list_item_path(&list_item) else {
-                    return;
-                };
-
-                let (in_collection, has_library_index) = widget
-                    .imp()
-                    .state
-                    .borrow()
-                    .as_ref()
-                    .map(|s| {
-                        let s = s.borrow();
-                        (
-                            matches!(s.scope, ViewScope::Collection(_)),
-                            s.library_index.is_some(),
-                        )
-                    })
-                    .unwrap_or((false, false));
-
-                let action_paths = collection_action_paths(&widget, &clicked_path);
-                let is_multi = action_paths.len() > 1;
-
-                *widget.imp().menu_ctx.borrow_mut() = Some(MenuContext {
-                    clicked_path,
-                    action_paths,
-                });
-
-                widget.action_set_enabled("filmstrip.add-to-collection", has_library_index);
-
-                if let Some(popover) = popover_weak.upgrade() {
-                    let model = build_context_menu_model(in_collection, is_multi);
-                    popover.set_menu_model(Some(&model));
-                    popover.popup();
+                if let Some(clicked_path) = list_item_path(&list_item) {
+                    widget.open_context_menu(&popover, clicked_path);
                 }
             });
 
@@ -801,7 +802,7 @@ impl FilmstripPane {
             };
 
             // Restore multi-select visual state when items are recycled.
-            if let Some(ib) = item_box {
+            if let Some(ib) = item_box.as_ref() {
                 unsafe {
                     ib.set_data("fs-path", entry.path());
                 }
@@ -1117,6 +1118,30 @@ impl FilmstripPane {
             });
         }
         group.add_action(&add_collection);
+
+        for (name, kind) in [
+            ("crop-copy", CopyKind::Crop),
+            ("webp-copy", CopyKind::Webp),
+            ("resize-copy", CopyKind::Resize),
+        ] {
+            let action = gio::SimpleAction::new(name, None);
+            let w = self.downgrade();
+            action.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let path = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.clicked_path.clone());
+                if let Some(path) = path {
+                    if let Some(cb) = widget.imp().copy_requested_cb.borrow().as_ref() {
+                        cb(kind, path);
+                    }
+                }
+            });
+            group.add_action(&action);
+        }
 
         let remove_collection = gio::SimpleAction::new("remove-from-collection", None);
         {
@@ -1829,6 +1854,72 @@ impl FilmstripPane {
         if let Some(cb) = self.imp().trash_requested_cb.borrow().as_ref() {
             cb(paths);
         }
+    }
+
+    /// Shows the image menu for `clicked_path` from its row's popover.
+    fn open_context_menu(&self, popover: &gtk4::PopoverMenu, clicked_path: PathBuf) {
+        let (in_collection, has_library_index) = self
+            .imp()
+            .state
+            .borrow()
+            .as_ref()
+            .map(|s| {
+                let s = s.borrow();
+                (
+                    matches!(s.scope, ViewScope::Collection(_)),
+                    s.library_index.is_some(),
+                )
+            })
+            .unwrap_or((false, false));
+        let action_paths = collection_action_paths(self, &clicked_path);
+        let is_multi = action_paths.len() > 1;
+        *self.imp().menu_ctx.borrow_mut() = Some(MenuContext {
+            clicked_path,
+            action_paths,
+        });
+        self.action_set_enabled("filmstrip.add-to-collection", has_library_index);
+        popover.set_menu_model(Some(&build_context_menu_model(in_collection, is_multi)));
+        popover.popup();
+    }
+
+    /// Opens the image menu for the current image from the keyboard
+    /// (Shift+F10 or the Menu key). Returns false when no row is on screen.
+    pub fn open_context_menu_for_current(&self) -> bool {
+        let Some(path) = self
+            .imp()
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.borrow().library.selected_entry())
+            .map(|entry| entry.path())
+        else {
+            return false;
+        };
+        let mut row = self.imp().list_view.first_child();
+        while let Some(current) = row {
+            if let Some(item_box) = current.first_child() {
+                let matches = unsafe {
+                    item_box
+                        .data::<PathBuf>("fs-path")
+                        .is_some_and(|p| p.as_ref() == &path)
+                };
+                let popover = unsafe {
+                    item_box
+                        .data::<gtk4::PopoverMenu>("fs-popover")
+                        .map(|p| p.as_ref().clone())
+                };
+                if let (true, Some(popover)) = (matches, popover) {
+                    self.open_context_menu(&popover, path);
+                    return true;
+                }
+            }
+            row = current.next_sibling();
+        }
+        false
+    }
+
+    pub fn connect_copy_requested<F: Fn(CopyKind, PathBuf) + 'static>(&self, f: F) {
+        *self.imp().copy_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn connect_add_to_collection_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {

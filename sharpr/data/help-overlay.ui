@@ -35,6 +35,12 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
+                <property name="title">Image menu (copies, compare, file actions)</property>
+                <property name="accelerator">&lt;Shift&gt;F10 Menu</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
                 <property name="title">Add selection to a bucket</property>
                 <property name="accelerator">&lt;Control&gt;b</property>
               </object>

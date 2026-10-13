@@ -31,11 +31,11 @@ Duplicates uses perceptual hashes to group visually similar files and loads them
 
 ## Compare
 
-Ctrl-click until exactly two filmstrip images are selected, then choose **Image → Compare Selected Images**. The images appear as neutral left and right panes. Close Compare to return to the viewer. Missing or corrupt files show an error in their pane.
+Ctrl-click until exactly two filmstrip images are selected, then right-click one of them and choose **Compare Selected Images**. The images appear as neutral left and right panes. Close Compare to return to the viewer. Missing or corrupt files show an error in their pane.
 
 ## Resize Copy
 
-Choose **Image → Resize Copy…** for the current image.
+Right-click an image in the filmstrip and choose **Resize Copy…**. Crop Copy and WebP Copy are in the same menu. Shift+F10 or the Menu key opens it for the current image.
 
 - Width and height start at the displayed, orientation-corrected dimensions.
 - Aspect ratio is locked by default and can be unlocked.

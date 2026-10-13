@@ -287,7 +287,20 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
         .as_ref()
         .unwrap()
         .navigate_to(index);
-    gtk4::prelude::WidgetExt::activate_action(&window, "win.crop-copy", None).unwrap();
+    // Shift+F10 opens the current image's menu from the keyboard (D21).
+    let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
+    pump_until(|| filmstrip.open_context_menu_for_current());
+    assert_eq!(
+        filmstrip
+            .imp()
+            .menu_ctx
+            .borrow()
+            .as_ref()
+            .map(|c| c.clicked_path.clone()),
+        Some(sea.clone())
+    );
+    // The right-click menu opens copies through this entry point (D21).
+    window.present_copy_dialog(crate::ui::filmstrip::CopyKind::Crop, sea.clone());
     pump_until(|| window.visible_dialog().is_some());
     let ready = std::time::Instant::now() + std::time::Duration::from_secs(2);
     pump_until(|| std::time::Instant::now() > ready);
