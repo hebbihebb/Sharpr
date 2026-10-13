@@ -227,6 +227,56 @@ impl LibraryIndex {
         Ok(removed)
     }
 
+    /// Every stored bucket member, in every library.
+    pub fn all_bucket_members(&self) -> rusqlite::Result<Vec<MemberRow>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT collection_id, last_path, fingerprint FROM bucket_members ORDER BY last_path",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(MemberRow {
+                collection_id: row.get(0)?,
+                last_path: PathBuf::from(row.get::<_, String>(1)?),
+                fingerprint: row.get(2)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Records the current fingerprint of a member's file.
+    pub fn set_member_fingerprint(
+        &self,
+        collection_id: i64,
+        last_path: &Path,
+        fingerprint: &str,
+    ) -> rusqlite::Result<()> {
+        self.conn()?.execute(
+            "UPDATE bucket_members SET fingerprint = ?3 WHERE collection_id = ?1 AND last_path = ?2",
+            params![collection_id, path_to_string(last_path), fingerprint],
+        )?;
+        Ok(())
+    }
+
+    /// Points a member at the file's new path. If the bucket already has a
+    /// member there (an identical copy), the two merge into that one.
+    pub fn move_member(&self, collection_id: i64, from: &Path, to: &Path) -> rusqlite::Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let moved = tx.execute(
+            "UPDATE OR IGNORE bucket_members SET last_path = ?3
+             WHERE collection_id = ?1 AND last_path = ?2",
+            params![collection_id, path_to_string(from), path_to_string(to)],
+        )?;
+        if moved == 0 {
+            tx.execute(
+                "DELETE FROM bucket_members WHERE collection_id = ?1 AND last_path = ?2
+                 AND EXISTS (SELECT 1 FROM bucket_members WHERE collection_id = ?1 AND last_path = ?3)",
+                params![collection_id, path_to_string(from), path_to_string(to)],
+            )?;
+        }
+        tx.commit()
+    }
+
     /// Cached files with each of `hashes`: `hash → [(path, size, mtime_ns)]`.
     /// Callers check that a file still matches before trusting it.
     pub fn files_with_fingerprints(

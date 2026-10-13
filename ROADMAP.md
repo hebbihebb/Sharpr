@@ -283,11 +283,14 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 **Outcome:** Bucket membership survives moves and renames made outside Sharpr (D3), keeps inheritance (D4), and stops depending on tags. Every image gets a content fingerprint, which Phase 5 and Phase 7 reuse.
 
-**Status (October 13):** units 1–2 committed and verified, not deployed.
+**Status (October 13): done, committed and verified, not deployed.** All acceptance criteria are met in tests.
 - **Unit 1, fingerprints:** a background pass at nice 19 and idle I/O; progress shows in Preferences.
 - **Unit 2, membership:** the `bucket_members` table and the migration. Every reader and editor has switched over.
+- **Unit 3, re-linking:** after each pass, members follow moved and edited files, and missing ones are counted.
 - **Acceptance on a copy of the live databases:** all 6 buckets were identical before and after, image for image, including Art › Diffusion. The counts: Model 95, CSR 44, upgrade? 4, Art 3, Trash? 3, Diffusion 2, none missing. All 7,718 tag rows were unchanged, the backup was written first, and the index was stamped version 2.
-- **Next, unit 3:** re-link members by fingerprint, and fill in missing fingerprints.
+- **Moved files:** a file moved and renamed outside Sharpr stays in its bucket after the next pass (unit and GTK tests). A deleted file counts as missing and is kept. Removing an image from Diffusion leaves it in Art when Art holds it directly.
+- **Rollback note:** older builds refuse the version-2 index. Going back means restoring the `before-bucket-membership-*` backup.
+- **Waiting on the user:** deployment, and their check on the real library.
 
 **Scope:**
 

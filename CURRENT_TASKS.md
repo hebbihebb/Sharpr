@@ -2,25 +2,14 @@
 
 ## Active Milestone
 
-**Phase 4: file identity and buckets** (`ROADMAP.md`). Phase 3 finished on October 13 (go with EmbeddingGemma, D22). The Phase 2 follow-ups are in the roadmap; the slow-folder-open logging awaits a session log from a deployed build.
-
-Plan, one commit per testable unit:
-1. **Fingerprints.**
-   - New table `file_fingerprints(path, size, mtime_ns, hash)`, keyed by path and checked against size and mtime. The hash is xxh3-128 from the new MIT dependency `twox-hash`.
-   - A background worker walks the active library, skipping disabled folders, at nice 19 and idle I/O priority. It drops page cache after each file.
-   - Progress shows in Preferences.
-   - Library index `user_version` 2: older builds refuse it, so rolling back means restoring the backup.
-2. **Membership.**
-   - New table `bucket_members(collection_id, last_path, fingerprint)`, deleted together with its bucket.
-   - A member is any file at `last_path`, or any file with the same fingerprint, so identical copies all count. Members found nowhere count as missing.
-   - **Inheritance:** a bucket shows its own members and its descendants'.
-   - **Edits:** adding to a child doesn't add to the parent. Removing from a bucket removes from it and its sub-buckets. Rename and reparent change no members. No tag writes.
-   - **Migration:** backup first. Each bucket's direct members become every stored effective-tag member, missing files included. Visible counts must match before commit. Tag rows are untouched.
-   - Every reader switches over: bucket open, sidebar counts, Info chip, badge colours, Ctrl+B, the menus, create, export, and import.
-3. **Re-link and missing.**
-   - After fingerprinting, a member whose path is gone moves to a file with its fingerprint.
-   - A member whose file changed gets the new fingerprint.
-   - Opening a bucket says how many members are missing.
+**Phase 4 (file identity and buckets) is done: committed and verified, not deployed** (`ROADMAP.md`).
+- **Fingerprints** are made in the background at the lowest priority; progress shows in Preferences.
+- **Buckets have their own member lists.** Members follow moved and renamed files and identical copies; missing ones are counted, never dropped.
+- **The one-time migration** was checked on a copy of the live data: all 6 buckets came through identical, and all 7,718 tag rows were unchanged.
+- **Next:**
+  - The user decides on deployment (backup first; older builds can't open the upgraded index).
+  - The user checks the real library.
+  - Then Phase 5: visual search with EmbeddingGemma, with its two packaging choices (Phase 3 item 5).
 
 ## State (October 13, 2026)
 

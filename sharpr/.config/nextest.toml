@@ -1,0 +1,8 @@
+# GTK end-to-end tests drive real windows on the same desktop and include
+# lowest-priority background work (fingerprints), so they run one at a time.
+[test-groups]
+gtk = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'test(gtk_tests)'
+test-group = 'gtk'

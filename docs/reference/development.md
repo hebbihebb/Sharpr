@@ -38,7 +38,7 @@ Most tests live in `#[cfg(test)]` modules next to the code. The main ones cover:
 - `model/library`
 - `model/browse`
 
-The GTK end-to-end test is `#[ignore]`d by default. It needs a graphical session and isolated directories, and it refuses to run against real data:
+The GTK end-to-end test is `#[ignore]`d by default. It needs a graphical session and isolated directories, and it refuses to run against real data. `sharpr/.config/nextest.toml` runs GTK tests one at a time. In test builds the fingerprint service skips its low priority and its 30 s spacing, so its passes finish predictably:
 
 ```bash
 glib-compile-schemas data/

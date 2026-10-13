@@ -653,7 +653,6 @@ impl SharprWindow {
             crate::fingerprint::Job {
                 root: library.root.clone(),
                 disabled: st.disabled_folders.clone(),
-                first: Vec::new(),
             }
         };
         service.request(job);
@@ -853,7 +852,45 @@ impl SharprWindow {
 
         // Fingerprints start once startup has settled, at the lowest priority.
         if let Some(index) = self.imp().state.borrow().library_index.clone() {
-            let service = crate::fingerprint::Service::start(index, Box::new(|_, _| {}));
+            // After each pass, members follow moved and edited files; views
+            // refresh when fingerprints or members changed.
+            let (changed_tx, changed_rx) = async_channel::unbounded::<()>();
+            let relink_index = index.clone();
+            let service = crate::fingerprint::Service::start(
+                index,
+                Box::new(move |_, pass| match crate::buckets::relink(&relink_index) {
+                    Ok(relinked) => {
+                        crate::bench_event!(
+                            "buckets.relink",
+                            serde_json::json!({
+                                "fingerprinted": relinked.fingerprinted,
+                                "relinked": relinked.relinked,
+                            }),
+                        );
+                        if pass.hashed + relinked.fingerprinted + relinked.relinked > 0 {
+                            let _ = changed_tx.send_blocking(());
+                        }
+                    }
+                    Err(error) => crate::bench_warn!(
+                        "buckets.relink.fail",
+                        serde_json::json!({"error": error}),
+                    ),
+                }),
+            );
+            let weak = self.downgrade();
+            glib::MainContext::default().spawn_local(async move {
+                while changed_rx.recv().await.is_ok() {
+                    let Some(win) = weak.upgrade() else { return };
+                    let refresh = win.imp().refresh_sidebar_collections_cb.borrow().clone();
+                    if let Some(refresh) = refresh {
+                        refresh();
+                    }
+                    let filmstrip = win.imp().filmstrip.borrow().clone();
+                    if let Some(filmstrip) = filmstrip {
+                        filmstrip.rebuild_path_colors();
+                    }
+                }
+            });
             *self.imp().fingerprints.borrow_mut() = Some(Rc::new(service));
             let weak = self.downgrade();
             glib::timeout_add_seconds_local_once(10, move || {

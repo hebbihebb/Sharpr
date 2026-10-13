@@ -46,6 +46,7 @@ pub fn file_stamp(metadata: &std::fs::Metadata) -> (u64, i64) {
 
 /// Lowers the calling thread to nice 19 and the idle I/O class, so hashing
 /// only uses time and disk bandwidth nothing else wants.
+#[cfg_attr(test, allow(dead_code))]
 pub fn lower_thread_priority() {
     // SAFETY: plain syscalls on the calling thread's own id.
     unsafe {
@@ -157,8 +158,6 @@ pub fn run_pass(
 pub struct Job {
     pub root: PathBuf,
     pub disabled: Vec<PathBuf>,
-    /// Paths to fingerprint first, such as bucket members.
-    pub first: Vec<PathBuf>,
 }
 
 impl Job {
@@ -186,7 +185,11 @@ pub struct Service {
 /// Runs on the service thread after every completed pass.
 pub type PassDone = Box<dyn Fn(&Job, &PassSummary) + Send>;
 
+#[cfg(not(test))]
 const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+/// Tests drive passes directly and shouldn't wait.
+#[cfg(test)]
+const MIN_INTERVAL: std::time::Duration = std::time::Duration::ZERO;
 
 impl Service {
     /// Starts the thread. `pass_done` runs on it after every completed pass.
@@ -202,6 +205,8 @@ impl Service {
         let _ = std::thread::Builder::new()
             .name("fingerprints".into())
             .spawn(move || {
+                // Tests run under a busy machine and must finish in time.
+                #[cfg(not(test))]
                 lower_thread_priority();
                 let mut last: Option<(Job, std::time::Instant)> = None;
                 loop {
@@ -227,14 +232,9 @@ impl Service {
                     let report = |p: Progress| {
                         *thread_progress.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
                     };
-                    match run_pass(
-                        &index,
-                        &job.root,
-                        &job.disabled,
-                        &job.first,
-                        &canceled,
-                        &report,
-                    ) {
+                    // Bucket members first, so re-linking can start soonest.
+                    let first = crate::buckets::member_paths(&index);
+                    match run_pass(&index, &job.root, &job.disabled, &first, &canceled, &report) {
                         Ok(summary) if !canceled() => {
                             crate::bench_event!(
                                 "fingerprint.pass",

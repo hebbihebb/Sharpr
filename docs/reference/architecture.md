@@ -83,6 +83,10 @@ Rules:
     - Removing removes from the bucket and its sub-buckets, by path and by fingerprint.
     - Rename and reparent change no members.
     - Deleting a bucket deletes its rows (`ON DELETE CASCADE`).
+  - **Re-linking:** after every fingerprint pass, `buckets::relink` updates stored members from cached fingerprints.
+    - A member whose file is at its path gets that file's current fingerprint: the first one known, or a new one after an edit.
+    - A member whose file is gone moves to an unchanged file with its fingerprint, if one exists.
+    - Members are fingerprinted first in each pass. The sidebar counts and badge colours then refresh.
   - **Tags no longer decide membership.** Until the one-time migration, buckets were tag-backed: a member carried every effective tag. Those rows stay in the tag database, untouched.
   - **Migration:** `buckets::migrate` runs at startup until it succeeds. It backs up both databases to `~/.local/share/sharpr/backups/before-bucket-membership-<time>/` and verifies the backup. It writes each bucket's stored effective-tag members, missing ones included, as that bucket's own members. In the same transaction it checks every bucket's count, marks `schema_meta.bucket_membership_migrated_at`, and stamps `user_version` 2. On failure nothing is written; the app reports it, and bucket edits are refused.
 - **Tags are keyed by path string.** Renames and moves made inside Sharpr call `rename_path`. Changes made outside Sharpr leave orphaned rows, which are kept. `rename_path` never overwrites them: Rename refuses a name whose missing file still has tags, and Move picks the next free name.

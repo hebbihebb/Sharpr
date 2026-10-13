@@ -517,6 +517,10 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     viewer.set_zoom_mode(crate::ui::viewer::ZoomMode::OneToOne);
     pump_until(|| shown_width() == 6000);
     assert_eq!(viewer.imp().full_size.get(), None);
+    // A bucket member moved and renamed outside Sharpr, as in Nautilus.
+    let moved = root.join("sub/mountain-moved.png");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::rename(root.join("mountain.png"), &moved).unwrap();
     // A fingerprint pass covers the library, and the index caches the result.
     window.request_fingerprints();
     pump_until(|| {
@@ -537,6 +541,17 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
         cached[sea.to_str().unwrap()].2,
         crate::fingerprint::hash_file(&sea).unwrap()
     );
+    // After the pass, the member follows the file into its bucket.
+    let index = window.imp().state.borrow().library_index.clone().unwrap();
+    pump_until(|| {
+        crate::buckets::view(&index, bucket, Some(&root), &[])
+            .is_ok_and(|v| v.paths.contains(&moved) && v.missing == 0)
+    });
+    assert!(index
+        .all_bucket_members()
+        .unwrap()
+        .iter()
+        .all(|m| m.last_path != root.join("mountain.png")));
     window.close();
 }
 

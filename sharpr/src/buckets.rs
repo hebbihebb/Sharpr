@@ -322,6 +322,77 @@ pub fn reparent_bucket(
     Ok(name)
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RelinkSummary {
+    /// Members whose fingerprint was recorded or updated.
+    pub fingerprinted: usize,
+    /// Members whose file moved, now pointing at its new path.
+    pub relinked: usize,
+}
+
+/// Brings stored members up to date after a fingerprint pass, using only
+/// cached fingerprints:
+/// - a member whose file is at its path gets that file's current fingerprint
+///   (first known, or changed because the file was edited);
+/// - a member whose file is gone moves to an unchanged file with its
+///   fingerprint, if there is one. Others stay, as missing.
+pub fn relink(index: &LibraryIndex) -> Result<RelinkSummary, String> {
+    let rows = index.all_bucket_members().map_err(|e| e.to_string())?;
+    let mut summary = RelinkSummary::default();
+    let lost: Vec<String> = rows
+        .iter()
+        .filter(|r| stamp(&r.last_path).is_none())
+        .filter_map(|r| r.fingerprint.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let by_hash = index
+        .files_with_fingerprints(&lost)
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        match stamp(&row.last_path) {
+            Some((size, mtime)) => {
+                let current = index
+                    .fresh_fingerprint(&row.last_path, size, mtime)
+                    .map_err(|e| e.to_string())?;
+                if let Some(current) = current.filter(|c| row.fingerprint.as_ref() != Some(c)) {
+                    index
+                        .set_member_fingerprint(row.collection_id, &row.last_path, &current)
+                        .map_err(|e| e.to_string())?;
+                    summary.fingerprinted += 1;
+                }
+            }
+            None => {
+                let mut candidates: Vec<&PathBuf> = row
+                    .fingerprint
+                    .as_ref()
+                    .and_then(|hash| by_hash.get(hash))
+                    .into_iter()
+                    .flatten()
+                    .filter(|(path, size, mtime)| stamp(path) == Some((*size, *mtime)))
+                    .map(|(path, _, _)| path)
+                    .collect();
+                candidates.sort();
+                if let Some(to) = candidates.first() {
+                    index
+                        .move_member(row.collection_id, &row.last_path, to)
+                        .map_err(|e| e.to_string())?;
+                    summary.relinked += 1;
+                }
+            }
+        }
+    }
+    Ok(summary)
+}
+
+/// Paths of every stored member, for fingerprinting them first.
+pub fn member_paths(index: &LibraryIndex) -> Vec<PathBuf> {
+    index
+        .all_bucket_members()
+        .map(|rows| rows.into_iter().map(|r| r.last_path).collect())
+        .unwrap_or_default()
+}
+
 /// Moves bucket membership out of tags, once. Backs up both databases to a
 /// new folder under `backups` first, and builds each bucket's own members
 /// from every stored effective-tag member, including missing files, so
@@ -576,6 +647,75 @@ mod tests {
         check(&[]);
         add_to_bucket(&f.index, blue, std::slice::from_ref(&image)).unwrap();
         check(&[blue]);
+    }
+
+    #[test]
+    fn relink_fills_fingerprints_and_follows_moved_and_edited_files() {
+        let f = Fixture::new("relink");
+        let bucket = f.bucket("Keep", None);
+        let photo = f.image("photo.jpg");
+        let tag = f.index.collection(bucket).unwrap().unwrap().primary_tag;
+        f.tags
+            .change_tags_checked(std::slice::from_ref(&photo), &[tag], false)
+            .unwrap();
+        // Migrated before any fingerprint existed.
+        migrate(&f.index, &f.tags, &f.root.join("backups")).unwrap();
+        assert_eq!(
+            f.index.bucket_members(&[bucket]).unwrap()[0].fingerprint,
+            None
+        );
+        let never = || false;
+        let pass = || {
+            crate::fingerprint::run_pass(&f.index, &f.root, &[], &[], &never, &|_| {}).unwrap();
+            relink(&f.index).unwrap()
+        };
+        assert_eq!(
+            pass(),
+            RelinkSummary {
+                fingerprinted: 1,
+                relinked: 0
+            }
+        );
+        let hash = crate::fingerprint::hash_file(&photo).unwrap();
+        assert_eq!(
+            f.index.bucket_members(&[bucket]).unwrap()[0].fingerprint,
+            Some(hash)
+        );
+
+        // Moved and renamed outside Sharpr: the member follows the file.
+        let moved = f.root.join("2026/beach.jpg");
+        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        std::fs::rename(&photo, &moved).unwrap();
+        assert_eq!(
+            pass(),
+            RelinkSummary {
+                fingerprinted: 0,
+                relinked: 1
+            }
+        );
+        assert_eq!(
+            f.index.bucket_members(&[bucket]).unwrap()[0].last_path,
+            moved
+        );
+
+        // Edited in place: the member keeps its path and takes the new fingerprint.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&moved, b"edited").unwrap();
+        assert_eq!(
+            pass(),
+            RelinkSummary {
+                fingerprinted: 1,
+                relinked: 0
+            }
+        );
+        assert_eq!(f.shows(bucket), vec![moved.clone()]);
+
+        // Deleted: it stays, as missing.
+        std::fs::remove_file(&moved).unwrap();
+        assert_eq!(pass(), RelinkSummary::default());
+        let gone = view(&f.index, bucket, Some(&f.root), &[]).unwrap();
+        assert_eq!((gone.paths.len(), gone.missing), (0, 1));
+        assert_eq!(f.index.bucket_members(&[bucket]).unwrap().len(), 1);
     }
 
     #[test]
