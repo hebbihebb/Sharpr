@@ -128,6 +128,11 @@ The user judged scrolling and switching as "everything works and feels fast". Th
 - The shortcuts window and manual are updated. The manual no longer claims Sharpr adds format tags.
 - **Manual check at deployment:** select several images, press Ctrl+B, and pick a bucket.
 
+**Item 6: done (committed, not yet deployed).**
+- Quality views are retired: the Quality Filter section of the sort menu, the unreachable `scan-quality` action, `ViewScope::Quality`, and the unused `ui/filter_bar.rs`.
+- Typed `below 4k` and `4k` replace them, and the manual says so.
+- The viewer's resolution chip (the `quality` scorer) stays.
+
 **Item 11, main-thread work: done (committed, not yet deployed).**
 - **Filmstrip badge colours:** binding a row no longer queries SQLite. A worker builds a path → colour map whenever bucket colours change, a viewer tag edit lands, or a tag is deleted. Until the first map is ready, binding falls back to the old query.
 - **Manual check at deployment:** the coloured position badges of bucket members still appear, and update after adding an image to a bucket.

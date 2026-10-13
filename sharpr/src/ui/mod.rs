@@ -3,7 +3,6 @@ pub mod compare_item;
 pub mod compare_page;
 pub mod crop_dialog;
 pub mod filmstrip;
-pub mod filter_bar;
 pub mod help_window;
 pub mod metadata_chip;
 pub mod ops_indicator;

@@ -52,7 +52,7 @@ pub(super) fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
         ViewScope::Collection(id) => {
             sidebar.set_collection_selected(*id);
         }
-        ViewScope::Duplicates | ViewScope::Search | ViewScope::Quality(_) | ViewScope::Compare => {
+        ViewScope::Duplicates | ViewScope::Search | ViewScope::Compare => {
             sidebar.clear_collection_selection();
         }
     }
@@ -994,7 +994,6 @@ impl SharprWindow {
                     st.selected_paths.clear();
                     st.scope = ViewScope::Folder(path.clone());
                 }
-                filmstrip_c.reset_quality_filter();
 
                 let (index, mut index_error, sort_order) = {
                     let st = state_c.borrow();
@@ -1666,7 +1665,6 @@ impl SharprWindow {
                     }
 
                     let result_count = paths.len();
-                    filmstrip_rx.reset_quality_filter();
                     state_rx.borrow_mut().scope = ViewScope::Duplicates;
                     load_virtual_async(&state_rx, &paths);
                     crate::bench_event!(
@@ -1711,176 +1709,6 @@ impl SharprWindow {
                 }
             });
             self.add_action(&cleanup);
-        }
-
-        {
-            let filmstrip_c = filmstrip.clone();
-            let viewer_c = viewer.clone();
-            let sidebar_c = sidebar.clone();
-            let state_c = state.clone();
-            let content_stack = content_stack.clone();
-            let window_weak = self.downgrade();
-            let quality_action =
-                gio::SimpleAction::new("scan-quality", Some(glib::VariantTy::STRING));
-            quality_action.connect_activate(move |_, param| {
-                let Some(class) = param
-                    .and_then(|p| p.str())
-                    .and_then(crate::quality::QualityClass::from_label)
-                else {
-                    return;
-                };
-                let expected_gen = window_weak.upgrade().and_then(|win| {
-                    let gen = win.bump_thumbnail_generation("smart.quality");
-                    win.complete_thumbnail_ops();
-                    win.clear_inline_search(true);
-                    gen
-                });
-                content_stack.set_visible_child_name("viewer");
-                crate::bench_event!(
-                    "smart.quality.request",
-                    serde_json::json!({
-                        "class": class.label(),
-                    }),
-                );
-
-                let (indexed_paths, current_folder, metadata_cache) =
-                    { state_c.borrow().library.bg_scan_quality_prep() };
-                let active_library = state_c.borrow().settings.active_library().cloned();
-                let library_root = active_library.as_ref().map(|library| library.root.clone());
-                let folder_mode = active_library
-                    .as_ref()
-                    .map(|library| library.folder_mode)
-                    .unwrap_or(FolderMode::TopLevel);
-                let disabled_folders = state_c.borrow().disabled_folders.clone();
-                let library_index = state_c.borrow().library_index.clone();
-                let op = state_c
-                    .borrow()
-                    .ops
-                    .add(format!("Scanning for {} quality", class.label()));
-
-                // Channel carries (matched_paths, Option<scan_state_to_store_back>).
-                // None = result came from the DB index (no scan state to update).
-                type ScanState = (
-                    Vec<PathBuf>,
-                    rustc_hash::FxHashMap<PathBuf, crate::model::library::CachedImageData>,
-                );
-                let (tx, rx) = async_channel::bounded::<(Vec<PathBuf>, Option<ScanState>)>(1);
-                rayon::spawn(move || {
-                    let started = Instant::now();
-
-                    // Try the persistent index first — much faster than a filesystem walk.
-                    if let Some(index) = library_index {
-                        match index.images_by_quality(class) {
-                            Ok(paths) if !paths.is_empty() => {
-                                let paths = filter_paths_for_library(
-                                    paths,
-                                    library_root.as_deref(),
-                                    &disabled_folders,
-                                );
-                                crate::bench_event!(
-                                    "smart.quality.scan_finish",
-                                    serde_json::json!({
-                                        "class": class.label(),
-                                        "source": "index",
-                                        "result_count": paths.len(),
-                                        "duration_ms": crate::bench::duration_ms(started),
-                                    }),
-                                );
-                                let _ = tx.send_blocking((paths, None));
-                                return;
-                            }
-                            Ok(_) => {} // not indexed yet — fall through to filesystem scan
-                            Err(err) => {
-                                crate::bench_event!(
-                                    "smart.quality.index_fail",
-                                    serde_json::json!({
-                                        "class": class.label(),
-                                        "error": err.to_string(),
-                                    }),
-                                );
-                            }
-                        }
-                    }
-
-                    // Fallback: full filesystem scan.
-                    let (new_indexed, new_cache, paths) =
-                        crate::model::library::LibraryManager::compute_paths_for_quality_class(
-                            library_root,
-                            folder_mode,
-                            class,
-                            indexed_paths,
-                            current_folder,
-                            metadata_cache,
-                            disabled_folders,
-                        );
-                    crate::bench_event!(
-                        "smart.quality.scan_finish",
-                        serde_json::json!({
-                            "class": class.label(),
-                            "source": "scan",
-                            "indexed_count": new_indexed.len(),
-                            "result_count": paths.len(),
-                            "duration_ms": crate::bench::duration_ms(started),
-                        }),
-                    );
-                    let _ = tx.send_blocking((paths, Some((new_indexed, new_cache))));
-                });
-
-                let filmstrip_rx = filmstrip_c.clone();
-                let viewer_rx = viewer_c.clone();
-                let sidebar_rx = sidebar_c.clone();
-                let state_rx = state_c.clone();
-                let window_weak_rx = window_weak.clone();
-                glib::MainContext::default().spawn_local(async move {
-                    let Ok((paths, scan_state)) = rx.recv().await else {
-                        op.fail("Quality scan failed");
-                        return;
-                    };
-                    if let (Some(expected), Some(win)) = (expected_gen, window_weak_rx.upgrade()) {
-                        if win.current_thumbnail_generation() != Some(expected) {
-                            crate::bench_event!(
-                                "smart.quality.stale_result",
-                                serde_json::json!({
-                                    "class": class.label(),
-                                    "expected_gen": expected,
-                                }),
-                            );
-                            op.complete();
-                            return;
-                        }
-                    }
-
-                    let result_count = paths.len();
-                    if let Some((new_indexed, new_cache)) = scan_state {
-                        state_rx
-                            .borrow_mut()
-                            .library
-                            .bg_scan_quality_finish(new_indexed, new_cache);
-                    }
-                    filmstrip_rx.reset_quality_filter();
-                    state_rx.borrow_mut().scope = ViewScope::Quality(class);
-                    load_virtual_async(&state_rx, &paths);
-                    crate::bench_event!(
-                        "virtual_view.load",
-                        serde_json::json!({
-                            "source": "quality",
-                            "class": class.label(),
-                            "image_count": result_count,
-                        }),
-                    );
-                    let scope = state_rx.borrow().scope.clone();
-                    apply_scope_to_sidebar(&scope, &sidebar_rx);
-                    viewer_rx.clear();
-                    filmstrip_rx.refresh_virtual();
-                    let has_first = state_rx.borrow().library.entry_at(0).is_some();
-                    if has_first {
-                        state_rx.borrow_mut().library.selected_index = Some(0);
-                        filmstrip_rx.navigate_to(0);
-                    }
-                    op.complete();
-                });
-            });
-            self.add_action(&quality_action);
         }
 
         // Populate sidebar collections on startup.
@@ -2042,7 +1870,6 @@ impl SharprWindow {
                         }
                     };
                     state_c.borrow_mut().selected_paths.clear();
-                    filmstrip_c.reset_quality_filter();
                     load_virtual_async(&state_c, &paths);
                     crate::bench_event!(
                         "collection.load",
@@ -2315,23 +2142,6 @@ impl SharprWindow {
         self.start_thumbnail_poll(state.clone(), filmstrip.clone(), tag_browser.clone());
         self.start_hash_poll(state.clone());
         self.start_sharpness_poll(state.clone(), viewer.clone());
-
-        {
-            let weak = self.downgrade();
-            filmstrip.connect_quality_filter_changed(move |quality| {
-                if let Some(win) = weak.upgrade() {
-                    win.imp().browse_options.borrow_mut().quality = quality;
-                    let query = win
-                        .imp()
-                        .inline_search_entry
-                        .borrow()
-                        .as_ref()
-                        .map(|e| e.text().to_string())
-                        .unwrap_or_default();
-                    win.run_scoped_search(query);
-                }
-            });
-        }
 
         // -----------------------------------------------------------------------
         // Layout: AdwOverlaySplitView (outer) → AdwOverlaySplitView (inner)
@@ -3716,7 +3526,6 @@ impl SharprWindow {
         self.rebuild_search_chips();
         if let Some(filmstrip) = self.imp().filmstrip.borrow().as_ref() {
             filmstrip.reset_dimension_filters();
-            filmstrip.reset_quality_filter();
         }
         let next_gen = self.imp().inline_search_generation.get().wrapping_add(1);
         self.imp().inline_search_generation.set(next_gen);
@@ -3980,7 +3789,6 @@ impl SharprWindow {
         // ───────────────────────────────────────────────────────────────────────────────────────────────────
         // win.find-duplicates      Find Duplicates               —                                always
         // win.show-tags            Browse Tags                   —                                always
-        // win.scan-quality         Scan Quality                  —                                always
         // win.go-to-viewer         Go to View Page               <Ctrl>1 (ShortcutController)     always
         // win.go-to-tags           Go to Tags Page               <Ctrl>2 (ShortcutController)     always
         // win.cycle-page-prev      Previous Page                 [ (ShortcutController)           always

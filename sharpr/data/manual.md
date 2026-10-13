@@ -27,9 +27,9 @@ Choose a folder in the Library sidebar to load its images. Thumbnails decode in 
 
 The tag editor adds and removes manual tags. Sharpr no longer adds format or resolution tags: type `png`, `4k` or `below 4k` in search instead, and use Main Menu → Library → Remove Old Automatic Tags… to clear the ones added in the past (a backup is made first). Collections are virtual groupings backed by tags; source files stay in their folders.
 
-## Duplicates And Quality
+## Duplicates And Resolution
 
-Duplicates uses perceptual hashes to group visually similar files. Quality views classify images by resolution. Both load results into the filmstrip without changing files.
+Duplicates uses perceptual hashes to group visually similar files and loads them into the filmstrip without changing files. To find low-resolution images, type `below 4k` (or `<1080p`) in search; `4k` finds images of at least 3840×2160 in either orientation.
 
 ## Compare
 

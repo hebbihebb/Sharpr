@@ -100,7 +100,6 @@ pub(crate) struct BrowseSnapshot {
 #[derive(Clone, Default)]
 pub(crate) struct BrowseOptions {
     pub dimensions: crate::model::browse::DimensionFilters,
-    pub quality: Option<crate::quality::QualityClass>,
     pub tags: Vec<String>,
     pub whole_library: bool,
     /// Chips taken out of the search box (decision D16).
@@ -111,7 +110,6 @@ impl BrowseOptions {
         self.whole_library
             || !self.chips.is_empty()
             || !self.dimensions.is_empty()
-            || self.quality.is_some()
             || !self.tags.is_empty()
     }
 }
@@ -398,7 +396,6 @@ impl SharprWindow {
                     }
                     let needs_dimensions = !options.dimensions.is_empty()
                         || chips.needs_dimensions()
-                        || options.quality.is_some()
                         || matches!(
                             order.field(),
                             crate::model::library::SortField::Aspect
@@ -422,14 +419,6 @@ impl SharprWindow {
                             || !chips.matches(&path, dimensions)
                         {
                             continue;
-                        }
-                        if let Some(class) = options.quality {
-                            if dimensions.map(|(w, h)| {
-                                crate::quality::scorer::score_file_info(Some((w, h))).class
-                            }) != Some(class)
-                            {
-                                continue;
-                            }
                         }
                         let (width, height) = dimensions.unwrap_or((0, 0));
                         raw.push(RawImageEntry {

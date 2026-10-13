@@ -14,7 +14,6 @@ use gtk4::subclass::prelude::*;
 use crate::model::browse::{AspectFilter, DimensionFilters};
 use crate::model::library::{SortField, SortOrder};
 use crate::model::ImageEntry;
-use crate::quality::QualityClass;
 use crate::thumbnails::worker::WorkerRequest;
 use crate::ui::state::{AppState, ViewScope};
 
@@ -33,7 +32,6 @@ type DuplicateRequestedCallback = Box<dyn Fn(PathBuf) + 'static>;
 type DimensionFiltersChangedCallback = Box<dyn Fn(DimensionFilters) + 'static>;
 
 type SortOrderChangedCallback = Box<dyn Fn(SortOrder) + 'static>;
-type QualityFilterChangedCallback = Box<dyn Fn(Option<QualityClass>) + 'static>;
 type SaveSearchAsCollectionCallback = Box<dyn Fn(&str) + 'static>;
 
 pub(crate) struct MenuContext {
@@ -238,7 +236,6 @@ mod imp {
         pub minimum_width: gtk4::SpinButton,
         pub minimum_height: gtk4::SpinButton,
         pub suppress_dimension_signals: Cell<bool>,
-        pub quality_filter_changed_cb: RefCell<Option<QualityFilterChangedCallback>>,
         pub save_search_as_collection_cb: RefCell<Option<SaveSearchAsCollectionCallback>>,
         pub current_sort_order: Cell<SortOrder>,
         pub sort_btn: RefCell<Option<gtk4::MenuButton>>,
@@ -315,7 +312,6 @@ mod imp {
                 minimum_width: gtk4::SpinButton::with_range(0.0, 65535.0, 1.0),
                 minimum_height: gtk4::SpinButton::with_range(0.0, 65535.0, 1.0),
                 suppress_dimension_signals: Cell::new(false),
-                quality_filter_changed_cb: RefCell::new(None),
                 save_search_as_collection_cb: RefCell::new(None),
                 current_sort_order: Cell::new(SortOrder::default()),
                 sort_btn: RefCell::new(None),
@@ -510,32 +506,6 @@ impl FilmstripPane {
         });
         group.add_action(&sort_direction);
 
-        // Quality Filter Action
-        let widget_weak = self.downgrade();
-        let quality_filter = gio::SimpleAction::new_stateful(
-            "quality-filter",
-            Some(glib::VariantTy::new("s").unwrap()),
-            &"all".to_variant(),
-        );
-        quality_filter.connect_activate(move |action, param| {
-            if let Some(class_str) = param.and_then(|p| p.get::<String>()) {
-                action.set_state(param.expect("Action should have a parameter"));
-                if let Some(f) = widget_weak.upgrade() {
-                    let class = match class_str.as_str() {
-                        "excellent" => Some(QualityClass::Excellent),
-                        "good" => Some(QualityClass::Good),
-                        "fair" => Some(QualityClass::Fair),
-                        "poor" => Some(QualityClass::Poor),
-                        "needs-upscale" => Some(QualityClass::NeedsUpscale),
-                        _ => None,
-                    };
-                    if let Some(cb) = f.imp().quality_filter_changed_cb.borrow().as_ref() {
-                        cb(class);
-                    }
-                }
-            }
-        });
-        group.add_action(&quality_filter);
         self.insert_action_group("filmstrip-sort", Some(&group));
         *imp.action_group.borrow_mut() = Some(group);
 
@@ -574,25 +544,6 @@ impl FilmstripPane {
         ));
         menu.append_section(None, &direction_section);
 
-        let quality_section = gio::Menu::new();
-        quality_section.append_item(&gio::MenuItem::new(
-            Some("All Quality"),
-            Some("filmstrip-sort.quality-filter::all"),
-        ));
-        for &class in QualityClass::ALL.iter() {
-            let id = match class {
-                QualityClass::Excellent => "excellent",
-                QualityClass::Good => "good",
-                QualityClass::Fair => "fair",
-                QualityClass::Poor => "poor",
-                QualityClass::NeedsUpscale => "needs-upscale",
-            };
-            quality_section.append_item(&gio::MenuItem::new(
-                Some(class.label()),
-                Some(&format!("filmstrip-sort.quality-filter::{id}")),
-            ));
-        }
-        menu.append_section(Some("Quality Filter"), &quality_section);
         sort_btn.set_menu_model(Some(&menu));
 
         self.install_css();
@@ -1810,23 +1761,8 @@ impl FilmstripPane {
         *self.imp().sort_order_changed_cb.borrow_mut() = Some(Box::new(cb));
     }
 
-    pub fn connect_quality_filter_changed<F: Fn(Option<QualityClass>) + 'static>(&self, cb: F) {
-        *self.imp().quality_filter_changed_cb.borrow_mut() = Some(Box::new(cb));
-    }
-
     pub fn connect_save_search_as_collection<F: Fn(&str) + 'static>(&self, f: F) {
         *self.imp().save_search_as_collection_cb.borrow_mut() = Some(Box::new(f));
-    }
-
-    /// Resets the quality filter radio to "All Quality" without emitting the callback.
-    pub fn reset_quality_filter(&self) {
-        if let Some(group) = self.imp().action_group.borrow().as_ref() {
-            if let Some(action) = group.lookup_action("quality-filter") {
-                if let Some(simple) = action.downcast_ref::<gio::SimpleAction>() {
-                    simple.set_state(&"all".to_variant());
-                }
-            }
-        }
     }
 
     pub fn show_autocomplete(&self, suggestions: Vec<String>) {

@@ -34,7 +34,6 @@ pub enum ViewScope {
     Duplicates,
     #[default]
     Search,
-    Quality(crate::quality::QualityClass),
     Compare,
 }
 
