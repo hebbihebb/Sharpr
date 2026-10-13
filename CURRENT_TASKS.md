@@ -152,6 +152,11 @@ The user judged scrolling and switching as "everything works and feels fast". Th
   - It waits for the image's details instead of showing stale ones.
   - GTK screenshots were checked at 1024×600.
 
+**Phase 3 groundwork: done (committed; tools only, no app changes).**
+- Judging sheet: `.tmp/search-judge.html`, private, built from native Gemma and SigLIP 2. It holds 908 pooled results, shuffled blind; previews are cached in `.tmp/judge-previews`.
+- **User's step:** open the sheet in Firefox, click the relevant images, tick "Judged" per query, check the categories, and press "Save judgments". Then run `tools/benchmark-score.py` (`docs/reference/development.md`).
+- Parity and provenance tools are in place.
+
 **Phase 2 status.** Items 1–9 and 11 are done, and item 10 is deferred. Still open:
 - suggestions while typing (part of item 2)
 - item 12: window.rs extraction, done opportunistically

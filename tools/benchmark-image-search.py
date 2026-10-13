@@ -9,6 +9,38 @@ import time
 from pathlib import Path
 
 
+def file_digest(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for block in iter(lambda: handle.read(1 << 20), b''):
+            digest.update(block)
+    return {'bytes': path.stat().st_size, 'sha256': digest.hexdigest()}
+
+
+def provenance(model_dir, kind, dtype, torch):
+    """What a later reader needs to reproduce this run (ROADMAP Phase 3)."""
+    import importlib.metadata
+    import platform
+    libraries = {}
+    for name in ('torch', 'transformers', 'sentence-transformers', 'pillow', 'numpy'):
+        try:
+            libraries[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    return {
+        'python': platform.python_version(),
+        'platform': platform.platform(),
+        'libraries': libraries,
+        'threads': torch.get_num_threads(),
+        'dtype': str(dtype),
+        'model_files': {str(f.relative_to(model_dir)): file_digest(f)
+                        for f in sorted(model_dir.rglob('*')) if f.is_file()},
+        'preprocessing': 'EXIF transpose, RGB, thumbnail to 768x768; JPEG XL via ImageMagick '
+                         '-auto-orient -thumbnail 768x768',
+        'query_prompt': "prompt_name='SearchQuery'" if kind == 'gemma' else "padding='max_length'",
+    }
+
+
 def main():
     p = argparse.ArgumentParser(__doc__)
     p.add_argument('--model-dir', type=Path, required=True)
@@ -55,7 +87,9 @@ def main():
         try:
             decode_path = path
             if Path(path).suffix.lower() == '.jxl':
-                prepared = cache / (hashlib.sha256(path.encode()).hexdigest() + '.png')
+                stat = Path(path).stat()  # a replaced file must not reuse a stale preview
+                key = f'{path}|{stat.st_size}|{stat.st_mtime_ns}'
+                prepared = cache / (hashlib.sha256(key.encode()).hexdigest() + '.png')
                 if not prepared.exists():
                     subprocess.run(['magick', path, '-auto-orient', '-thumbnail', '768x768', str(prepared)], check=True, capture_output=True, timeout=60)
                 decode_path = prepared
@@ -95,6 +129,7 @@ def main():
         'warm_p95_seconds': float(np.percentile(latencies, 95)),
         'hit_rate': sum(r['hit'] for r in judged)/len(judged) if judged else None,
         'gate': 'pending: need 1000 images, 30 judged queries, native parity and navigation measurements',
+        'provenance': provenance(args.model_dir, args.kind, dtype, torch),
         'errors': errors, 'results': results}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2))

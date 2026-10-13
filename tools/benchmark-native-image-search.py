@@ -14,6 +14,39 @@ import urllib.request
 from pathlib import Path
 
 
+QUERY_PROMPT='task: search result | query: '
+THREADS='2'
+
+
+def file_digest(path):
+    import hashlib
+    digest=hashlib.sha256()
+    with open(path,'rb') as handle:
+        for block in iter(lambda: handle.read(1<<20),b''):digest.update(block)
+    return {'path':str(path.resolve()),'bytes':path.stat().st_size,'sha256':digest.hexdigest()}
+
+
+def provenance(args,env):
+    """What a later reader needs to reproduce this run (ROADMAP Phase 3)."""
+    import importlib.metadata,platform
+    try:
+        version=subprocess.run([str(args.runtime.resolve()),'--version'],env=env,capture_output=True,
+            text=True,timeout=30)
+        runtime_version=(version.stdout+version.stderr).strip().splitlines()[-2:]
+    except (OSError,subprocess.SubprocessError) as error:runtime_version=[str(error)]
+    libraries={}
+    for name in ('pillow','numpy'):
+        try:libraries[name]=importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:pass
+    return {'python':platform.python_version(),'platform':platform.platform(),'libraries':libraries,
+        'runtime':file_digest(args.runtime),'runtime_version':runtime_version,
+        'model':file_digest(args.model),'projector':file_digest(args.projector),
+        'threads':THREADS,'server':'--ctx-size 8192 --batch-size 8192 --ubatch-size 8192 --parallel 1',
+        'preprocessing':'EXIF transpose, RGB, thumbnail to 768x768, PNG data URL; JPEG XL via '
+            'ImageMagick -auto-orient -thumbnail 768x768',
+        'query_prompt':QUERY_PROMPT+'{text}'}
+
+
 def main():
     p=argparse.ArgumentParser(__doc__)
     p.add_argument('--runtime',type=Path,required=True)
@@ -38,7 +71,7 @@ def main():
     server=subprocess.Popen([str(args.runtime.resolve()),'--model',str(args.model.resolve()),
         '--mmproj',str(args.projector.resolve()),'--embeddings','--host','127.0.0.1','--port',str(port),
         '--api-key',key,'--ctx-size','8192','--batch-size','8192','--ubatch-size','8192',
-        '--threads','2','--threads-batch','2','--parallel','1'],env=env,stdout=log,stderr=log)
+        '--threads',THREADS,'--threads-batch',THREADS,'--parallel','1'],env=env,stdout=log,stderr=log)
     def request(path,body=None):
         req=urllib.request.Request(url+path,data=json.dumps(body).encode() if body is not None else None,
             headers={'Content-Type':'application/json','Authorization':'Bearer '+key})
@@ -65,7 +98,8 @@ def main():
                 source=Path(path)
                 if source.suffix.lower()=='.jxl':
                     import hashlib
-                    name=hashlib.sha256(path.encode()).hexdigest()
+                    stat=source.stat()  # a replaced file must not reuse a stale preview
+                    name=hashlib.sha256(f'{path}|{stat.st_size}|{stat.st_mtime_ns}'.encode()).hexdigest()
                     prepared=cache/(name+'.png')
                     if not prepared.exists():
                         partial=cache/(name+f'.{os.getpid()}.png')
@@ -87,7 +121,7 @@ def main():
         if len(matrix)>1 and np.allclose(matrix[0],matrix[1]):raise RuntimeError('Images produced identical vectors')
         results,latencies=[],[]
         for query in manifest['queries']:
-            content=[{'type':'text','text':'task: search result | query: '+query['text']}]
+            content=[{'type':'text','text':QUERY_PROMPT+query['text']}]
             embed(content)
             began=time.perf_counter();vector=embed(content);scores=matrix@vector
             order=np.argsort(-scores)[:20];latency=time.perf_counter()-began;latencies.append(latency)
@@ -99,6 +133,7 @@ def main():
             'warm_p95_seconds':float(np.percentile(latencies,95)),
             'hit_rate':sum(r['hit'] for r in judged)/len(judged) if judged else None,
             'gate':'pending native/reference parity, complete relevance judgments and navigation measurements',
+            'provenance':provenance(args,env),
             'errors':errors,'results':results}
         args.output.write_text(json.dumps(report,indent=2));np.save(args.output.with_suffix('.vectors.npy'),matrix)
         print(json.dumps({k:v for k,v in report.items() if k not in ('results','errors')}),flush=True)

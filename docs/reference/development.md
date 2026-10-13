@@ -157,4 +157,20 @@ To check filmstrip performance, do the same steps in the same folders before and
 - model files (`.tmp/search-models`, `.tmp/native-benchmark`)
 - the private manifest and reports (`.tmp/*.json`)
 
+Phase 3 judging and analysis, run with the benchmark environment `.tmp/search-benchmark/bin/python`:
+
+```bash
+# blind judging sheet: pools each query's top 20 across reports, then shuffles them
+tools/benchmark-judge.py --manifest .tmp/search-manifest.json \
+    --report .tmp/gemma-native.json --report .tmp/siglip-reference.json --output .tmp/search-judge.html
+# after saving search-judgments.json from the sheet:
+tools/benchmark-score.py --judgments ~/Downloads/search-judgments.json \
+    --report .tmp/gemma-native.json --report .tmp/siglip-reference.json --detail
+# native versus reference agreement of the same model
+tools/benchmark-parity.py --manifest .tmp/search-manifest.json \
+    --reference .tmp/gemma-reference.json --native .tmp/gemma-native.json
+```
+
+Both benchmark scripts record provenance in every new report: model and runtime hashes, versions, threads, preprocessing, and the query prompt.
+
 The method and gate are in `ROADMAP.md` Phase 3.

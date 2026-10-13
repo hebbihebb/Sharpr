@@ -209,9 +209,13 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 **Scope:**
 
-1. **Cover the real query mix (D15).** Check the 30 queries against the four categories: subjects, style, mood and colour, and people or adult content. Add queries where a category is missing, choosing expectations before seeing any results. Report pass rates per category, because a model that handles adult content poorly fails the user even if its overall rate passes. Never send filter words (formats, resolutions, aspects) to the model.
-2. **Judge relevance with the agreed rubric.** A query passes when the top 20 contain at least 10 relevant results, including at least one in the top 5. At least 80% of queries must pass (24 of 30), and unjudged queries fail. A contact sheet or the trial UI may be used for judging.
-3. **Make runs reproducible.** Every report records:
+1. ~~Cover the real query mix (D15).~~ Checked October 13: the 30 queries already span all four categories. The judging sheet labels each query's category, and the judge can change it.
+   Original scope: Check the 30 queries against the four categories: subjects, style, mood and colour, and people or adult content. Add queries where a category is missing, choosing expectations before seeing any results. Report pass rates per category, because a model that handles adult content poorly fails the user even if its overall rate passes. Never send filter words (formats, resolutions, aspects) to the model.
+2. **Judge relevance with the agreed rubric.** Tooling is ready (October 13): `tools/benchmark-judge.py` builds a blind judging sheet (908 pooled results for native Gemma and SigLIP 2), and `tools/benchmark-score.py` applies the rubric overall and per category. **This step is the user's.** A query passes when the top 20 contain at least 10 relevant results, including at least one in the top 5. At least 80% of queries must pass (24 of 30), and unjudged queries fail. A contact sheet or the trial UI may be used for judging.
+3. ~~Make runs reproducible.~~ Done October 13. Both scripts record provenance (hashes verified against the download manifest), preview caches are keyed by file size and mtime, and `tools/benchmark-parity.py` exists.
+   - Gemma native vs reference: cosine median 0.983, 5th percentile 0.955, minimum 0.905.
+   - Top-20 overlap: mean 79.5%, minimum 50%.
+   Original scope: Every report records:
    - model and projector hashes
    - quantization
    - runtime and library versions
