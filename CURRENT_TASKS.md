@@ -2,7 +2,7 @@
 
 ## Active Milestone
 
-**Phase 5: visual search and tag retirement** (`ROADMAP.md`). Deployed in `c176934` on October 14 and in use; not yet accepted.
+**Phase 5: visual search and tag retirement** (`ROADMAP.md`). In use since `c176934`; all later Phase 5 work is deployed in `baa007d` (October 14). Not yet accepted.
 - **Built:** indexing and search (`58ac0ef`), tag retirement (`78a0639`), packaging (`b07a226`), and GPU indexing (`c176934`).
 - **The user's test so far:**
   - Overall (October 14): Sharpr "seems to run even better than it did before this recent work started, regardless of indexing work".
@@ -14,7 +14,8 @@
   2. ~~The Library Overview~~: built, committed and verified, **not deployed**.
   3. ~~Search into buckets, with selection tools~~: built, committed and verified, **not deployed**.
   4. ~~Negative search (`tower -water`)~~: built, committed and verified, **not deployed**.
-  - **All Phase 5 work is built.** Left before acceptance: deploying (with approval), the user's test, and a measured browsing check during indexing.
+  - Items 1–4 are deployed in `baa007d`.
+  - **All Phase 5 work is built and deployed.** Left before acceptance: the user's test, and a measured browsing check during indexing.
 - **Open user decision:** keep file-name matches first in results. They stay for now; the user will judge after use.
 
 ## Next Milestone: Phases 6–8, Then A Proper Install (User, October 14)
@@ -32,7 +33,7 @@ The user asked for Phases 6, 7, and 8 to be finished, then a proper install to t
    - A review window, and trash only after confirmation.
 3. **Phase 8, Compare:** N images two at a time, with A/B flip (Space), split, and side by side; knockouts; zoom lock; survivors selected on close.
 
-Phases 6, 7, and 8 are built, committed, and verified by tests; each waits for the user's acceptance after the install.
+**Status:** Phases 6 (`5e2ad3d`, `9f7a42a`), 7 (`a32227a`), and 8 (`baa007d`) are built, committed, verified by tests, and installed in `baa007d` with a backup first. Each waits for the user's test. An adversarial `gpt-6.1-sol` audit is offered.
 4. **Then:** a release install, a smoke test on a copy of the live data, and a backup.
 
 ## State (October 14, 2026)
@@ -41,16 +42,18 @@ Phases 6, 7, and 8 are built, committed, and verified by tests; each waits for t
   - `main` is at `1924346`, the accepted Phases 1–2.
   - `viewer-reset` carries everything since.
   - Pushed to GitHub on October 14 at the user's request.
-- **Deployed:** `c176934` at `~/.local/opt/sharpr/c176934`, with `current` pointing to it.
+- **Deployed:** `baa007d` at `~/.local/opt/sharpr/baa007d`, with `current` pointing to it, installed October 14 at the user's request. It brings everything since `c176934`: the Phase 5 audit fixes, Library Overview, search into buckets, negative search, and Phases 6–8.
+  - Smoke check: it ran on a copy of the live data and settings in isolated directories; all databases were intact afterwards, and it indexed the one picture added since. Its 13 "Finalizing SharprFolderRow/SharprCollectionRow" GTK warnings at startup also appear with `c176934`.
+  - The build changes no database. It adds six GSettings keys, `webp-export-*`.
+  - **Rollback:** close Sharpr, then run `ln -sfn ~/.local/opt/sharpr/c176934 ~/.local/opt/sharpr/current`. No data restore is needed.
   - The model and both runtimes are installed in `~/.local/share/sharpr-models/embeddinggemma-2/` (`runtime/` for the processor, `runtime-gpu/` for Vulkan). In the Flatpak, the server is `/app/libexec/sharpr-llama/llama-server`.
-  - The build changes no schema. Its additions are `visual-search.sqlite`, one `schema_meta` key, and the GSettings key `visual-search-gpu`.
-  - **Rollback:** close Sharpr, then run `ln -sfn ~/.local/opt/sharpr/bf12e07 ~/.local/opt/sharpr/current`. No data restore is needed.
   - Redeploy only with approval, via `python3 tools/install-native-launcher.py`.
 - **Live data:**
   - 9 buckets: the user added 3 on October 14.
   - 7,718 tag rows, unused. Of these, 7,346 are old automatic tags; their cleanup is ready but not run.
   - Bucket membership was migrated by `bf12e07` (151 members across the original 6 buckets).
 - **Backups**, each byte-verified and integrity-checked, in `~/.local/share/`:
+  - `sharpr.backup-20261014-055753`, taken before `baa007d`, with a dump of the settings (`dconf-sharpr.ini`)
   - `sharpr.backup-20261014-015921`, taken before `c176934`
   - `sharpr.backup-20261013-111041`, taken before `bf12e07`
   - three older ones

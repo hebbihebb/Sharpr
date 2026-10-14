@@ -9,10 +9,14 @@ Earlier installs are kept for rollback:
     ln -sfn ~/.local/opt/sharpr/<older-commit> ~/.local/opt/sharpr/current
 """
 from pathlib import Path
+import argparse
 import datetime
 import os
 import shutil
 import subprocess
+
+# No options; this makes --help (or a typo) stop instead of installing.
+argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
 
 root = Path(__file__).resolve().parents[1]
 app = root / 'sharpr'
