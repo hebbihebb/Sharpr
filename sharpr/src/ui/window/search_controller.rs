@@ -22,6 +22,8 @@ pub(super) enum VisualSummary {
         strength: Option<crate::visual_search::search::Strength>,
         /// More visual results wait behind "Show More".
         more: bool,
+        /// Images left out for looking like a negative word.
+        excluded: usize,
     },
     /// Visual search couldn't run; file names were matched instead.
     Unavailable(String),
@@ -393,7 +395,9 @@ impl SharprWindow {
             }
 
             let weak = self.downgrade();
+            let label_chip = chip.clone();
             label.connect_clicked(move |_| {
+                let chip = label_chip.clone();
                 let Some(win) = weak.upgrade() else { return };
                 win.imp()
                     .browse_options
@@ -686,6 +690,45 @@ impl SharprWindow {
                             height,
                         });
                     }
+                    // Negative words: file names were handled by the chips;
+                    // with visual search, the images most like each word go
+                    // too, before anything is ranked.
+                    let mut fingerprints = None;
+                    let mut excluded = 0;
+                    let without = chips.without_words();
+                    if let (false, Some(searcher), Some(index)) =
+                        (without.is_empty(), searcher.as_ref(), index.as_ref())
+                    {
+                        let mut alike = std::collections::HashSet::new();
+                        for word in &without {
+                            if let Ok(negative) = searcher.prepare(word, &superseded) {
+                                alike.extend(crate::visual_search::search::most_alike(&negative));
+                            }
+                            if superseded() {
+                                return Err("Search superseded".into());
+                            }
+                        }
+                        if !alike.is_empty() {
+                            let map = index.cached_fingerprints().map_err(|e| e.to_string())?;
+                            let before = raw.len();
+                            let mut kept_stamps = Vec::with_capacity(stamps.len());
+                            let mut kept = Vec::with_capacity(raw.len());
+                            for (entry, stamp) in raw.into_iter().zip(stamps) {
+                                let like = map
+                                    .get(entry.path.to_string_lossy().as_ref())
+                                    .filter(|(size, mtime, _)| (*size, *mtime) == stamp)
+                                    .is_some_and(|(_, _, hash)| alike.contains(hash));
+                                if !like {
+                                    kept.push(entry);
+                                    kept_stamps.push(stamp);
+                                }
+                            }
+                            excluded = before - kept.len();
+                            raw = kept;
+                            stamps = kept_stamps;
+                            fingerprints = Some(map);
+                        }
+                    }
                     let prepared = match visual {
                         Some(Ok(prepared)) => prepared,
                         other => {
@@ -704,7 +747,10 @@ impl SharprWindow {
                     // closest images. Fingerprints are read fresh for every
                     // query, so newly fingerprinted or edited files count.
                     let index = index.as_ref().ok_or("Library index is unavailable")?;
-                    let fingerprints = index.cached_fingerprints().map_err(|e| e.to_string())?;
+                    let fingerprints = match fingerprints {
+                        Some(map) => map,
+                        None => index.cached_fingerprints().map_err(|e| e.to_string())?,
+                    };
                     let mut by_name = Vec::new();
                     let mut candidates = Vec::with_capacity(raw.len());
                     for (entry, stamp) in raw.into_iter().zip(stamps) {
@@ -740,6 +786,7 @@ impl SharprWindow {
                             eligible: ranked.eligible,
                             strength: ranked.strength,
                             more: false,
+                            excluded,
                         },
                         by_name: by_name.into_iter().map(|r| r.path).collect(),
                         visual,
@@ -839,6 +886,7 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
             indexed,
             eligible,
             strength,
+            excluded,
             ..
         } => {
             let mut parts = Vec::new();
@@ -861,6 +909,9 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
                 parts.push(format!("{indexed} of {eligible} images indexed"));
             } else {
                 parts.push(format!("all {eligible} images searched"));
+            }
+            if *excluded > 0 {
+                parts.push(format!("{excluded} left out by the \"not\" words"));
             }
             parts.join(" · ")
         }
@@ -934,6 +985,7 @@ mod tests {
                 eligible: 6,
                 strength: None,
                 more: false,
+                excluded: 0,
             },
         };
         let first = snapshot.page(2);

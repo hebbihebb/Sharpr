@@ -418,7 +418,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
   - Disabled folders are excluded from conversion; AGENTS.md already rules this.
   - The GTK screenshot timeout and the rapid-navigation flake are Claude's to investigate, in the test harness.
   - Browsing impact is still to be measured.
-- **Negative search (added October 14 at the user's request).** `tower -water` finds towers, leaving out images that look like water.
+- **Negative search (added October 14 at the user's request; built October 14, committed and verified, not deployed).** `tower -water` finds towers, leaving out images that look like water.
   - **Syntax:** a word starting with `-` becomes a chip reading "not water". Clicking the chip turns it back into text, like the other chips (D16).
   - **The same negation works for every kind of word:**
     - `-png` and `-16:9` leave out a format or an aspect ratio, which gives the "not 16:9" the user asked for (see Phase 9).

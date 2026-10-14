@@ -12,7 +12,8 @@
   1. ~~Fix the Phase 5 audit's findings~~: done October 14 in six commits (`df82623`..`cf438a9`), verified, and **not deployed**. Deploying needs the user's approval.
   2. ~~The Library Overview~~: built, committed and verified, **not deployed**.
   3. ~~Search into buckets, with selection tools~~: built, committed and verified, **not deployed**.
-  4. Negative search (`tower -water`).
+  4. ~~Negative search (`tower -water`)~~: built, committed and verified, **not deployed**.
+  - **All Phase 5 work is built.** Left before acceptance: deploying (with approval), the user's test, and a measured browsing check during indexing.
 - **Open user decision:** keep file-name matches first in results. They stay for now; the user will judge after use.
 
 ## State (October 14, 2026)

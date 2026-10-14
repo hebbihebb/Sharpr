@@ -6,7 +6,10 @@
 //! aspects. Everything else stays search text. A word in double quotes is
 //! always text, which is how a chip is turned back into a search word.
 //! Chips of the same kind are alternatives (`png webp`); different kinds
-//! must all match (`png 4k`).
+//! must all match (`png 4k`). A leading `-` negates: `-png` and `-16:9`
+//! leave out a format or aspect, and any other `-word` leaves out images
+//! like that word (file names containing it, and, with visual search,
+//! the images closest to it).
 
 use std::path::Path;
 
@@ -160,12 +163,16 @@ impl Aspect {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Chip {
     Format(Format),
     AtLeast(Resolution),
     Below(Resolution),
     Aspect(Aspect),
+    /// A negated filter (`-png`, `-16:9`): every one must hold.
+    Not(Box<Chip>),
+    /// A negative word (`-water`), lowercase.
+    Without(String),
 }
 
 impl Chip {
@@ -176,11 +183,27 @@ impl Chip {
             Self::AtLeast(resolution) => format!("{}+", resolution.label()),
             Self::Below(resolution) => format!("Below {}", resolution.label()),
             Self::Aspect(aspect) => aspect.label(),
+            Self::Not(inner) => format!("Not {}", inner.label()),
+            Self::Without(word) => format!("Not {word}"),
+        }
+    }
+
+    /// A negative word, if this chip is one.
+    pub fn without(&self) -> Option<&str> {
+        match self {
+            Self::Without(word) => Some(word),
+            _ => None,
         }
     }
 
     /// The text that turns this chip back into a plain search word.
     pub fn as_literal(&self) -> String {
+        // A negation comes back as "-word", left for the user to edit.
+        match self {
+            Self::Not(inner) => return format!("-{}", inner.as_literal().trim_matches('"')),
+            Self::Without(word) => return format!("-{word}"),
+            _ => {}
+        }
         let word = match self {
             Self::Format(format) => format.extensions()[0].to_string(),
             Self::AtLeast(resolution) | Self::Below(resolution) => resolution.word.to_string(),
@@ -190,20 +213,28 @@ impl Chip {
                 Aspect::Square => "square".into(),
                 Aspect::Ratio(a, b) => format!("{a}:{b}"),
             },
+            Self::Not(_) | Self::Without(_) => unreachable!("returned above"),
         };
         format!("\"{word}\"")
     }
 
-    fn kind(&self) -> u8 {
+    /// Positive chips of one kind are alternatives; `None` for negations,
+    /// which must all hold.
+    fn kind(&self) -> Option<u8> {
         match self {
-            Self::Format(_) => 0,
-            Self::AtLeast(_) | Self::Below(_) => 1,
-            Self::Aspect(_) => 2,
+            Self::Format(_) => Some(0),
+            Self::AtLeast(_) | Self::Below(_) => Some(1),
+            Self::Aspect(_) => Some(2),
+            Self::Not(_) | Self::Without(_) => None,
         }
     }
 
     fn needs_dimensions(&self) -> bool {
-        !matches!(self, Self::Format(_))
+        match self {
+            Self::Format(_) | Self::Without(_) => false,
+            Self::Not(inner) => inner.needs_dimensions(),
+            _ => true,
+        }
     }
 
     fn matches(&self, path: &Path, dimensions: Option<(u32, u32)>) -> bool {
@@ -217,6 +248,12 @@ impl Chip {
             Self::Aspect(aspect) => dimensions
                 .filter(|(w, h)| *w > 0 && *h > 0)
                 .is_some_and(|d| aspect.matches(d)),
+            Self::Not(inner) => !inner.matches(path, dimensions),
+            // The visual part of a negative word is applied by the search.
+            Self::Without(word) => !path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| name.to_lowercase().contains(word.as_str())),
         }
     }
 }
@@ -237,10 +274,28 @@ impl ChipFilters {
     }
 
     pub fn matches(&self, path: &Path, dimensions: Option<(u32, u32)>) -> bool {
-        (0..3).all(|kind| {
-            let mut of_kind = self.chips.iter().filter(|c| c.kind() == kind).peekable();
+        let positives = (0..3).all(|kind| {
+            let mut of_kind = self
+                .chips
+                .iter()
+                .filter(|c| c.kind() == Some(kind))
+                .peekable();
             of_kind.peek().is_none() || of_kind.any(|chip| chip.matches(path, dimensions))
-        })
+        });
+        positives
+            && self
+                .chips
+                .iter()
+                .filter(|c| c.kind().is_none())
+                .all(|chip| chip.matches(path, dimensions))
+    }
+
+    /// The negative words, whose visual part the search applies.
+    pub fn without_words(&self) -> Vec<String> {
+        self.chips
+            .iter()
+            .filter_map(|c| c.without().map(str::to_string))
+            .collect()
     }
 }
 
@@ -267,6 +322,15 @@ fn parse_words(words: &[&str]) -> ParsedQuery {
             Some(Chip::Below(resolution))
         } else if let Some(rest) = lower.strip_prefix('<') {
             Resolution::parse(rest).map(Chip::Below)
+        } else if let Some(rest) = lower.strip_prefix('-').filter(|r| !r.is_empty()) {
+            Some(
+                Format::parse(rest)
+                    .map(Chip::Format)
+                    .or_else(|| Resolution::parse(rest).map(Chip::AtLeast))
+                    .or_else(|| Aspect::parse(rest).map(Chip::Aspect))
+                    .map(|chip| Chip::Not(Box::new(chip)))
+                    .unwrap_or_else(|| Chip::Without(rest.to_string())),
+            )
         } else {
             Format::parse(&lower)
                 .map(Chip::Format)
@@ -545,5 +609,62 @@ mod tests {
             Chip::Below(Resolution::parse("1080p").unwrap()).label(),
             "Below 1080p"
         );
+    }
+
+    #[test]
+    fn a_leading_minus_negates_filters_and_words() {
+        let parsed = parse("tower -water -png -16:9 -4k");
+        assert_eq!(parsed.text, "tower");
+        assert_eq!(
+            parsed.chips,
+            vec![
+                Chip::Without("water".into()),
+                Chip::Not(Box::new(Chip::Format(Format::Png))),
+                Chip::Not(Box::new(Chip::Aspect(Aspect::Ratio(16, 9)))),
+                Chip::Not(Box::new(Chip::AtLeast(four_k()))),
+            ]
+        );
+        let filters = ChipFilters {
+            chips: parsed.chips.clone(),
+        };
+        assert_eq!(filters.without_words(), vec!["water".to_string()]);
+        let wide = Some((1920, 1080));
+        let boxy = Some((1600, 1200));
+        assert!(filters.matches(Path::new("/l/tower.jpg"), boxy));
+        assert!(!filters.matches(Path::new("/l/tower.png"), boxy), "-png");
+        assert!(!filters.matches(Path::new("/l/tower.jpg"), wide), "-16:9");
+        assert!(
+            !filters.matches(Path::new("/l/Waterfall.jpg"), boxy),
+            "name has water"
+        );
+        assert!(
+            !filters.matches(Path::new("/l/big.jpg"), Some((4000, 3000))),
+            "-4k"
+        );
+        assert_eq!(Chip::Without("water".into()).label(), "Not water");
+        assert_eq!(
+            Chip::Not(Box::new(Chip::Format(Format::Png))).label(),
+            "Not PNG"
+        );
+        assert_eq!(Chip::Without("water".into()).as_literal(), "-water");
+        assert_eq!(
+            Chip::Not(Box::new(Chip::Format(Format::Png))).as_literal(),
+            "-png"
+        );
+        // Negations are all required, alongside positive alternatives.
+        let mixed = ChipFilters {
+            chips: parse("png webp -16:9").chips,
+        };
+        assert!(mixed.matches(Path::new("/l/a.webp"), boxy));
+        assert!(!mixed.matches(Path::new("/l/a.webp"), wide));
+        assert!(parse("\"-water\"").chips.is_empty(), "quoted stays text");
+        assert!(parse("-").chips.is_empty());
+    }
+
+    #[test]
+    fn finished_negative_words_become_chips() {
+        let (chips, remaining) = take_completed_chips("tower -water ");
+        assert_eq!(chips, vec![Chip::Without("water".into())]);
+        assert_eq!(remaining, "tower ");
     }
 }

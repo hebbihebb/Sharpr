@@ -799,6 +799,20 @@ fn visual_search_ranks_by_content() {
     window.visible_dialog().unwrap().close();
     pump_until(|| window.visible_dialog().is_none());
 
+    // A negative word leaves out the most alike images (here 1 of 4) and
+    // file names containing it.
+    window.show_inline_search();
+    entry.set_text("green -red");
+    pump_until(|| {
+        status_text().is_some_and(|t| t.contains("1 left out"))
+            && !paths().contains(&root.join("one.png"))
+    });
+    entry.set_text("green -notes");
+    pump_until(|| {
+        let shown = paths();
+        !shown.is_empty() && !shown.contains(&root.join("green-notes.png"))
+    });
+
     // Escape closes the search, and its status line with it.
     window.close_browse_search();
     pump_until(|| window.imp().state.borrow().library.image_count() == 4);

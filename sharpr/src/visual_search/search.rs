@@ -50,6 +50,29 @@ const GENERIC_PROMPTS: [&str; 10] = [
 /// these by default.
 pub const STRONG_RESULT: f32 = 0.04;
 
+/// A negative word (`-water`) leaves out this share of the library: the
+/// images most like it. On the judged sample this cleared the unwanted
+/// images while keeping relevant ones (ROADMAP Phase 5).
+pub const EXCLUDE_SHARE: f64 = 0.10;
+
+/// Fingerprints of the `EXCLUDE_SHARE` of all indexed images most like a
+/// negative word, by generic-corrected closeness. The cut-off comes from
+/// the whole library, so a scope full of water still loses its water.
+pub fn most_alike(negative: &Prepared) -> std::collections::HashSet<String> {
+    let mut scored: Vec<(f32, &String)> = negative
+        .vectors
+        .iter()
+        .map(|(fingerprint, vector)| (similarity(&negative.specific, vector), fingerprint))
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let keep = ((scored.len() as f64) * EXCLUDE_SHARE).ceil() as usize;
+    scored
+        .into_iter()
+        .take(keep)
+        .map(|(_, fingerprint)| fingerprint.clone())
+        .collect()
+}
+
 /// Below this many indexed candidates, the fifth-best score says little
 /// about the words, so strength isn't judged.
 pub const JUDGE_FROM: usize = 50;
@@ -414,6 +437,24 @@ mod tests {
         assert_eq!(
             (none.paths.len(), none.indexed, none.strength),
             (0, 0, None)
+        );
+    }
+
+    #[test]
+    fn a_negative_word_leaves_out_the_most_alike_tenth() {
+        let vectors: HashMap<String, Vec<f32>> = (0..20)
+            .map(|i| (format!("f{i:02}"), axis(0, i as f32 / 20.0)))
+            .collect();
+        let negative = Prepared {
+            query: axis(0, 1.0),
+            specific: axis(0, 1.0),
+            vectors: Arc::new(vectors),
+        };
+        let alike = most_alike(&negative);
+        assert_eq!(
+            alike,
+            ["f19".to_string(), "f18".to_string()].into(),
+            "the 2 of 20 closest"
         );
     }
 
