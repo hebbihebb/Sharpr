@@ -386,6 +386,34 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
     - Several searches can fill one bucket, such as `tower`, then `plane`. A single query `tower and plane` instead finds images showing both.
   - **Selection tools:** Shift-click selects a range (pick down to the last good result), Ctrl+A selects all, and Ctrl-click drops images. The status line shows "N selected".
   - All membership writes run off the GTK thread, through `buckets::add_to_bucket`.
+- **Audit fixes (next; audit of October 14, `docs/archive/audit-2026-10-14-phase5.md`).** 17 findings, with 0 critical. Claude reviewed them and agrees with all 17. Fix them in this order:
+  1. **Offline guarantee (finding 3, high).** Pass `--offline` to every managed `llama-server`, and strip inherited `LLAMA_ARG_*` and other remote-model environment variables. Today an inherited `LLAMA_ARG_MODEL_URL` could make the child download, and even replace the installed model. Also correct the Flatpak docs: they disable HTTPS and UI fetches, not every network capability.
+  2. **Vector integrity:**
+     - **Finding 1, high.** Keep each file's stamp in the indexing queue. Recheck it before decoding and before saving a vector or failure. A file changed mid-pass waits for a fresh fingerprint and is never saved under the old one.
+     - **Finding 2, high.** Search revalidates the model key from file stamps on every query. A replaced model drops the cached server, query vectors, and image vectors.
+     - **Finding 12.** Detect a deleted or replaced vector file, invalidate the cache, and request indexing. The Library Overview's "Rebuild Index…" uses the same path.
+  3. **Failure classification (finding 9).** Only a real image problem is recorded as a permanent failure. Server, transport, or GPU errors on a live server retry once on the processor; otherwise they stop the pass without marking the image.
+  4. **Tag conversion (findings 4–6):**
+     - Create the bucket and its members in one transaction.
+     - Offer and conversion share one eligibility rule, which excludes automatic rows and disabled folders.
+     - Disabling or enabling a folder cancels and requeues fingerprint and indexing work.
+  5. **Search stability (findings 7–8).** "Show More" extends one ranked snapshot per query, scope, and filters, keeping the selection and scroll. The fingerprint cache refreshes when the search inputs change.
+  6. **Responsiveness (finding 10).** Query preparation gets a deadline and honours cancellation, so a stalled server can't hold up newer searches or filters. A stalled child is killed and restarted.
+  7. **Memory (finding 11).** Check a JPEG XL's dimensions against the decode budget before a full decode.
+  8. **Small UI fixes (findings 14–16):**
+     - Coverage counts every candidate, including file-name matches.
+     - Escape and folder or bucket changes clear the search status line.
+     - Query errors show their real reason.
+  9. **Done on October 14 (finding 17):** `CURRENT_TASKS.md` was rewritten to match the committed and deployed state.
+
+  **Not now (finding 13):** AVIF and HEIC can't be indexed. The user's library has none of these files (3,752 JPEG, 1,457 PNG, 462 JPEG XL, 186 WebP), so it moves to the Backlog. Until it is fixed, an unsupported format must be reported as unsupported, not as unreadable.
+
+  **Sol's open questions, answered:**
+  - Files changing mid-pass are skipped and retried, not snapshotted.
+  - "Show More" keeps its first ranking until the inputs change. The Phase 5 scope already requires stable results.
+  - Disabled folders are excluded from conversion; AGENTS.md already rules this.
+  - The GTK screenshot timeout and the rapid-navigation flake are Claude's to investigate, in the test harness.
+  - Browsing impact is still to be measured.
 - **Negative search (added October 14 at the user's request).** `tower -water` finds towers, leaving out images that look like water.
   - **Syntax:** a word starting with `-` becomes a chip reading "not water". Clicking the chip turns it back into text, like the other chips (D16).
   - **The same negation works for every kind of word:**
@@ -614,6 +642,8 @@ Optional and unordered. Pick something up only when a phase touches that area, o
 - Make Flatpak `home` access writable for move and rename, if the user needs it.
 - Guard the startup legacy-bucket migration (`migrate_legacy_collections_to_tags`) with a backup and count check, or retire it, before old databases are treated as a supported upgrade (audit finding 12).
 - Keep thumbnail generations through to completion: a failure or success from an old request must not mark a newer view's row (audit finding 7).
+- Index AVIF and HEIC/HEIF for visual search, with a bounded decoder on the worker (Phase 5 audit, finding 13). The live library has none; weigh the Flatpak cost before adding decoders.
+- GTK test harness: the screenshot helper's `render_node` sometimes times out, and `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs). Make both deterministic.
 
 ### Considered, Not Planned
 
