@@ -525,6 +525,12 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 ## Phase 8: Compare
 
+**Status (October 14): built, committed, and verified; not deployed or accepted.**
+- Two or more selected images enable Compare. The `Knockout` model and the canvas geometry have unit tests (five images to one with undo; same region for a 4K and a 1080p version at 100%; zoom keeps the point under the pointer).
+- A GTK test narrows five images to one, checks the shared view across a flip at 100% and the split while zoomed, and checks the survivor is selected after closing and no file changed.
+- Delete, F2, and Ctrl+D are off while Compare is open.
+- **Left for acceptance:** the user's judgement of the feel of zooming, panning, and the split on real images.
+
 **Outcome:** One on-demand Compare tool serves both version inspection and choosing the best of several (D8).
 
 **Scope:**

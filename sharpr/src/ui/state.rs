@@ -6,7 +6,6 @@ use crate::config::AppSettings;
 use crate::library_index::LibraryIndex;
 use crate::model::library::SortOrder;
 use crate::model::LibraryManager;
-use crate::ui::compare_item::CompareItem;
 
 pub struct AppState {
     pub library: LibraryManager,
@@ -25,7 +24,6 @@ pub struct AppState {
     pub current_focused_set: Option<crate::focused_image_set::FocusedImageSet>,
     pub previous_scope: Option<ViewScope>,
     pub previous_content_page: Option<String>,
-    pub comparison: Option<CompareItem>,
     pub disabled_folders: Vec<PathBuf>,
     pub collections: Vec<crate::library_index::Collection>,
 }
@@ -104,7 +102,6 @@ impl AppState {
             current_focused_set: None,
             previous_scope: None,
             previous_content_page: None,
-            comparison: None,
             disabled_folders,
             collections: Vec::new(),
         }

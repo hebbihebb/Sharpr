@@ -12,7 +12,7 @@ Sharpr is for people with thousands of downloaded images, generated artwork, and
 - **Find images by describing them.** Type `woman on a sofa`, `dark mountain landscape`, or `watercolor`, and Sharpr ranks images by what they show, not by their names. It runs the EmbeddingGemma 2 model locally through [llama.cpp](https://github.com/ggml-org/llama.cpp).
 - **Filter by typing.** Words such as `4k`, `below 4k`, `png`, `jxl`, `16:9`, `portrait`, or `landscape` become removable chips: `mountains 4k png 16:9` finds 4K PNG mountains in 16:9. Search covers the current folder or bucket, with a switch for the whole library.
 - **Keep images in buckets.** Buckets are hand-picked groups, nested if you like, and they never move or copy your files. A bucket remembers each image by its content, so it keeps it after the file is moved or renamed outside Sharpr.
-- **Compare two images** side by side.
+- **Compare** two or more images, two at a time: side by side, a draggable split, or A/B flip, with zoom and pan locked together. Dismiss the weaker one until the best is left; the survivors stay selected.
 - **Prepare wallpapers.** Crop a copy, or batch-export a selection as WebP (lossless by default, optionally fitted within a size such as 3840×2160) in the background. Every copy is a new, uniquely named file.
 - **Clean up copies.** Find exact copies, and resized or converted copies of the same picture (crops and variants are left alone), keep the highest resolution, and move the rest to the trash after you confirm.
 - **View** JPEG, PNG, WebP, JPEG XL, GIF, TIFF, and BMP, with zoom, fullscreen, and an Info panel for file details and EXIF.

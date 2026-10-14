@@ -50,7 +50,15 @@ To find low-resolution images, type `below 4k` (or `<1080p`) in search; `4k` fin
 
 ## Compare
 
-Ctrl-click until exactly two filmstrip images are selected, then right-click one of them and choose **Compare Selected Images**. The images appear as neutral left and right panes. Close Compare to return to the viewer. Missing or corrupt files show an error in their pane.
+Select two or more images (Ctrl-click, Shift-click, or Ctrl+A), then right-click one and choose **Compare Selected Images**. Compare shows them two at a time, in filmstrip order, and never changes files.
+
+- **Side by Side**, **Split**, and **Flip** change how the pair is shown. In Split, drag the divider. In Flip, **Space** switches between the two; the badge of the hidden image is dimmed. Space also switches to Flip from the other modes.
+- **Zoom:** scroll to zoom at the pointer, drag to pan, double-click for 100% or back to fit. **Fit** and **100%** do the same from the toolbar.
+- **Zoom lock** (the padlock, on by default) keeps both images on the same region, even when they have different resolutions, as for a 4K original and its 1080p copy. Turn it off to zoom and pan each side separately in Side by Side.
+- **Dismiss** an image with the × on its badge, or **[** for the left and **]** for the right; the next image takes its place. **Ctrl+Z** brings back the last one dismissed.
+- **Done** (or **Escape**) returns to browsing with the images you didn't dismiss selected.
+
+Delete, Rename (F2), and Duplicate (Ctrl+D) are off while Compare is open. An image that can't be read shows the error in its badge.
 
 ## Export As WebP
 

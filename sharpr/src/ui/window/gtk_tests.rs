@@ -1179,3 +1179,110 @@ fn copies_are_found_and_trashed_only_on_request() {
     pump_until(|| window.imp().state.borrow().library.image_count() == 2);
     window.close();
 }
+
+/// Phase 8 acceptance: five images narrow down to one; zoom lock keeps the
+/// same view when flipping; the split works while zoomed; leaving Compare
+/// selects the survivors.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn compare_narrows_five_images_to_one() {
+    let root = isolated_fixture("compare");
+    std::fs::create_dir_all(&root).unwrap();
+    let colours = [
+        [200, 40, 40],
+        [40, 200, 40],
+        [40, 40, 200],
+        [200, 200, 40],
+        [40, 200, 200],
+    ];
+    let mut paths = Vec::new();
+    for (i, colour) in colours.iter().enumerate() {
+        let path = root.join(format!("{i}.png"));
+        image::RgbImage::from_fn(320, 180, |x, _| {
+            image::Rgb(if x < 160 {
+                *colour
+            } else {
+                [colour[2], colour[0], colour[1]]
+            })
+        })
+        .save(&path)
+        .unwrap();
+        paths.push(path);
+    }
+    let originals: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 5 && window.is_mapped());
+
+    let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
+    filmstrip.select_all();
+    gio::prelude::ActionGroupExt::activate_action(&window, "compare", None);
+    let page = window.imp().compare_page.borrow().clone().unwrap();
+    pump_until(|| page.survivors().len() == 5);
+    let view = page.view();
+    pump_until(|| page.imp().shown.borrow().iter().all(Option::is_some));
+
+    // Zoom lock: at 100%, flipping shows the same region.
+    view.set_mode(crate::ui::compare_view::Mode::Flip);
+    view.set_zoom(Some(1.0));
+    let before = view.views();
+    view.flip();
+    assert_eq!(view.views(), before);
+    assert_eq!(before[0], before[1], "one shared view while locked");
+    // The split moves at any zoom.
+    view.set_mode(crate::ui::compare_view::Mode::Split);
+    view.set_split(0.3);
+    assert!((view.split() - 0.3).abs() < 1e-9);
+    view.set_zoom(None);
+    let stack = window.imp().content_stack.borrow().clone().unwrap();
+    let settle = std::time::Instant::now();
+    pump_until(|| {
+        !stack.is_transition_running() && settle.elapsed() > std::time::Duration::from_millis(500)
+    });
+    screenshot(&window, &root.parent().unwrap().join("compare-split.png"));
+
+    use crate::ui::compare_item::Side;
+    for side in [Side::Left, Side::Right, Side::Left, Side::Right] {
+        page.dismiss(side);
+    }
+    assert_eq!(page.survivors().len(), 1, "five narrow down to one");
+    assert_eq!(
+        view.mode(),
+        crate::ui::compare_view::Mode::Flip,
+        "the last image fills the canvas"
+    );
+    assert!(!view.flipped());
+    let winner = page.survivors()[0].clone();
+    page.close();
+    pump_until(|| window.imp().state.borrow().scope != ViewScope::Compare);
+    let st = window.imp().state.borrow();
+    assert_eq!(
+        st.selected_paths.iter().cloned().collect::<Vec<_>>(),
+        vec![winner.clone()],
+        "the survivor stays selected"
+    );
+    drop(st);
+    for (path, original) in paths.iter().zip(&originals) {
+        assert_eq!(
+            &std::fs::read(path).unwrap(),
+            original,
+            "Compare changes no file"
+        );
+    }
+    window.close();
+}

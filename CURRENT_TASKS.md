@@ -31,6 +31,8 @@ The user asked for Phases 6, 7, and 8 to be finished, then a proper install to t
    - Resized or converted copies by visual-search vectors (≥ 0.99; 0.95–0.99 only with matching aspect and a pixel check).
    - A review window, and trash only after confirmation.
 3. **Phase 8, Compare:** N images two at a time, with A/B flip (Space), split, and side by side; knockouts; zoom lock; survivors selected on close.
+
+Phases 6, 7, and 8 are built, committed, and verified by tests; each waits for the user's acceptance after the install.
 4. **Then:** a release install, a smoke test on a copy of the live data, and a backup.
 
 ## State (October 14, 2026)

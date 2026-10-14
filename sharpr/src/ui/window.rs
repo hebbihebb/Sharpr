@@ -21,7 +21,7 @@ use crate::ui::collection_dialogs::{
     show_change_color_dialog, show_new_collection_dialog, show_new_library_dialog,
     show_rename_collection_dialog, switch_active_library,
 };
-use crate::ui::compare_item::{ordered_selected_paths, CompareItem};
+use crate::ui::compare_item::ordered_selection;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::ops_indicator::OpsIndicator;
 use crate::ui::preferences::build_preferences_window;
@@ -30,6 +30,7 @@ use crate::ui::state::{AppState, ViewScope};
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 
 mod compare_controller;
+use compare_controller::is_comparing;
 #[cfg(test)]
 mod gtk_tests;
 mod search_controller;
@@ -2561,9 +2562,9 @@ impl SharprWindow {
 
         {
             let window_weak = self.downgrade();
-            compare_page.set_close_cb(move || {
+            compare_page.set_close_cb(move |survivors| {
                 if let Some(window) = window_weak.upgrade() {
-                    window.exit_compare_mode();
+                    window.exit_compare_mode(survivors);
                 }
             });
         }
@@ -2574,16 +2575,15 @@ impl SharprWindow {
             let window_weak = self.downgrade();
             let state_c = state.clone();
             compare_action.connect_activate(move |_, _| {
-                let item = {
+                let selection = {
                     let state = state_c.borrow();
                     let paths = (0..state.library.image_count())
                         .filter_map(|index| state.library.entry_at(index))
                         .map(|entry: ImageEntry| entry.path());
-                    ordered_selected_paths(paths, &state.selected_paths)
-                        .map(|(left, right)| CompareItem::from_paths(left, right))
+                    ordered_selection(paths, &state.selected_paths)
                 };
-                if let (Some(window), Some(item)) = (window_weak.upgrade(), item) {
-                    window.enter_compare_mode(item);
+                if let (Some(window), Some(paths)) = (window_weak.upgrade(), selection) {
+                    window.enter_compare_mode(paths);
                 }
             });
         }
@@ -2592,7 +2592,7 @@ impl SharprWindow {
             let compare_action = compare_action.clone();
             let weak = self.downgrade();
             filmstrip.connect_action_selection_changed(move |count| {
-                compare_action.set_enabled(count == 2);
+                compare_action.set_enabled(count >= 2);
                 if let Some(win) = weak.upgrade() {
                     win.show_search_selection(count);
                 }
@@ -3291,7 +3291,7 @@ impl SharprWindow {
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("Delete").unwrap()),
                 Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if text_input_has_focus(widget) {
+                    if text_input_has_focus(widget) || is_comparing(widget) {
                         return glib::Propagation::Proceed;
                     }
                     let paths = filmstrip_d.selected_paths_for_action();
@@ -3392,7 +3392,7 @@ impl SharprWindow {
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("F2").unwrap()),
                 Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if text_input_has_focus(widget) {
+                    if text_input_has_focus(widget) || is_comparing(widget) {
                         return glib::Propagation::Proceed;
                     }
                     if let Some(path) = filmstrip_f2.selected_single_path() {
@@ -3410,7 +3410,10 @@ impl SharprWindow {
             let filmstrip_dup = filmstrip.clone();
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("<Control>d").unwrap()),
-                Some(gtk4::CallbackAction::new(move |_, _| {
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if is_comparing(widget) {
+                        return glib::Propagation::Proceed;
+                    }
                     if let Some(path) = filmstrip_dup.selected_single_path() {
                         filmstrip_dup.emit_duplicate_requested(path);
                         glib::Propagation::Stop

@@ -1,7 +1,10 @@
+//! Compare (Phase 8, decision D8): the selection, two at a time, and back
+//! to browsing with the survivors selected.
 use super::*;
 
 impl SharprWindow {
-    pub fn enter_compare_mode(&self, item: CompareItem) {
+    /// Compares `paths` (at least two) in this order.
+    pub fn enter_compare_mode(&self, paths: Vec<PathBuf>) {
         {
             let state_rc = self.app_state();
             let mut state = state_rc.borrow_mut();
@@ -10,10 +13,9 @@ impl SharprWindow {
             }
             state.scope = ViewScope::Compare;
             state.previous_content_page = Some("viewer".to_string());
-            state.comparison = Some(item.clone());
         }
         if let Some(page) = self.imp().compare_page.borrow().as_ref() {
-            page.set_comparison(item);
+            page.start(paths);
         }
         if let Some(stack) = self.imp().content_stack.borrow().as_ref() {
             stack.set_transition_type(gtk4::StackTransitionType::SlideLeft);
@@ -21,7 +23,8 @@ impl SharprWindow {
         }
     }
 
-    pub fn exit_compare_mode(&self) {
+    /// Back to browsing, with `survivors` selected and the first one shown.
+    pub fn exit_compare_mode(&self, survivors: Vec<PathBuf>) {
         {
             let state_rc = self.app_state();
             let mut state = state_rc.borrow_mut();
@@ -29,14 +32,31 @@ impl SharprWindow {
                 state.scope = state.previous_scope.take().unwrap_or_default();
             }
             state.previous_content_page = None;
-            state.comparison = None;
-        }
-        if let Some(page) = self.imp().compare_page.borrow().as_ref() {
-            page.clear();
+            state.selected_paths = survivors
+                .iter()
+                .filter(|path| state.library.index_of_path(path).is_some())
+                .cloned()
+                .collect();
         }
         if let Some(stack) = self.imp().content_stack.borrow().as_ref() {
             stack.set_transition_type(gtk4::StackTransitionType::SlideRight);
             stack.set_visible_child_name("viewer");
         }
+        let first = survivors
+            .first()
+            .and_then(|path| self.imp().state.borrow().library.index_of_path(path));
+        if let Some(filmstrip) = self.imp().filmstrip.borrow().as_ref() {
+            if let Some(index) = first {
+                filmstrip.navigate_to(index);
+            }
+            filmstrip.refresh_multi_selection_visuals();
+        }
     }
+}
+
+/// Compare never changes files, so shortcuts that do are off while it's open.
+pub(super) fn is_comparing(widget: &gtk4::Widget) -> bool {
+    widget
+        .downcast_ref::<SharprWindow>()
+        .is_some_and(|win| win.app_state().borrow().scope == ViewScope::Compare)
 }
