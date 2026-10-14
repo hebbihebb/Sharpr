@@ -273,6 +273,10 @@ pub fn run_pass(
                 continue;
             }
             let result = embedder.embed_image(path);
+            // A changed library scope may have disabled this folder meanwhile.
+            if canceled() {
+                return Err("Indexing canceled".into());
+            }
             if !unchanged(path, *stamp) {
                 continue;
             }

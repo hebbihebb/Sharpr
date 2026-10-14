@@ -486,14 +486,17 @@ pub struct TagOffer {
     pub images: usize,
 }
 
-/// Tags that could become buckets: every tag except those buckets use
-/// (their names and extra tags) and the old automatic format and
-/// resolution rows (D17). Only images under `root` count.
-pub fn tag_offers(
+/// The images each tag would bring into a bucket: every stored row except
+/// tags that buckets use (their names and extra tags), the old automatic
+/// format and resolution rows (D17), and files outside `root` or in a
+/// disabled folder. Missing files are kept. The offer and the conversion
+/// both use this, so they always agree.
+fn tag_candidates(
     index: &LibraryIndex,
     tags: &TagDatabase,
     root: &Path,
-) -> Result<Vec<TagOffer>, String> {
+    disabled: &[PathBuf],
+) -> Result<std::collections::BTreeMap<String, Vec<PathBuf>>, String> {
     let protected: HashSet<String> = index
         .list_collections()
         .map_err(|e| e.to_string())?
@@ -502,52 +505,63 @@ pub fn tag_offers(
         .collect();
     let automatic: HashSet<(String, String)> =
         tags.automatic_tag_rows(&protected)?.into_iter().collect();
-    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut candidates: std::collections::BTreeMap<String, Vec<PathBuf>> = Default::default();
     for (path, tag) in tags.stored_rows()? {
+        let file = PathBuf::from(&path);
         if protected.contains(&tag)
-            || !Path::new(&path).starts_with(root)
+            || !visible(&file, Some(root), disabled)
             || automatic.contains(&(path, tag.clone()))
         {
             continue;
         }
-        *counts.entry(tag).or_default() += 1;
+        candidates.entry(tag).or_default().push(file);
     }
-    let mut offers: Vec<TagOffer> = counts
+    for paths in candidates.values_mut() {
+        paths.sort();
+    }
+    Ok(candidates)
+}
+
+/// Tags that could become buckets, most images first.
+pub fn tag_offers(
+    index: &LibraryIndex,
+    tags: &TagDatabase,
+    root: &Path,
+    disabled: &[PathBuf],
+) -> Result<Vec<TagOffer>, String> {
+    let mut offers: Vec<TagOffer> = tag_candidates(index, tags, root, disabled)?
         .into_iter()
-        .map(|(tag, images)| TagOffer { tag, images })
+        .map(|(tag, paths)| TagOffer {
+            tag,
+            images: paths.len(),
+        })
         .collect();
     offers.sort_by(|a, b| b.images.cmp(&a.images).then_with(|| a.tag.cmp(&b.tag)));
     Ok(offers)
 }
 
-/// Makes a bucket named `tag` whose members are the tag's images under
-/// `root`, missing ones included. The tag rows are not touched. Returns the
-/// bucket and its member count; on failure nothing is created.
+/// Makes a bucket named `tag` from exactly the images its offer counted,
+/// with the bucket and all its members written in one transaction: on any
+/// failure nothing is created. The tag rows are not touched. Returns the
+/// bucket and its member count.
 pub fn bucket_from_tag(
     index: &LibraryIndex,
     tags: &TagDatabase,
     library_id: &str,
     root: &Path,
+    disabled: &[PathBuf],
     tag: &str,
 ) -> Result<(Collection, usize), String> {
     require_migrated(index)?;
-    let paths: Vec<PathBuf> = tags
-        .stored_paths_for_all_tags_checked(&[tag.to_string()])?
-        .into_iter()
-        .filter(|path| path.starts_with(root))
+    let paths = tag_candidates(index, tags, root, disabled)?
+        .remove(tag)
+        .ok_or_else(|| format!("No images to add for “{tag}”"))?;
+    let members: Vec<(PathBuf, Option<String>)> = paths
+        .iter()
+        .map(|path| (path.clone(), current_fingerprint(index, path)))
         .collect();
-    let bucket = index
-        .create_collection(library_id, None, tag, &[], None, None)
-        .map_err(|e| e.to_string())?;
-    if let Err(error) = add_to_bucket(index, bucket.id, &paths) {
-        return match index.delete_collection(bucket.id) {
-            Ok(()) => Err(error),
-            Err(rollback) => Err(format!(
-                "{error}; removing the new bucket failed: {rollback}"
-            )),
-        };
-    }
-    Ok((bucket, paths.len()))
+    let bucket = index.create_bucket_with_members(library_id, tag, &members)?;
+    Ok((bucket, members.len()))
 }
 
 #[cfg(test)]
@@ -878,7 +892,7 @@ mod tests {
             rows
         };
 
-        let offers = tag_offers(&f.index, &f.tags, &f.root).unwrap();
+        let offers = tag_offers(&f.index, &f.tags, &f.root, &[]).unwrap();
         assert_eq!(
             offers,
             vec![
@@ -895,7 +909,7 @@ mod tests {
         );
 
         let (bucket, members) =
-            bucket_from_tag(&f.index, &f.tags, "test", &f.root, "nature").unwrap();
+            bucket_from_tag(&f.index, &f.tags, "test", &f.root, &[], "nature").unwrap();
         assert_eq!((bucket.name.as_str(), members), ("nature", 3));
         let view = view(&f.index, bucket.id, Some(&f.root), &[]).unwrap();
         assert_eq!(view.paths, vec![a.clone(), b.clone()]);
@@ -904,15 +918,44 @@ mod tests {
         rows_after.sort();
         assert_eq!(rows_after, rows_before, "tag rows are untouched");
         assert!(
-            tag_offers(&f.index, &f.tags, &f.root)
+            tag_offers(&f.index, &f.tags, &f.root, &[])
                 .unwrap()
                 .iter()
                 .all(|o| o.tag != "nature"),
             "a converted tag is no longer offered"
         );
         assert!(
-            bucket_from_tag(&f.index, &f.tags, "test", &f.root, "Nature").is_err(),
+            bucket_from_tag(&f.index, &f.tags, "test", &f.root, &[], "Nature").is_err(),
             "no second bucket with the same name"
         );
+
+        // The conversion takes exactly what the offer counted: the JPEG's
+        // hand-made png tag, not the PNG's automatic one.
+        let (png, members) =
+            bucket_from_tag(&f.index, &f.tags, "test", &f.root, &[], "png").unwrap();
+        assert_eq!(members, 1);
+        assert_eq!(
+            super::view(&f.index, png.id, Some(&f.root), &[])
+                .unwrap()
+                .paths,
+            vec![b.clone()]
+        );
+
+        // Disabled folders are neither counted nor written.
+        let hidden = f.image("off/d.jpg");
+        f.tags.add_tag(&hidden, "comics");
+        f.tags.add_tag(&a, "comics");
+        let disabled = vec![f.root.join("off")];
+        let offers = tag_offers(&f.index, &f.tags, &f.root, &disabled).unwrap();
+        assert_eq!(offers.iter().find(|o| o.tag == "comics").unwrap().images, 1);
+        let (comics, members) =
+            bucket_from_tag(&f.index, &f.tags, "test", &f.root, &disabled, "comics").unwrap();
+        assert_eq!(members, 1);
+        assert!(f
+            .index
+            .bucket_members(&[comics.id])
+            .unwrap()
+            .iter()
+            .all(|m| !m.last_path.starts_with(f.root.join("off"))));
     }
 }

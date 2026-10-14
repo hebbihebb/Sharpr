@@ -681,6 +681,23 @@ impl SharprWindow {
         }
     }
 
+    /// The enabled part of the library changed: running background passes
+    /// over the old scope stop, and new ones cover the new scope.
+    pub fn library_scope_changed(&self) {
+        let job = {
+            let st = self.imp().state.borrow();
+            st.settings
+                .active_library()
+                .map(|library| (library.root.clone(), st.disabled_folders.clone()))
+        };
+        if let (Some((root, disabled)), Some(service)) =
+            (job, self.imp().visual_index.borrow().as_ref())
+        {
+            service.request(crate::visual_search::index::Job { root, disabled });
+        }
+        self.request_fingerprints();
+    }
+
     /// Asks for a fingerprint pass over the active library. Passes over the
     /// same library are coalesced and spaced out by the service.
     pub fn request_fingerprints(&self) {
@@ -1692,6 +1709,7 @@ impl SharprWindow {
                 if let Some(win) = window_weak.upgrade() {
                     let _ = win.bump_thumbnail_generation("folder.ignored_changed");
                     win.complete_thumbnail_ops();
+                    win.library_scope_changed();
                 }
                 let label = if ignored {
                     "Folder disabled"

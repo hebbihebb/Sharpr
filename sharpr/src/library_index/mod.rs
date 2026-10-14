@@ -777,41 +777,11 @@ impl LibraryIndex {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
         }
-        let now = now_secs();
-        let primary_tag = normalize_collection_tag(name);
-        self.ensure_bucket_tag_free(&primary_tag, None)?;
-        let mut extra_tags = normalize_collection_tags(extra_tags);
-        extra_tags.retain(|tag| tag != &primary_tag);
+        self.ensure_bucket_tag_free(&normalize_collection_tag(name), None)?;
         let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO collections (
-                 library_id, parent_id, name, primary_tag, extra_tags_json, color, icon_name,
-                 created_at, updated_at, tag_migrated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?8)",
-            params![
-                library_id,
-                parent_id,
-                name,
-                primary_tag,
-                tags_to_json(&extra_tags),
-                color,
-                icon_name,
-                now
-            ],
-        )?;
-        let id = conn.last_insert_rowid();
-        Ok(Collection {
-            id,
-            parent_id,
-            name: name.to_string(),
-            primary_tag,
-            extra_tags,
-            color: color.map(str::to_string),
-            icon_name: icon_name.map(str::to_string),
-            created_at: now,
-            updated_at: now,
-            item_count: 0,
-        })
+        insert_collection(
+            &conn, library_id, parent_id, name, extra_tags, color, icon_name,
+        )
     }
 
     pub fn ensure_output_collection(&self, name: &str) -> rusqlite::Result<i64> {
@@ -1196,6 +1166,50 @@ fn current_status(
     let sql = format!("SELECT {column} FROM images WHERE path = ?1");
     conn.query_row(&sql, params![path_to_string(path)], |row| row.get(0))
         .optional()
+}
+
+/// Inserts a bucket row; the caller has checked that its name is free.
+pub(crate) fn insert_collection(
+    conn: &rusqlite::Connection,
+    library_id: &str,
+    parent_id: Option<i64>,
+    name: &str,
+    extra_tags: &[String],
+    color: Option<&str>,
+    icon_name: Option<&str>,
+) -> rusqlite::Result<Collection> {
+    let now = now_secs();
+    let primary_tag = normalize_collection_tag(name);
+    let mut extra_tags = normalize_collection_tags(extra_tags);
+    extra_tags.retain(|tag| tag != &primary_tag);
+    conn.execute(
+        "INSERT INTO collections (
+             library_id, parent_id, name, primary_tag, extra_tags_json, color, icon_name,
+             created_at, updated_at, tag_migrated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?8)",
+        params![
+            library_id,
+            parent_id,
+            name,
+            primary_tag,
+            tags_to_json(&extra_tags),
+            color,
+            icon_name,
+            now
+        ],
+    )?;
+    Ok(Collection {
+        id: conn.last_insert_rowid(),
+        parent_id,
+        name: name.to_string(),
+        primary_tag,
+        extra_tags,
+        color: color.map(str::to_string),
+        icon_name: icon_name.map(str::to_string),
+        created_at: now,
+        updated_at: now,
+        item_count: 0,
+    })
 }
 
 fn now_secs() -> i64 {

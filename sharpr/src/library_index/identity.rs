@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, params_from_iter, Connection};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use super::{now_secs, path_to_string, LibraryIndex};
 
@@ -32,6 +32,33 @@ pub type FilesByFingerprint = HashMap<String, Vec<(PathBuf, u64, i64)>>;
 
 fn placeholders(n: usize) -> String {
     std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",")
+}
+
+/// Adds `(path, fingerprint)` members to bucket `id` inside `tx`; returns
+/// how many were new. A known fingerprint fills in one that was missing.
+fn insert_members(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    members: &[(PathBuf, Option<String>)],
+) -> rusqlite::Result<usize> {
+    let mut insert = tx.prepare(
+        "INSERT OR IGNORE INTO bucket_members (collection_id, last_path, fingerprint, added_at)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    let mut fill = tx.prepare(
+        "UPDATE bucket_members SET fingerprint = ?3
+         WHERE collection_id = ?1 AND last_path = ?2 AND fingerprint IS NULL",
+    )?;
+    let now = now_secs();
+    let mut added = 0;
+    for (path, fingerprint) in members {
+        let path = path_to_string(path);
+        added += insert.execute(params![id, path, fingerprint, now])?;
+        if fingerprint.is_some() {
+            fill.execute(params![id, path, fingerprint])?;
+        }
+    }
+    Ok(added)
 }
 
 impl LibraryIndex {
@@ -184,27 +211,43 @@ impl LibraryIndex {
     ) -> rusqlite::Result<usize> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
-        let mut added = 0;
-        {
-            let mut insert = tx.prepare(
-                "INSERT OR IGNORE INTO bucket_members (collection_id, last_path, fingerprint, added_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            let mut fill = tx.prepare(
-                "UPDATE bucket_members SET fingerprint = ?3
-                 WHERE collection_id = ?1 AND last_path = ?2 AND fingerprint IS NULL",
-            )?;
-            let now = now_secs();
-            for (path, fingerprint) in members {
-                let path = path_to_string(path);
-                added += insert.execute(params![id, path, fingerprint, now])?;
-                if fingerprint.is_some() {
-                    fill.execute(params![id, path, fingerprint])?;
-                }
-            }
-        }
+        let added = insert_members(&tx, id, members)?;
         tx.commit()?;
         Ok(added)
+    }
+
+    /// Creates a root bucket named `name` with `members` in one
+    /// transaction: on any failure, or a crash, neither exists.
+    pub fn create_bucket_with_members(
+        &self,
+        library_id: &str,
+        name: &str,
+        members: &[(PathBuf, Option<String>)],
+    ) -> Result<super::Collection, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("A bucket needs a name".into());
+        }
+        let mut conn = self.conn().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let primary_tag = super::normalize_collection_tag(name);
+        let taken: Option<String> = tx
+            .query_row(
+                "SELECT name FROM collections WHERE primary_tag = ?1 LIMIT 1",
+                params![primary_tag],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(existing) = taken {
+            return Err(format!("A bucket named “{existing}” already exists"));
+        }
+        let mut bucket = super::insert_collection(&tx, library_id, None, name, &[], None, None)
+            .map_err(|e| e.to_string())?;
+        insert_members(&tx, bucket.id, members).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        bucket.item_count = members.len();
+        Ok(bucket)
     }
 
     /// Removes from the buckets `ids` every member stored at one of `paths`
@@ -352,5 +395,42 @@ impl LibraryIndex {
         )?;
         let mut rows = stmt.query(params![path_to_string(path), size as i64, mtime_ns])?;
         rows.next()?.map(|row| row.get(0)).transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_member_write_leaves_no_bucket_behind() {
+        let index = LibraryIndex::open_in_memory().unwrap();
+        index
+            .conn()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_members BEFORE INSERT ON bucket_members
+                 BEGIN SELECT RAISE(ABORT, 'member write failure'); END;",
+            )
+            .unwrap();
+        let members = vec![(PathBuf::from("/library/a.jpg"), None)];
+        let error = index
+            .create_bucket_with_members("test", "nature", &members)
+            .unwrap_err();
+        assert!(error.contains("member write failure"), "{error}");
+        assert!(index.list_collections().unwrap().is_empty());
+
+        index
+            .conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_members;")
+            .unwrap();
+        let bucket = index
+            .create_bucket_with_members("test", "nature", &members)
+            .unwrap();
+        assert_eq!(index.bucket_members(&[bucket.id]).unwrap().len(), 1);
+        assert!(index
+            .create_bucket_with_members("test", "Nature", &members)
+            .is_err());
     }
 }

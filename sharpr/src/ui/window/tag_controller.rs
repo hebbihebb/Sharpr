@@ -357,12 +357,13 @@ impl SharprWindow {
     /// the offer, and only the first time there is something to offer.
     pub(super) fn offer_tags_as_buckets(&self, once: bool) {
         const NOTICE: &str = "tag_bucket_offer_shown_at";
-        let (index, tags, root) = {
+        let (index, tags, root, disabled) = {
             let st = self.imp().state.borrow();
             (
                 st.library_index.clone(),
                 st.tags.clone(),
                 st.settings.active_library().map(|l| l.root.clone()),
+                st.disabled_folders.clone(),
             )
         };
         let (Some(index), Some(tags), Some(root)) = (index, tags, root) else {
@@ -379,7 +380,7 @@ impl SharprWindow {
                 if once && index.notice_shown(NOTICE).map_err(|e| e.to_string())? {
                     return Ok(None);
                 }
-                let offers = crate::buckets::tag_offers(&index, &tags, &root)?;
+                let offers = crate::buckets::tag_offers(&index, &tags, &root, &disabled)?;
                 if once && !offers.is_empty() {
                     index.mark_notice_shown(NOTICE).map_err(|e| e.to_string())?;
                 }
@@ -497,13 +498,14 @@ impl SharprWindow {
     }
 
     fn create_buckets_from_tags(&self, chosen: Vec<String>) {
-        let (index, tags, library, root) = {
+        let (index, tags, library, root, disabled) = {
             let st = self.imp().state.borrow();
             (
                 st.library_index.clone(),
                 st.tags.clone(),
                 st.settings.active_library_id.clone(),
                 st.settings.active_library().map(|l| l.root.clone()),
+                st.disabled_folders.clone(),
             )
         };
         let (Some(index), Some(tags), Some(library), Some(root)) = (index, tags, library, root)
@@ -518,9 +520,10 @@ impl SharprWindow {
             let results: Vec<(String, Result<usize, String>)> = chosen
                 .into_iter()
                 .map(|tag| {
-                    let result =
-                        crate::buckets::bucket_from_tag(&index, &tags, &library, &root, &tag)
-                            .map(|(_, members)| members);
+                    let result = crate::buckets::bucket_from_tag(
+                        &index, &tags, &library, &root, &disabled, &tag,
+                    )
+                    .map(|(_, members)| members);
                     (tag, result)
                 })
                 .collect();
