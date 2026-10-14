@@ -245,6 +245,7 @@ mod tests {
             model: dir.join("model.gguf"),
             projector: dir.join("projector.gguf"),
             server: dir.join("llama-server"),
+            gpu_server: None,
         };
         std::fs::write(&files.model, b"GGUF one").unwrap();
         std::fs::write(&files.projector, b"GGUF two").unwrap();

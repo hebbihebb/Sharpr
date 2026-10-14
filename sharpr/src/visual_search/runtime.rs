@@ -54,14 +54,113 @@ const START_TIMEOUT: Duration = Duration::from_secs(120);
 /// Long enough for one image on a slow, busy CPU.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// A graphics card `llama-server` can run on, from `--list-devices`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GpuDevice {
+    /// The id `--device` takes, such as `Vulkan0`.
+    pub id: String,
+    pub name: String,
+    pub free_mib: u64,
+}
+
+/// The model, projector, and working memory need about 1.2 GB on the card.
+const GPU_FREE_MIB: u64 = 2048;
+
+/// The first graphics card with room for the model. ggml lists discrete
+/// cards before integrated ones, which share the computer's own memory.
+pub fn pick_gpu(gpu_server: &std::path::Path) -> Option<GpuDevice> {
+    let mut command = Command::new(gpu_server);
+    command
+        .arg("--list-devices")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    set_library_path(&mut command, gpu_server);
+    let mut child = command.spawn().ok()?;
+    let started = Instant::now();
+    while matches!(child.try_wait(), Ok(None)) {
+        if started.elapsed() > Duration::from_secs(30) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let output = child.wait_with_output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout).into_owned()
+        + &String::from_utf8_lossy(&output.stderr);
+    parse_devices(&text)
+        .into_iter()
+        .find(|device| device.free_mib >= GPU_FREE_MIB)
+}
+
+/// Lines like `  Vulkan0: NVIDIA GeForce RTX 4060 (8188 MiB, 7038 MiB free)`.
+pub fn parse_devices(text: &str) -> Vec<GpuDevice> {
+    text.lines()
+        .filter_map(|line| {
+            let (id, rest) = line.trim().split_once(": ")?;
+            if id.contains(' ') || id.is_empty() {
+                return None;
+            }
+            let open = rest.rfind(" (")?;
+            let memory = rest[open + 2..].strip_suffix(" MiB free)")?;
+            let free = memory.rsplit(", ").next()?.trim().parse().ok()?;
+            Some(GpuDevice {
+                id: id.to_string(),
+                name: rest[..open].to_string(),
+                free_mib: free,
+            })
+        })
+        .collect()
+}
+
+/// The prebuilt runtimes keep their libraries beside the binary.
+fn set_library_path(command: &mut Command, server: &std::path::Path) {
+    if let Some(dir) = server.parent() {
+        let mut paths = vec![dir.to_path_buf()];
+        if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
+            paths.extend(std::env::split_paths(&existing));
+        }
+        if let Ok(joined) = std::env::join_paths(paths) {
+            command.env("LD_LIBRARY_PATH", joined);
+        }
+    }
+}
+
 impl Server {
-    /// Starts a server and waits until it answers. The child inherits the
-    /// calling thread's CPU and I/O priority.
+    /// Starts a server on the processor and waits until it answers. The
+    /// child inherits the calling thread's CPU and I/O priority.
     pub fn start(files: &ModelFiles, mode: Mode) -> Result<Self, String> {
+        Self::spawn(&files.server, files, mode, None)
+    }
+
+    /// Starts an image server on `device` with the GPU build: about 17
+    /// times faster than the processor, with matching vectors (Phase 5
+    /// experiment, October 14).
+    pub fn start_gpu(files: &ModelFiles, device: &GpuDevice) -> Result<Self, String> {
+        let server = files
+            .gpu_server
+            .as_ref()
+            .ok_or("No GPU build of llama-server is installed")?;
+        Self::spawn(server, files, Mode::Images, Some(&device.id))
+    }
+
+    fn spawn(
+        server_path: &std::path::Path,
+        files: &ModelFiles,
+        mode: Mode,
+        device: Option<&str>,
+    ) -> Result<Self, String> {
         let port = free_port()?;
         let key = random_key()?;
         let threads = mode.threads().to_string();
-        let mut command = Command::new(&files.server);
+        let mut command = Command::new(server_path);
+        if let Some(device) = device {
+            command.args(["--device", device, "--n-gpu-layers", "99"]);
+        } else {
+            // A CPU build ignores this; a GPU build must not touch the card.
+            command.args(["--n-gpu-layers", "0"]);
+        }
         command.arg("--model").arg(&files.model);
         if mode == Mode::Images {
             command.arg("--mmproj").arg(&files.projector);
@@ -78,16 +177,7 @@ impl Server {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(server_log(mode));
-        // The prebuilt runtime keeps its libraries beside the binary.
-        if let Some(dir) = files.server.parent() {
-            let mut paths = vec![dir.to_path_buf()];
-            if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
-                paths.extend(std::env::split_paths(&existing));
-            }
-            if let Ok(joined) = std::env::join_paths(paths) {
-                command.env("LD_LIBRARY_PATH", joined);
-            }
-        }
+        set_library_path(&mut command, server_path);
         // SAFETY: prctl is async-signal-safe and touches only the child.
         unsafe {
             use std::os::unix::process::CommandExt;
@@ -98,7 +188,7 @@ impl Server {
         }
         let child = command
             .spawn()
-            .map_err(|e| format!("Could not start {}: {e}", files.server.display()))?;
+            .map_err(|e| format!("Could not start {}: {e}", server_path.display()))?;
         let mut server = Server {
             child,
             port,
@@ -367,6 +457,25 @@ pub fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graphics_cards_are_read_from_the_device_list() {
+        let text = "load_backend: loaded Vulkan backend\nAvailable devices:\n  \
+            Vulkan0: NVIDIA GeForce RTX 4060 Laptop GPU (8188 MiB, 7038 MiB free)\n  \
+            Vulkan1: AMD Radeon 780M Graphics (RADV PHOENIX) (8088 MiB, 8005 MiB free)\n";
+        let devices = parse_devices(text);
+        assert_eq!(devices.len(), 2);
+        assert_eq!(
+            devices[0],
+            GpuDevice {
+                id: "Vulkan0".into(),
+                name: "NVIDIA GeForce RTX 4060 Laptop GPU".into(),
+                free_mib: 7038
+            }
+        );
+        assert_eq!(devices[1].name, "AMD Radeon 780M Graphics (RADV PHOENIX)");
+        assert!(parse_devices("Available devices:\n").is_empty());
+    }
 
     #[test]
     fn base64_matches_the_standard() {

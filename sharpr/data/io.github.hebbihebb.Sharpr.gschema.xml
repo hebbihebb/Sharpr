@@ -6,6 +6,11 @@
       <summary>Last opened folder</summary>
       <description>The path of the folder last opened by the user.</description>
     </key>
+    <key name="visual-search-gpu" type="b">
+      <default>true</default>
+      <summary>Index visual search on the graphics card</summary>
+      <description>Whether visual-search indexing uses an installed GPU build of llama-server, falling back to the processor when no graphics card has room.</description>
+    </key>
     <key name="metadata-visible" type="b">
       <default>true</default>
       <summary>Metadata overlay visible</summary>

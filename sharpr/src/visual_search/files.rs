@@ -15,6 +15,9 @@ pub struct ModelFiles {
     pub model: PathBuf,
     pub projector: PathBuf,
     pub server: PathBuf,
+    /// A GPU (Vulkan) build of `llama-server` for indexing, if installed in
+    /// the model folder's `runtime-gpu/`.
+    pub gpu_server: Option<PathBuf>,
 }
 
 /// The folder Sharpr checks for the model:
@@ -94,10 +97,16 @@ pub fn locate_in(dir: &Path, servers: &[PathBuf]) -> Result<ModelFiles, String> 
                 dir.join("runtime").display()
             )
         })?;
+    let gpu_server = std::env::var_os("SHARPR_LLAMA_SERVER_GPU")
+        .map(PathBuf::from)
+        .into_iter()
+        .chain([dir.join("runtime-gpu").join("llama-server")])
+        .find(|path| is_executable(path));
     Ok(ModelFiles {
         model,
         projector,
         server,
+        gpu_server,
     })
 }
 

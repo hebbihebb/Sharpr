@@ -336,7 +336,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - **GPU experiment (October 14, approved by the user):** the official Vulkan build of the same llama.cpp (`b11457`), pinned to the RTX 4060 Laptop GPU, ran the same 1,000 images at **5.24 images/s, 17× the CPU**. That is about 20 minutes for the real library instead of 5 hours, using about 1.2 GB of graphics memory.
   - Its vectors match the CPU's at median cosine 0.99989 (minimum 0.9985), with 98% top-20 overlap, so both can share one index.
   - It also passes 30/30, with 85.3% relevant in the top 20 and 95.3% in the top 5.
-  - Not integrated yet. That needs a GPU runtime in the model folder and a Preferences switch, with the CPU as fallback; see `CURRENT_TASKS.md`.
+  - Integrated the same day, at the user's request: GPU indexing is the default when a GPU build is installed, with the processor as fallback. Phase 3 should have measured the GPU from the start.
 - **Match strength** is calibrated on the judged sample: the fifth-best score after subtracting each image's closeness to generic prompts. It separates 28 of 30 real queries from 13 of 15 absent subjects. It isn't judged below 50 indexed images.
 - **Decision for the user:** whether file names should still match, first, alongside visual results (implemented that way for now, so names like `seedvr2-…` stay findable).
 - **Left for acceptance:**

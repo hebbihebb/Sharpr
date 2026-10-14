@@ -54,27 +54,81 @@ pub trait Embedder {
 /// Embeds through a `Mode::Images` server, started at the first image.
 pub struct ServerEmbedder {
     files: ModelFiles,
+    use_gpu: bool,
     server: Option<Server>,
+    /// The graphics card the running server uses, if any.
+    on_gpu: Option<String>,
+    /// The GPU didn't work during this pass; the processor takes over.
+    gpu_failed: bool,
     crashes: usize,
+    /// Where the running server works, for the status line.
+    device: Arc<Mutex<Option<String>>>,
 }
 
 impl ServerEmbedder {
-    pub fn new(files: ModelFiles) -> Self {
+    pub fn new(files: ModelFiles, use_gpu: bool, device: Arc<Mutex<Option<String>>>) -> Self {
         Self {
             files,
+            use_gpu,
             server: None,
+            on_gpu: None,
+            gpu_failed: false,
             crashes: 0,
+            device,
         }
+    }
+
+    /// Starts a server: on a graphics card with room when the GPU build is
+    /// installed and allowed, otherwise on the processor.
+    fn ensure_server(&mut self) -> Result<(), EmbedError> {
+        if self.server.is_some() {
+            return Ok(());
+        }
+        self.on_gpu = None;
+        let gpu = (self.use_gpu && !self.gpu_failed)
+            .then(|| self.files.gpu_server.clone())
+            .flatten();
+        if let Some(gpu_server) = gpu {
+            match super::runtime::pick_gpu(&gpu_server) {
+                Some(device) => match Server::start_gpu(&self.files, &device) {
+                    Ok(server) => {
+                        self.server = Some(server);
+                        self.on_gpu = Some(device.name);
+                    }
+                    Err(error) => {
+                        crate::bench_warn!(
+                            "visual_search.gpu.fail",
+                            serde_json::json!({"device": device.name, "error": error}),
+                        );
+                        self.gpu_failed = true;
+                    }
+                },
+                None => self.gpu_failed = true,
+            }
+        }
+        if self.server.is_none() {
+            self.server =
+                Some(Server::start(&self.files, Mode::Images).map_err(EmbedError::Runtime)?);
+        }
+        crate::bench_event!(
+            "visual_search.server",
+            serde_json::json!({"device": self.on_gpu.as_deref().unwrap_or("processor")}),
+        );
+        *self.device.lock().unwrap_or_else(|e| e.into_inner()) = self.on_gpu.clone();
+        Ok(())
+    }
+}
+
+impl Drop for ServerEmbedder {
+    fn drop(&mut self) {
+        *self.device.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
 impl Embedder for ServerEmbedder {
     fn embed_image(&mut self, path: &Path) -> Result<Vec<f32>, EmbedError> {
         let png = super::prepare::prepare_png(path).map_err(EmbedError::Image)?;
-        if self.server.is_none() {
-            let server = Server::start(&self.files, Mode::Images).map_err(EmbedError::Runtime)?;
-            self.server = Some(server);
-        }
+        self.ensure_server()?;
         let server = self.server.as_mut().expect("started above");
         match server.embed_png(&png) {
             Ok(vector) => Ok(vector),
@@ -85,6 +139,17 @@ impl Embedder for ServerEmbedder {
                 } else {
                     Err(EmbedError::Image(error))
                 }
+            }
+            Err(error) if self.on_gpu.is_some() => {
+                // The graphics card failed, perhaps another program took its
+                // memory: finish the pass on the processor, this image too.
+                crate::bench_warn!(
+                    "visual_search.gpu.fail",
+                    serde_json::json!({"device": self.on_gpu, "error": error}),
+                );
+                self.server = None;
+                self.gpu_failed = true;
+                self.embed_image(path)
             }
             Err(error) => {
                 // The image took the server down: skip it, restart for the
@@ -209,10 +274,17 @@ pub struct Service {
     cancel: Arc<AtomicBool>,
     status: Arc<Mutex<Status>>,
     vectors_version: Arc<AtomicU64>,
+    use_gpu: Arc<AtomicBool>,
+    device: Arc<Mutex<Option<String>>>,
 }
 
 impl Service {
-    pub fn start(index: Arc<LibraryIndex>, store_path: PathBuf) -> Self {
+    /// `use_gpu` allows indexing on a graphics card (the GPU build must be
+    /// installed); it can change later with `set_use_gpu`.
+    pub fn start(index: Arc<LibraryIndex>, store_path: PathBuf, use_gpu: bool) -> Self {
+        let use_gpu = Arc::new(AtomicBool::new(use_gpu));
+        let device = Arc::new(Mutex::new(None));
+        let (thread_use_gpu, thread_device) = (use_gpu.clone(), device.clone());
         let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
         let cancel = Arc::new(AtomicBool::new(false));
         let status = Arc::new(Mutex::new(Status::Waiting));
@@ -256,7 +328,11 @@ impl Service {
                         };
                         let store = Store::open(&store_path)?;
                         let model = store.model_key(&files)?;
-                        let mut embedder = ServerEmbedder::new(files);
+                        let mut embedder = ServerEmbedder::new(
+                            files,
+                            thread_use_gpu.load(Ordering::Relaxed),
+                            thread_device.clone(),
+                        );
                         let canceled = || thread_cancel.load(Ordering::Relaxed);
                         let last_indexed = std::cell::Cell::new(None);
                         let progress = |coverage: Coverage| {
@@ -313,7 +389,23 @@ impl Service {
             cancel,
             status,
             vectors_version,
+            use_gpu,
+            device,
         }
+    }
+
+    /// Applies from the next pass on.
+    pub fn set_use_gpu(&self, enabled: bool) {
+        self.use_gpu.store(enabled, Ordering::Relaxed);
+    }
+
+    /// The graphics card the running pass uses; None while idle or on the
+    /// processor.
+    pub fn device(&self) -> Option<String> {
+        self.device
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Asks for a pass over `job`'s library.
@@ -539,7 +631,8 @@ mod tests {
         }
         let output = PathBuf::from(env("SHARPR_BENCH_OUTPUT"));
 
-        let mut embedder = ServerEmbedder::new(files.clone());
+        let use_gpu = files.gpu_server.is_some();
+        let mut embedder = ServerEmbedder::new(files.clone(), use_gpu, Arc::new(Mutex::new(None)));
         let (mut vectors, mut embedded, mut errors) = (Vec::new(), Vec::new(), Vec::new());
         let started = std::time::Instant::now();
         for (i, path) in images.iter().enumerate() {
@@ -636,7 +729,7 @@ mod tests {
         let index = Arc::new(LibraryIndex::open_in_memory().unwrap());
         fingerprint(&index, &root, &[]);
         let store_path = root.join("store/visual-search.sqlite");
-        let service = Service::start(index, store_path.clone());
+        let service = Service::start(index, store_path.clone(), true);
         service.request(Job {
             root: root.clone(),
             disabled: Vec::new(),

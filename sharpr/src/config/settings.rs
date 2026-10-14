@@ -44,6 +44,8 @@ pub struct AppSettings {
     pub last_folder: Option<PathBuf>,
     /// Whether the metadata overlay is visible by default.
     pub metadata_visible: bool,
+    /// Whether visual-search indexing may use the graphics card.
+    pub visual_search_gpu: bool,
     /// Restored main window width in logical pixels.
     pub window_width: i32,
     /// Restored main window height in logical pixels.
@@ -89,6 +91,7 @@ impl std::fmt::Debug for AppSettings {
         f.debug_struct("AppSettings")
             .field("last_folder", &self.last_folder)
             .field("metadata_visible", &self.metadata_visible)
+            .field("visual_search_gpu", &self.visual_search_gpu)
             .field("window_width", &self.window_width)
             .field("window_height", &self.window_height)
             .field("library_root", &self.library_root)
@@ -108,6 +111,7 @@ impl Default for AppSettings {
         Self {
             last_folder: None,
             metadata_visible: true,
+            visual_search_gpu: true,
             window_width: 1400,
             window_height: 900,
             library_root: None,
@@ -143,6 +147,7 @@ impl AppSettings {
         Self {
             last_folder: active_last_folder.or(last_folder),
             metadata_visible: settings.boolean("metadata-visible"),
+            visual_search_gpu: settings.boolean("visual-search-gpu"),
             window_width: settings.int("window-width").clamp(400, 7680),
             window_height: settings.int("window-height").clamp(300, 4320),
             library_root,
@@ -286,6 +291,11 @@ impl AppSettings {
     pub fn set_metadata_visible(&mut self, visible: bool) {
         self.metadata_visible = visible;
         let _ = self.settings.set_boolean("metadata-visible", visible);
+    }
+
+    pub fn set_visual_search_gpu(&mut self, enabled: bool) {
+        self.visual_search_gpu = enabled;
+        let _ = self.settings.set_boolean("visual-search-gpu", enabled);
     }
 
     pub fn set_library_root(&mut self, path: Option<PathBuf>) {
@@ -493,6 +503,7 @@ mod tests {
         let app = AppSettings {
             last_folder: Some(PathBuf::from("/tmp/library/Art")),
             metadata_visible: false,
+            visual_search_gpu: true,
             window_width: 10,
             window_height: 50000,
             library_root: Some(PathBuf::from("/tmp/library")),

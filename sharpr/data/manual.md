@@ -28,7 +28,7 @@ Start typing anywhere, or press Ctrl+F, and describe what you are looking for: `
 
 The line under the search box says how well the results match and how much of the library is indexed. "Only weak matches" means the words may not fit anything there.
 
-Visual search needs the EmbeddingGemma 2 model, installed once into the folder shown in Preferences → Library → Visual Search. Indexing then runs in the background at the lowest priority; a full library can take several hours, and it resumes after a restart. Until the model is installed, or before any images are indexed, search matches file names only.
+Visual search needs the EmbeddingGemma 2 model, installed once into the folder shown in Preferences → Library → Visual Search. Indexing then runs in the background at the lowest priority, on the graphics card when a GPU build is installed (Preferences → Library → Use Graphics Card): about 20 minutes for a library of 6,000 images, against several hours on the processor. It resumes after a restart. Until the model is installed, or before any images are indexed, search matches file names only.
 
 ## Buckets
 

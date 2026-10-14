@@ -178,6 +178,18 @@ fn build_visual_search_group(parent: &SharprWindow) -> libadwaita::PreferencesGr
         });
     }
 
+    let gpu_row = libadwaita::SwitchRow::new();
+    gpu_row.set_title("Use Graphics Card");
+    gpu_row.set_subtitle(&gpu_subtitle());
+    gpu_row.set_active(parent.app_state().borrow().settings.visual_search_gpu);
+    {
+        let parent = parent.clone();
+        gpu_row.connect_active_notify(move |row| {
+            parent.set_visual_search_gpu(row.is_active());
+        });
+    }
+    group.add(&gpu_row);
+
     let dir = crate::visual_search::files::model_dir();
     let folder_row = libadwaita::ActionRow::new();
     folder_row.set_title("Model Folder");
@@ -197,6 +209,23 @@ fn build_visual_search_group(parent: &SharprWindow) -> libadwaita::PreferencesGr
     group
 }
 
+/// Whether a GPU build is installed; which card it picks shows while
+/// indexing runs.
+fn gpu_subtitle() -> String {
+    let installed = crate::visual_search::files::locate()
+        .ok()
+        .and_then(|files| files.gpu_server)
+        .is_some();
+    if installed {
+        "Indexes about 17 times faster than the processor, using less energy per image. \
+         Falls back to the processor when no card has room."
+            .into()
+    } else {
+        "No GPU build of llama-server in the model folder's runtime-gpu; indexing uses the processor"
+            .into()
+    }
+}
+
 fn visual_search_status(window: &SharprWindow) -> String {
     use crate::visual_search::index::Status;
     let failed = |failed: usize| {
@@ -210,7 +239,10 @@ fn visual_search_status(window: &SharprWindow) -> String {
         None | Some(Status::Waiting) => "Starts after image fingerprints are made".into(),
         Some(Status::Unavailable(message)) => message,
         Some(Status::Indexing(c)) => format!(
-            "Indexing: {} of {} images ready{}…",
+            "Indexing on {}: {} of {} images ready{}…",
+            window
+                .visual_search_device()
+                .unwrap_or_else(|| "the processor".into()),
             c.indexed,
             c.images,
             failed(c.failed)

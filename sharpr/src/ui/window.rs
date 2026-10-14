@@ -660,6 +660,27 @@ impl SharprWindow {
             .map(|service| service.status())
     }
 
+    /// The graphics card indexing runs on right now, if any.
+    pub fn visual_search_device(&self) -> Option<String> {
+        self.imp()
+            .visual_index
+            .borrow()
+            .as_ref()
+            .and_then(|service| service.device())
+    }
+
+    /// Lets indexing use the graphics card, from the next pass on.
+    pub fn set_visual_search_gpu(&self, enabled: bool) {
+        self.imp()
+            .state
+            .borrow_mut()
+            .settings
+            .set_visual_search_gpu(enabled);
+        if let Some(service) = self.imp().visual_index.borrow().as_ref() {
+            service.set_use_gpu(enabled);
+        }
+    }
+
     /// Asks for a fingerprint pass over the active library. Passes over the
     /// same library are coalesced and spaced out by the service.
     pub fn request_fingerprints(&self) {
@@ -878,9 +899,11 @@ impl SharprWindow {
             let (changed_tx, changed_rx) = async_channel::unbounded::<()>();
             let relink_index = index.clone();
             // Visual search indexes what the fingerprint pass just covered.
+            let use_gpu = self.imp().state.borrow().settings.visual_search_gpu;
             let visual_index = Arc::new(crate::visual_search::index::Service::start(
                 index.clone(),
                 crate::visual_search::store::default_path(),
+                use_gpu,
             ));
             *self.imp().visual_index.borrow_mut() = Some(visual_index.clone());
             *self.imp().visual_searcher.borrow_mut() =
