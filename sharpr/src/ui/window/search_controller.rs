@@ -9,18 +9,47 @@ pub(super) struct BrowseResult {
     visual: Option<VisualSummary>,
 }
 
+#[derive(Clone)]
 pub(super) enum VisualSummary {
     Ranked {
         name_matches: usize,
-        ranked: crate::visual_search::search::Ranked,
-        limit: usize,
+        /// Coverage over every candidate, file-name matches included.
+        indexed: usize,
+        eligible: usize,
+        strength: Option<crate::visual_search::search::Strength>,
+        /// More visual results wait behind "Show More".
+        more: bool,
     },
     /// Visual search couldn't run; file names were matched instead.
     Unavailable(String),
 }
 
-/// Fresh fingerprints by path, for one search session.
-type FingerprintCache = (u64, std::collections::HashMap<String, (u64, i64, String)>);
+/// One visual search's complete ranking. "Show More" pages through it
+/// without ranking again, so results already shown never move while
+/// indexing adds vectors. A new query replaces it.
+struct RankedSnapshot {
+    /// The browse session and the search box's text it answers.
+    key: (u64, String),
+    by_name: Vec<PathBuf>,
+    /// Visual results, closest first, without the file-name matches.
+    visual: Vec<PathBuf>,
+    summary: VisualSummary,
+}
+
+impl RankedSnapshot {
+    fn page(&self, limit: usize) -> BrowseResult {
+        let mut paths = self.by_name.clone();
+        paths.extend(self.visual.iter().take(limit).cloned());
+        let mut summary = self.summary.clone();
+        if let VisualSummary::Ranked { more, .. } = &mut summary {
+            *more = self.visual.len() > limit;
+        }
+        BrowseResult {
+            paths,
+            visual: Some(summary),
+        }
+    }
+}
 
 /// State the browse worker keeps between queries.
 #[derive(Default)]
@@ -30,26 +59,10 @@ pub(super) struct BrowseCaches {
     /// library root and disabled folders. Walking the library tree on every
     /// keystroke grows with library size.
     library_paths: Option<(u64, PathBuf, Vec<PathBuf>, Vec<PathBuf>)>,
-    fingerprints: Option<FingerprintCache>,
+    ranked: Option<RankedSnapshot>,
 }
 
 impl BrowseCaches {
-    fn fingerprints(
-        &mut self,
-        session: u64,
-        index: &crate::library_index::LibraryIndex,
-    ) -> Result<&std::collections::HashMap<String, (u64, i64, String)>, String> {
-        if self
-            .fingerprints
-            .as_ref()
-            .is_none_or(|(s, _)| *s != session)
-        {
-            let map = index.cached_fingerprints().map_err(|e| e.to_string())?;
-            self.fingerprints = Some((session, map));
-        }
-        Ok(&self.fingerprints.as_ref().expect("filled above").1)
-    }
-
     fn library_paths(
         &mut self,
         session: u64,
@@ -428,11 +441,11 @@ impl SharprWindow {
             .as_ref()
             .map(|e| e.text().to_string())
             .unwrap_or_default();
-        self.run_browse_query_with_limit(query, false);
+        self.run_browse_query_with_limit(query, false, true);
     }
 
     /// Says how a visual search went, or hides the line.
-    fn show_search_status(&self, summary: Option<&VisualSummary>) {
+    pub(super) fn show_search_status(&self, summary: Option<&VisualSummary>) {
         let Some((bar, label, more)) = self.imp().search_status.borrow().clone() else {
             return;
         };
@@ -441,7 +454,7 @@ impl SharprWindow {
         label.set_text(text.as_deref().unwrap_or_default());
         more.set_visible(matches!(
             summary,
-            Some(VisualSummary::Ranked { ranked, limit, .. }) if ranked.indexed > *limit
+            Some(VisualSummary::Ranked { more: true, .. })
         ));
         self.sync_search_chip_bar();
     }
@@ -450,10 +463,12 @@ impl SharprWindow {
         self.imp()
             .visual_limit
             .set(crate::visual_search::search::PAGE);
-        self.run_browse_query_with_limit(query, sort_only);
+        self.run_browse_query_with_limit(query, sort_only, false);
     }
 
-    fn run_browse_query_with_limit(&self, query: String, sort_only: bool) {
+    /// `extend` shows the next page of the current visual ranking instead of
+    /// ranking again.
+    fn run_browse_query_with_limit(&self, query: String, sort_only: bool, extend: bool) {
         // Until a bucket's members arrive, the filmstrip still holds the previous
         // view; searching it would label those images as the bucket. The bucket
         // open runs the current query when it completes.
@@ -505,6 +520,7 @@ impl SharprWindow {
         let session = self.imp().browse_session.get();
         let searcher = self.imp().visual_searcher.borrow().clone();
         let visual_limit = self.imp().visual_limit.get();
+        let snapshot_query = query.clone();
         let (tx, rx) = async_channel::bounded(1);
         let expected_query = query.clone();
         let canceled = self.imp().browse_generation.clone();
@@ -517,6 +533,14 @@ impl SharprWindow {
                         || canceled.load(std::sync::atomic::Ordering::Relaxed) != generation;
                     if superseded() {
                         return Err("Search superseded".into());
+                    }
+                    let snapshot_key = (session, snapshot_query);
+                    if extend {
+                        if let Some(snapshot) = &cache.ranked {
+                            if snapshot.key == snapshot_key {
+                                return Ok(snapshot.page(visual_limit));
+                            }
+                        }
                     }
                     let candidates = if options.whole_library {
                         let root = root.clone().ok_or("No active library")?;
@@ -605,36 +629,46 @@ impl SharprWindow {
                         }
                     };
                     // File-name matches first, in the chosen order, then the
-                    // closest images.
+                    // closest images. Fingerprints are read fresh for every
+                    // query, so newly fingerprinted or edited files count.
                     let index = index.as_ref().ok_or("Library index is unavailable")?;
-                    let fingerprints = cache.fingerprints(session, index)?;
+                    let fingerprints = index.cached_fingerprints().map_err(|e| e.to_string())?;
                     let mut by_name = Vec::new();
-                    let mut others = Vec::new();
+                    let mut candidates = Vec::with_capacity(raw.len());
                     for (entry, stamp) in raw.into_iter().zip(stamps) {
+                        let fingerprint = fingerprints
+                            .get(entry.path.to_string_lossy().as_ref())
+                            .filter(|(size, mtime, _)| (*size, *mtime) == stamp)
+                            .map(|(_, _, hash)| hash.clone());
+                        candidates.push((entry.path.clone(), fingerprint));
                         if name_matches.contains(&entry.path) {
                             by_name.push(entry);
-                        } else {
-                            let fingerprint = fingerprints
-                                .get(entry.path.to_string_lossy().as_ref())
-                                .filter(|(size, mtime, _)| (*size, *mtime) == stamp)
-                                .map(|(_, _, hash)| hash.clone());
-                            others.push((entry.path, fingerprint));
                         }
                     }
                     crate::model::library::sort_raw_entries(&mut by_name, order);
-                    let ranked =
-                        crate::visual_search::search::rank(&others, &prepared, visual_limit);
-                    let name_count = by_name.len();
-                    let mut paths: Vec<PathBuf> = by_name.into_iter().map(|r| r.path).collect();
-                    paths.extend(ranked.paths.iter().cloned());
-                    Ok(BrowseResult {
-                        paths,
-                        visual: Some(VisualSummary::Ranked {
-                            name_matches: name_count,
-                            ranked,
-                            limit: visual_limit,
-                        }),
-                    })
+                    // Coverage and strength count every candidate; only the
+                    // listing leaves the file-name matches out of the ranking.
+                    let ranked = crate::visual_search::search::rank(&candidates, &prepared);
+                    let visual: Vec<PathBuf> = ranked
+                        .paths
+                        .into_iter()
+                        .filter(|path| !name_matches.contains(path))
+                        .collect();
+                    let snapshot = RankedSnapshot {
+                        key: snapshot_key,
+                        summary: VisualSummary::Ranked {
+                            name_matches: by_name.len(),
+                            indexed: ranked.indexed,
+                            eligible: ranked.eligible,
+                            strength: ranked.strength,
+                            more: false,
+                        },
+                        by_name: by_name.into_iter().map(|r| r.path).collect(),
+                        visual,
+                    };
+                    let page = snapshot.page(visual_limit);
+                    cache.ranked = Some(snapshot);
+                    Ok(page)
                 })();
                 result
             }),
@@ -665,16 +699,30 @@ impl SharprWindow {
                         .selected_index
                         .and_then(|i| win.imp().state.borrow().library.entry_at(i))
                         .map(|e| e.path());
+                    let scroll = win
+                        .imp()
+                        .filmstrip
+                        .borrow()
+                        .as_ref()
+                        .map(|f| f.scroll_position());
                     win.bump_thumbnail_generation("search.apply");
-                    win.imp().state.borrow_mut().selected_paths.clear();
-                    // Ranked results start at the closest image.
-                    let selected = if matches!(visual, Some(VisualSummary::Ranked { .. })) {
-                        None
-                    } else {
-                        selected
-                    };
+                    // A new ranking starts at the closest image; "Show More"
+                    // keeps the selection and the place in the list.
+                    let ranked = matches!(visual, Some(VisualSummary::Ranked { .. }));
+                    let selected = if ranked && !extend { None } else { selected };
+                    if !extend {
+                        win.imp().state.borrow_mut().selected_paths.clear();
+                    }
                     load_virtual_async(&win.imp().state, &paths);
                     win.present_browse_paths(selected.as_deref());
+                    if extend {
+                        if let (Some(filmstrip), Some(scroll)) =
+                            (win.imp().filmstrip.borrow().as_ref(), scroll)
+                        {
+                            filmstrip.refresh_multi_selection_visuals();
+                            filmstrip.restore_scroll_position(scroll);
+                        }
+                    }
                     if sort_only
                         && expected_query.is_empty()
                         && !win.imp().browse_options.borrow().has_filters()
@@ -700,17 +748,13 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
     use crate::visual_search::search::Strength;
     match summary {
         VisualSummary::Unavailable(reason) => {
-            if reason.starts_with("No images are indexed") {
-                "Matching file names only: no images are indexed for visual search yet".into()
-            } else {
-                "Matching file names only: visual search isn't available \
-                 (Preferences → Library shows why)"
-                    .into()
-            }
+            format!("Matching file names only. {}", reason.trim_end_matches('.'))
         }
         VisualSummary::Ranked {
             name_matches,
-            ranked,
+            indexed,
+            eligible,
+            strength,
             ..
         } => {
             let mut parts = Vec::new();
@@ -718,24 +762,21 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
                 parts.push(format!("{name_matches} by file name first"));
             }
             parts.push(
-                match ranked.strength {
+                match strength {
                     Some(Strength::Strong) => "Strong matches",
                     Some(Strength::Some) => "Some good matches",
                     Some(Strength::Weak) => {
                         "Only weak matches: these words may not fit anything here"
                     }
-                    None if ranked.indexed == 0 => "None of these images are indexed yet",
+                    None if *indexed == 0 => "None of these images are indexed yet",
                     None => "Closest first",
                 }
                 .to_string(),
             );
-            if ranked.indexed < ranked.eligible {
-                parts.push(format!(
-                    "{} of {} images indexed",
-                    ranked.indexed, ranked.eligible
-                ));
+            if indexed < eligible {
+                parts.push(format!("{indexed} of {eligible} images indexed"));
             } else {
-                parts.push(format!("all {} images searched", ranked.eligible));
+                parts.push(format!("all {eligible} images searched"));
             }
             parts.join(" · ")
         }
@@ -794,6 +835,40 @@ mod tests {
 
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn show_more_extends_one_ranking_without_reordering() {
+        let snapshot = RankedSnapshot {
+            key: (1, "tower".into()),
+            by_name: vec![PathBuf::from("/l/tower-notes.jpg")],
+            visual: (0..5)
+                .map(|i| PathBuf::from(format!("/l/{i}.jpg")))
+                .collect(),
+            summary: VisualSummary::Ranked {
+                name_matches: 1,
+                indexed: 6,
+                eligible: 6,
+                strength: None,
+                more: false,
+            },
+        };
+        let first = snapshot.page(2);
+        let more = snapshot.page(4);
+        assert_eq!(first.paths.len(), 3);
+        assert_eq!(
+            &more.paths[..3],
+            &first.paths[..],
+            "shown results never move"
+        );
+        assert!(matches!(
+            first.visual,
+            Some(VisualSummary::Ranked { more: true, .. })
+        ));
+        assert!(matches!(
+            snapshot.page(5).visual,
+            Some(VisualSummary::Ranked { more: false, .. })
+        ));
+    }
+
     #[test]
     fn later_queries_use_original_candidates_and_never_escape_scope() {
         let paths = vec![

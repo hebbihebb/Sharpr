@@ -83,7 +83,7 @@ impl Strength {
 
 #[derive(Debug, PartialEq)]
 pub struct Ranked {
-    /// The closest `limit` indexed candidates, closest first.
+    /// Every indexed candidate, closest first.
     pub paths: Vec<PathBuf>,
     /// Candidates with a vector; the rest aren't indexed yet.
     pub indexed: usize,
@@ -92,9 +92,8 @@ pub struct Ranked {
     pub strength: Option<Strength>,
 }
 
-/// Ranks `candidates` (each with its current fingerprint, if known) and
-/// keeps the closest `limit`.
-pub fn rank(candidates: &[(PathBuf, Option<String>)], prepared: &Prepared, limit: usize) -> Ranked {
+/// Ranks `candidates`, each with its current fingerprint if known.
+pub fn rank(candidates: &[(PathBuf, Option<String>)], prepared: &Prepared) -> Ranked {
     let mut scored: Vec<(f32, &PathBuf, &Vec<f32>)> = candidates
         .iter()
         .filter_map(|(path, fingerprint)| {
@@ -113,7 +112,6 @@ pub fn rank(candidates: &[(PathBuf, Option<String>)], prepared: &Prepared, limit
     Ranked {
         paths: scored
             .into_iter()
-            .take(limit)
             .map(|(_, path, _)| path.clone())
             .collect(),
         indexed,
@@ -359,13 +357,14 @@ mod tests {
             (PathBuf::from("/a/new.jpg"), None),
             (PathBuf::from("/a/unindexed.jpg"), Some("zz".to_string())),
         ];
-        let ranked = rank(&candidates, &prepared, 3);
+        let ranked = rank(&candidates, &prepared);
         assert_eq!(
             ranked.paths,
             vec![
                 PathBuf::from("/a/copy-of-near.jpg"),
                 PathBuf::from("/a/near.jpg"),
                 PathBuf::from("/a/mid.jpg"),
+                PathBuf::from("/a/far.jpg"),
             ],
             "closest first; an image outside the candidates never appears"
         );
@@ -380,9 +379,9 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(rank(&many, &prepared, 3).strength, Some(Strength::Strong));
+        assert_eq!(rank(&many, &prepared).strength, Some(Strength::Strong));
 
-        let none = rank(&candidates[4..], &prepared, 3);
+        let none = rank(&candidates[4..], &prepared);
         assert_eq!(
             (none.paths.len(), none.indexed, none.strength),
             (0, 0, None)

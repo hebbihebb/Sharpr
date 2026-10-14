@@ -3512,6 +3512,7 @@ impl SharprWindow {
         }
         self.imp().browse_snapshot.borrow_mut().take();
         *self.imp().browse_options.borrow_mut() = Default::default();
+        self.show_search_status(None);
         self.rebuild_search_chips();
         if let Some(filmstrip) = self.imp().filmstrip.borrow().as_ref() {
             filmstrip.reset_dimension_filters();

@@ -729,7 +729,7 @@ fn visual_search_ranks_by_content() {
     assert_eq!(found[0], root.join("green-notes.png"), "name match first");
     assert_eq!(found[1], root.join("three.png"), "then the green image");
     let status = status_text().unwrap();
-    assert!(status.contains("all 3 images searched"), "{status}");
+    assert!(status.contains("all 4 images searched"), "{status}");
     assert!(status.contains("Closest first"), "{status}");
     assert_eq!(
         window.imp().state.borrow().library.selected_index,
@@ -745,6 +745,10 @@ fn visual_search_ranks_by_content() {
     pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
     screenshot(&window, &root.parent().unwrap().join("visual-search.png"));
     eprintln!("status: {}", status_text().unwrap());
+    // Escape closes the search, and its status line with it.
+    window.close_browse_search();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 4);
+    assert!(status_text().is_none(), "the old search's status is gone");
     window.close();
 }
 
