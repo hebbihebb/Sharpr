@@ -24,6 +24,8 @@ pub(super) enum VisualSummary {
         more: bool,
         /// Images left out for looking like a negative word.
         excluded: usize,
+        /// Why a negative word's visual part couldn't be applied.
+        not_applied: Option<String>,
     },
     /// Visual search couldn't run; file names were matched instead.
     Unavailable(String),
@@ -490,7 +492,15 @@ impl SharprWindow {
     /// Shows how many images are selected beside the search status.
     pub(super) fn show_search_selection(&self, selected: usize) {
         if let Some(status) = self.imp().search_status.borrow().as_ref() {
-            status.selected.set_visible(selected > 1);
+            // Called from selection callbacks: the state may be borrowed.
+            let explicit = self
+                .imp()
+                .state
+                .try_borrow()
+                .is_ok_and(|st| st.selection_explicit);
+            status
+                .selected
+                .set_visible(selected > 1 || (explicit && selected == 1));
             status.selected.set_text(&format!("{selected} selected"));
         }
     }
@@ -502,7 +512,11 @@ impl SharprWindow {
         let Some(filmstrip) = self.imp().filmstrip.borrow().clone() else {
             return;
         };
-        if self.imp().state.borrow().selected_paths.len() > 1 {
+        let chosen = {
+            let st = self.imp().state.borrow();
+            st.selected_paths.len() > 1 || (st.selection_explicit && !st.selected_paths.is_empty())
+        };
+        if chosen {
             filmstrip.request_add_selection_to_bucket();
             return;
         }
@@ -702,14 +716,19 @@ impl SharprWindow {
                     // too, before anything is ranked.
                     let mut fingerprints = None;
                     let mut excluded = 0;
+                    let mut not_applied = None;
                     let without = chips.without_words();
                     if let (false, Some(searcher), Some(index)) =
                         (without.is_empty(), searcher.as_ref(), index.as_ref())
                     {
                         let mut alike = std::collections::HashSet::new();
                         for word in &without {
-                            if let Ok(negative) = searcher.prepare(word, &superseded) {
-                                alike.extend(crate::visual_search::search::most_alike(&negative));
+                            match searcher.prepare(word, &superseded) {
+                                Ok(negative) => alike
+                                    .extend(crate::visual_search::search::most_alike(&negative)),
+                                Err(error) => {
+                                    not_applied.get_or_insert(error);
+                                }
                             }
                             if superseded() {
                                 return Err("Search superseded".into());
@@ -794,6 +813,7 @@ impl SharprWindow {
                             strength: ranked.strength,
                             more: false,
                             excluded,
+                            not_applied,
                         },
                         by_name: by_name.into_iter().map(|r| r.path).collect(),
                         visual,
@@ -894,6 +914,7 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
             eligible,
             strength,
             excluded,
+            not_applied,
             ..
         } => {
             let mut parts = Vec::new();
@@ -919,6 +940,12 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
             }
             if *excluded > 0 {
                 parts.push(format!("{excluded} left out by the \"not\" words"));
+            }
+            if let Some(error) = not_applied {
+                parts.push(format!(
+                    "the \"not\" words could only exclude file names ({})",
+                    error.trim_end_matches('.')
+                ));
             }
             parts.join(" · ")
         }
@@ -993,6 +1020,7 @@ mod tests {
                 strength: None,
                 more: false,
                 excluded: 0,
+                not_applied: None,
             },
         };
         let first = snapshot.page(2);

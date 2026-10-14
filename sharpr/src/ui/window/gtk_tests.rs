@@ -523,17 +523,19 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     session.save();
     assert!(window.crop_session().is_none(), "saving leaves crop mode");
     assert!(!super::file_actions_blocked(window.upcast_ref()));
-    pump_until(|| {
+    // The finished copy, not the hidden partial file it is written as.
+    let finished = || {
         std::fs::read_dir(root.join("crops"))
-            .map(|entries| entries.count() == 1)
-            .unwrap_or(false)
-    });
-    let cropped = std::fs::read_dir(root.join("crops"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .find(|path| !path.file_name().unwrap().to_string_lossy().starts_with('.'))
+            })
+    };
+    pump_until(|| finished().is_some());
+    let cropped = finished().unwrap();
     assert_eq!(image::image_dimensions(&cropped).unwrap(), (128, 72));
     let output = crate::export::crop_copy(&crate::export::CropConfig {
         source: sea.clone(),
@@ -819,6 +821,17 @@ fn visual_search_ranks_by_content() {
     assert_eq!(window.imp().state.borrow().selected_paths.len(), 3);
     let status = window.imp().search_status.borrow().clone().unwrap();
     assert_eq!(status.selected.text().as_str(), "3 selected");
+    // Ctrl-clicking all but one away leaves a selection of one, which
+    // actions honour instead of the image being viewed.
+    let second = paths()[1].clone();
+    filmstrip.toggle_action_selection_path(&paths()[0].clone());
+    filmstrip.toggle_action_selection_path(&third);
+    assert_eq!(filmstrip.selected_paths_for_action(), vec![second.clone()]);
+    assert!(status.selected.is_visible());
+    assert_eq!(status.selected.text().as_str(), "1 selected");
+    // A plain click is navigation, not a selection of one.
+    filmstrip.set_action_selection_to_path(&third);
+    assert!(!status.selected.is_visible());
     // Without a selection, "Add to Bucket…" asks which results, then the
     // bucket picker opens.
     filmstrip.clear_multi_selection();

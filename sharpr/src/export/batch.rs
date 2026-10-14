@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use image::imageops::FilterType;
 
-use super::{decode_oriented, reserve_output, webp_bytes, write_flushed, WEBP_MAX_DIMENSION};
+use super::{decode_oriented, webp_bytes, Pending, WEBP_MAX_DIMENSION};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WebpOptions {
@@ -123,31 +123,21 @@ fn export_one(
         .filter(|s| !s.is_empty())
         .unwrap_or("image")
         .to_string();
-    let (output, partial) = reserve_output(|suffix| {
-        options.destination.join(if suffix == 0 {
+    let destination = options.destination.clone();
+    let mut pending = Pending::reserve(move |suffix| {
+        destination.join(if suffix == 0 {
             format!("{stem}.webp")
         } else {
             format!("{stem}-{suffix}.webp")
         })
     })
     .map_err(|e| e.to_string())?;
-    let discard = || {
-        let _ = std::fs::remove_file(&partial);
-        let _ = std::fs::remove_file(&output);
-    };
-    let written = write_flushed(&partial, &encoded);
-    if let Err(error) = written {
-        discard();
-        return Err(format!("writing {}: {error}", partial.display()));
-    }
+    pending.write(&encoded).map_err(|e| e.to_string())?;
+    // Cancelled: dropping the pending file removes it.
     if canceled() {
-        discard();
         return Ok(None);
     }
-    if let Err(error) = std::fs::rename(&partial, &output) {
-        discard();
-        return Err(format!("moving into place {}: {error}", output.display()));
-    }
+    let output = pending.publish().map_err(|e| e.to_string())?;
     Ok(Some(output))
 }
 

@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +22,10 @@ pub const SUPERSEDED: &str = "Search superseded";
 
 /// Results are shown this many at a time (`ROADMAP.md` Phase 5).
 pub const PAGE: usize = 200;
+
+/// The longest a search waits for its words to be embedded, start-up of
+/// the model server included.
+const PREPARE_DEADLINE: Duration = Duration::from_secs(150);
 
 #[cfg(not(test))]
 const IDLE: Duration = Duration::from_secs(300);
@@ -159,6 +163,18 @@ pub fn rank(candidates: &[(PathBuf, Option<String>)], prepared: &Prepared) -> Ra
 struct Request {
     text: String,
     reply: mpsc::Sender<Result<Prepared, String>>,
+    /// Set when the caller stopped waiting; the search thread then skips
+    /// the request instead of working through a backlog of old searches.
+    abandoned: Arc<AtomicBool>,
+}
+
+/// Marks the request abandoned however `Searcher::prepare` returns.
+struct Abandon(Arc<AtomicBool>);
+
+impl Drop for Abandon {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 /// The search thread. Cheap to clone; all clones share the thread.
@@ -183,6 +199,7 @@ impl Searcher {
                 let mut state = State::new(store_path, vectors_version, reindex);
                 loop {
                     match rx.recv_timeout(IDLE) {
+                        Ok(request) if request.abandoned.load(Ordering::Relaxed) => {}
                         Ok(request) => {
                             let result = state.prepare(&request.text);
                             if result.is_err() {
@@ -202,23 +219,31 @@ impl Searcher {
         Self { requests: tx }
     }
 
-    /// Waits until the query is embedded, or until `superseded` says a newer
-    /// search replaced this one, so a slow or stalled model never holds up
-    /// newer searches and filters. Errors explain why visual search can't
-    /// run, in words for the user.
+    /// Waits until the query is embedded, until `superseded` says a newer
+    /// search replaced this one, or until `PREPARE_DEADLINE`, so a slow or
+    /// stalled model never holds up newer searches and filters. A request
+    /// given up on is skipped by the search thread. Errors explain why
+    /// visual search can't run, in words for the user.
     pub fn prepare(&self, text: &str, superseded: &dyn Fn() -> bool) -> Result<Prepared, String> {
         let (reply, response) = mpsc::channel();
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let _abandon = Abandon(abandoned.clone());
         self.requests
             .send(Request {
                 text: text.to_string(),
                 reply,
+                abandoned,
             })
             .map_err(|_| "Visual search stopped".to_string())?;
+        let started = std::time::Instant::now();
         loop {
             match response.recv_timeout(Duration::from_millis(50)) {
                 Ok(result) => return result,
                 Err(mpsc::RecvTimeoutError::Timeout) if superseded() => {
                     return Err(SUPERSEDED.into())
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) if started.elapsed() > PREPARE_DEADLINE => {
+                    return Err("Visual search took too long to answer; try again".into())
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -371,6 +396,29 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requests_given_up_on_are_skipped() {
+        let searcher = Searcher::start(
+            std::env::temp_dir().join("sharpr-no-such-vectors.sqlite"),
+            Arc::new(AtomicU64::new(0)),
+            Box::new(|| {}),
+        );
+        let (reply, response) = mpsc::channel();
+        searcher
+            .requests
+            .send(Request {
+                text: "tower".into(),
+                reply,
+                abandoned: Arc::new(AtomicBool::new(true)),
+            })
+            .unwrap();
+        // Dropped unanswered: no model was asked.
+        assert!(matches!(
+            response.recv_timeout(Duration::from_secs(5)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
 
     fn axis(index: usize, weight: f32) -> Vec<f32> {
         let mut v = vec![0.0; super::super::DIMENSIONS];

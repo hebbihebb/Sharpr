@@ -10,7 +10,6 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
-use crate::metadata::orientation::apply_exif_orientation;
 use crate::ui::compare_item::{compare_asset_format, Knockout, Side};
 use crate::ui::compare_view::{CompareView, Mode};
 
@@ -158,7 +157,14 @@ impl ComparePage {
             let dismiss = &imp.dismiss[side];
             match &pair[side] {
                 Some(path) => {
-                    label.set_text(&summary(path));
+                    if imp.shown.borrow()[side].as_ref() != Some(path) {
+                        label.set_text(
+                            &path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        );
+                    }
                     label.set_tooltip_text(Some(&path.display().to_string()));
                     dismiss.set_visible(pair[1].is_some());
                     imp.badges[side].set_visible(true);
@@ -199,11 +205,14 @@ impl ComparePage {
         let (tx, rx) = async_channel::bounded(1);
         let worker_path = path.clone();
         std::thread::spawn(move || {
-            let _ = tx.send_blocking(decode_image(&worker_path));
+            // The summary reads the header and EXIF: off the GTK thread too.
+            let _ = tx.send_blocking((summary(&worker_path), decode_image(&worker_path)));
         });
         let weak = self.downgrade();
         glib::MainContext::default().spawn_local(async move {
-            let Ok(result) = rx.recv().await else { return };
+            let Ok((text, result)) = rx.recv().await else {
+                return;
+            };
             let Some(page) = weak.upgrade() else { return };
             let imp = page.imp();
             if imp.load_generation.get() != generation
@@ -211,6 +220,7 @@ impl ComparePage {
             {
                 return;
             }
+            imp.labels[side].set_text(&text);
             match result {
                 Ok(decoded) => {
                     let texture: gdk4::Texture = gdk4::MemoryTexture::new(
@@ -252,14 +262,11 @@ struct DecodedImage {
     height: i32,
 }
 
+/// Decodes upright, within the export decoder's memory limits.
 fn decode_image(path: &Path) -> Result<DecodedImage, String> {
-    let image = if crate::jxl::is_jxl_path(path) {
-        crate::jxl::decode_path(path)
-    } else {
-        image::open(path).map_err(|error| error.to_string())
-    }
-    .map_err(|error| format!("Could not load {}: {error}", path.display()))?;
-    let rgba = apply_exif_orientation(image, path).to_rgba8();
+    let image = crate::export::decode_oriented(path)
+        .map_err(|error| format!("Could not load {}: {error}", path.display()))?;
+    let rgba = image.to_rgba8();
     Ok(DecodedImage {
         width: rgba.width() as i32,
         height: rgba.height() as i32,

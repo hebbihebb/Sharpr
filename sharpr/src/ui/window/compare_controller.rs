@@ -46,6 +46,7 @@ impl SharprWindow {
                 .filter(|path| state.library.index_of_path(path).is_some())
                 .cloned()
                 .collect();
+            state.selection_explicit = true;
         }
         if let Some(stack) = self.imp().content_stack.borrow().as_ref() {
             stack.set_transition_type(gtk4::StackTransitionType::SlideRight);

@@ -20,6 +20,10 @@ pub struct AppState {
     pub bucket_migration_error: Option<String>,
     pub ops: crate::ops::queue::OpQueue,
     pub selected_paths: HashSet<PathBuf>,
+    /// Whether `selected_paths` was chosen on purpose (Ctrl- or
+    /// Shift-click, Ctrl+A, Compare's survivors) rather than by a plain
+    /// click, so a single chosen image counts as a selection.
+    pub selection_explicit: bool,
     pub scope: ViewScope,
     pub current_focused_set: Option<crate::focused_image_set::FocusedImageSet>,
     pub previous_scope: Option<ViewScope>,
@@ -98,6 +102,7 @@ impl AppState {
             bucket_migration_error,
             ops,
             selected_paths: HashSet::new(),
+            selection_explicit: false,
             scope: ViewScope::default(),
             current_focused_set: None,
             previous_scope: None,

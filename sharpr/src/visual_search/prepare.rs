@@ -42,12 +42,6 @@ pub fn prepare_png(path: &Path) -> Result<Vec<u8>, String> {
     Ok(png)
 }
 
-/// Whether a full decode of `width`×`height` stays within the budget, at up
-/// to 8 bytes per pixel (16-bit RGBA, the most a decode here produces).
-fn fits_decode_budget(width: u32, height: u32) -> bool {
-    u64::from(width) * u64::from(height) * 8 <= MAX_DECODE_BYTES
-}
-
 /// Formats the library shows but indexing can't decode yet; reported as
 /// unsupported rather than unreadable (Phase 5 audit, finding 13).
 fn unsupported_format(path: &Path) -> Option<&'static str> {
@@ -78,13 +72,7 @@ fn decode_upright(path: &Path) -> Result<DynamicImage, String> {
     // libjxl already applies the image's orientation. It decodes the
     // whole image, outside the limits below, so check its size first.
     if crate::jxl::is_jxl_path(path) {
-        let (width, height) = crate::jxl::image_dimensions(path).map_err(error)?;
-        if !fits_decode_budget(width, height) {
-            return Err(error(format!(
-                "{width}×{height} is too large to index (over {} GB to decode)",
-                MAX_DECODE_BYTES >> 30
-            )));
-        }
+        crate::jxl::check_decode_budget(path).map_err(error)?;
         return crate::jxl::decode_path(path).map_err(error);
     }
     if let Some(format) = unsupported_format(path) {
@@ -158,8 +146,8 @@ mod tests {
 
     #[test]
     fn huge_images_and_unsupported_formats_are_turned_away_before_decoding() {
-        assert!(fits_decode_budget(12_000, 8_000));
-        assert!(!fits_decode_budget(60_000, 60_000));
+        assert!(crate::jxl::fits_decode_budget(12_000, 8_000));
+        assert!(!crate::jxl::fits_decode_budget(60_000, 60_000));
         assert_eq!(unsupported_format(Path::new("/l/a.AVIF")), Some("AVIF"));
         assert_eq!(unsupported_format(Path::new("/l/a.heif")), Some("HEIC"));
         assert_eq!(unsupported_format(Path::new("/l/a.jpg")), None);

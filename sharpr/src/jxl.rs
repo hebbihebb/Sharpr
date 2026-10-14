@@ -151,6 +151,27 @@ pub fn decode_preview_or_full(path: &Path, min_long_edge: u32) -> Result<JxlPrev
     }
 }
 
+/// The most a decode may take: libjxl decodes whole images outside the
+/// `image` crate's limits, so callers check the size first.
+pub const MAX_DECODE_BYTES: u64 = 3 << 30;
+
+pub fn fits_decode_budget(width: u32, height: u32) -> bool {
+    u64::from(width) * u64::from(height) * 8 <= MAX_DECODE_BYTES
+}
+
+/// Refuses a JPEG XL too large to decode within `MAX_DECODE_BYTES`
+/// (at up to 8 bytes a pixel), from its header alone.
+pub fn check_decode_budget(path: &Path) -> Result<(), String> {
+    let (width, height) = image_dimensions(path)?;
+    if !fits_decode_budget(width, height) {
+        return Err(format!(
+            "{width}×{height} is too large to open (over {} GB to decode)",
+            MAX_DECODE_BYTES >> 30
+        ));
+    }
+    Ok(())
+}
+
 pub fn image_dimensions(path: &Path) -> Result<(u32, u32), String> {
     let file =
         std::fs::File::open(path).map_err(|err| format!("open {}: {err}", path.display()))?;

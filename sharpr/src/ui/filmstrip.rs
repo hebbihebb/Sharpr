@@ -2013,6 +2013,7 @@ impl FilmstripPane {
                 .filter_map(|i| state.library.entry_at(i).map(|e| e.path()))
                 .collect();
             state.selected_paths = range.into_iter().collect();
+            state.selection_explicit = true;
         }
         self.refresh_multi_selection_visuals();
     }
@@ -2025,6 +2026,7 @@ impl FilmstripPane {
                 .filter_map(|i| state.library.entry_at(i).map(|e| e.path()))
                 .collect();
             state.selected_paths = all.into_iter().collect();
+            state.selection_explicit = true;
         }
         self.refresh_multi_selection_visuals();
     }
@@ -2036,7 +2038,9 @@ impl FilmstripPane {
             .as_ref()
             .and_then(|s| {
                 let s = s.borrow();
-                if s.selected_paths.len() > 1 {
+                if s.selected_paths.len() > 1
+                    || (s.selection_explicit && !s.selected_paths.is_empty())
+                {
                     Some(s.selected_paths.iter().cloned().collect())
                 } else {
                     s.library.selected_entry().map(|e| vec![e.path()])
@@ -2064,6 +2068,7 @@ impl FilmstripPane {
         if let Some(state) = self.imp().state.borrow().as_ref() {
             let mut state = state.borrow_mut();
             state.selected_paths.clear();
+            state.selection_explicit = false;
             if state.library.entry_for_path(path).is_some() {
                 state.selected_paths.insert(path.to_path_buf());
             }
@@ -2084,20 +2089,22 @@ impl FilmstripPane {
             } else if state.library.entry_for_path(path).is_some() {
                 state.selected_paths.insert(path.to_path_buf());
             }
+            state.selection_explicit = true;
         }
         self.refresh_multi_selection_visuals();
     }
 
     pub fn refresh_multi_selection_visuals(&self) {
-        let selected_paths = self
+        let (selected_paths, explicit) = self
             .imp()
             .state
             .borrow()
             .as_ref()
             .and_then(|state| state.try_borrow().ok())
-            .map(|state| state.selected_paths.clone())
+            .map(|state| (state.selected_paths.clone(), state.selection_explicit))
             .unwrap_or_default();
-        let show_multi = selected_paths.len() > 1;
+        // A single image chosen on purpose is marked too: actions use it.
+        let show_multi = selected_paths.len() > 1 || (explicit && !selected_paths.is_empty());
         if let Some(callback) = self.imp().action_selection_changed_cb.borrow().as_ref() {
             callback(selected_paths.len());
         }

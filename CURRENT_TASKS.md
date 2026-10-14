@@ -9,12 +9,7 @@
   - Search while indexing: "working really well, I am totally impressed and happy".
   - Browsing during GPU indexing "feels smooth". This is a manual check; the measured 10% check is still open.
   - The real library is fully indexed: 5,178 vectors (identical copies share one) and 0 failures. It has no AVIF or HEIC files.
-- **Next, in order:**
-  1. ~~Fix the Phase 5 audit's findings~~: done October 14 in six commits (`df82623`..`cf438a9`), verified, and **not deployed**. Deploying needs the user's approval.
-  2. ~~The Library Overview~~: built, committed and verified, **not deployed**.
-  3. ~~Search into buckets, with selection tools~~: built, committed and verified, **not deployed**.
-  4. ~~Negative search (`tower -water`)~~: built, committed and verified, **not deployed**.
-  - Items 1–4 are deployed in `baa007d`.
+- **Done:** the Phase 5 audit fixes (`df82623`..`cf438a9`), the Library Overview, search into buckets, and negative search, all deployed in `baa007d`.
   - **All Phase 5 work is built and deployed.** Left before acceptance: the user's test, and a measured browsing check during indexing.
 - **Open user decision:** keep file-name matches first in results. They stay for now; the user will judge after use.
 
@@ -33,8 +28,10 @@ The user asked for Phases 6, 7, and 8 to be finished, then a proper install to t
    - A review window, and trash only after confirmation.
 3. **Phase 8, Compare:** N images two at a time, with A/B flip (Space), split, and side by side; knockouts; zoom lock; survivors selected on close.
 
-**Status:** Phases 6 (`5e2ad3d`, `9f7a42a`), 7 (`a32227a`), and 8 (`baa007d`) are built, committed, verified by tests, and installed in `baa007d` with a backup first. Each waits for the user's test. An adversarial `gpt-6.1-sol` audit is offered.
-4. **Then:** a release install, a smoke test on a copy of the live data, and a backup.
+**Status:** Phases 6 (`5e2ad3d`, `9f7a42a`), 7 (`a32227a`), and 8 (`baa007d`) are built, committed, verified by tests, and installed in `baa007d` with a backup first.
+- **User test of `baa007d` (October 14):** export and crop work; search into buckets works. Find Copies never got past its spinner, Compare "works for two images only", and `tower -water` looked ignored. All three are diagnosed and fixed in `934b49b` (`ROADMAP.md` Phases 5, 7, 8).
+- **Adversarial audit** (`gpt-6.1-sol`, October 14): `docs/archive/audit-2026-10-14-phases6-8.md`, 12 findings. Ten are fixed in the commits after `e9d3c8f`; finding 12's Library Overview parts and finding 6's Compare decode concurrency are in the Backlog.
+- **Next:** install the fixes (backup first), then the user tests Find Copies, Compare, and negative search again.
 
 ## State (October 14, 2026)
 

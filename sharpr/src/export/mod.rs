@@ -178,9 +178,8 @@ pub fn crop_copy(config: &CropConfig) -> Result<ResizeResult, ResizeError> {
         target_width: config.rectangle.width,
         target_height: config.rectangle.height,
     };
-    copy_with_encoder(&target, Some(config.rectangle), "cropped", |image, path| {
-        let bytes = webp_bytes(image, true, 100)?;
-        write_flushed(path, &bytes)
+    copy_with_encoder(&target, Some(config.rectangle), "cropped", |image| {
+        webp_bytes(image, true, 100)
     })
 }
 
@@ -205,13 +204,144 @@ pub(crate) fn webp_bytes(
         .map_err(|error| ResizeError::Encode(format!("WebP encoding failed: {error:?}")))
 }
 
-/// Writes `bytes` to `path` and makes sure they reached the disk.
-pub(crate) fn write_flushed(path: &Path, bytes: &[u8]) -> Result<(), ResizeError> {
-    use std::io::Write;
-    let mut file = std::fs::File::create(path).map_err(|e| ResizeError::Io(e.to_string()))?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| ResizeError::Io(e.to_string()))
+/// A new output file on its way: a hidden partial file created exclusively
+/// and written only through its own handle, then published under the first
+/// free candidate name by a rename that never replaces a file. Dropped
+/// unpublished, it removes the partial file, but only if that is still the
+/// file it created; nothing else is ever removed or overwritten.
+pub(crate) struct Pending {
+    partial: PathBuf,
+    file: std::fs::File,
+    id: (u64, u64),
+    candidate: Box<dyn Fn(u32) -> PathBuf>,
+    suffix: u32,
+    published: bool,
+}
+
+fn file_id(metadata: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.dev(), metadata.ino())
+}
+
+/// Renames `from` to `to` unless `to` exists, atomically where the file
+/// system allows (`renameat2` with `RENAME_NOREPLACE`, else a hard link).
+fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = |path: &Path| {
+        std::ffi::CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+    };
+    let (from_c, to_c) = (c(from)?, c(to)?);
+    // SAFETY: both are valid NUL-terminated paths for the call's duration.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from_c.as_ptr(),
+            libc::AT_FDCWD,
+            to_c.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        // Not supported here: a hard link also fails if `to` exists.
+        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP) => {
+            std::fs::hard_link(from, to)?;
+            std::fs::remove_file(from)
+        }
+        _ => Err(error),
+    }
+}
+
+impl Pending {
+    /// Claims a partial file beside the first candidate name that is free.
+    pub(crate) fn reserve(
+        candidate: impl Fn(u32) -> PathBuf + 'static,
+    ) -> Result<Self, ResizeError> {
+        for suffix in 0..10_000 {
+            let path = candidate(suffix);
+            if std::fs::symlink_metadata(&path).is_ok() {
+                continue;
+            }
+            let partial = partial_path(&path);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&partial)
+            {
+                Ok(file) => {
+                    let id = file
+                        .metadata()
+                        .map(|m| file_id(&m))
+                        .map_err(|e| ResizeError::Io(e.to_string()))?;
+                    return Ok(Self {
+                        partial,
+                        file,
+                        id,
+                        candidate: Box::new(candidate),
+                        suffix,
+                        published: false,
+                    });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(ResizeError::Io(e.to_string())),
+            }
+        }
+        Err(ResizeError::Io("No unused output name is available".into()))
+    }
+
+    /// Writes `bytes` and makes sure they reached the disk.
+    pub(crate) fn write(&mut self, bytes: &[u8]) -> Result<(), ResizeError> {
+        use std::io::Write;
+        self.file
+            .write_all(bytes)
+            .and_then(|()| self.file.sync_all())
+            .map_err(|e| ResizeError::Io(format!("writing {}: {e}", self.partial.display())))
+    }
+
+    fn still_ours(&self) -> bool {
+        std::fs::symlink_metadata(&self.partial).is_ok_and(|m| file_id(&m) == self.id)
+    }
+
+    /// Moves the written file to the first free name from the claimed one
+    /// on, never replacing a file that appeared there meanwhile.
+    pub(crate) fn publish(mut self) -> Result<PathBuf, ResizeError> {
+        if !self.still_ours() {
+            return Err(ResizeError::Io(format!(
+                "{} was replaced while writing",
+                self.partial.display()
+            )));
+        }
+        for suffix in self.suffix..10_000 {
+            let output = (self.candidate)(suffix);
+            match rename_no_replace(&self.partial, &output) {
+                Ok(()) => {
+                    self.published = true;
+                    return Ok(output);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    return Err(ResizeError::Io(format!(
+                        "move {} to {}: {e}",
+                        self.partial.display(),
+                        output.display()
+                    )))
+                }
+            }
+        }
+        Err(ResizeError::Io("No unused output name is available".into()))
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if !self.published && self.still_ours() {
+            let _ = std::fs::remove_file(&self.partial);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,7 +398,7 @@ fn copy_with_encoder<F>(
     encoder: F,
 ) -> Result<ResizeResult, ResizeError>
 where
-    F: FnOnce(&image::DynamicImage, &Path) -> Result<(), ResizeError>,
+    F: FnOnce(&image::DynamicImage) -> Result<Vec<u8>, ResizeError>,
 {
     if config.target_width == 0 || config.target_height == 0 {
         return Err(ResizeError::InvalidDimensions);
@@ -316,29 +446,26 @@ where
                 FilterType::Lanczos3,
             )
         };
-    let (output, partial) = reserve_copy_paths(config, label)?;
-
-    let result = encoder(&resized, &partial).and_then(|()| {
-        std::fs::rename(&partial, &output).map_err(|error| {
-            ResizeError::Io(format!(
-                "move {} to {}: {error}",
-                partial.display(),
-                output.display()
-            ))
-        })
+    let target = config.clone();
+    let label = label.to_string();
+    let mut pending = Pending::reserve(move |suffix| copy_candidate(&target, &label, suffix))?;
+    let result = encoder(&resized).and_then(|bytes| {
+        pending.write(&bytes)?;
+        pending.publish()
     });
-    if let Err(error) = result {
-        let _ = std::fs::remove_file(&partial);
-        let _ = std::fs::remove_file(&output);
-        crate::bench_error!(
-            "resize.copy.fail",
-            serde_json::json!({
-                "source": config.source.display().to_string(),
-                "error": error.to_string(),
-            }),
-        );
-        return Err(error);
-    }
+    let output = match result {
+        Ok(output) => output,
+        Err(error) => {
+            crate::bench_error!(
+                "resize.copy.fail",
+                serde_json::json!({
+                    "source": config.source.display().to_string(),
+                    "error": error.to_string(),
+                }),
+            );
+            return Err(error);
+        }
+    };
 
     crate::bench_event!(
         "resize.copy.done",
@@ -363,6 +490,8 @@ const MAX_DECODE_BYTES: u64 = 3 << 30;
 /// itself; other formats follow their EXIF orientation.
 pub fn decode_oriented(source: &Path) -> Result<image::DynamicImage, ResizeError> {
     if crate::jxl::is_jxl_path(source) {
+        // libjxl applies the orientation itself, outside the limits below.
+        crate::jxl::check_decode_budget(source).map_err(ResizeError::Decode)?;
         return crate::jxl::decode_path(source).map_err(ResizeError::Decode);
     }
     let mut reader = image::ImageReader::open(source)
@@ -395,47 +524,6 @@ fn copy_candidate(config: &CopyTarget, label: &str, suffix: u32) -> PathBuf {
     };
     config.destination_dir.join(filename)
 }
-fn reserve_copy_paths(config: &CopyTarget, label: &str) -> Result<(PathBuf, PathBuf), ResizeError> {
-    reserve_output(|suffix| copy_candidate(config, label, suffix))
-}
-
-/// Claims the first free name `candidate(0)`, `candidate(1)`, … by creating
-/// it exclusively, plus a hidden partial file to write into. The caller
-/// renames the partial over the claimed name when done, and removes both on
-/// failure. An existing file is never opened for writing.
-pub(crate) fn reserve_output(
-    candidate: impl Fn(u32) -> PathBuf,
-) -> Result<(PathBuf, PathBuf), ResizeError> {
-    for suffix in 0..10_000 {
-        let path = candidate(suffix);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(_) => {
-                let partial = partial_path(&path);
-                match std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&partial)
-                {
-                    Ok(_) => return Ok((path, partial)),
-                    Err(error) => {
-                        let _ = std::fs::remove_file(&path);
-                        if error.kind() != std::io::ErrorKind::AlreadyExists {
-                            return Err(ResizeError::Io(error.to_string()));
-                        }
-                    }
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(ResizeError::Io(e.to_string())),
-        }
-    }
-    Err(ResizeError::Io("No unused output name is available".into()))
-}
-
 pub(crate) fn partial_path(output: &Path) -> PathBuf {
     let stem = output
         .file_stem()
@@ -737,6 +825,34 @@ mod tests {
     }
 
     #[test]
+    fn publishing_never_replaces_a_file_that_appeared_meanwhile() {
+        let dir = test_dir("no-replace");
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.clone();
+        let name = move |suffix: u32| base.join(format!("out-{suffix}.webp"));
+        let mut pending = Pending::reserve(name.clone()).unwrap();
+        pending.write(b"ours").unwrap();
+        // Another program writes the chosen name before publishing.
+        std::fs::write(name(0), b"theirs").unwrap();
+        let output = pending.publish().unwrap();
+        assert_eq!(output, name(1));
+        assert_eq!(std::fs::read(name(0)).unwrap(), b"theirs");
+        assert_eq!(std::fs::read(name(1)).unwrap(), b"ours");
+
+        // A partial file replaced from outside is neither published nor
+        // removed.
+        let mut pending = Pending::reserve(name.clone()).unwrap();
+        pending.write(b"ours").unwrap();
+        let partial = pending.partial.clone();
+        std::fs::remove_file(&partial).unwrap();
+        std::fs::write(&partial, b"replacement").unwrap();
+        assert!(pending.publish().is_err());
+        assert_eq!(std::fs::read(&partial).unwrap(), b"replacement");
+        assert!(!name(2).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn removes_partial_output_when_encoding_fails() {
         let dir = test_dir("partial");
         let config = crop(&dir, SIX_BY_FOUR);
@@ -747,8 +863,7 @@ mod tests {
             target_height: 4,
         };
         let output = copy_candidate(&target, "cropped", 0);
-        let result = copy_with_encoder(&target, Some(SIX_BY_FOUR), "cropped", |_, path| {
-            std::fs::write(path, b"partial").unwrap();
+        let result = copy_with_encoder(&target, Some(SIX_BY_FOUR), "cropped", |_| {
             Err(ResizeError::Encode("forced failure".into()))
         });
         assert!(result.is_err());

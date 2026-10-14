@@ -27,7 +27,8 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `library_index/` | SQLite index of folders, images, and buckets (`schema.rs` sets up new databases) |
 | `tags/db.rs` | SQLite manual tags and sharpness store |
 | `export/`, `collection_export.rs` | WebP copies (crop and batch export) with safe output reservation, and crop geometry; bucket import and export |
-| `copies.rs`, `ui/copies_dialog.rs` | Phase 7 "Find Copies…": exact copies by fingerprint, and resized or converted copies by visual-search vectors (cosine ≥ 0.95, the same aspect, and matching 32×32 grey versions, made once per image from the thumbnail cache where possible, in parallel and cancellable), then review and confirmed trash |
+| `copies.rs`, `ui/copies_dialog.rs` | Phase 7 "Find Copies…": exact copies by fingerprint, and resized or converted copies by visual-search vectors (cosine ≥ 0.95, the same aspect, and matching 32×32 colour versions, made once per image from the thumbnail cache where possible, in parallel and cancellable; every member is then checked directly against the copy to keep), then review and confirmed trash, which skips files changed since the review (`copies::verify`) |
+| `export/mod.rs` `Pending` | Every new output (crop, batch export): an exclusive hidden partial file written through its own handle, published by `renameat2(RENAME_NOREPLACE)` (or a hard link) under the first free name; it never replaces or removes a file it didn't create |
 | `duplicates/`, `quality/` | Perceptual hashes (still computed by the thumbnail workers, no longer shown) and sharpness |
 | `ops/`, `ui/ops_indicator.rs` | Events for transient background operations. There is no persistent queue. |
 | `config/settings.rs` | GSettings wrapper. Keys for removed features stay declared but are not used. |

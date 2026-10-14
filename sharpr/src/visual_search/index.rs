@@ -45,6 +45,10 @@ pub enum EmbedError {
     Image(String),
     /// The runtime is broken; stop the pass and try again next time.
     Runtime(String),
+    /// The server failed on this image for reasons outside it (a timeout,
+    /// a lost connection, an internal error); record nothing, so a later
+    /// pass tries it again, and go on.
+    Skipped(String),
 }
 
 pub trait Embedder {
@@ -132,23 +136,40 @@ enum Recovery {
     Retry,
     /// The image itself is the problem: record it.
     ImageFailed,
+    /// Not the image's fault, but not worth more tries now: leave it for
+    /// a later pass.
+    Skip,
     /// The runtime is broken: stop the pass, record nothing.
     StopPass,
 }
 
 /// Sharpr sends the server a PNG it made itself, so a server error is
 /// rarely the image's fault. A GPU error moves the pass to the processor;
-/// a processor error gets one retry on a fresh server, and only an image
-/// that fails twice is recorded. A wrong model, or a server that keeps
-/// dying, stops the pass without blaming any image.
+/// a processor error gets one retry on a fresh server. Only an image the
+/// server rejects twice (an HTTP 4xx answer) is recorded; timeouts, lost
+/// connections, and internal errors leave it for a later pass. A wrong
+/// model, or a server that keeps dying, stops the pass without blaming any
+/// image.
 fn recovery(error: &str, on_gpu: bool, cpu_attempts: usize, crashes: usize) -> Recovery {
     if error.contains("not EmbeddingGemma 2") || crashes >= 3 {
         Recovery::StopPass
     } else if on_gpu || cpu_attempts < 2 {
         Recovery::Retry
-    } else {
+    } else if rejected(error) {
         Recovery::ImageFailed
+    } else {
+        Recovery::Skip
     }
+}
+
+/// Whether the server answered with a client error (4xx): it read the
+/// request and refused this image.
+fn rejected(error: &str) -> bool {
+    error
+        .split_once("answered ")
+        .and_then(|(_, rest)| rest.get(..3))
+        .and_then(|code| code.parse::<u16>().ok())
+        .is_some_and(|code| (400..500).contains(&code))
 }
 
 impl Embedder for ServerEmbedder {
@@ -185,6 +206,7 @@ impl Embedder for ServerEmbedder {
                         "llama-server could not read this image: {error}"
                     )))
                 }
+                Recovery::Skip => return Err(EmbedError::Skipped(error)),
                 Recovery::StopPass if self.crashes >= 3 => {
                     return Err(EmbedError::Runtime(format!(
                         "llama-server keeps stopping: {error}"
@@ -294,6 +316,12 @@ pub fn run_pass(
                     coverage.failed += copies.len();
                 }
                 Err(EmbedError::Runtime(error)) => return Err(error),
+                Err(EmbedError::Skipped(error)) => {
+                    crate::bench_warn!(
+                        "visual_search.image_skipped",
+                        serde_json::json!({"path": path.display().to_string(), "error": error}),
+                    );
+                }
             }
             break;
         }
@@ -582,6 +610,7 @@ mod tests {
             match bytes.as_slice() {
                 b"bad" => Err(EmbedError::Image("unreadable".into())),
                 b"crash" => Err(EmbedError::Runtime("runtime down".into())),
+                b"busy" => Err(EmbedError::Skipped("timed out".into())),
                 _ => {
                     let mut v = vec![0.0; super::super::DIMENSIONS];
                     v[bytes.len() % super::super::DIMENSIONS] = 1.0;
@@ -767,7 +796,19 @@ mod tests {
             recovery("connection: timed out", false, 1, 0),
             Recovery::Retry
         );
-        assert_eq!(recovery("answered 500", false, 2, 0), Recovery::ImageFailed);
+        // Twice on the processor: only a rejection blames the image.
+        assert_eq!(
+            recovery("llama-server answered 400: bad image", false, 2, 0),
+            Recovery::ImageFailed
+        );
+        assert_eq!(
+            recovery("llama-server answered 500: oops", false, 2, 0),
+            Recovery::Skip
+        );
+        assert_eq!(
+            recovery("connection: timed out", false, 2, 0),
+            Recovery::Skip
+        );
         assert_eq!(
             recovery("not EmbeddingGemma 2", false, 1, 0),
             Recovery::StopPass
@@ -804,6 +845,24 @@ mod tests {
             store.failures("m").unwrap().is_empty(),
             "not the image's fault"
         );
+
+        // A skipped image is neither indexed nor blamed, and the pass goes on.
+        std::fs::write(root.join("z.jpg"), b"busy").unwrap();
+        fingerprint(&index, &root, &[]);
+        run_pass(
+            &index,
+            &store,
+            "m",
+            &root,
+            &[],
+            &|| false,
+            &|_| {},
+            &mut embedder,
+        )
+        .unwrap();
+        assert!(store.failures("m").unwrap().is_empty());
+        let skipped = crate::fingerprint::hash_file(&root.join("z.jpg")).unwrap();
+        assert!(!store.done("m").unwrap().contains(&skipped));
 
         let canceled = run_pass(
             &index,

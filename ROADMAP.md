@@ -328,7 +328,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 **Status (October 14): every scope item is built and committed; the core is deployed in `c176934`; not accepted.** Phase 3 said go (D22).
 - **Deployed in `c176934`** with the model installed: visual search, GPU indexing, and tag retirement.
-- **Committed, not deployed:** the audit fixes, the Library Overview, search into buckets, and negative search. The user chose not to deploy them yet (October 14).
+- **Deployed in `baa007d`** (October 14): the audit fixes, the Library Overview, search into buckets, and negative search.
 - **The user's hands-on verdict on `c176934`** (October 14): Sharpr "seems to run even better than it did before this recent work started, regardless of indexing work".
 - **Units:** indexing and search (`58ac0ef`), tag retirement (`78a0639`), packaging (`b07a226`), and GPU indexing (`c176934`).
 - **Verified in tests:**
@@ -680,6 +680,8 @@ Optional and unordered. Pick something up only when a phase touches that area, o
 - Keep thumbnail generations through to completion: a failure or success from an old request must not mark a newer view's row (audit finding 7).
 - Stop computing perceptual hashes in the thumbnail workers, now that "Find Copies…" (Phase 7) uses fingerprints and vectors; remove `duplicates/phash.rs` and `LibraryIndex::duplicate_groups` with it. Wrap or extend the thumbnail scheduler; don't rewrite it.
 - Index AVIF and HEIC/HEIF for visual search, with a bounded decoder on the worker (Phase 5 audit, finding 13). The live library has none; weigh the Flatpak cost before adding decoders.
+- Library Overview: refresh the fingerprint, copy, bucket, and index-file figures while it is open, or label them as a snapshot; show gathering errors instead of "…"; count unsupported formats apart from unreadable files (Phases 6–8 audit, finding 12).
+- Compare: decode at most one image per side at a time, dropping superseded decodes, and give the canvas a screen-sized preview at Fit with full pixels only when zoomed in (Phases 6–8 audit, finding 6). Each decode is already within the 3 GB limit.
 - GTK test harness: `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs); make it deterministic. The screenshot timeout is solved (October 14): a window the compositor isn't drawing (covered, for example by a fullscreen video while the user works) gives no frame, so screenshots are now best-effort and never fail a test.
 
 ### Considered, Not Planned

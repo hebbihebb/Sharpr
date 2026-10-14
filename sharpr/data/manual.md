@@ -4,7 +4,7 @@ Sharpr is a local-first image curation viewer for GNOME. It makes no network con
 
 ## Library And Filmstrip
 
-Choose a folder in the Library sidebar to load its images. Thumbnails decode in the background, with visible images prioritized over preload work. Click an image to view it; Ctrl-click adds or removes images from the selection, Shift-click selects everything from the last clicked image to this one, and Ctrl+A selects all.
+Choose a folder in the Library sidebar to load its images. Thumbnails decode in the background, with visible images prioritized over preload work. Click an image to view it; Ctrl-click adds or removes images from the selection, Shift-click selects everything from the last clicked image to this one, and Ctrl+A selects all. A selection made this way counts even when it is down to one image: actions such as export, Delete, and Add to Bucket use it rather than the image you are viewing.
 
 ## Viewer Shortcuts
 
@@ -44,7 +44,7 @@ Tags are retired. Main Menu → Library → Turn Tags into Buckets… offers eac
 
 ## Copies And Resolution
 
-Main Menu → Library → **Find Copies…** finds exact copies (the same file in several places) and resized or converted copies of the same picture, such as a 1080p JPEG of a 4K PNG, or a WebP conversion. Crops, mirrored versions, and merely similar pictures are not copies. Each group lists resolution, format, size, and folder with the highest resolution first, marked **Keep**; the others are ticked. **Move to Trash…** asks before anything moves, warns when a whole group is ticked, and reports files it couldn't move. Finding resized and converted copies needs the visual-search index; without it, only exact copies are found. On a large library, comparing similar pictures can take a little while; the window counts them as it goes, and closing it stops the search.
+Main Menu → Library → **Find Copies…** finds exact copies (the same file in several places) and resized or converted copies of the same picture, such as a 1080p JPEG of a 4K PNG, or a WebP conversion. Crops, mirrored versions, and merely similar pictures should not count: every copy must have the same shape as the one kept and look the same as it in a small colour version. Look over each group before moving anything. Each group lists resolution, format, size, and folder with the highest resolution first, marked **Keep**; the others are ticked. **Move to Trash…** asks before anything moves, warns when a whole group is ticked, and reports files it couldn't move. A file that changed after the search stays where it is, and so does the rest of a group whose kept copy changed or disappeared. Finding resized and converted copies needs the visual-search index; without it, only exact copies are found. On a large library, comparing similar pictures can take a little while; the window counts them as it goes, and closing it stops the search.
 
 To find low-resolution images, type `below 4k` (or `<1080p`) in search; `4k` finds images of at least 3840×2160 in either orientation.
 
@@ -58,13 +58,13 @@ Select two or more images (Ctrl-click, Shift-click, or Ctrl+A), then right-click
 - **Dismiss** an image with the × on its badge, or **[** for the left and **]** for the right; the next image takes its place. **Ctrl+Z** brings back the last one dismissed.
 - **Done** (or **Escape**) returns to browsing with the images you didn't dismiss selected.
 
-Delete, Rename (F2), and Duplicate (Ctrl+D) are off while Compare is open. An image that can't be read shows the error in its badge.
+The side panels make way while Compare is open. Delete, Rename (F2), Duplicate (Ctrl+D), and the image menu (Shift+F10) are off, as they are while cropping. An image that can't be read shows the error in its badge.
 
 ## Export As WebP
 
 Select images and press Ctrl+E, or right-click → **Export as WebP…**. Choose the folder (**Wallpapers** is one click), lossless or a lossy quality, and optionally **Fit Within** a size such as 3840×2160, which shrinks larger images and never enlarges smaller ones. The export runs in the background: a notification counts progress and can cancel it, keeping the images already finished and leaving no partial file. Each copy is a new file (`name.webp`, `name-1.webp`, …); originals are never changed.
 
-**Crop Copy…** on the right-click menu crops in the viewer at full size: the side panels make way (press F11 for fullscreen), and you drag the selection to move it or its corners to resize it, in 16:9 or freely. **Save Copy** (or Enter) saves the selection as a new lossless WebP in the export folder, Wallpapers unless you chose another; Escape cancels.
+**Crop Copy…** on the right-click menu crops in the viewer at full size: the side panels make way (press F11 for fullscreen), and you drag the selection to move it or its corners to resize it, in 16:9 or freely. **Save Copy** (or Enter) saves the selection as a new lossless WebP in the export folder, Wallpapers unless you chose another; Escape cancels. If the image changes on disk while you crop, Save Copy refuses rather than crop the new file.
 
 ## Preferences
 
