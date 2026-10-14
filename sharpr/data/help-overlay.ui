@@ -65,7 +65,7 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
-                <property name="title">Inline filename search</property>
+                <property name="title">Search: describe images, or type filters such as 4k png 16:9</property>
                 <property name="accelerator">&lt;Control&gt;f</property>
               </object>
             </child>
