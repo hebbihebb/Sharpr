@@ -48,7 +48,7 @@ Tags are **frozen**: no improvements to tagging. They are retired only after vis
 - Move each area out of `window.rs` into `ui/window/` controllers when a phase changes it.
 - Retiring tags (Phase 5) removes a whole UI layer instead of rewriting it.
 - Do not run a separate refactor phase or feature freeze.
-- Target: no new feature logic in `setup()`, and by Phase 9 no function longer than about 500 lines in the areas phases touched.
+- Target: no new feature logic in `setup()`, and by Phase 10 no function longer than about 500 lines in the areas phases touched.
 
 **Revisit triggers:** a fix requires replacing the thumbnail scheduler or `LibraryManager` wholesale, or GTK/Libadwaita changes force a broad UI rewrite anyway.
 
@@ -58,14 +58,16 @@ Tags are **frozen**: no improvements to tagging. They are retired only after vis
 Phase 1 ─┬→ Phase 2 Finding ──────────────────┐
          ├→ Phase 3 Visual-search evaluation ─┤
          └→ Phase 4 File identity + buckets ──┴→ Phase 5 Visual search + tag retirement (go only)
-            then Phase 6 Wallpaper output → Phase 7 Cleanup → Phase 8 Compare → Phase 9 Release
+            then Phase 6 Wallpaper output → Phase 7 Cleanup → Phase 8 Compare
+            → Phase 9 Interface review → Phase 10 Release
 ```
 
 - **Phase 0 is done**; see `docs/archive/history.md`.
-- **Mandatory:** Phases 1, 2, 4, 6, 7, 8, and 9. Phase 3 is a mandatory evaluation; Phase 5 happens only if Phase 3 says go.
+- **Mandatory:** Phases 1, 2, 4, 6, 7, 8, 9, and 10. Phase 3 is a mandatory evaluation; Phase 5 happens only if Phase 3 says go.
 - **Finding comes first** after the data-safety work (D19). Phases 2 and 3 can run in parallel, because Phase 3 is mostly human relevance judging.
 - **Phase 4 is shared groundwork.** Phase 5 (vector identity) and Phase 7 (exact duplicates) both need it.
 - **Phases 6–8 depend only on Phase 1.** The user may reorder them. Phase 6 needs nothing from Phase 4, so it can move earlier if wallpaper output becomes urgent.
+- **Phase 9 (interface review) comes after the features,** by the user's choice (October 14): it reviews the whole interface once everything it must hold exists. Until then, new controls use standard placements and may move in Phase 9.
 
 ---
 
@@ -477,7 +479,51 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - The split slider works at any zoom.
 - Leaving Compare restores browsing with the survivors selected.
 
-## Phase 9: Release
+## Phase 9: Interface Review
+
+**Added October 14 at the user's request.** Placed near the end, "but no less important".
+
+**Outcome:** Every control has one clear home, a name or recognisable icon, and a stable position. Nothing is duplicated without reason. Controls that matter only in a context appear in that context. Each change is a decision the user approved.
+
+**Method:**
+1. **Inventory.** GTK tests screenshot every surface and state: folder, bucket, search, chips, Compare, fullscreen, the empty library, dialogs, and menus. They do this at 1024×600 and at a wide size, in light and dark. Every control is listed with its location, label or icon, shortcut, and any duplicate.
+2. **Review** each control against these questions:
+   - Is it duplicated or redundant?
+   - Is it unlabelled, or does it move?
+   - Should it always be visible, or appear only in context (principle 6, quiet interface)?
+   - Can the keyboard reach it, with an accessible name?
+   - Does it follow the GNOME HIG?
+3. **Proposals** go on a page with before-and-after screenshots, one yes/no decision each. Approved changes are recorded in the decision log, as D18 and D21 were.
+4. **Build** in small commits, with screenshot tests that hold the agreed layout.
+
+**Starting list (the user's observations, October 14, plus code findings):**
+- **Aspect ratio exists in three places:**
+  1. The filmstrip "Filter" popover: all, landscape, portrait, square, and 16:9 within 2%, plus a minimum size. It keeps its own filter state.
+  2. The typed chips: `landscape`, `portrait`, `square`/`1:1`, and `16:9` (D16).
+  3. The sort menu: aspect, and "wide screen" (distance from 16:9).
+
+  None can say "not 16:9", "narrower than 16:9" (boxier), or "wider than 16:9" (ultrawide). The sort by aspect gives a useful range, but not quite the right one.
+  - Idea to weigh: the typed chips become the one filter language, with `<16:9`, `>16:9`, and `not 16:9`. The popover becomes a clickable way to add the same chips, and "closest to 16:9" stays a sort.
+- **The sort button** is only a down arrow, with no name.
+- **The "Filter" label** sits beside a page title.
+- **The "Photos" and "Library" titles** may be redundant; the layout explains itself.
+- **The menu button moves** to the left of the search box when search opens. It needs a fixed position.
+- **Search placement:** the search box could appear centred at the top of the viewer. GNOME Files puts search in the header's centre.
+- **Image actions in the viewer:** many image actions (copies, crop, Compare, file actions) could also be reached from the viewer itself:
+  - right-click, or a modifier-click, on the image
+  - controls that appear on hover
+  - context-dependent controls
+
+  D21 put them in the filmstrip's right-click menu with keyboard access. This extends the question to the viewer and keeps one action model, so menus can't drift apart.
+- **Phase 5 and later additions:** the search status line, "Show More", and "Add to Bucket…"; the Library Overview and its header ring; the Phase 6 export and Phase 7 cleanup controls. All are reviewed here, wherever they first landed.
+
+**Acceptance:**
+- Every control in the inventory is either kept as it is, or changed or removed by a recorded decision.
+- No action has two unrelated entry points that can disagree.
+- Screenshot tests at 1024×600 and wide sizes pass, and nothing overflows or moves when search opens.
+- The user approves the result in a manual pass.
+
+## Phase 10: Release
 
 **Outcome:** A versioned build the user can install and rely on.
 
