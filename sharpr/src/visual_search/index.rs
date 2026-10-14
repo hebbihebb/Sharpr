@@ -201,10 +201,11 @@ pub fn run_pass(
         images: paths.len(),
         ..Default::default()
     };
-    // Fingerprints still to index, each with one of its files and how many
-    // images it stands for.
-    let mut todo: Vec<(String, PathBuf)> = Vec::new();
-    let mut copies: HashMap<String, usize> = HashMap::new();
+    // Fingerprints still to index, each with its files (and the stamps
+    // their fingerprint was made for); every file is one image.
+    type Copies = Vec<(PathBuf, (u64, i64))>;
+    let mut order: Vec<String> = Vec::new();
+    let mut todo: HashMap<String, Copies> = HashMap::new();
     for path in &paths {
         let Ok(metadata) = std::fs::metadata(path) else {
             continue;
@@ -221,33 +222,50 @@ pub fn run_pass(
         } else if done.contains(hash) {
             coverage.indexed += 1;
         } else {
-            let count = copies.entry(hash.clone()).or_insert(0);
-            if *count == 0 {
-                todo.push((hash.clone(), path.clone()));
-            }
-            *count += 1;
+            let copies = todo.entry(hash.clone()).or_insert_with(|| {
+                order.push(hash.clone());
+                Vec::new()
+            });
+            copies.push((path.clone(), stamp));
         }
     }
     progress(coverage);
-    for (hash, path) in todo {
+    for hash in order {
         if canceled() {
             return Err("Indexing canceled".into());
         }
-        let images = copies[&hash];
-        match embedder.embed_image(&path) {
-            Ok(vector) => {
-                store.put_vector(model, &hash, &vector)?;
-                coverage.indexed += images;
+        let copies = &todo[&hash];
+        // A file edited since its fingerprint was made must not lend its new
+        // content to the old fingerprint: check it before and after
+        // embedding, and fall back to an unchanged identical copy. When
+        // every copy changed, the next fingerprint pass brings them back.
+        let unchanged = |path: &Path, stamp: (u64, i64)| {
+            std::fs::metadata(path).is_ok_and(|m| crate::fingerprint::file_stamp(&m) == stamp)
+        };
+        for (path, stamp) in copies {
+            if !unchanged(path, *stamp) {
+                continue;
             }
-            Err(EmbedError::Image(error)) => {
-                crate::bench_warn!(
-                    "visual_search.image_failed",
-                    serde_json::json!({"path": path.display().to_string(), "error": error}),
-                );
-                store.put_failure(model, &hash, &error)?;
-                coverage.failed += images;
+            let result = embedder.embed_image(path);
+            if !unchanged(path, *stamp) {
+                continue;
             }
-            Err(EmbedError::Runtime(error)) => return Err(error),
+            match result {
+                Ok(vector) => {
+                    store.put_vector(model, &hash, &vector)?;
+                    coverage.indexed += copies.len();
+                }
+                Err(EmbedError::Image(error)) => {
+                    crate::bench_warn!(
+                        "visual_search.image_failed",
+                        serde_json::json!({"path": path.display().to_string(), "error": error}),
+                    );
+                    store.put_failure(model, &hash, &error)?;
+                    coverage.failed += copies.len();
+                }
+                Err(EmbedError::Runtime(error)) => return Err(error),
+            }
+            break;
         }
         progress(coverage);
     }
@@ -556,6 +574,72 @@ mod tests {
             other_model.calls.len(),
             4,
             "a new model indexes every distinct image again"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Rewrites the first file it is asked for (as an outside editor
+    /// would mid-pass), then embeds by content like `FakeEmbedder`.
+    struct EditingEmbedder {
+        edited: Option<PathBuf>,
+        calls: Vec<PathBuf>,
+    }
+
+    impl Embedder for EditingEmbedder {
+        fn embed_image(&mut self, path: &Path) -> Result<Vec<f32>, EmbedError> {
+            if self.edited.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::fs::write(path, b"edited content").unwrap();
+                self.edited = Some(path.to_path_buf());
+            }
+            self.calls.push(path.to_path_buf());
+            FakeEmbedder { calls: Vec::new() }.embed_image(path)
+        }
+    }
+
+    #[test]
+    fn a_file_edited_mid_pass_never_lends_its_vector_to_the_old_fingerprint() {
+        let root = temp_dir("edited");
+        std::fs::write(root.join("a.jpg"), b"a").unwrap();
+        std::fs::write(root.join("b-copy.jpg"), b"a").unwrap();
+        let index = LibraryIndex::open_in_memory().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        fingerprint(&index, &root, &[]);
+        let old = crate::fingerprint::hash_file(&root.join("b-copy.jpg")).unwrap();
+
+        let mut embedder = EditingEmbedder {
+            edited: None,
+            calls: Vec::new(),
+        };
+        run_pass(
+            &index,
+            &store,
+            "m",
+            &root,
+            &[],
+            &|| false,
+            &|_| {},
+            &mut embedder,
+        )
+        .unwrap();
+        let edited = embedder.edited.clone().unwrap();
+        let other = if edited.ends_with("a.jpg") {
+            root.join("b-copy.jpg")
+        } else {
+            root.join("a.jpg")
+        };
+        assert_eq!(
+            embedder.calls,
+            vec![edited, other.clone()],
+            "falls back to the unchanged copy"
+        );
+        let expected = FakeEmbedder { calls: Vec::new() }
+            .embed_image(&other)
+            .unwrap();
+        assert_eq!(
+            store.vectors("m").unwrap()[&old],
+            expected,
+            "the old fingerprint keeps the old content's vector"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

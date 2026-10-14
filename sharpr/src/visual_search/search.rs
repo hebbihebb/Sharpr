@@ -135,20 +135,18 @@ pub struct Searcher {
 
 impl Searcher {
     /// `vectors_version` changes whenever indexing may have added vectors.
-    pub fn start(store_path: PathBuf, vectors_version: Arc<AtomicU64>) -> Self {
+    /// `reindex` runs on the search thread when the vector file turns out to
+    /// be deleted or replaced, so indexing can start again.
+    pub fn start(
+        store_path: PathBuf,
+        vectors_version: Arc<AtomicU64>,
+        reindex: Box<dyn Fn() + Send>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel::<Request>();
         let _ = std::thread::Builder::new()
             .name("visual-search".into())
             .spawn(move || {
-                let mut state = State {
-                    store_path,
-                    vectors_version,
-                    server: None,
-                    generic: None,
-                    model: None,
-                    loaded: None,
-                    last: None,
-                };
+                let mut state = State::new(store_path, vectors_version, reindex);
                 loop {
                     match rx.recv_timeout(IDLE) {
                         Ok(request) => {
@@ -186,43 +184,103 @@ impl Searcher {
     }
 }
 
+/// Size and modification time of each model file, which a cached model key
+/// must still match.
+type ModelStamps = [(u64, i64); 2];
+
+/// Which file the vectors came from: device and inode, so a deleted and
+/// recreated vector file is noticed.
+type FileId = (u64, u64);
+
+fn file_id(path: &std::path::Path) -> Option<FileId> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
 struct State {
     store_path: PathBuf,
     vectors_version: Arc<AtomicU64>,
+    reindex: Box<dyn Fn() + Send>,
     server: Option<Server>,
     generic: Option<Vec<f32>>,
-    /// The model key and files it was computed for.
-    model: Option<(super::files::ModelFiles, String)>,
-    /// Vectors for (model key, version).
-    loaded: Option<(String, u64, Vectors)>,
+    /// The model key, and the files and stamps it was computed for.
+    model: Option<(super::files::ModelFiles, ModelStamps, String)>,
+    /// Vectors for (model key, version, vector file).
+    loaded: Option<(String, u64, FileId, Vectors)>,
     /// The last query, which "Show More" asks for again.
     last: Option<(String, Vec<f32>)>,
 }
 
 impl State {
+    fn new(
+        store_path: PathBuf,
+        vectors_version: Arc<AtomicU64>,
+        reindex: Box<dyn Fn() + Send>,
+    ) -> Self {
+        Self {
+            store_path,
+            vectors_version,
+            reindex,
+            server: None,
+            generic: None,
+            model: None,
+            loaded: None,
+            last: None,
+        }
+    }
+
+    /// The key of the installed model files, recomputed whenever a file's
+    /// size or modification time changes. A new key drops the query server
+    /// and everything computed with the old model.
+    fn model_key(&mut self, files: &super::files::ModelFiles) -> Result<String, String> {
+        let stamp = |path: &std::path::Path| {
+            std::fs::metadata(path)
+                .map(|m| crate::fingerprint::file_stamp(&m))
+                .map_err(|e| format!("{}: {e}", path.display()))
+        };
+        let stamps = [stamp(&files.model)?, stamp(&files.projector)?];
+        if let Some((known, known_stamps, key)) = &self.model {
+            if known == files && *known_stamps == stamps {
+                return Ok(key.clone());
+            }
+        }
+        let key = Store::open(&self.store_path)?.model_key(files)?;
+        if self.model.as_ref().is_some_and(|(_, _, old)| *old != key) {
+            self.server = None;
+            self.generic = None;
+            self.loaded = None;
+        }
+        self.last = None;
+        self.model = Some((files.clone(), stamps, key.clone()));
+        Ok(key)
+    }
+
+    /// The vectors for `model`, reloaded when indexing added more or the
+    /// vector file was replaced. A vanished or replaced file asks for a new
+    /// indexing pass.
+    fn vectors(&mut self, model: &str) -> Result<Vectors, String> {
+        let version = self.vectors_version.load(Ordering::Relaxed);
+        let current = file_id(&self.store_path);
+        if let Some((key, loaded_version, id, vectors)) = &self.loaded {
+            if current == Some(*id) {
+                if key == model && *loaded_version == version {
+                    return Ok(vectors.clone());
+                }
+            } else {
+                self.loaded = None;
+                (self.reindex)();
+            }
+        }
+        let vectors = Arc::new(Store::open(&self.store_path)?.vectors(model)?);
+        let id = file_id(&self.store_path).ok_or("The visual search index could not be opened")?;
+        self.loaded = Some((model.to_string(), version, id, vectors.clone()));
+        Ok(vectors)
+    }
+
     fn prepare(&mut self, text: &str) -> Result<Prepared, String> {
         let files = super::files::locate()?;
-        let model = match &self.model {
-            Some((known, key)) if *known == files => key.clone(),
-            _ => {
-                let key = Store::open(&self.store_path)?.model_key(&files)?;
-                self.model = Some((files.clone(), key.clone()));
-                self.server = None;
-                self.last = None;
-                key
-            }
-        };
-        let version = self.vectors_version.load(Ordering::Relaxed);
-        let vectors = match &self.loaded {
-            Some((key, loaded_version, vectors)) if *key == model && *loaded_version == version => {
-                vectors.clone()
-            }
-            _ => {
-                let vectors = Arc::new(Store::open(&self.store_path)?.vectors(&model)?);
-                self.loaded = Some((model.clone(), version, vectors.clone()));
-                vectors
-            }
-        };
+        let model = self.model_key(&files)?;
+        let vectors = self.vectors(&model)?;
         if vectors.is_empty() {
             return Err("No images are indexed for visual search yet".into());
         }
@@ -338,11 +396,101 @@ mod tests {
         assert_eq!(Strength::from_score(0.01), Strength::Weak);
     }
 
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sharpr-search-{}-{}-{name}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_model_replaced_in_place_changes_the_key_and_drops_old_vectors() {
+        let dir = temp_dir("model");
+        let files = super::super::files::ModelFiles {
+            model: dir.join("model.gguf"),
+            projector: dir.join("projector.gguf"),
+            server: dir.join("llama-server"),
+            gpu_server: None,
+        };
+        std::fs::write(&files.model, b"GGUF first").unwrap();
+        std::fs::write(&files.projector, b"GGUF projector").unwrap();
+        let store_path = dir.join("visual-search.sqlite");
+        let mut state = State::new(
+            store_path.clone(),
+            Arc::new(AtomicU64::new(0)),
+            Box::new(|| {}),
+        );
+        let first = state.model_key(&files).unwrap();
+        Store::open(&store_path)
+            .unwrap()
+            .put_vector(&first, "aa", &axis(0, 1.0))
+            .unwrap();
+        assert_eq!(state.vectors(&first).unwrap().len(), 1);
+        assert_eq!(
+            state.model_key(&files).unwrap(),
+            first,
+            "unchanged files reuse the key"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&files.model, b"GGUF second").unwrap();
+        let second = state.model_key(&files).unwrap();
+        assert_ne!(second, first);
+        assert!(state.loaded.is_none(), "old-model vectors are dropped");
+        assert!(
+            state.vectors(&second).unwrap().is_empty(),
+            "never ranks old vectors"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_deleted_vector_file_is_noticed_and_asks_for_reindexing() {
+        let dir = temp_dir("store");
+        let store_path = dir.join("visual-search.sqlite");
+        Store::open(&store_path)
+            .unwrap()
+            .put_vector("m", "aa", &axis(0, 1.0))
+            .unwrap();
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = asked.clone();
+        let mut state = State::new(
+            store_path.clone(),
+            Arc::new(AtomicU64::new(0)),
+            Box::new(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+        assert_eq!(state.vectors("m").unwrap().len(), 1);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", store_path.display()));
+        }
+        assert!(
+            state.vectors("m").unwrap().is_empty(),
+            "no cached vectors survive"
+        );
+        assert_eq!(asked.load(Ordering::Relaxed), 1);
+        assert!(state.vectors("m").unwrap().is_empty());
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            1,
+            "asked once, not on every search"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn a_missing_model_is_explained() {
         let searcher = Searcher::start(
             std::env::temp_dir().join("sharpr-no-such-store.sqlite"),
             Arc::new(AtomicU64::new(0)),
+            Box::new(|| {}),
         );
         // Tests run with an isolated data folder that has no model.
         if super::super::files::locate().is_err() {

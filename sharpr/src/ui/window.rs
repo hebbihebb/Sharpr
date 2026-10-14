@@ -906,11 +906,26 @@ impl SharprWindow {
                 use_gpu,
             ));
             *self.imp().visual_index.borrow_mut() = Some(visual_index.clone());
+            // A deleted or replaced vector file starts indexing again, through
+            // a fingerprint pass on the GTK side, which knows the library.
+            let (reindex_tx, reindex_rx) = async_channel::unbounded::<()>();
             *self.imp().visual_searcher.borrow_mut() =
                 Some(crate::visual_search::search::Searcher::start(
                     crate::visual_search::store::default_path(),
                     visual_index.vectors_version(),
+                    Box::new(move || {
+                        let _ = reindex_tx.send_blocking(());
+                    }),
                 ));
+            {
+                let weak = self.downgrade();
+                glib::MainContext::default().spawn_local(async move {
+                    while reindex_rx.recv().await.is_ok() {
+                        let Some(win) = weak.upgrade() else { return };
+                        win.request_fingerprints();
+                    }
+                });
+            }
             let service = crate::fingerprint::Service::start(
                 index,
                 Box::new(move |job, pass| {
