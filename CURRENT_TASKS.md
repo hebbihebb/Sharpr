@@ -2,7 +2,7 @@
 
 ## Active Milestone
 
-**Phase 5: visual search and tag retirement** (`ROADMAP.md`). Started October 13. Phase 4 is deployed in `bf12e07`, not yet checked by the user.
+**Phase 5: visual search and tag retirement** (`ROADMAP.md`). All units are committed and deployed in `c176934` (October 14), waiting on the user's test. The user is still to decide whether file-name matches stay first in results; they stay for now.
 
 Plan, one commit per unit:
 1. **Runtime and index (GTK-free `src/visual_search/`).** Done with unit 2 in one commit (committed, verified, not deployed).
@@ -32,15 +32,14 @@ Plan, one commit per unit:
   - `main` is at `1924346`: the accepted build `66f3d94` plus its notes.
   - `viewer-reset` continues from there with the audit fixes and later work.
   - Nothing is pushed. Pushing is the user's call.
-- **Deployed:** `bf12e07` (Phases 1–4, the audit fixes, and the large-image viewer fix) at `~/.local/opt/sharpr/bf12e07`, with `current` pointing to it. Installed on October 13 at 11:11 with the user's approval; not yet tested by the user.
-  - **First launch** upgrades bucket membership after its own backup (`~/.local/share/sharpr/backups/before-bucket-membership-*`). After that, older builds refuse the index.
-  - **Smoke test:** run on a copy of the live data. The upgrade gave every bucket identical members, and all 7,718 tag rows were byte-identical.
-  - **Rollback:**
-    1. Close Sharpr.
-    2. Restore `~/.local/share/sharpr.backup-20261013-111041/`.
-    3. Run `ln -sfn ~/.local/opt/sharpr/e9c142f ~/.local/opt/sharpr/current`.
+- **Deployed:** `c176934` (all of Phase 5, with GPU indexing) at `~/.local/opt/sharpr/c176934`, with `current` pointing to it. Installed on October 14 at 02:00 with the user's approval; not yet tested by the user.
+  - The model and both runtimes are installed in `~/.local/share/sharpr-models/embeddinggemma-2/` (approved). The first launch indexes the library on the RTX 4060, about 20 minutes.
+  - The previous build `bf12e07` had already migrated bucket membership on the live data: 151 member rows, matching all 6 buckets.
+  - This build changes no schema. Its new files are `visual-search.sqlite` and the model folder; it adds one `schema_meta` key (the tag offer notice) and one GSettings key.
+  - **Rollback:** close Sharpr, then run `ln -sfn ~/.local/opt/sharpr/bf12e07 ~/.local/opt/sharpr/current`. No data restore is needed.
   - Redeploy only with approval, via `python3 tools/install-native-launcher.py`.
 - **Backups**, each byte-verified and integrity-checked:
+  - `~/.local/share/sharpr.backup-20261014-015921/`, taken before `c176934`: 7,718 tag rows, 6 buckets, 151 members.
   - `~/.local/share/sharpr.backup-20261013-111041/`, taken before `bf12e07`: 7,718 tag rows, 6 buckets.
   - `~/.local/share/sharpr.backup-20261013-090919/`, taken before `e9c142f`: 7,718 tag rows, 6 buckets.
   - `~/.local/share/sharpr.backup-20261013-042010/`
