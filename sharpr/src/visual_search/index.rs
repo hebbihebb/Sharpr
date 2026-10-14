@@ -125,46 +125,72 @@ impl Drop for ServerEmbedder {
     }
 }
 
+/// What to do after the server failed to embed an image.
+#[derive(Debug, PartialEq, Eq)]
+enum Recovery {
+    /// Try again (on the processor, or on a fresh server).
+    Retry,
+    /// The image itself is the problem: record it.
+    ImageFailed,
+    /// The runtime is broken: stop the pass, record nothing.
+    StopPass,
+}
+
+/// Sharpr sends the server a PNG it made itself, so a server error is
+/// rarely the image's fault. A GPU error moves the pass to the processor;
+/// a processor error gets one retry on a fresh server, and only an image
+/// that fails twice is recorded. A wrong model, or a server that keeps
+/// dying, stops the pass without blaming any image.
+fn recovery(error: &str, on_gpu: bool, cpu_attempts: usize, crashes: usize) -> Recovery {
+    if error.contains("not EmbeddingGemma 2") || crashes >= 3 {
+        Recovery::StopPass
+    } else if on_gpu || cpu_attempts < 2 {
+        Recovery::Retry
+    } else {
+        Recovery::ImageFailed
+    }
+}
+
 impl Embedder for ServerEmbedder {
     fn embed_image(&mut self, path: &Path) -> Result<Vec<f32>, EmbedError> {
         let png = super::prepare::prepare_png(path).map_err(EmbedError::Image)?;
-        self.ensure_server()?;
-        let server = self.server.as_mut().expect("started above");
-        match server.embed_png(&png) {
-            Ok(vector) => Ok(vector),
-            Err(error) if server.is_alive() => {
-                // The server rejected this image but still works.
-                if error.contains("not EmbeddingGemma 2") {
-                    Err(EmbedError::Runtime(error))
-                } else {
-                    Err(EmbedError::Image(error))
-                }
-            }
-            Err(error) if self.on_gpu.is_some() => {
-                // The graphics card failed, perhaps another program took its
-                // memory: finish the pass on the processor, this image too.
+        let mut cpu_attempts = 0;
+        loop {
+            self.ensure_server()?;
+            let server = self.server.as_mut().expect("started above");
+            let error = match server.embed_png(&png) {
+                Ok(vector) => return Ok(vector),
+                Err(error) => error,
+            };
+            let alive = server.is_alive();
+            // Every retry gets a fresh server.
+            self.server = None;
+            let on_gpu = self.on_gpu.is_some();
+            if on_gpu {
                 crate::bench_warn!(
                     "visual_search.gpu.fail",
                     serde_json::json!({"device": self.on_gpu, "error": error}),
                 );
-                self.server = None;
                 self.gpu_failed = true;
-                self.embed_image(path)
+            } else {
+                cpu_attempts += 1;
+                if !alive {
+                    self.crashes += 1;
+                }
             }
-            Err(error) => {
-                // The image took the server down: skip it, restart for the
-                // next one, and give up if that keeps happening.
-                self.server = None;
-                self.crashes += 1;
-                if self.crashes >= 3 {
-                    Err(EmbedError::Runtime(format!(
-                        "llama-server keeps stopping: {error}"
-                    )))
-                } else {
-                    Err(EmbedError::Image(format!(
-                        "llama-server stopped while reading this image: {error}"
+            match recovery(&error, on_gpu, cpu_attempts, self.crashes) {
+                Recovery::Retry => {}
+                Recovery::ImageFailed => {
+                    return Err(EmbedError::Image(format!(
+                        "llama-server could not read this image: {error}"
                     )))
                 }
+                Recovery::StopPass if self.crashes >= 3 => {
+                    return Err(EmbedError::Runtime(format!(
+                        "llama-server keeps stopping: {error}"
+                    )))
+                }
+                Recovery::StopPass => return Err(EmbedError::Runtime(error)),
             }
         }
     }
@@ -642,6 +668,28 @@ mod tests {
             "the old fingerprint keeps the old content's vector"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_an_image_that_fails_twice_on_the_processor_is_blamed() {
+        // A live GPU answering 500 moves to the processor, never a failure.
+        assert_eq!(
+            recovery("answered 500: GPU allocation failed", true, 0, 0),
+            Recovery::Retry
+        );
+        assert_eq!(
+            recovery("connection: timed out", false, 1, 0),
+            Recovery::Retry
+        );
+        assert_eq!(recovery("answered 500", false, 2, 0), Recovery::ImageFailed);
+        assert_eq!(
+            recovery("not EmbeddingGemma 2", false, 1, 0),
+            Recovery::StopPass
+        );
+        assert_eq!(
+            recovery("connection refused", false, 1, 3),
+            Recovery::StopPass
+        );
     }
 
     #[test]
