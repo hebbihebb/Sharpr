@@ -386,6 +386,27 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
     - Several searches can fill one bucket, such as `tower`, then `plane`. A single query `tower and plane` instead finds images showing both.
   - **Selection tools:** Shift-click selects a range (pick down to the last good result), Ctrl+A selects all, and Ctrl-click drops images. The status line shows "N selected".
   - All membership writes run off the GTK thread, through `buckets::add_to_bucket`.
+- **Negative search (added October 14 at the user's request).** `tower -water` finds towers, leaving out images that look like water.
+  - **Syntax:** a word starting with `-` becomes a chip reading "not water". Clicking the chip turns it back into text, like the other chips (D16).
+  - **The same negation works for every kind of word:**
+    - `-png` and `-16:9` leave out a format or an aspect ratio, which gives the "not 16:9" the user asked for (see Phase 9).
+    - A negative word also removes file-name matches whose names contain it, such as `-seedvr2`.
+  - **Method: remove the images most like the negative word.** Never send it to the model as part of the query.
+    - For each negative word, score every indexed image's closeness to it, corrected by the generic prompts (as match strength is).
+    - Drop the images in the word's top 10% across the library; the rest keep their normal order.
+    - Tune the cut-off on real searches.
+  - **Evidence (October 14, judged 1,000-image sample, six cases).** Each pair below is: images judged to show the unwanted thing in the top 20, then images judged relevant.
+
+    | Query | Plain | Removing the top 10% | Sending "… without …" |
+    | --- | --- | --- | --- |
+    | woman −beach | 1 / 17 | 0 / 15 | 11 / 5 |
+    | woman −bikini | 1 / 17 | 0 / 17 | not given |
+    | robot −gun | 8 / 17 | 1 / 9 | not given |
+    | blue sky −mountains | 5 / 18 | 1 / 15 | not given |
+
+    - Sending "woman without beach" backfires: the model looks for beaches.
+    - Subtracting the negative word's vector sat in between (woman −beach 0 / 14, robot −gun 5 / 13).
+    - Both columns are lower bounds, because images outside the judged pool count as neither.
 - **Retire tags (D1, D2).**
   - Remove the tag popover and editor, tag pills, and Ctrl+T. The Tags page and the page switcher were already removed on 2026-10-13 (D20).
   - Offer each manual tag that no bucket uses (`nsfw`, `nude`, `mountain`, `nature`, `comics`, …) as a new bucket.
@@ -400,6 +421,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - After retirement, bucket counts are unchanged, offered conversions create correct buckets, and tag row counts are unchanged.
 - The Library Overview's counts match the index files, update while it is open, and never block the GTK thread. The header ring appears only while indexing runs.
 - From one search, a new bucket with the chosen results takes at most three actions. A second search adds to the same bucket, and no image is added twice.
+- `tower -water` returns towers with the most water-like images removed. `-png` and `-16:9` exclude those formats and ratios. Negative chips can be turned back into text.
 
 **Later (optional):** Find similar, per-folder indexing, scheduling controls, and incremental updates when files change.
 
@@ -502,7 +524,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
   2. The typed chips: `landscape`, `portrait`, `square`/`1:1`, and `16:9` (D16).
   3. The sort menu: aspect, and "wide screen" (distance from 16:9).
 
-  None can say "not 16:9", "narrower than 16:9" (boxier), or "wider than 16:9" (ultrawide). The sort by aspect gives a useful range, but not quite the right one.
+  None can say "not 16:9", "narrower than 16:9" (boxier), or "wider than 16:9" (ultrawide). The sort by aspect gives a useful range, but not quite the right one. Phase 5's negative search adds `-16:9`; the comparisons `<16:9` and `>16:9` remain for this phase.
   - Idea to weigh: the typed chips become the one filter language, with `<16:9`, `>16:9`, and `not 16:9`. The popover becomes a clickable way to add the same chips, and "closest to 16:9" stays a sort.
 - **The sort button** is only a down arrow, with no name.
 - **The "Filter" label** sits beside a page title.
