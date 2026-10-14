@@ -370,9 +370,9 @@ impl MetadataChip {
             imp.popover_duplicates_label.set_text("");
             imp.popover_duplicates_label.set_visible(false);
         } else {
-            let image_text = if count == 1 { "image" } else { "images" };
+            let copies = if count == 1 { "copy" } else { "copies" };
             imp.popover_duplicates_label
-                .set_text(&format!("{count} similar {image_text} found"));
+                .set_text(&format!("{count} identical {copies} elsewhere"));
             imp.popover_duplicates_label.set_visible(true);
         }
     }

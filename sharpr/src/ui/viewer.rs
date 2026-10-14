@@ -873,15 +873,10 @@ impl ViewerPane {
                     }
                     None => Vec::new(),
                 };
+                // Identical copies elsewhere, by content fingerprint (Phase 7).
                 let duplicates = index
                     .as_ref()
-                    .map(|index| index.duplicate_groups())
-                    .transpose()
-                    .map_err(|e| e.to_string())?
-                    .unwrap_or_default()
-                    .iter()
-                    .find(|g| g.contains(&worker_path))
-                    .map(|g| g.len().saturating_sub(1))
+                    .map(|index| crate::copies::identical_elsewhere(index, &worker_path))
                     .unwrap_or(0);
                 Ok((names, duplicates))
             })();

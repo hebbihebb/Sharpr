@@ -1118,3 +1118,64 @@ fn webp_export_runs_in_the_background() {
     }
     window.close();
 }
+
+/// Phase 7: "Find Copies…" groups identical files, keeps the first, and
+/// trashes only what the user confirms. (The isolated `XDG_DATA_HOME` holds
+/// the test's trash.)
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn copies_are_found_and_trashed_only_on_request() {
+    let root = isolated_fixture("copies");
+    std::fs::create_dir_all(&root).unwrap();
+    image::RgbImage::from_pixel(96, 54, image::Rgb([30, 140, 90]))
+        .save(root.join("keep.png"))
+        .unwrap();
+    std::fs::copy(root.join("keep.png"), root.join("keep copy.png")).unwrap();
+    image::RgbImage::from_pixel(96, 54, image::Rgb([200, 30, 30]))
+        .save(root.join("other.png"))
+        .unwrap();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 700);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 3 && window.is_mapped());
+    let index = window.imp().state.borrow().library_index.clone().unwrap();
+    crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
+
+    crate::ui::copies_dialog::present(&window);
+    pump_until(|| window.visible_dialog().is_some());
+    let dialog: gtk4::Widget = window.visible_dialog().unwrap().upcast();
+    pump_until(|| row_subtitle(&dialog, "keep copy.png").is_some());
+    assert!(
+        row_subtitle(&dialog, "other.png").is_none(),
+        "a different picture"
+    );
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(500));
+    screenshot(&window, &root.parent().unwrap().join("copies.png"));
+    assert!(
+        root.join("keep copy.png").exists(),
+        "nothing moves before confirming"
+    );
+    window.visible_dialog().unwrap().close();
+
+    window.trash_copies(vec![root.join("keep copy.png")]);
+    pump_until(|| !root.join("keep copy.png").exists());
+    assert!(root.join("keep.png").exists());
+    assert!(root.join("other.png").exists());
+    pump_until(|| window.imp().state.borrow().library.image_count() == 2);
+    window.close();
+}

@@ -12,7 +12,6 @@ use libadwaita::subclass::prelude::*;
 use std::path::{Path, PathBuf};
 
 use crate::config::{AppSettings, FolderMode};
-use crate::duplicates::phash;
 use crate::library_index::{BasicImageInfo, Collection, IndexedImage, LibraryIndex};
 use crate::model::library::{CachedImageData, RawImageEntry};
 use crate::model::{ImageEntry, LibraryManager};
@@ -662,6 +661,66 @@ impl SharprWindow {
     /// The crop in progress, if any.
     pub fn crop_session(&self) -> Option<crate::ui::crop_mode::CropSession> {
         self.imp().crop_session.borrow().clone()
+    }
+
+    /// Moves copies chosen in "Find Copies…" to the trash on a worker, drops
+    /// them from the view, and reports what happened (Phase 7).
+    pub(crate) fn trash_copies(&self, paths: Vec<PathBuf>) {
+        let operation = self
+            .imp()
+            .state
+            .borrow()
+            .ops
+            .add("Moving copies to the trash…");
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let mut trashed = Vec::new();
+            let mut failed = Vec::new();
+            for path in paths {
+                match gio::File::for_path(&path).trash(None::<&gio::Cancellable>) {
+                    Ok(()) => trashed.push(path),
+                    Err(error) => failed.push((path, error.to_string())),
+                }
+            }
+            let _ = tx.send_blocking((trashed, failed));
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok((trashed, failed)) = rx.recv().await else {
+                operation.fail("Trash worker stopped");
+                return;
+            };
+            operation.complete();
+            let Some(win) = weak.upgrade() else { return };
+            {
+                let mut st = win.imp().state.borrow_mut();
+                for path in &trashed {
+                    st.library.remove_path(path);
+                    remove_path_from_action_selection(&mut st, path);
+                }
+            }
+            if let Some(filmstrip) = win.imp().filmstrip.borrow().as_ref() {
+                filmstrip.refresh_virtual();
+                filmstrip.refresh_multi_selection_visuals();
+            }
+            crate::bench_event!(
+                "copies.trash",
+                serde_json::json!({"trashed": trashed.len(), "failed": failed.len()})
+            );
+            let mut message = format!(
+                "Moved {} {} to the trash",
+                trashed.len(),
+                if trashed.len() == 1 { "file" } else { "files" }
+            );
+            if let Some((path, error)) = failed.first() {
+                message.push_str(&format!(
+                    "; {} couldn't be moved ({}: {error})",
+                    failed.len(),
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                ));
+            }
+            win.add_toast(libadwaita::Toast::new(&message));
+        });
     }
 
     /// Exports `sources` as WebP in the background (ROADMAP Phase 6). A toast
@@ -1943,114 +2002,16 @@ impl SharprWindow {
             });
         }
 
-        // Duplicates row → group detection → load_virtual.
+        // Find Copies… (Phase 7): exact, resized, and converted copies.
         {
-            let filmstrip_c = filmstrip.clone();
-            let viewer_c = viewer.clone();
-            let sidebar_c = sidebar.clone();
-            let state_c = state.clone();
-            let content_stack = content_stack.clone();
-            let toast_overlay_c = toast_overlay.clone();
             let window_weak = self.downgrade();
-            let dupe_action = gio::SimpleAction::new("find-duplicates", None);
-            dupe_action.connect_activate(move |_, _| {
-                let expected_gen = window_weak.upgrade().and_then(|win| {
-                    let gen = win.bump_thumbnail_generation("smart.duplicates");
-                    win.complete_thumbnail_ops();
-                    win.clear_inline_search(true);
-                    gen
-                });
-                content_stack.set_visible_child_name("viewer");
-                let hashes = {
-                    let st = state_c.borrow();
-                    st.library
-                        .all_hashes_snapshot()
-                        .into_iter()
-                        .filter(|(path, _)| !path_is_disabled(path, &st.disabled_folders))
-                        .collect::<Vec<_>>()
-                };
-                crate::bench_event!(
-                    "smart.duplicates.request",
-                    serde_json::json!({
-                        "hash_count": hashes.len(),
-                    }),
-                );
-                if hashes.is_empty() {
-                    toast_overlay_c.add_toast(libadwaita::Toast::new(
-                        "Browse your library first — hashes are computed as thumbnails load",
-                    ));
-                    return;
+            let copies = gio::SimpleAction::new("find-duplicates", None);
+            copies.connect_activate(move |_, _| {
+                if let Some(win) = window_weak.upgrade() {
+                    crate::ui::copies_dialog::present(&win);
                 }
-
-                let op = state_c.borrow().ops.add("Finding duplicates");
-                let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
-                rayon::spawn(move || {
-                    let started = Instant::now();
-                    let paths = phash::group_duplicates(&hashes)
-                        .into_iter()
-                        .filter(|group| group.len() > 1)
-                        .flatten()
-                        .collect();
-                    crate::bench_event!(
-                        "smart.duplicates.finish",
-                        serde_json::json!({
-                            "duration_ms": crate::bench::duration_ms(started),
-                        }),
-                    );
-                    let _ = tx.send_blocking(paths);
-                });
-
-                let filmstrip_rx = filmstrip_c.clone();
-                let viewer_rx = viewer_c.clone();
-                let sidebar_rx = sidebar_c.clone();
-                let state_rx = state_c.clone();
-                let window_weak_rx = window_weak.clone();
-                glib::MainContext::default().spawn_local(async move {
-                    let Ok(paths) = rx.recv().await else {
-                        op.fail("Detection failed");
-                        return;
-                    };
-                    if let (Some(expected), Some(win)) = (expected_gen, window_weak_rx.upgrade()) {
-                        if win.current_thumbnail_generation() != Some(expected) {
-                            crate::bench_event!(
-                                "smart.duplicates.stale_result",
-                                serde_json::json!({
-                                    "expected_gen": expected,
-                                }),
-                            );
-                            op.complete();
-                            return;
-                        }
-                    }
-
-                    if paths.is_empty() {
-                        op.fail("No duplicates found");
-                        return;
-                    }
-
-                    let result_count = paths.len();
-                    state_rx.borrow_mut().scope = ViewScope::Duplicates;
-                    load_virtual_async(&state_rx, &paths);
-                    crate::bench_event!(
-                        "virtual_view.load",
-                        serde_json::json!({
-                            "source": "duplicates",
-                            "image_count": result_count,
-                        }),
-                    );
-                    let scope = state_rx.borrow().scope.clone();
-                    apply_scope_to_sidebar(&scope, &sidebar_rx);
-                    filmstrip_rx.refresh_virtual();
-                    let has_first = state_rx.borrow().library.entry_at(0).is_some();
-                    if has_first {
-                        filmstrip_rx.navigate_to(0);
-                    } else {
-                        viewer_rx.clear();
-                    }
-                    op.complete();
-                });
             });
-            self.add_action(&dupe_action);
+            self.add_action(&copies);
         }
 
         {
@@ -3846,14 +3807,6 @@ impl SharprWindow {
         Some(gen)
     }
 
-    fn current_thumbnail_generation(&self) -> Option<u64> {
-        self.imp()
-            .thumbnail_worker
-            .borrow()
-            .as_ref()
-            .map(|worker| worker.current_generation())
-    }
-
     fn complete_thumbnail_ops(&self) {
         if let Some(op) = self.imp().global_thumbnail_op.borrow_mut().take() {
             op.complete();
@@ -4022,7 +3975,7 @@ impl SharprWindow {
         // Image actions live on the filmstrip's right-click menu (decision D21).
 
         let library_section = gio::Menu::new();
-        library_section.append(Some("Find Duplicates"), Some("win.find-duplicates"));
+        library_section.append(Some("Find Copies…"), Some("win.find-duplicates"));
         library_section.append(Some("Library Overview…"), Some("win.library-overview"));
         library_section.append(Some("Turn Tags into Buckets…"), Some("win.tags-to-buckets"));
         library_section.append(

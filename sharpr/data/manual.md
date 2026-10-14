@@ -42,9 +42,11 @@ Buckets are hand-picked groups of images; the files stay in their folders. A buc
 
 Tags are retired. Main Menu → Library → Turn Tags into Buckets… offers each old tag as a new bucket. Your tags themselves are kept, unused, and Main Menu → Library → Remove Old Automatic Tags… clears the format and resolution tags Sharpr once added (a backup is made first).
 
-## Duplicates And Resolution
+## Copies And Resolution
 
-Duplicates uses perceptual hashes to group visually similar files and loads them into the filmstrip without changing files. To find low-resolution images, type `below 4k` (or `<1080p`) in search; `4k` finds images of at least 3840×2160 in either orientation.
+Main Menu → Library → **Find Copies…** finds exact copies (the same file in several places) and resized or converted copies of the same picture, such as a 1080p JPEG of a 4K PNG, or a WebP conversion. Crops, mirrored versions, and merely similar pictures are not copies. Each group lists resolution, format, size, and folder with the highest resolution first, marked **Keep**; the others are ticked. **Move to Trash…** asks before anything moves, warns when a whole group is ticked, and reports files it couldn't move. Finding resized and converted copies needs the visual-search index; without it, only exact copies are found.
+
+To find low-resolution images, type `below 4k` (or `<1080p`) in search; `4k` finds images of at least 3840×2160 in either orientation.
 
 ## Compare
 

@@ -495,6 +495,12 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 ## Phase 7: Cleanup
 
+**Status (October 14): built, committed, and verified; not deployed or accepted.**
+- **Item 1:** the old finder's inconsistency was incomplete coverage: it only knew the perceptual hashes of images whose thumbnails had loaded this session. "Find Copies…" replaces it.
+- **Fixture with the real model:** the 1080p JPEG (0.9959) and the WebP conversion (0.9970) of a 4K picture group with it and its exact copy. A same-shape 16:9 crop (0.9711) and a mirrored copy (0.9892) fail the pixel check and stay out.
+- **Every vector pair also needs the same aspect ratio,** because a test showed a crop could otherwise chain in through a close copy.
+- **Left for acceptance:** the user reviews groups on the real library, and the thresholds are tuned on those real examples.
+
 **Outcome:** The user reliably finds exact copies and resized or converted copies, then trashes the extras safely (D14). Images below 4K are found with the Phase 2 filter.
 
 **Scope:**
@@ -663,6 +669,7 @@ Optional and unordered. Pick something up only when a phase touches that area, o
 - Make Flatpak `home` access writable for move and rename, if the user needs it.
 - Guard the startup legacy-bucket migration (`migrate_legacy_collections_to_tags`) with a backup and count check, or retire it, before old databases are treated as a supported upgrade (audit finding 12).
 - Keep thumbnail generations through to completion: a failure or success from an old request must not mark a newer view's row (audit finding 7).
+- Stop computing perceptual hashes in the thumbnail workers, now that "Find Copies…" (Phase 7) uses fingerprints and vectors; remove `duplicates/phash.rs` and `LibraryIndex::duplicate_groups` with it. Wrap or extend the thumbnail scheduler; don't rewrite it.
 - Index AVIF and HEIC/HEIF for visual search, with a bounded decoder on the worker (Phase 5 audit, finding 13). The live library has none; weigh the Flatpak cost before adding decoders.
 - GTK test harness: `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs); make it deterministic. The screenshot timeout is solved (October 14): a window the compositor isn't drawing (covered, for example by a fullscreen video while the user works) gives no frame, so screenshots are now best-effort and never fail a test.
 

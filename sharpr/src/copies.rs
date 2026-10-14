@@ -1,0 +1,510 @@
+//! Finding copies to clean up (`ROADMAP.md` Phase 7, decision D14): exact
+//! copies, and resized or converted copies of the same picture. Crops and
+//! merely similar pictures are not copies. GTK-free; runs on a worker.
+//!
+//! - **Exact copies** share a content fingerprint (Phase 4).
+//! - **Resized or converted copies** are found through the visual-search
+//!   vectors (Phase 5), which barely change with size or format. On the
+//!   judged sample, pairs at a cosine of 0.99 or more were all the same
+//!   picture, then came a clear gap. Every vector match also needs the same
+//!   aspect ratio, since a crop changes it and copies keep it; without
+//!   that, a crop could chain into a group through a close copy. Between
+//!   0.95 and 0.99, small versions of the two images must also look the
+//!   same pixel for pixel.
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+
+use crate::config::FolderMode;
+use crate::library_index::LibraryIndex;
+
+/// At or above this cosine, two images are the same picture.
+pub const SAME_PICTURE: f32 = 0.99;
+/// Between this and `SAME_PICTURE`, a pair needs the aspect and pixel checks.
+pub const MAYBE_SAME: f32 = 0.95;
+/// The largest mean difference, out of 255, between 32×32 grey versions of
+/// two images that still counts as the same picture.
+const PIXEL_TOLERANCE: f64 = 10.0;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CopyFile {
+    pub path: PathBuf,
+    /// Displayed (oriented) size, if it could be read.
+    pub size: Option<(u32, u32)>,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CopyGroup {
+    /// Highest resolution first; the first is the one to keep.
+    pub files: Vec<CopyFile>,
+    /// Every file has the same bytes.
+    pub identical: bool,
+}
+
+impl CopyGroup {
+    /// Bytes the extras take up.
+    pub fn extra_bytes(&self) -> u64 {
+        self.files.iter().skip(1).map(|f| f.bytes).sum()
+    }
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct CopyReport {
+    pub groups: Vec<CopyGroup>,
+    /// Images that have no visual-search vector yet, so only exact copies
+    /// of them could be found.
+    pub not_indexed: usize,
+    pub images: usize,
+}
+
+struct UnionFind(Vec<usize>);
+
+impl UnionFind {
+    fn new(n: usize) -> Self {
+        Self((0..n).collect())
+    }
+    fn find(&mut self, i: usize) -> usize {
+        let mut root = i;
+        while self.0[root] != root {
+            root = self.0[root];
+        }
+        let mut node = i;
+        while self.0[node] != root {
+            let next = self.0[node];
+            self.0[node] = root;
+            node = next;
+        }
+        root
+    }
+    fn union(&mut self, a: usize, b: usize) {
+        let (a, b) = (self.find(a), self.find(b));
+        if a != b {
+            self.0[b] = a;
+        }
+    }
+}
+
+/// Whether two sizes have the same aspect ratio within 2%.
+fn same_aspect(a: (u32, u32), b: (u32, u32)) -> bool {
+    let ratio = |(w, h): (u32, u32)| f64::from(w) / f64::from(h.max(1));
+    (ratio(a) / ratio(b) - 1.0).abs() <= 0.02
+}
+
+/// A 32×32 grey version of `path`, upright, for the pixel check.
+fn tiny_grey(path: &Path) -> Option<Vec<u8>> {
+    let png = crate::visual_search::prepare::prepare_png(path).ok()?;
+    let image = image::load_from_memory(&png).ok()?;
+    Some(
+        image
+            .resize_exact(32, 32, image::imageops::FilterType::Triangle)
+            .to_luma8()
+            .into_raw(),
+    )
+}
+
+/// Whether two images look the same at 32×32.
+pub fn look_the_same(a: &Path, b: &Path) -> bool {
+    match (tiny_grey(a), tiny_grey(b)) {
+        (Some(a), Some(b)) => {
+            let diff: f64 = a
+                .iter()
+                .zip(&b)
+                .map(|(x, y)| f64::from(x.abs_diff(*y)))
+                .sum::<f64>()
+                / a.len() as f64;
+            diff <= PIXEL_TOLERANCE
+        }
+        _ => false,
+    }
+}
+
+/// Groups the images in `fingerprints` (path → fingerprint, current files
+/// only) into copies, using `vectors` (fingerprint → unit vector) for
+/// resized and converted copies. `size_of` and `same_pixels` read files
+/// for the borderline checks.
+pub fn group(
+    fingerprints: &BTreeMap<PathBuf, String>,
+    vectors: &HashMap<String, Vec<f32>>,
+    size_of: &dyn Fn(&Path) -> Option<(u32, u32)>,
+    same_pixels: &dyn Fn(&Path, &Path) -> bool,
+) -> Vec<Vec<PathBuf>> {
+    // One node per distinct fingerprint, with every file that has it.
+    let mut by_hash: BTreeMap<&str, Vec<&PathBuf>> = BTreeMap::new();
+    for (path, hash) in fingerprints {
+        by_hash.entry(hash).or_default().push(path);
+    }
+    let nodes: Vec<(&str, Vec<&PathBuf>)> = by_hash.into_iter().collect();
+    let mut sets = UnionFind::new(nodes.len());
+    let indexed: Vec<(usize, &Vec<f32>)> = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (hash, _))| vectors.get(*hash).map(|v| (i, v)))
+        .collect();
+    // Every pair of distinct pictures, in parallel rows.
+    use rayon::prelude::*;
+    let pairs: Vec<(usize, usize, f32)> = (0..indexed.len())
+        .into_par_iter()
+        .flat_map_iter(|a| {
+            let (i, va) = indexed[a];
+            indexed[a + 1..].iter().filter_map(move |(j, vb)| {
+                let score = crate::visual_search::similarity(va, vb);
+                (score >= MAYBE_SAME).then_some((i, *j, score))
+            })
+        })
+        .collect();
+    let mut sizes: HashMap<usize, Option<(u32, u32)>> = HashMap::new();
+    for (i, j, score) in pairs {
+        let (a, b) = (nodes[i].1[0], nodes[j].1[0]);
+        let size_a = *sizes.entry(i).or_insert_with(|| size_of(a));
+        let size_b = *sizes.entry(j).or_insert_with(|| size_of(b));
+        let aspect_matches = match (size_a, size_b) {
+            (Some(sa), Some(sb)) => same_aspect(sa, sb),
+            _ => false,
+        };
+        if aspect_matches && (score >= SAME_PICTURE || same_pixels(a, b)) {
+            sets.union(i, j);
+        }
+    }
+    let mut groups: BTreeMap<usize, Vec<PathBuf>> = BTreeMap::new();
+    for (i, (_, paths)) in nodes.iter().enumerate() {
+        groups
+            .entry(sets.find(i))
+            .or_default()
+            .extend(paths.iter().map(|p| (*p).clone()));
+    }
+    groups
+        .into_values()
+        .filter(|paths| paths.len() > 1)
+        .collect()
+}
+
+/// How many other existing files have exactly the bytes of `path`, from
+/// cached fingerprints only (nothing is read or hashed here).
+pub fn identical_elsewhere(index: &LibraryIndex, path: &Path) -> usize {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return 0;
+    };
+    let (size, mtime) = crate::fingerprint::file_stamp(&metadata);
+    let Ok(Some(hash)) = index.fresh_fingerprint(path, size, mtime) else {
+        return 0;
+    };
+    let Ok(files) = index.files_with_fingerprints(std::slice::from_ref(&hash)) else {
+        return 0;
+    };
+    files
+        .get(&hash)
+        .into_iter()
+        .flatten()
+        .filter(|(other, size, mtime)| {
+            other != path
+                && std::fs::metadata(other)
+                    .is_ok_and(|m| crate::fingerprint::file_stamp(&m) == (*size, *mtime))
+        })
+        .count()
+}
+
+/// Finds every group of copies in the enabled library under `root`, using
+/// the visual-search vectors in `vectors` (empty without the model).
+pub fn find(
+    index: &LibraryIndex,
+    root: &Path,
+    disabled: &[PathBuf],
+    vectors: &HashMap<String, Vec<f32>>,
+    canceled: &dyn Fn() -> bool,
+) -> Result<CopyReport, String> {
+    let paths = crate::model::library::collect_library_image_paths_cancellable(
+        Some(root.to_path_buf()),
+        FolderMode::DrillDown,
+        None,
+        disabled,
+        canceled,
+    );
+    if canceled() {
+        return Err("Canceled".into());
+    }
+    let cached = index.cached_fingerprints().map_err(|e| e.to_string())?;
+    let mut fingerprints = BTreeMap::new();
+    let mut bytes = HashMap::new();
+    for path in &paths {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            continue;
+        };
+        let stamp = crate::fingerprint::file_stamp(&metadata);
+        if let Some((size, mtime, hash)) = cached.get(path.to_string_lossy().as_ref()) {
+            if (*size, *mtime) == stamp {
+                fingerprints.insert(path.clone(), hash.clone());
+                bytes.insert(path.clone(), metadata.len());
+            }
+        }
+    }
+    let not_indexed = fingerprints
+        .values()
+        .filter(|hash| !vectors.contains_key(*hash))
+        .count();
+    let size_of = |path: &Path| crate::export::oriented_source_dimensions(path).ok();
+    let mut groups: Vec<CopyGroup> = group(&fingerprints, vectors, &size_of, &look_the_same)
+        .into_iter()
+        .map(|paths| {
+            let identical = paths
+                .iter()
+                .all(|p| fingerprints.get(p) == fingerprints.get(&paths[0]));
+            let mut files: Vec<CopyFile> = paths
+                .into_iter()
+                .map(|path| CopyFile {
+                    size: size_of(&path),
+                    bytes: bytes.get(&path).copied().unwrap_or(0),
+                    path,
+                })
+                .collect();
+            // Keep the most pixels; then the bigger file (less compressed);
+            // then the shorter, earlier path.
+            files.sort_by(|a, b| {
+                let pixels = |f: &CopyFile| f.size.map_or(0, |(w, h)| u64::from(w) * u64::from(h));
+                pixels(b)
+                    .cmp(&pixels(a))
+                    .then(b.bytes.cmp(&a.bytes))
+                    .then(a.path.as_os_str().len().cmp(&b.path.as_os_str().len()))
+                    .then(a.path.cmp(&b.path))
+            });
+            CopyGroup { files, identical }
+        })
+        .collect();
+    groups.sort_by_key(|group| std::cmp::Reverse(group.extra_bytes()));
+    Ok(CopyReport {
+        groups,
+        not_indexed,
+        images: paths.len(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unit(values: &[(usize, f32)]) -> Vec<f32> {
+        let mut v = vec![0.0f32; crate::visual_search::DIMENSIONS];
+        for (i, x) in values {
+            v[*i] = *x;
+        }
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.iter().map(|x| x / norm).collect()
+    }
+
+    #[test]
+    fn copies_group_by_fingerprint_and_by_vector_but_crops_do_not() {
+        let p = |name: &str| PathBuf::from(format!("/l/{name}"));
+        let fingerprints: BTreeMap<PathBuf, String> = [
+            (p("a.png"), "A"),
+            (p("a-copy.png"), "A"),   // identical bytes
+            (p("a-1080p.jpg"), "A2"), // resized: same picture
+            (p("a.webp"), "A3"),      // converted, borderline score
+            (p("a-crop.png"), "A4"),  // a crop, borderline score
+            (p("other.jpg"), "B"),    // a different picture
+            (p("lonely.png"), "C"),   // no vector at all
+        ]
+        .into_iter()
+        .map(|(path, hash)| (path, hash.to_string()))
+        .collect();
+        let vectors: HashMap<String, Vec<f32>> = [
+            ("A", unit(&[(0, 1.0)])),
+            ("A2", unit(&[(0, 1.0), (1, 0.05)])), // cosine ≈ 0.9988
+            ("A3", unit(&[(0, 1.0), (1, 0.2)])),  // cosine ≈ 0.98
+            ("A4", unit(&[(0, 1.0), (1, 0.25)])), // cosine ≈ 0.97
+            ("B", unit(&[(2, 1.0)])),
+        ]
+        .into_iter()
+        .map(|(h, v)| (h.to_string(), v))
+        .collect();
+        let size_of = |path: &Path| {
+            Some(if path.ends_with("a-crop.png") {
+                (1000, 1000)
+            } else {
+                (1920, 1080)
+            })
+        };
+        let same = |_: &Path, _: &Path| true;
+        let groups = group(&fingerprints, &vectors, &size_of, &same);
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        let mut members = groups[0].clone();
+        members.sort();
+        assert_eq!(
+            members,
+            vec![p("a-1080p.jpg"), p("a-copy.png"), p("a.png"), p("a.webp")],
+            "the crop's aspect differs, so it stays out"
+        );
+
+        // A borderline pair whose pixels differ stays apart too.
+        let different = |_: &Path, _: &Path| false;
+        let groups = group(&fingerprints, &vectors, &size_of, &different);
+        let mut members = groups[0].clone();
+        members.sort();
+        assert_eq!(members, vec![p("a-1080p.jpg"), p("a-copy.png"), p("a.png")]);
+    }
+
+    #[test]
+    fn aspect_ratios_match_within_two_percent() {
+        assert!(same_aspect((3840, 2160), (1920, 1080)));
+        assert!(same_aspect((1920, 1080), (1920, 1090)));
+        assert!(!same_aspect((1920, 1080), (1080, 1080)));
+    }
+
+    /// A busy picture: overlapping coloured discs on a gradient.
+    fn scene(width: u32, height: u32) -> image::RgbImage {
+        let mut seed = 0x5eed_u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as u32
+        };
+        let discs: Vec<(f64, f64, f64, [u8; 3])> = (0..40)
+            .map(|_| {
+                (
+                    f64::from(next() % 1000) / 1000.0,
+                    f64::from(next() % 1000) / 1000.0,
+                    0.03 + f64::from(next() % 100) / 1000.0,
+                    [
+                        (next() % 256) as u8,
+                        (next() % 256) as u8,
+                        (next() % 256) as u8,
+                    ],
+                )
+            })
+            .collect();
+        image::RgbImage::from_fn(width, height, |x, y| {
+            let (u, v) = (
+                f64::from(x) / f64::from(width),
+                f64::from(y) / f64::from(height),
+            );
+            let mut pixel = [(u * 120.0) as u8, (v * 160.0) as u8, 90];
+            for (cx, cy, r, colour) in &discs {
+                let dx = (u - cx) * f64::from(width) / f64::from(height);
+                if dx * dx + (v - cy) * (v - cy) < r * r {
+                    pixel = *colour;
+                }
+            }
+            image::Rgb(pixel)
+        })
+    }
+
+    /// The Phase 7 acceptance fixture with the real model: run with
+    /// `SHARPR_TEST_MODEL_DIR` and `SHARPR_LLAMA_SERVER` (and optionally
+    /// `SHARPR_LLAMA_SERVER_GPU`).
+    #[test]
+    #[ignore]
+    fn the_real_model_groups_resized_and_converted_copies_but_not_crops() {
+        let env = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("set {name}"));
+        let root = std::env::temp_dir().join(format!("sharpr-copies-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let picture = image::DynamicImage::ImageRgb8(scene(3840, 2160));
+        picture.save(root.join("wallpaper-4k.png")).unwrap();
+        std::fs::copy(
+            root.join("wallpaper-4k.png"),
+            root.join("wallpaper-4k copy.png"),
+        )
+        .unwrap();
+        picture
+            .resize_exact(1920, 1080, image::imageops::FilterType::Lanczos3)
+            .save(root.join("wallpaper-1080p.jpg"))
+            .unwrap();
+        std::fs::write(
+            root.join("wallpaper.webp"),
+            crate::export::webp_bytes(&picture, false, 80).unwrap(),
+        )
+        .unwrap();
+        picture.fliph().save(root.join("mirrored.jpg")).unwrap();
+        // A crop with the same 16:9 shape: only the vectors and pixels can
+        // tell it apart.
+        picture
+            .crop_imm(0, 0, 1920, 1080)
+            .save(root.join("crop-16x9.png"))
+            .unwrap();
+
+        let index = LibraryIndex::open_in_memory().unwrap();
+        crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
+        let files = crate::visual_search::files::locate_in(
+            Path::new(&env("SHARPR_TEST_MODEL_DIR")),
+            &[PathBuf::from(env("SHARPR_LLAMA_SERVER"))],
+        )
+        .unwrap();
+        let store = crate::visual_search::store::Store::open(&root.join("vectors.sqlite")).unwrap();
+        let mut embedder = crate::visual_search::index::ServerEmbedder::new(
+            files.clone(),
+            files.gpu_server.is_some(),
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        );
+        crate::visual_search::index::run_pass(
+            &index,
+            &store,
+            "m",
+            &root,
+            &[],
+            &|| false,
+            &|_| {},
+            &mut embedder,
+        )
+        .unwrap();
+        drop(embedder);
+        let vectors = store.vectors("m").unwrap();
+
+        let report = find(&index, &root, &[], &vectors, &|| false).unwrap();
+        for group in &report.groups {
+            eprintln!(
+                "group: {:?}",
+                group
+                    .files
+                    .iter()
+                    .map(|f| f.path.file_name().unwrap())
+                    .collect::<Vec<_>>()
+            );
+        }
+        // Print the scores, to tune the thresholds.
+        let cached = index.cached_fingerprints().unwrap();
+        let vector_of = |name: &str| {
+            let hash = &cached[root.join(name).to_str().unwrap()].2;
+            vectors[hash].clone()
+        };
+        for name in [
+            "wallpaper-1080p.jpg",
+            "wallpaper.webp",
+            "mirrored.jpg",
+            "crop-16x9.png",
+        ] {
+            eprintln!(
+                "{name}: {:.4}",
+                crate::visual_search::similarity(&vector_of("wallpaper-4k.png"), &vector_of(name))
+            );
+        }
+        let group = report
+            .groups
+            .iter()
+            .find(|g| g.files.iter().any(|f| f.path.ends_with("wallpaper-4k.png")))
+            .expect("the 4K picture is in a group");
+        let names: Vec<String> = group
+            .files
+            .iter()
+            .map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names[0], "wallpaper-4k.png",
+            "the highest resolution comes first"
+        );
+        for copy in [
+            "wallpaper-4k copy.png",
+            "wallpaper-1080p.jpg",
+            "wallpaper.webp",
+        ] {
+            assert!(
+                names.contains(&copy.to_string()),
+                "{copy} missing from {names:?}"
+            );
+        }
+        assert!(
+            !names.contains(&"crop-16x9.png".to_string()),
+            "a crop is not a copy"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

@@ -3,6 +3,7 @@ mod bench;
 mod buckets;
 mod collection_export;
 mod config;
+mod copies;
 mod db_version;
 mod display_scale;
 mod duplicates;

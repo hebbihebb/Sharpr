@@ -26,7 +26,8 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `library_index/` | SQLite index of folders, images, and buckets (`schema.rs` sets up new databases) |
 | `tags/db.rs` | SQLite manual tags and sharpness store |
 | `export/`, `collection_export.rs` | WebP copies (crop and batch export) with safe output reservation, and crop geometry; bucket import and export |
-| `duplicates/`, `quality/` | Perceptual-hash duplicates; resolution-based quality views and sharpness |
+| `copies.rs`, `ui/copies_dialog.rs` | Phase 7 "Find Copies…": exact copies by fingerprint, and resized or converted copies by visual-search vectors (cosine ≥ 0.99, or 0.95–0.99 with a 32×32 pixel check; every pair needs the same aspect), then review and confirmed trash |
+| `duplicates/`, `quality/` | Perceptual hashes (still computed by the thumbnail workers, no longer shown) and sharpness |
 | `ops/`, `ui/ops_indicator.rs` | Events for transient background operations. There is no persistent queue. |
 | `config/settings.rs` | GSettings wrapper. Keys for removed features stay declared but are not used. |
 | `bench.rs` | Structured JSONL event log (see `development.md`) |
