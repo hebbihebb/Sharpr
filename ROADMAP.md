@@ -330,7 +330,13 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
   - A GTK test with the real model indexes synthetic images in the background and ranks them by content, file-name matches first.
   - Without a model, search falls back to file names and says so.
   - Turning a tag into a bucket keeps every tag row unchanged.
-- **Parity:** a 10-image pilot of the app's own pipeline matched the judged benchmark vectors at cosine 0.997–0.9998; PARITY_PENDING.
+- **Parity:** the app's own pipeline over the 1,000-image sample (release build, CPU) matched the judged benchmark vectors at median cosine 0.9995 (5th percentile 0.997, minimum 0.968), with 95% top-20 overlap (minimum 85%).
+  - It passes 30/30 queries in every category. 85.2% of its top 20 and 94.7% of its top 5 are judged relevant, against 88.2% and 95.3%; these are lower bounds, because the about 5% of results outside the judged pool count as not relevant.
+  - Indexing ran at 0.31 images/s with 2 threads, about 5.2 hours for the real library. Queries took 15 ms at p95. The 2 errors were files deleted since the sample was drawn.
+- **GPU experiment (October 14, approved by the user):** the official Vulkan build of the same llama.cpp (`b11457`), pinned to the RTX 4060 Laptop GPU, ran the same 1,000 images at **5.24 images/s, 17× the CPU**. That is about 20 minutes for the real library instead of 5 hours, using about 1.2 GB of graphics memory.
+  - Its vectors match the CPU's at median cosine 0.99989 (minimum 0.9985), with 98% top-20 overlap, so both can share one index.
+  - It also passes 30/30, with 85.3% relevant in the top 20 and 95.3% in the top 5.
+  - Not integrated yet. That needs a GPU runtime in the model folder and a Preferences switch, with the CPU as fallback; see `CURRENT_TASKS.md`.
 - **Match strength** is calibrated on the judged sample: the fifth-best score after subtracting each image's closeness to generic prompts. It separates 28 of 30 real queries from 13 of 15 absent subjects. It isn't judged below 50 indexed images.
 - **Decision for the user:** whether file names should still match, first, alongside visual results (implemented that way for now, so names like `seedvr2-…` stay findable).
 - **Left for acceptance:**

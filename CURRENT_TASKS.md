@@ -18,7 +18,10 @@ Plan, one commit per unit:
    - Name search stays as the fallback.
    - Check parity with the Phase 3 results inside the app.
 3. **Tag retirement.** Done (committed, verified, not deployed). The tag popover, Ctrl+T, on-image pills, tag search, and the extra-tags field are gone. Main menu → Library → "Turn Tags into Buckets…" offers each unused manual tag, none ticked; a one-time toast points to it. On the live data that is 11 tags (`nsfw` 88, `nude` 88, `mountain` 8, `nature` 8, and smaller ones). Tag rows stay.
-4. **Packaging.** Implemented: `tools/install-visual-search-model.py` (tested in a scratch folder) and a `llama-cpp` Flatpak module; the Flatpak build is being checked.
+4. **Packaging.** Implemented: `tools/install-visual-search-model.py` (tested in a scratch folder) and a `llama-cpp` Flatpak module. The Flatpak builds (36 MB for `llama-server` and its libraries), and inside the sandbox it embedded an image and a query from the model folder (verified October 14; not installed).
+- **Parity (October 14):** the app's CPU pipeline passes 30/30 against the user's judgments (median cosine 0.9995 to the benchmark). The GPU (Vulkan, RTX 4060) is 17× faster with matching vectors. Next, if the user agrees: GPU indexing as an option.
+- **GNOME Shell's graphics-memory leak:** it held 6.9 GB of the 4060's 8 GB, and dropped to 0.55 GB when the user turned off blur-my-shell and the wallpaper slideshow. Which one caused it is not known yet.
+- **Crash on October 13, 15:57:** the Flatpak build, the parity run, and rust-analyzer together ran out of memory, and the kernel killed the terminal. Nothing was lost. Run heavy jobs one at a time, inside `systemd-run --user --scope -p MemoryMax=9G`.
    - The installer places the model and runtime.
    - A llama.cpp module goes in the Flatpak manifest, without network features.
    - Update the docs.
