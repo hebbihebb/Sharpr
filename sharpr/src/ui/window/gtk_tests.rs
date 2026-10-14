@@ -861,3 +861,79 @@ fn unused_tags_are_offered_as_buckets() {
     assert_eq!(rows_after, rows_before, "tag rows are untouched");
     window.close();
 }
+
+/// The subtitle of the first `AdwActionRow` titled `title` under `widget`.
+fn row_subtitle(widget: &gtk4::Widget, title: &str) -> Option<String> {
+    if let Some(row) = widget.downcast_ref::<libadwaita::ActionRow>() {
+        if row.title().as_str() == title {
+            return row.subtitle().map(|s| s.to_string());
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if let Some(found) = row_subtitle(&current, title) {
+            return Some(found);
+        }
+        child = current.next_sibling();
+    }
+    None
+}
+
+/// The Library Overview shows the library's size, formats, copies, and
+/// buckets (Phase 5).
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn library_overview_counts_the_library() {
+    let root = isolated_fixture("overview");
+    std::fs::create_dir_all(&root).unwrap();
+    for (name, colour) in [("one.png", [200, 40, 40]), ("two.png", [40, 200, 40])] {
+        image::RgbImage::from_pixel(64, 48, image::Rgb(colour))
+            .save(root.join(name))
+            .unwrap();
+    }
+    std::fs::copy(root.join("one.png"), root.join("one-copy.png")).unwrap();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 700);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 3 && window.is_mapped());
+    let index = window.imp().state.borrow().library_index.clone().unwrap();
+    crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
+
+    crate::ui::library_overview::present(&window);
+    pump_until(|| window.visible_dialog().is_some());
+    let dialog: gtk4::Widget = window.visible_dialog().unwrap().upcast();
+    pump_until(|| row_subtitle(&dialog, "Images").is_some_and(|s| s != "…"));
+    assert!(row_subtitle(&dialog, "Images")
+        .unwrap()
+        .starts_with("3 images"));
+    assert_eq!(row_subtitle(&dialog, "Formats").unwrap(), "PNG 3");
+    assert_eq!(
+        row_subtitle(&dialog, "Fingerprinted").unwrap(),
+        "3 of 3 images"
+    );
+    assert_eq!(
+        row_subtitle(&dialog, "Exact Copies").unwrap(),
+        "1 group of identical files (1 extra)"
+    );
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(500));
+    screenshot(
+        &window,
+        &root.parent().unwrap().join("library-overview.png"),
+    );
+    window.close();
+}

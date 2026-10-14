@@ -313,6 +313,25 @@ pub struct Job {
 struct Queue {
     pending: Option<Job>,
     running: Option<Job>,
+    /// Delete the vector file before the next pass.
+    rebuild: bool,
+}
+
+/// How a pass is going, for the Library Overview and the header ring.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pace {
+    /// Images indexed per second in the current pass, once measurable.
+    pub per_second: Option<f64>,
+    /// Estimated time until the pass ends.
+    pub remaining: Option<std::time::Duration>,
+    /// When the last pass finished.
+    pub last_finished: Option<std::time::SystemTime>,
+}
+
+#[derive(Default)]
+struct PassClock {
+    started: Option<(std::time::Instant, usize)>,
+    last_finished: Option<std::time::SystemTime>,
 }
 
 /// The indexing thread. The newest request wins; a request for a different
@@ -324,6 +343,7 @@ pub struct Service {
     vectors_version: Arc<AtomicU64>,
     use_gpu: Arc<AtomicBool>,
     device: Arc<Mutex<Option<String>>>,
+    clock: Arc<Mutex<PassClock>>,
 }
 
 impl Service {
@@ -332,7 +352,9 @@ impl Service {
     pub fn start(index: Arc<LibraryIndex>, store_path: PathBuf, use_gpu: bool) -> Self {
         let use_gpu = Arc::new(AtomicBool::new(use_gpu));
         let device = Arc::new(Mutex::new(None));
-        let (thread_use_gpu, thread_device) = (use_gpu.clone(), device.clone());
+        let clock = Arc::new(Mutex::new(PassClock::default()));
+        let (thread_use_gpu, thread_device, thread_clock) =
+            (use_gpu.clone(), device.clone(), clock.clone());
         let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
         let cancel = Arc::new(AtomicBool::new(false));
         let status = Arc::new(Mutex::new(Status::Waiting));
@@ -353,18 +375,32 @@ impl Service {
                     *thread_status.lock().unwrap_or_else(|e| e.into_inner()) = s;
                 };
                 loop {
-                    let job = {
+                    let (job, rebuild) = {
                         let (lock, ready) = &*thread_queue;
                         let mut queue = lock.lock().unwrap_or_else(|e| e.into_inner());
                         loop {
                             if let Some(job) = queue.pending.take() {
                                 queue.running = Some(job.clone());
-                                break job;
+                                break (job, std::mem::take(&mut queue.rebuild));
                             }
                             queue = ready.wait(queue).unwrap_or_else(|e| e.into_inner());
                         }
                     };
                     thread_cancel.store(false, Ordering::Relaxed);
+                    // Only this thread writes the vector file, and no pass
+                    // has it open now, so it can go safely.
+                    if rebuild {
+                        for suffix in ["", "-wal", "-shm"] {
+                            let _ =
+                                std::fs::remove_file(format!("{}{suffix}", store_path.display()));
+                        }
+                        thread_version.fetch_add(1, Ordering::Relaxed);
+                        crate::bench_event!("visual_search.rebuild", serde_json::json!({}));
+                    }
+                    thread_clock
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .started = None;
                     let started = std::time::Instant::now();
                     let outcome = (|| -> Result<Option<Coverage>, String> {
                         let files = match super::files::locate() {
@@ -390,6 +426,11 @@ impl Service {
                             {
                                 thread_version.fetch_add(1, Ordering::Relaxed);
                             }
+                            let mut clock = thread_clock.lock().unwrap_or_else(|e| e.into_inner());
+                            clock
+                                .started
+                                .get_or_insert((std::time::Instant::now(), coverage.indexed));
+                            drop(clock);
                             set_status(Status::Indexing(coverage));
                         };
                         run_pass(
@@ -428,6 +469,11 @@ impl Service {
                         }
                     }
                     thread_version.fetch_add(1, Ordering::Relaxed);
+                    {
+                        let mut clock = thread_clock.lock().unwrap_or_else(|e| e.into_inner());
+                        clock.started = None;
+                        clock.last_finished = Some(std::time::SystemTime::now());
+                    }
                     let (lock, _) = &*thread_queue;
                     lock.lock().unwrap_or_else(|e| e.into_inner()).running = None;
                 }
@@ -439,7 +485,43 @@ impl Service {
             vectors_version,
             use_gpu,
             device,
+            clock,
         }
+    }
+
+    /// Deletes the vector file and indexes `job`'s library from scratch.
+    /// The running pass stops first; the file goes between passes.
+    pub fn rebuild(&self, job: Job) {
+        let (lock, ready) = &*self.queue;
+        let mut queue = lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.cancel.store(true, Ordering::Relaxed);
+        queue.pending = Some(job);
+        queue.rebuild = true;
+        ready.notify_one();
+    }
+
+    /// Speed and time left while indexing, and when the last pass ended.
+    pub fn pace(&self) -> Pace {
+        let clock = self.clock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pace = Pace {
+            last_finished: clock.last_finished,
+            ..Default::default()
+        };
+        if let (Some((started, at_start)), Status::Indexing(coverage)) =
+            (clock.started, self.status())
+        {
+            let elapsed = started.elapsed().as_secs_f64();
+            let done = coverage.indexed.saturating_sub(at_start);
+            if elapsed >= 5.0 && done > 0 {
+                let per_second = done as f64 / elapsed;
+                let left = coverage
+                    .images
+                    .saturating_sub(coverage.indexed + coverage.failed);
+                pace.per_second = Some(per_second);
+                pace.remaining = Some(std::time::Duration::from_secs_f64(left as f64 / per_second));
+            }
+        }
+        pace
     }
 
     /// Applies from the next pass on.

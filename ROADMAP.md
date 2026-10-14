@@ -369,7 +369,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
   - The app manages a local child process and talks to it only over authenticated loopback.
   - The user supplies the model files at a documented path; the app downloads nothing.
   - Native builds are supported. The Flatpak is supported only if Phase 3 proved it feasible.
-- **Library Overview (added October 14 at the user's request).** Show the user how big the library is and what the indexes hold.
+- **Library Overview (added October 14 at the user's request; built October 14, committed and verified, not deployed).** Show the user how big the library is and what the indexes hold. Its GTK test checks the counts. The GTK suite's intermittent screenshot timeout predates it: the same commit without the overview failed 1 run in 3.
   - A window from Main menu → Library → Library Overview…, built from standard Libadwaita rows, updating live while open. Its groups:
     - **Library:** total images and size, a breakdown by format, the count below 4K, and disabled folders with how many images they hide.
     - **Fingerprints:** images fingerprinted, and exact-copy groups.

@@ -26,7 +26,7 @@ Choose a folder in the Library sidebar to load its images. Thumbnails decode in 
 
 Start typing anywhere, or press Ctrl+F, and describe what you are looking for: `mountains at dusk`, `woman on a sofa`, `watercolor`. Images whose file names contain the words come first, then the closest images by content, 200 at a time; **Show More** adds the next 200. Search covers the current folder or bucket unless **Whole library** is on. Filter words such as `4k`, `png` or `16:9` become chips and narrow the results first.
 
-The line under the search box says how well the results match and how much of the library is indexed. "Only weak matches" means the words may not fit anything there.
+The line under the search box says how well the results match and how much of the library is indexed. "Only weak matches" means the words may not fit anything there. While indexing runs, a small ring in the header shows its progress; Main Menu → Library → Library Overview… shows the details, and can rebuild the index from scratch.
 
 Visual search needs the EmbeddingGemma 2 model, installed once into the folder shown in Preferences → Library → Visual Search. Indexing then runs in the background at the lowest priority, on the graphics card when a GPU build is installed (Preferences → Library → Use Graphics Card): about 20 minutes for a library of 6,000 images, against several hours on the processor. It resumes after a restart. Until the model is installed, or before any images are indexed, search matches file names only.
 

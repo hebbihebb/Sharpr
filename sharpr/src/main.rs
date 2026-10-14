@@ -13,6 +13,7 @@ pub mod focused_image_set;
 mod image_pipeline;
 mod jxl;
 mod library_index;
+mod library_overview;
 mod metadata;
 mod model;
 mod ops;

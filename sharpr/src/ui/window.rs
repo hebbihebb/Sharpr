@@ -660,6 +660,32 @@ impl SharprWindow {
             .map(|service| service.status())
     }
 
+    /// Speed, time left, and the last finished pass of visual indexing.
+    pub fn visual_search_pace(&self) -> crate::visual_search::index::Pace {
+        self.imp()
+            .visual_index
+            .borrow()
+            .as_ref()
+            .map(|service| service.pace())
+            .unwrap_or_default()
+    }
+
+    /// Deletes the visual-search vectors and indexes the library again.
+    pub fn rebuild_visual_index(&self) {
+        let job = {
+            let st = self.imp().state.borrow();
+            st.settings
+                .active_library()
+                .map(|library| (library.root.clone(), st.disabled_folders.clone()))
+        };
+        if let (Some((root, disabled)), Some(service)) =
+            (job, self.imp().visual_index.borrow().as_ref())
+        {
+            service.rebuild(crate::visual_search::index::Job { root, disabled });
+            self.add_toast(libadwaita::Toast::new("Rebuilding the visual search index"));
+        }
+    }
+
     /// The graphics card indexing runs on right now, if any.
     pub fn visual_search_device(&self) -> Option<String> {
         self.imp()
@@ -1871,6 +1897,14 @@ impl SharprWindow {
             });
             self.add_action(&cleanup);
             let window_weak = self.downgrade();
+            let overview = gio::SimpleAction::new("library-overview", None);
+            overview.connect_activate(move |_, _| {
+                if let Some(win) = window_weak.upgrade() {
+                    crate::ui::library_overview::present(&win);
+                }
+            });
+            self.add_action(&overview);
+            let window_weak = self.downgrade();
             let offer = gio::SimpleAction::new("tags-to-buckets", None);
             offer.connect_activate(move |_, _| {
                 if let Some(win) = window_weak.upgrade() {
@@ -2489,6 +2523,36 @@ impl SharprWindow {
         toast_overlay.set_child(Some(&outer_split));
 
         self.set_content(Some(&toast_overlay));
+
+        // While visual search indexes, the indicator shows a progress ring.
+        {
+            let indicator = ops_indicator.downgrade();
+            let weak = self.downgrade();
+            glib::timeout_add_seconds_local(1, move || {
+                let (Some(win), Some(indicator)) = (weak.upgrade(), indicator.upgrade()) else {
+                    return glib::ControlFlow::Break;
+                };
+                use crate::ui::library_overview::{count, duration};
+                match win.visual_search_status() {
+                    Some(crate::visual_search::index::Status::Indexing(c)) if c.images > 0 => {
+                        let done = c.indexed + c.failed;
+                        let mut tooltip = format!(
+                            "Indexing for visual search on {}: {} of {} images",
+                            win.visual_search_device()
+                                .unwrap_or_else(|| "the processor".into()),
+                            count(c.indexed),
+                            count(c.images)
+                        );
+                        if let Some(left) = win.visual_search_pace().remaining {
+                            tooltip.push_str(&format!(" · {} left", duration(left)));
+                        }
+                        indicator.set_indexing(Some((done as f64 / c.images as f64, &tooltip)));
+                    }
+                    _ => indicator.set_indexing(None),
+                }
+                glib::ControlFlow::Continue
+            });
+        }
 
         // Drive the indicator from the ops event channel.
         {
@@ -3732,6 +3796,7 @@ impl SharprWindow {
 
         let library_section = gio::Menu::new();
         library_section.append(Some("Find Duplicates"), Some("win.find-duplicates"));
+        library_section.append(Some("Library Overview…"), Some("win.library-overview"));
         library_section.append(Some("Turn Tags into Buckets…"), Some("win.tags-to-buckets"));
         library_section.append(
             Some("Remove Old Automatic Tags…"),

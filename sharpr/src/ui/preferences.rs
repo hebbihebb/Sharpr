@@ -158,25 +158,9 @@ fn build_visual_search_group(parent: &SharprWindow) -> libadwaita::PreferencesGr
     let group = libadwaita::PreferencesGroup::new();
     group.set_title("Visual Search");
     group.set_description(Some(
-        "Find images by describing them. Indexing runs in the background at the lowest priority.",
+        "Find images by describing them. Indexing runs in the background at the lowest \
+         priority; Main Menu → Library → Library Overview shows its progress.",
     ));
-
-    let status_row = libadwaita::ActionRow::new();
-    status_row.set_title("Index");
-    status_row.set_subtitle(&visual_search_status(parent));
-    status_row.set_subtitle_selectable(true);
-    group.add(&status_row);
-    {
-        let row = status_row.downgrade();
-        let parent = parent.downgrade();
-        gtk4::glib::timeout_add_seconds_local(1, move || {
-            let (Some(row), Some(parent)) = (row.upgrade(), parent.upgrade()) else {
-                return gtk4::glib::ControlFlow::Break;
-            };
-            row.set_subtitle(&visual_search_status(&parent));
-            gtk4::glib::ControlFlow::Continue
-        });
-    }
 
     let gpu_row = libadwaita::SwitchRow::new();
     gpu_row.set_title("Use Graphics Card");
@@ -190,22 +174,6 @@ fn build_visual_search_group(parent: &SharprWindow) -> libadwaita::PreferencesGr
     }
     group.add(&gpu_row);
 
-    let dir = crate::visual_search::files::model_dir();
-    let folder_row = libadwaita::ActionRow::new();
-    folder_row.set_title("Model Folder");
-    folder_row.set_subtitle(&dir.display().to_string());
-    folder_row.set_subtitle_selectable(true);
-    let open_button = gtk4::Button::with_label("Open");
-    open_button.set_valign(gtk4::Align::Center);
-    open_button.set_tooltip_text(Some("Open the model folder in Files"));
-    open_button.connect_clicked(move |_| {
-        // An empty folder is harmless and gives the user a place to put files.
-        let _ = std::fs::create_dir_all(&dir);
-        let uri = gio::File::for_path(&dir).uri();
-        let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
-    });
-    folder_row.add_suffix(&open_button);
-    group.add(&folder_row);
     group
 }
 
@@ -223,39 +191,6 @@ fn gpu_subtitle() -> String {
     } else {
         "No GPU build of llama-server in the model folder's runtime-gpu; indexing uses the processor"
             .into()
-    }
-}
-
-fn visual_search_status(window: &SharprWindow) -> String {
-    use crate::visual_search::index::Status;
-    let failed = |failed: usize| {
-        if failed == 0 {
-            String::new()
-        } else {
-            format!("; {failed} could not be read")
-        }
-    };
-    match window.visual_search_status() {
-        None | Some(Status::Waiting) => "Starts after image fingerprints are made".into(),
-        Some(Status::Unavailable(message)) => message,
-        Some(Status::Indexing(c)) => format!(
-            "Indexing on {}: {} of {} images ready{}…",
-            window
-                .visual_search_device()
-                .unwrap_or_else(|| "the processor".into()),
-            c.indexed,
-            c.images,
-            failed(c.failed)
-        ),
-        Some(Status::Done(c)) => format!(
-            "{} of {} images indexed{}",
-            c.indexed,
-            c.images,
-            failed(c.failed)
-        ),
-        Some(Status::Failed(error)) => {
-            format!("Indexing stopped: {error}. It tries again after the next fingerprint pass")
-        }
     }
 }
 

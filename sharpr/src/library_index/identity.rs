@@ -62,6 +62,16 @@ fn insert_members(
 }
 
 impl LibraryIndex {
+    /// Every image size the index has read, by path. Some older rows may be
+    /// unrotated, so use them only where orientation doesn't matter.
+    pub fn stored_dimensions(&self) -> rusqlite::Result<HashMap<String, (u32, u32)>> {
+        let conn = self.conn()?;
+        let mut stmt =
+            conn.prepare("SELECT path, width, height FROM images WHERE width > 0 AND height > 0")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?;
+        rows.collect()
+    }
+
     /// Whether the one-time notice `key` was shown (kept in `schema_meta`).
     pub fn notice_shown(&self, key: &str) -> rusqlite::Result<bool> {
         self.conn()?.query_row(
