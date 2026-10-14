@@ -446,6 +446,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - no queue or history
 2. **Retire Resize Copy** and JPEG, PNG, and JPEG XL output from the UI. Viewing JPEG XL stays.
 3. **Crop preview fallback.** When glycin cannot preview a format, use a preview decoded and oriented on a worker. Add a test with an EXIF-rotated source.
+3a. **Crop at full size (user, October 14).** The crop preview is far too small to judge a wallpaper. Crop in the viewer itself at full size, or fullscreen, instead of in a small dialog.
 4. **Make the Wallpapers folder easy to reach** as a crop and export destination.
 
 **Acceptance:**
@@ -537,6 +538,11 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
   - context-dependent controls
 
   D21 put them in the filmstrip's right-click menu with keyboard access. This extends the question to the viewer and keeps one action model, so menus can't drift apart.
+- **More notes from the user (October 14):**
+  - **"Add to Collection…" doesn't close on click-away.** It is an `AdwAlertDialog`, and Libadwaita dialogs ignore clicks outside them by design (only Escape or Done close them). A quick pick fits better as a popover anchored to the clicked image, or the drop target, which closes on click-away. Ctrl+B uses the same picker. *A candidate to fix early, with the post-audit fixes.*
+  - **"Collection" or "bucket".** The interface still says "Collection" (menus, dialogs, tooltips) where the product, the docs, and the user say "bucket". Pick one word everywhere.
+  - **The Info panel** opens as a second, bigger pill above the small corner chip. A better design is for the chip itself to expand on hover (the context idea above). This revisits D18, which put details in an Info panel opened by a key or the context menu, so it needs a decision.
+  - **Fullscreen:** the corner chip should hide, and reappear on mouse movement, like a video player's controls.
 - **Phase 5 and later additions:** the search status line, "Show More", and "Add to Bucket…"; the Library Overview and its header ring; the Phase 6 export and Phase 7 cleanup controls. All are reviewed here, wherever they first landed.
 
 **Visual polish from the Strata research** (`docs/research/strata-design-and-agent-setup.md`, Tier 1). The finding: Strata's clean look comes from discipline, not from dropping Libadwaita. Sharpr's "default GNOME" look comes from these gaps:
