@@ -517,8 +517,29 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
   D21 put them in the filmstrip's right-click menu with keyboard access. This extends the question to the viewer and keeps one action model, so menus can't drift apart.
 - **Phase 5 and later additions:** the search status line, "Show More", and "Add to Bucket…"; the Library Overview and its header ring; the Phase 6 export and Phase 7 cleanup controls. All are reviewed here, wherever they first landed.
 
+**Visual polish from the Strata research** (`docs/research/strata-design-and-agent-setup.md`, Tier 1). The finding: Strata's clean look comes from discipline, not from dropping Libadwaita. Sharpr's "default GNOME" look comes from these gaps:
+- **One stylesheet.** Move all CSS into `sharpr/data/style.css`, which `AdwApplication` loads itself. Today 13 CSS providers in 7 files load it.
+- **Name every colour once.** Build Sharpr tokens on Libadwaita's CSS variables. The bucket palette becomes one Rust constant (it is copied into 5 files), and no hex or `rgba` literals remain in `sharpr/src/ui` outside the token definitions.
+- **Quieter headers.** Use flat toolbars and drop the self-evident "Library" and "Photos" titles. Pane separators become 1 px hairlines.
+- **Numbers that look like numbers.** Use `.numeric` (tabular figures) for resolution, counts, and zoom, and consider `.monospace` for the resolution and format chip.
+- **Small dim section labels** (`.caption-heading` with `.dimmed`).
+- **Sharpr's own symbolic icons,** namespaced `sharpr-*-symbolic`, for its concepts: bucket, add to bucket, Compare, crop, WebP export, below 4K, and copies. Record their source and licence; system icons stay for standard actions.
+- **Skeleton tiles** while thumbnails load, and restrained hover and press feedback. These are CSS only; the thumbnail scheduler stays untouched.
+- **The viewer and Compare canvas stay neutral** whatever the theme, so image colours aren't skewed.
+
+**Decision to make in this phase: is Libadwaita an asset or an anchor?** Decide it by prototype, not on paper.
+1. Do the polish above.
+2. On a separate branch, prototype a single unified top row (sidebar toggle, search, and actions across the window), still with Libadwaita, as the Strata report's Tier 2 describes.
+3. Compare screenshots side by side with Strata's and the current Sharpr, at 1024×600 and at a wide size.
+
+If the result reaches the look the user wants, Libadwaita stays and the question is closed with that evidence. If not, dropping it becomes its own decision, with a decision-log entry and probably its own phase.
+- **What dropping it costs:** Sharpr uses Libadwaita in 188 places across 13 files. Light, dark, and high-contrast themes, the accent colour, the adaptive split views and breakpoints, dialogs, toasts, Preferences, reduce-motion, and the user's window-button layout would all need rebuilding. Strata's stylesheet alone is 7,091 lines.
+- Claude's view going in (October 14): it is an asset that Sharpr hasn't styled yet.
+
 **Acceptance:**
 - Every control in the inventory is either kept as it is, or changed or removed by a recorded decision.
+- The Libadwaita question is decided by the user from the prototype screenshots and recorded in the decision log.
+- The polish holds: one stylesheet, no stray colour literals, and light, dark, and high-contrast all readable at 1024×600. Filmstrip scroll and folder-switch bench logs are unchanged.
 - No action has two unrelated entry points that can disagree.
 - Screenshot tests at 1024×600 and wide sizes pass, and nothing overflows or moves when search opens.
 - The user approves the result in a manual pass.
