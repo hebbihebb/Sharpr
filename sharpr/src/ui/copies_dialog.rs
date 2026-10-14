@@ -263,7 +263,15 @@ fn results_page(
     let checks: Checks = Rc::default();
     let mut thumbnails = Vec::new();
     for (group_index, group) in report.groups.iter().enumerate() {
-        list.add(&group_rows(group, group_index, &checks, &mut thumbnails));
+        let rows = group_rows(group, group_index, &checks, &mut thumbnails);
+        rows.set_header_suffix(Some(&compare_button(
+            window,
+            dialog,
+            group,
+            group_index,
+            &checks,
+        )));
+        list.add(&rows);
     }
     load_thumbnails(thumbnails);
     scroller.set_child(Some(&list));
@@ -353,6 +361,49 @@ fn results_page(
         });
     }
     page.upcast()
+}
+
+/// "Compare": opens the group in Compare, the copy to keep on the left;
+/// back here, the images dismissed there are ticked and the rest are not.
+/// Compare itself never changes files.
+fn compare_button(
+    window: &SharprWindow,
+    dialog: &libadwaita::Dialog,
+    group: &CopyGroup,
+    group_index: usize,
+    checks: &Checks,
+) -> gtk4::Button {
+    let button = gtk4::Button::with_label("Compare");
+    button.add_css_class("flat");
+    button.set_valign(gtk4::Align::Center);
+    button.set_tooltip_text(Some(
+        "Look at these side by side; the ones you dismiss come back ticked",
+    ));
+    let paths: Vec<PathBuf> = group.files.iter().map(|f| f.path.clone()).collect();
+    let window = window.downgrade();
+    let dialog = dialog.clone();
+    let checks = checks.clone();
+    button.connect_clicked(move |_| {
+        let Some(window) = window.upgrade() else {
+            return;
+        };
+        // The window waits, closed but kept, for Compare to finish.
+        dialog.close();
+        let dialog = dialog.clone();
+        let checks = checks.clone();
+        let parent = window.downgrade();
+        window.compare_then(paths.clone(), move |survivors| {
+            for choice in checks.borrow().iter() {
+                if choice.group == group_index {
+                    choice.check.set_active(!survivors.contains(&choice.path));
+                }
+            }
+            if let Some(parent) = parent.upgrade() {
+                dialog.present(Some(&parent));
+            }
+        });
+    });
+    button
 }
 
 fn group_rows(

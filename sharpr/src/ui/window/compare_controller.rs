@@ -32,8 +32,35 @@ impl SharprWindow {
         }
     }
 
-    /// Back to browsing, with `survivors` selected and the first one shown.
+    /// Compares `paths` for someone else, such as Find Copies: `done` gets
+    /// the survivors, and the browsing selection is left alone.
+    pub fn compare_then(&self, paths: Vec<PathBuf>, done: impl FnOnce(Vec<PathBuf>) + 'static) {
+        *self.imp().compare_done.borrow_mut() = Some(Box::new(done));
+        self.enter_compare_mode(paths);
+    }
+
+    /// Back to browsing, with `survivors` selected and the first one shown,
+    /// or handed to whoever opened Compare (`compare_then`).
     pub fn exit_compare_mode(&self, survivors: Vec<PathBuf>) {
+        if let Some(done) = self.imp().compare_done.take() {
+            {
+                let state_rc = self.app_state();
+                let mut state = state_rc.borrow_mut();
+                if state.scope == ViewScope::Compare {
+                    state.scope = state.previous_scope.take().unwrap_or_default();
+                }
+                state.previous_content_page = None;
+            }
+            if let Some(stack) = self.imp().content_stack.borrow().as_ref() {
+                stack.set_transition_type(gtk4::StackTransitionType::SlideRight);
+                stack.set_visible_child_name("viewer");
+            }
+            if let Some(panels) = self.imp().compare_panels.take() {
+                self.restore_side_panels(panels);
+            }
+            done(survivors);
+            return;
+        }
         {
             let state_rc = self.app_state();
             let mut state = state_rc.borrow_mut();

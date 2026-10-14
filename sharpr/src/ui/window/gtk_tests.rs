@@ -1251,6 +1251,22 @@ fn copies_are_found_and_trashed_only_on_request() {
     screenshot(&window, &root.parent().unwrap().join("copies.png"));
     button("Select None").emit_clicked();
     assert_eq!(ticked(), 0);
+    // "Compare" opens the group there; dismissing the copy and pressing
+    // Done comes back with it ticked and the keeper not.
+    button("Compare").emit_clicked();
+    pump_until(|| window.imp().state.borrow().scope == ViewScope::Compare);
+    let page = window.imp().compare_page.borrow().clone().unwrap();
+    pump_until(|| page.survivors().len() == 2);
+    page.handle_key(gdk4::Key::bracketright, gdk4::ModifierType::empty());
+    page.close();
+    pump_until(|| window.visible_dialog().is_some());
+    assert_eq!(ticked(), 1);
+    assert!(!checks[0].is_active(), "the survivor is not ticked");
+    assert!(
+        window.imp().state.borrow().selected_paths.is_empty(),
+        "browsing selection untouched"
+    );
+    button("Select None").emit_clicked();
     assert!(
         root.join("keep copy.png").exists(),
         "nothing moves before confirming"

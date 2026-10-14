@@ -30,6 +30,8 @@ use crate::ui::state::{AppState, ViewScope};
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 
 mod compare_controller;
+/// Gets Compare's survivors when someone else opened it (Find Copies).
+type CompareDone = Box<dyn FnOnce(Vec<PathBuf>)>;
 use compare_controller::{file_actions_blocked, is_comparing};
 #[cfg(test)]
 mod gtk_tests;
@@ -526,6 +528,9 @@ mod imp {
         pub crop_preparing: Cell<bool>,
         /// Which side panels Compare hid, to show them again.
         pub compare_panels: Cell<Option<(bool, bool)>>,
+        /// Who opened Compare and gets the survivors back instead of the
+        /// browsing selection (Find Copies).
+        pub compare_done: RefCell<Option<CompareDone>>,
     }
 
     impl Default for SharprWindow {
@@ -581,6 +586,7 @@ mod imp {
                 crop_request: Cell::new(0),
                 crop_preparing: Cell::new(false),
                 compare_panels: Cell::new(None),
+                compare_done: RefCell::new(None),
             }
         }
     }
