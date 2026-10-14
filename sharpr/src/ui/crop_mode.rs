@@ -1,0 +1,494 @@
+//! Crop Copy in the viewer at full size (`ROADMAP.md` Phase 6): the image
+//! fills the viewer with a selection to move and resize, 16:9 or free, and
+//! saves a new lossless WebP. The side panels make way while cropping; F11
+//! makes it fullscreen. Originals are only read.
+
+use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use gtk4::prelude::*;
+use gtk4::subclass::prelude::*;
+
+use crate::export::{Corner, CropConfig, CropRect};
+use crate::ui::window::SharprWindow;
+
+/// The longest edge of a preview decoded on a worker.
+const PREVIEW_EDGE: u32 = 2560;
+/// How close to a corner, in screen pixels, a drag resizes.
+const HANDLE: f64 = 18.0;
+
+#[derive(Clone, Copy)]
+enum Drag {
+    Move(CropRect),
+    Resize(Corner, CropRect),
+}
+
+struct Crop {
+    source: PathBuf,
+    dims: (u32, u32),
+    rect: Cell<CropRect>,
+    aspect: Cell<Option<(u32, u32)>>,
+    drag: Cell<Option<Drag>>,
+}
+
+/// Where the image sits on a `width`×`height` canvas: offset and scale.
+fn placement(dims: (u32, u32), width: f64, height: f64) -> (f64, f64, f64) {
+    let scale = (width / f64::from(dims.0)).min(height / f64::from(dims.1));
+    (
+        (width - f64::from(dims.0) * scale) / 2.0,
+        (height - f64::from(dims.1) * scale) / 2.0,
+        scale,
+    )
+}
+
+/// Starts cropping `source`: reads its displayed size and a preview on a
+/// worker (reusing the viewer's picture when it shows this image), then
+/// covers the viewer.
+pub fn start(window: &SharprWindow, source: PathBuf) {
+    let Some(viewer) = window.imp_viewer() else {
+        return;
+    };
+    let shown = (viewer.current_path().as_ref() == Some(&source))
+        .then(|| viewer.imp().picture.paintable())
+        .flatten();
+    let need_preview = shown.is_none();
+    let (tx, rx) = async_channel::bounded(1);
+    let worker_source = source.clone();
+    std::thread::spawn(move || {
+        type Preview = Option<(u32, u32, Vec<u8>)>;
+        let result = (|| -> Result<((u32, u32), Preview), String> {
+            let dims = crate::export::oriented_source_dimensions(&worker_source)
+                .map_err(|e| e.to_string())?;
+            let preview = if need_preview {
+                // The viewer can't show it, or shows another image: decode
+                // an oriented preview here instead.
+                let image =
+                    crate::export::decode_oriented(&worker_source).map_err(|e| e.to_string())?;
+                let (w, h) = crate::visual_search::prepare::fit_within(
+                    image.width(),
+                    image.height(),
+                    PREVIEW_EDGE,
+                );
+                let rgba = image
+                    .resize(w, h, image::imageops::FilterType::Triangle)
+                    .to_rgba8();
+                Some((rgba.width(), rgba.height(), rgba.into_raw()))
+            } else {
+                None
+            };
+            Ok((dims, preview))
+        })();
+        let _ = tx.send_blocking(result);
+    });
+    let weak = window.downgrade();
+    glib::MainContext::default().spawn_local(async move {
+        let Ok(result) = rx.recv().await else { return };
+        let Some(window) = weak.upgrade() else { return };
+        match result {
+            Ok((dims, preview)) => {
+                let paintable = shown.or_else(|| {
+                    preview.map(|(w, h, rgba)| {
+                        gdk4::MemoryTexture::new(
+                            w as i32,
+                            h as i32,
+                            gdk4::MemoryFormat::R8g8b8a8,
+                            &glib::Bytes::from_owned(rgba),
+                            w as usize * 4,
+                        )
+                        .upcast()
+                    })
+                });
+                if let Some(paintable) = paintable {
+                    open(&window, source, dims, &paintable);
+                }
+            }
+            Err(error) => {
+                window.add_toast(libadwaita::Toast::new(&format!("Could not crop: {error}")))
+            }
+        }
+    });
+}
+
+fn open(window: &SharprWindow, source: PathBuf, dims: (u32, u32), paintable: &gdk4::Paintable) {
+    let Some(viewer) = window.imp_viewer() else {
+        return;
+    };
+    let aspect = (dims.0 >= 16 && dims.1 >= 9).then_some((16, 9));
+    let crop = Rc::new(Crop {
+        source,
+        dims,
+        rect: Cell::new(CropRect::centered(dims, aspect)),
+        aspect: Cell::new(aspect),
+        drag: Cell::new(None),
+    });
+
+    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    root.add_css_class("background");
+    root.set_focusable(true);
+    let stage = gtk4::Overlay::new();
+    stage.set_vexpand(true);
+    let picture = gtk4::Picture::for_paintable(paintable);
+    picture.set_can_shrink(true);
+    picture.set_content_fit(gtk4::ContentFit::Contain);
+    picture.set_margin_top(12);
+    picture.set_margin_bottom(12);
+    picture.set_margin_start(12);
+    picture.set_margin_end(12);
+    stage.set_child(Some(&picture));
+    let canvas = gtk4::DrawingArea::new();
+    canvas.set_margin_top(12);
+    canvas.set_margin_bottom(12);
+    canvas.set_margin_start(12);
+    canvas.set_margin_end(12);
+    stage.add_overlay(&canvas);
+    root.append(&stage);
+
+    let bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    bar.set_margin_top(6);
+    bar.set_margin_bottom(12);
+    bar.set_margin_start(12);
+    bar.set_margin_end(12);
+    let aspects = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    aspects.add_css_class("linked");
+    let wide = gtk4::ToggleButton::with_label("16:9");
+    let free = gtk4::ToggleButton::with_label("Free");
+    free.set_group(Some(&wide));
+    wide.set_active(aspect.is_some());
+    free.set_active(aspect.is_none());
+    wide.set_sensitive(aspect.is_some());
+    aspects.append(&wide);
+    aspects.append(&free);
+    bar.append(&aspects);
+    let size = gtk4::Label::new(None);
+    size.add_css_class("dim-label");
+    size.add_css_class("numeric");
+    bar.append(&size);
+    let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    bar.append(&spacer);
+    let destination = Rc::new(RefCell::new(
+        window
+            .app_state()
+            .borrow()
+            .settings
+            .webp_export
+            .dir
+            .clone()
+            .unwrap_or_else(crate::config::settings::wallpapers_dir),
+    ));
+    let folder = gtk4::Button::new();
+    folder.add_css_class("flat");
+    folder.set_tooltip_text(Some("Folder for the cropped copy"));
+    let folder_label = |path: &std::path::Path| {
+        format!(
+            "To {}",
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string())
+        )
+    };
+    folder.set_label(&folder_label(&destination.borrow()));
+    bar.append(&folder);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let save = gtk4::Button::with_label("Save Copy");
+    save.add_css_class("suggested-action");
+    save.set_tooltip_text(Some("Save the selection as a new lossless WebP (Enter)"));
+    bar.append(&cancel);
+    bar.append(&save);
+    root.append(&bar);
+
+    let update_size: Rc<dyn Fn()> = {
+        let crop = crop.clone();
+        let size = size.clone();
+        Rc::new(move || {
+            let r = crop.rect.get();
+            size.set_text(&format!("{} × {}", r.width, r.height));
+        })
+    };
+    update_size();
+
+    {
+        let crop = crop.clone();
+        canvas.set_draw_func(move |_, cr, width, height| {
+            let (ox, oy, scale) = placement(crop.dims, f64::from(width), f64::from(height));
+            let (iw, ih) = (
+                f64::from(crop.dims.0) * scale,
+                f64::from(crop.dims.1) * scale,
+            );
+            let r = crop.rect.get();
+            let (x, y) = (ox + f64::from(r.x) * scale, oy + f64::from(r.y) * scale);
+            let (w, h) = (f64::from(r.width) * scale, f64::from(r.height) * scale);
+            // Shade everything outside the selection.
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.6);
+            cr.set_fill_rule(gtk4::cairo::FillRule::EvenOdd);
+            cr.rectangle(ox, oy, iw, ih);
+            cr.rectangle(x, y, w, h);
+            let _ = cr.fill();
+            // Thirds, then the border and corner handles.
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.35);
+            cr.set_line_width(1.0);
+            for i in 1..3 {
+                let f = f64::from(i) / 3.0;
+                cr.move_to(x + w * f, y);
+                cr.line_to(x + w * f, y + h);
+                cr.move_to(x, y + h * f);
+                cr.line_to(x + w, y + h * f);
+            }
+            let _ = cr.stroke();
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
+            cr.set_line_width(2.0);
+            cr.rectangle(x, y, w, h);
+            let _ = cr.stroke();
+            for (cx, cy) in [(x, y), (x + w, y), (x, y + h), (x + w, y + h)] {
+                cr.rectangle(cx - 5.0, cy - 5.0, 10.0, 10.0);
+                let _ = cr.fill();
+            }
+        });
+    }
+
+    let drag = gtk4::GestureDrag::new();
+    {
+        let crop = crop.clone();
+        let canvas = canvas.clone();
+        drag.connect_drag_begin(move |_, sx, sy| {
+            let (ox, oy, scale) = placement(
+                crop.dims,
+                f64::from(canvas.width()),
+                f64::from(canvas.height()),
+            );
+            let r = crop.rect.get();
+            let (x, y) = (ox + f64::from(r.x) * scale, oy + f64::from(r.y) * scale);
+            let (w, h) = (f64::from(r.width) * scale, f64::from(r.height) * scale);
+            let corners = [
+                (Corner::TopLeft, x, y),
+                (Corner::TopRight, x + w, y),
+                (Corner::BottomLeft, x, y + h),
+                (Corner::BottomRight, x + w, y + h),
+            ];
+            let near = corners
+                .into_iter()
+                .find(|(_, cx, cy)| (sx - cx).abs() <= HANDLE && (sy - cy).abs() <= HANDLE);
+            crop.drag.set(if let Some((corner, _, _)) = near {
+                Some(Drag::Resize(corner, r))
+            } else if (x..=x + w).contains(&sx) && (y..=y + h).contains(&sy) {
+                Some(Drag::Move(r))
+            } else {
+                None
+            });
+        });
+    }
+    {
+        let crop = crop.clone();
+        let canvas = canvas.clone();
+        let update_size = update_size.clone();
+        drag.connect_drag_update(move |_, dx, dy| {
+            let (_, _, scale) = placement(
+                crop.dims,
+                f64::from(canvas.width()),
+                f64::from(canvas.height()),
+            );
+            if scale <= 0.0 {
+                return;
+            }
+            let (dx, dy) = (dx / scale, dy / scale);
+            let rect = match crop.drag.get() {
+                Some(Drag::Move(start)) => start.moved(dx, dy, crop.dims),
+                Some(Drag::Resize(corner, start)) => {
+                    start.resized(corner, dx, dy, crop.dims, crop.aspect.get())
+                }
+                None => return,
+            };
+            crop.rect.set(rect);
+            update_size();
+            canvas.queue_draw();
+        });
+    }
+    {
+        let crop = crop.clone();
+        drag.connect_drag_end(move |_, _, _| crop.drag.set(None));
+    }
+    canvas.add_controller(drag);
+
+    {
+        let crop = crop.clone();
+        let canvas = canvas.clone();
+        let update_size = update_size.clone();
+        wide.connect_toggled(move |button| {
+            let aspect = button.is_active().then_some((16, 9));
+            crop.aspect.set(aspect);
+            if aspect.is_some() {
+                crop.rect.set(CropRect::centered(crop.dims, aspect));
+            }
+            update_size();
+            canvas.queue_draw();
+        });
+    }
+
+    // The side panels make way while cropping and come back afterwards.
+    let panels = window.hide_side_panels();
+    let close: Rc<dyn Fn()> = {
+        let window = window.downgrade();
+        let root = root.clone();
+        let viewer = viewer.clone();
+        Rc::new(move || {
+            if root.parent().is_some() {
+                viewer.imp().overlay.remove_overlay(&root);
+            }
+            if let Some(window) = window.upgrade() {
+                window.restore_side_panels(panels);
+            }
+        })
+    };
+    let save_crop: Rc<dyn Fn()> = {
+        let window = window.downgrade();
+        let crop = crop.clone();
+        let destination = destination.clone();
+        let close = close.clone();
+        Rc::new(move || {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            let folder = destination.borrow().clone();
+            let config = CropConfig {
+                source: crop.source.clone(),
+                destination_dir: folder.clone(),
+                rectangle: crop.rect.get(),
+            };
+            {
+                let state = window.app_state();
+                let mut st = state.borrow_mut();
+                let mut export = st.settings.webp_export.clone();
+                export.dir =
+                    (folder != crate::config::settings::wallpapers_dir()).then_some(folder);
+                st.settings.set_webp_export(export);
+            }
+            close();
+            let operation = window.app_state().borrow().ops.add("Saving cropped copy…");
+            let (tx, rx) = async_channel::bounded(1);
+            std::thread::spawn(move || {
+                let _ = tx.send_blocking(crate::export::crop_copy(&config));
+            });
+            let weak = window.downgrade();
+            glib::MainContext::default().spawn_local(async move {
+                let Ok(result) = rx.recv().await else {
+                    operation.fail("Crop worker stopped");
+                    return;
+                };
+                let Some(window) = weak.upgrade() else { return };
+                match result {
+                    Ok(result) => {
+                        operation.complete();
+                        let toast = libadwaita::Toast::new(&format!(
+                            "Saved {}",
+                            result
+                                .output
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        ));
+                        toast.set_button_label(Some("Show"));
+                        let weak = window.downgrade();
+                        toast.connect_button_clicked(move |_| {
+                            if let Some(window) = weak.upgrade() {
+                                window.show_created_copy(result.output.clone());
+                            }
+                        });
+                        window.add_toast(toast);
+                    }
+                    Err(error) => {
+                        operation.fail(error.to_string());
+                        window.add_toast(libadwaita::Toast::new(&format!("Crop failed: {error}")));
+                    }
+                }
+            });
+        })
+    };
+    {
+        let close = close.clone();
+        cancel.connect_clicked(move |_| close());
+    }
+    {
+        let save_crop = save_crop.clone();
+        save.connect_clicked(move |_| save_crop());
+    }
+    {
+        let window = window.downgrade();
+        let destination = destination.clone();
+        folder.connect_clicked(move |button| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            let chooser = gtk4::FileDialog::new();
+            chooser.set_initial_folder(Some(&gio::File::for_path(&*destination.borrow())));
+            let destination = destination.clone();
+            let button = button.clone();
+            chooser.select_folder(Some(&window), None::<&gio::Cancellable>, move |result| {
+                if let Some(path) = result.ok().and_then(|file| file.path()) {
+                    button.set_label(&folder_label(&path));
+                    *destination.borrow_mut() = path;
+                }
+            });
+        });
+    }
+    let keys = gtk4::EventControllerKey::new();
+    keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    {
+        let close = close.clone();
+        let save_crop = save_crop.clone();
+        keys.connect_key_pressed(move |_, key, _, _| match key {
+            gdk4::Key::Escape => {
+                close();
+                glib::Propagation::Stop
+            }
+            gdk4::Key::Return | gdk4::Key::KP_Enter => {
+                save_crop();
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        });
+    }
+    root.add_controller(keys);
+
+    viewer.imp().overlay.add_overlay(&root);
+    root.grab_focus();
+    window.set_crop_session(Some(CropSession {
+        crop,
+        canvas,
+        update_size,
+        save: save_crop,
+        close,
+    }));
+}
+
+/// A crop in progress, reachable from tests and the window.
+#[derive(Clone)]
+pub struct CropSession {
+    crop: Rc<Crop>,
+    canvas: gtk4::DrawingArea,
+    update_size: Rc<dyn Fn()>,
+    save: Rc<dyn Fn()>,
+    close: Rc<dyn Fn()>,
+}
+
+impl CropSession {
+    pub fn rect(&self) -> CropRect {
+        self.crop.rect.get()
+    }
+
+    pub fn set_rect(&self, rect: CropRect) {
+        if rect.fits(self.crop.dims) {
+            self.crop.rect.set(rect);
+            (self.update_size)();
+            self.canvas.queue_draw();
+        }
+    }
+
+    pub fn save(&self) {
+        (self.save)();
+    }
+
+    pub fn close(&self) {
+        (self.close)();
+    }
+}

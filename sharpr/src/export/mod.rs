@@ -48,6 +48,121 @@ impl CropRect {
     }
 }
 
+/// A corner of a crop selection, dragged to resize it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+/// The smallest crop side the selection can be dragged down to.
+const MIN_CROP: u32 = 16;
+
+impl CropRect {
+    /// The largest `aspect` rectangle centred in `bounds`, or the whole
+    /// image for a free aspect.
+    pub fn centered(bounds: (u32, u32), aspect: Option<(u32, u32)>) -> Self {
+        match aspect {
+            Some((16, 9)) => Self::centered_widescreen(bounds),
+            Some((a, b)) => {
+                let scale =
+                    (f64::from(bounds.0) / f64::from(a)).min(f64::from(bounds.1) / f64::from(b));
+                let (w, h) = (
+                    ((f64::from(a) * scale) as u32).clamp(1, bounds.0),
+                    ((f64::from(b) * scale) as u32).clamp(1, bounds.1),
+                );
+                Self {
+                    x: (bounds.0 - w) / 2,
+                    y: (bounds.1 - h) / 2,
+                    width: w,
+                    height: h,
+                }
+            }
+            None => Self {
+                x: 0,
+                y: 0,
+                width: bounds.0.max(1),
+                height: bounds.1.max(1),
+            },
+        }
+    }
+
+    /// Moved by (`dx`, `dy`) image pixels, kept inside `bounds`.
+    pub fn moved(self, dx: f64, dy: f64, bounds: (u32, u32)) -> Self {
+        let clamp = |start: u32, delta: f64, size: u32, limit: u32| {
+            (f64::from(start) + delta)
+                .round()
+                .clamp(0.0, f64::from(limit.saturating_sub(size))) as u32
+        };
+        Self {
+            x: clamp(self.x, dx, self.width, bounds.0),
+            y: clamp(self.y, dy, self.height, bounds.1),
+            ..self
+        }
+    }
+
+    /// Resized by dragging `corner` by (`dx`, `dy`); the opposite corner
+    /// stays put. With an `aspect`, the larger change decides the size and
+    /// the ratio holds. The result stays inside `bounds`.
+    pub fn resized(
+        self,
+        corner: Corner,
+        dx: f64,
+        dy: f64,
+        bounds: (u32, u32),
+        aspect: Option<(u32, u32)>,
+    ) -> Self {
+        let (left, top) = (f64::from(self.x), f64::from(self.y));
+        let (right, bottom) = (left + f64::from(self.width), top + f64::from(self.height));
+        // The fixed corner, and how far the room extends from it.
+        let (anchor_x, anchor_y, grow_x, grow_y) = match corner {
+            Corner::TopLeft => (right, bottom, -1.0, -1.0),
+            Corner::TopRight => (left, bottom, 1.0, -1.0),
+            Corner::BottomLeft => (right, top, -1.0, 1.0),
+            Corner::BottomRight => (left, top, 1.0, 1.0),
+        };
+        let room_x = if grow_x > 0.0 {
+            f64::from(bounds.0) - anchor_x
+        } else {
+            anchor_x
+        };
+        let room_y = if grow_y > 0.0 {
+            f64::from(bounds.1) - anchor_y
+        } else {
+            anchor_y
+        };
+        let min = f64::from(MIN_CROP);
+        let mut w = (f64::from(self.width) + dx * grow_x).clamp(min.min(room_x), room_x);
+        let mut h = (f64::from(self.height) + dy * grow_y).clamp(min.min(room_y), room_y);
+        if let Some((a, b)) = aspect {
+            let (a, b) = (f64::from(a), f64::from(b));
+            // Follow the drag's larger relative change, in whole a×b units
+            // so the ratio is exact, within the room.
+            let units = if (w / f64::from(self.width)) >= (h / f64::from(self.height)) {
+                w / a
+            } else {
+                h / b
+            };
+            let most = (room_x / a).floor().min((room_y / b).floor()).max(1.0);
+            let least = (min / b).ceil().min(most);
+            let units = units.round().clamp(least, most);
+            w = units * a;
+            h = units * b;
+        }
+        let (w, h) = (w.round().max(1.0), h.round().max(1.0));
+        let x = if grow_x > 0.0 { anchor_x } else { anchor_x - w };
+        let y = if grow_y > 0.0 { anchor_y } else { anchor_y - h };
+        Self {
+            x: x.max(0.0) as u32,
+            y: y.max(0.0) as u32,
+            width: w as u32,
+            height: h as u32,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CropConfig {
     pub source: PathBuf,
@@ -472,6 +587,136 @@ mod tests {
         for path in paths {
             assert_eq!(image::image_dimensions(path).unwrap(), (6, 4));
         }
+    }
+
+    /// A JPEG stored sideways (EXIF orientation 6, a quarter turn
+    /// clockwise): the crop follows what the viewer shows.
+    #[test]
+    fn cropping_a_rotated_jpeg_takes_the_displayed_pixels() {
+        let dir = test_dir("crop-exif-pixels");
+        // Stored 32×18: left half red, right half blue. Displayed upright
+        // (18×32), red is on top and blue below.
+        let stored = image::RgbImage::from_fn(32, 18, |x, _| {
+            if x < 16 {
+                image::Rgb([220, 20, 20])
+            } else {
+                image::Rgb([20, 20, 220])
+            }
+        });
+        let plain = dir.join("plain.jpg");
+        stored.save(&plain).unwrap();
+        let bytes = std::fs::read(&plain).unwrap();
+        let mut exif = b"Exif\0\0II".to_vec();
+        exif.extend_from_slice(&42u16.to_le_bytes());
+        exif.extend_from_slice(&8u32.to_le_bytes());
+        exif.extend_from_slice(&1u16.to_le_bytes());
+        exif.extend_from_slice(&0x0112u16.to_le_bytes());
+        exif.extend_from_slice(&3u16.to_le_bytes());
+        exif.extend_from_slice(&1u32.to_le_bytes());
+        exif.extend_from_slice(&6u16.to_le_bytes());
+        exif.extend_from_slice(&0u16.to_le_bytes());
+        exif.extend_from_slice(&0u32.to_le_bytes());
+        let mut oriented = bytes[..2].to_vec();
+        oriented.extend_from_slice(&[0xff, 0xe1]);
+        oriented.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+        oriented.extend_from_slice(&exif);
+        oriented.extend_from_slice(&bytes[2..]);
+        let jpeg = dir.join("rotated.jpg");
+        std::fs::write(&jpeg, &oriented).unwrap();
+
+        let crop = |y| {
+            let result = crop_copy(&CropConfig {
+                source: jpeg.clone(),
+                destination_dir: dir.join("out"),
+                rectangle: CropRect {
+                    x: 2,
+                    y,
+                    width: 14,
+                    height: 12,
+                },
+            })
+            .unwrap();
+            let pixels = image::open(result.output).unwrap().to_rgb8();
+            pixels.get_pixel(7, 6).0
+        };
+        let top = crop(2);
+        let bottom = crop(18);
+        assert!(
+            top[0] > 150 && top[2] < 90,
+            "top of the displayed image is red: {top:?}"
+        );
+        assert!(
+            bottom[2] > 150 && bottom[0] < 90,
+            "bottom is blue: {bottom:?}"
+        );
+        assert_eq!(std::fs::read(&jpeg).unwrap(), oriented, "source untouched");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn crop_selections_move_and_resize_inside_the_image() {
+        let bounds = (1920, 1080);
+        let rect = CropRect::centered(bounds, Some((16, 9)));
+        assert_eq!(
+            rect,
+            CropRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080
+            }
+        );
+        assert_eq!(CropRect::centered((1000, 1000), None).width, 1000);
+        let small = CropRect {
+            x: 100,
+            y: 100,
+            width: 320,
+            height: 180,
+        };
+        assert_eq!(
+            small.moved(-500.0, 20.0, bounds),
+            CropRect {
+                x: 0,
+                y: 120,
+                ..small
+            }
+        );
+        assert_eq!(small.moved(5000.0, 0.0, bounds).x, 1920 - 320);
+
+        // Free: the opposite corner stays, each side follows the drag.
+        let free = small.resized(Corner::BottomRight, 80.0, 20.0, bounds, None);
+        assert_eq!(
+            free,
+            CropRect {
+                x: 100,
+                y: 100,
+                width: 400,
+                height: 200
+            }
+        );
+        let from_top_left = small.resized(Corner::TopLeft, 50.0, 50.0, bounds, None);
+        assert_eq!(
+            from_top_left,
+            CropRect {
+                x: 150,
+                y: 150,
+                width: 270,
+                height: 130
+            }
+        );
+
+        // 16:9 holds, and the image edge stops it.
+        let wide = small.resized(Corner::BottomRight, 160.0, 0.0, bounds, Some((16, 9)));
+        assert_eq!((wide.width, wide.height), (480, 270));
+        let huge = small.resized(Corner::BottomRight, 9000.0, 9000.0, bounds, Some((16, 9)));
+        assert!(huge.fits(bounds), "{huge:?}");
+        assert_eq!(huge.width * 9, huge.height * 16);
+        let tiny = small.resized(Corner::BottomRight, -9000.0, -9000.0, bounds, None);
+        assert_eq!(
+            (tiny.width, tiny.height),
+            (16, 16),
+            "never below the minimum"
+        );
     }
 
     #[test]

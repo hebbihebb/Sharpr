@@ -517,6 +517,8 @@ mod imp {
         pub search_status: RefCell<Option<SearchStatus>>,
         /// The shown search results that match strongly, for "Add to Bucket…".
         pub search_strong: RefCell<Vec<PathBuf>>,
+        /// The crop in progress in the viewer, if any (Phase 6).
+        pub crop_session: RefCell<Option<crate::ui::crop_mode::CropSession>>,
     }
 
     impl Default for SharprWindow {
@@ -568,6 +570,7 @@ mod imp {
                 visual_limit: Cell::new(crate::visual_search::search::PAGE),
                 search_status: RefCell::new(None),
                 search_strong: RefCell::new(Vec::new()),
+                crop_session: RefCell::new(None),
             }
         }
     }
@@ -619,6 +622,46 @@ impl SharprWindow {
         if let Some(open) = self.imp().open_folder_cb.borrow().as_ref() {
             open(folder);
         }
+    }
+
+    pub(crate) fn imp_viewer(&self) -> Option<crate::ui::viewer::ViewerPane> {
+        self.imp().viewer.borrow().clone()
+    }
+
+    /// Hides the library and filmstrip panels, returning whether each was
+    /// shown, for `restore_side_panels`.
+    pub(crate) fn hide_side_panels(&self) -> (bool, bool) {
+        let imp = self.imp();
+        let mut shown = (false, false);
+        if let Some(outer) = imp.presentation_outer_split.borrow().as_ref() {
+            shown.0 = outer.shows_sidebar();
+            outer.set_show_sidebar(false);
+        }
+        if let Some(inner) = imp.presentation_inner_split.borrow().as_ref() {
+            shown.1 = inner.shows_sidebar();
+            inner.set_show_sidebar(false);
+        }
+        shown
+    }
+
+    pub(crate) fn restore_side_panels(&self, (outer_shown, inner_shown): (bool, bool)) {
+        let imp = self.imp();
+        if let Some(outer) = imp.presentation_outer_split.borrow().as_ref() {
+            outer.set_show_sidebar(outer_shown);
+        }
+        if let Some(inner) = imp.presentation_inner_split.borrow().as_ref() {
+            inner.set_show_sidebar(inner_shown);
+        }
+        *imp.crop_session.borrow_mut() = None;
+    }
+
+    pub(crate) fn set_crop_session(&self, session: Option<crate::ui::crop_mode::CropSession>) {
+        *self.imp().crop_session.borrow_mut() = session;
+    }
+
+    /// The crop in progress, if any.
+    pub fn crop_session(&self) -> Option<crate::ui::crop_mode::CropSession> {
+        self.imp().crop_session.borrow().clone()
     }
 
     /// Exports `sources` as WebP in the background (ROADMAP Phase 6). A toast
@@ -758,8 +801,7 @@ impl SharprWindow {
         match kind {
             CopyKind::Crop => {
                 if let Some(source) = sources.into_iter().next() {
-                    let state = self.imp().state.clone();
-                    crate::ui::crop_dialog::present_crop_dialog(self, source, state);
+                    crate::ui::crop_mode::start(self, source);
                 }
             }
             CopyKind::Export => crate::ui::export_dialog::present(self, sources),

@@ -461,6 +461,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 ## Phase 6: Wallpaper Output
 
+**Status (October 14): built, committed, and verified; not deployed or accepted.** Batch WebP export and the retirement of Resize Copy and the non-WebP outputs are in `5e2ad3d`; cropping in the viewer, the preview fallback, and the rotated-JPEG test follow in the next commit. Left for acceptance: the user makes a real wallpaper end to end.
+
 **Outcome:** The user crops in Sharpr and batch-exports WebP well enough to stop using XL Converter (D13).
 
 **Existing implementation:** committed in the Phase 0 checkpoint.

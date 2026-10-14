@@ -17,7 +17,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `library_overview.rs`, `ui/library_overview.rs` | The Library Overview: library size and formats, below-4K count, disabled folders, fingerprints and exact copies, buckets, and visual-search progress. Gathered on a worker when the window opens. |
 | `fingerprint.rs` | Content fingerprints (xxh3-128) and the background pass service (GTK-free) |
 | `ui/sidebar.rs` | Folder tree and buckets (the Tags page was removed on 2026-10-13, D20) |
-| `ui/resize_dialog.rs`, `ui/crop_dialog.rs` | Resize Copy, and Crop/WebP Copy dialogs |
+| `ui/export_dialog.rs`, `ui/crop_mode.rs`, `export/batch.rs` | Phase 6 output: the "Export as WebP…" dialog and its background batch job, and Crop Copy in the viewer at full size |
 | `ui/state.rs` | `AppState` (`Rc<RefCell<_>>`, GTK thread only) and `ViewScope` |
 | `model/library.rs` | `LibraryManager`: list store, path index, selection, and metadata caches |
 | `model/browse.rs` | Pure aspect, resolution, and orientation filter and sort logic |
@@ -25,7 +25,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `image_pipeline/` | Viewer preview and metadata workers |
 | `library_index/` | SQLite index of folders, images, and buckets (`schema.rs` sets up new databases) |
 | `tags/db.rs` | SQLite manual tags and sharpness store |
-| `export/`, `collection_export.rs` | Copy encoders (JPEG, PNG, WebP, JPEG XL) with safe output reservation; bucket import and export |
+| `export/`, `collection_export.rs` | WebP copies (crop and batch export) with safe output reservation, and crop geometry; bucket import and export |
 | `duplicates/`, `quality/` | Perceptual-hash duplicates; resolution-based quality views and sharpness |
 | `ops/`, `ui/ops_indicator.rs` | Events for transient background operations. There is no persistent queue. |
 | `config/settings.rs` | GSettings wrapper. Keys for removed features stay declared but are not used. |
@@ -108,7 +108,7 @@ Rules:
 
 ## Output Files
 
-- Resize, Crop, and WebP copies decode the source in its displayed orientation and write to a new file. The output name is reserved with `create_new`, the data is written to a hidden partial file, and the partial is renamed into place. Encoder flushes are checked, and failed outputs are removed.
+- Crop copies and batch WebP exports decode the source in its displayed orientation (a 3 GB decode budget) and write to a new file. Only WebP is written: crops are lossless, and exports are lossless by default or lossy at a chosen quality, optionally fitted within a size that only shrinks. Batch export runs at the lowest priority and checks for cancellation between images and before keeping each output. The output name is reserved with `create_new`, the data is written to a hidden partial file, and the partial is renamed into place. Encoder flushes are checked, and failed outputs are removed.
 - Originals are only ever opened for reading. The exceptions are explicit trash, move, and rename actions. Rename and Move to… go through `file_ops::rename_no_replace`, which never replaces an existing file.
 - Embedded metadata is never written.
 

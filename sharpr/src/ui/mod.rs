@@ -1,7 +1,7 @@
 pub mod collection_dialogs;
 pub mod compare_item;
 pub mod compare_page;
-pub mod crop_dialog;
+pub mod crop_mode;
 pub mod export_dialog;
 pub mod filmstrip;
 pub mod help_window;

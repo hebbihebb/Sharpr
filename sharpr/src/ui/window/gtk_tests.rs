@@ -484,13 +484,52 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
             .map(|c| c.clicked_path.clone()),
         Some(sea.clone())
     );
-    // The right-click menu opens copies through this entry point (D21).
+    // The right-click menu opens copies through this entry point (D21):
+    // Crop Copy crops in the viewer at full size (Phase 6). Its folder is
+    // set first; the default, Wallpapers, is the real Pictures folder.
+    {
+        let state = window.app_state();
+        let mut st = state.borrow_mut();
+        let mut export = st.settings.webp_export.clone();
+        export.dir = Some(root.join("crops"));
+        st.settings.set_webp_export(export);
+    }
     window.present_copy_dialog(crate::ui::filmstrip::CopyKind::Crop, vec![sea.clone()]);
-    pump_until(|| window.visible_dialog().is_some());
-    let ready = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    pump_until(|| window.crop_session().is_some());
+    let session = window.crop_session().unwrap();
+    assert_eq!(
+        session.rect(),
+        crate::export::CropRect {
+            x: 0,
+            y: 15,
+            width: 160,
+            height: 90
+        },
+        "starts as the largest centred 16:9"
+    );
+    session.set_rect(crate::export::CropRect {
+        x: 16,
+        y: 9,
+        width: 128,
+        height: 72,
+    });
+    let ready = std::time::Instant::now() + std::time::Duration::from_millis(500);
     pump_until(|| std::time::Instant::now() > ready);
-    screenshot(&window, &root.parent().unwrap().join("crop-dialog.png"));
-    window.visible_dialog().unwrap().close();
+    screenshot(&window, &root.parent().unwrap().join("crop-mode.png"));
+    session.save();
+    assert!(window.crop_session().is_none(), "saving leaves crop mode");
+    pump_until(|| {
+        std::fs::read_dir(root.join("crops"))
+            .map(|entries| entries.count() == 1)
+            .unwrap_or(false)
+    });
+    let cropped = std::fs::read_dir(root.join("crops"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert_eq!(image::image_dimensions(&cropped).unwrap(), (128, 72));
     let output = crate::export::crop_copy(&crate::export::CropConfig {
         source: sea.clone(),
         destination_dir: root.join("outputs"),
