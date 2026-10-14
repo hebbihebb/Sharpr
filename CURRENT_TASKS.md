@@ -32,7 +32,7 @@ The user asked for Phases 6, 7, and 8 to be finished, then a proper install to t
 - **User test of `baa007d` (October 14):** export and crop work; search into buckets works. Find Copies never got past its spinner, Compare "works for two images only", and `tower -water` looked ignored. All three are diagnosed and fixed in `934b49b` (`ROADMAP.md` Phases 5, 7, 8).
 - **Adversarial audit** (`gpt-6.1-sol`, October 14): `docs/archive/audit-2026-10-14-phases6-8.md`, 12 findings. Ten are fixed in the commits after `e9d3c8f`; finding 12's Library Overview parts and finding 6's Compare decode concurrency are in the Backlog.
 - **User test of `5044c72` (October 14):** Compare and the selection fixes worked. Asked for: Find Copies limited to the folder with nothing pre-ticked, a per-side image picker in Compare, a bucket picker that adds only on Add, and a stronger minus word. All four are in `8501517`.
-- **Next:** the user tests `8501517`.
+- **Next:** the user tests `ef91d32` (adds Compare from Find Copies).
 
 ## State (October 14, 2026)
 
@@ -40,10 +40,10 @@ The user asked for Phases 6, 7, and 8 to be finished, then a proper install to t
   - `main` is at `1924346`, the accepted Phases 1–2.
   - `viewer-reset` carries everything since.
   - Pushed to GitHub on October 14 at the user's request.
-- **Deployed:** `8501517` at `~/.local/opt/sharpr/8501517`, with `current` pointing to it, installed October 14 at the user's request. It adds the fixes from the user's test of `5044c72`: Find Copies over the images in view with nothing ticked, Compare pickers, tick-then-Add bucket picker, and strict `--word`.
+- **Deployed:** `ef91d32` at `~/.local/opt/sharpr/ef91d32`, with `current` pointing to it, installed October 14 at the user's request. It adds Compare from Find Copies to `8501517`.
   - Smoke check: it ran on a copy of the live data and settings in isolated directories, with no panic and all databases intact.
   - It changes no database and no settings schema.
-  - **Rollback:** close Sharpr, then run `ln -sfn ~/.local/opt/sharpr/5044c72 ~/.local/opt/sharpr/current`. No data restore is needed.
+  - **Rollback:** close Sharpr, then run `ln -sfn ~/.local/opt/sharpr/8501517 ~/.local/opt/sharpr/current`. No data restore is needed.
   - The model and both runtimes are installed in `~/.local/share/sharpr-models/embeddinggemma-2/` (`runtime/` for the processor, `runtime-gpu/` for Vulkan). In the Flatpak, the server is `/app/libexec/sharpr-llama/llama-server`.
   - Redeploy only with approval, via `python3 tools/install-native-launcher.py`.
 - **Live data:**
@@ -51,6 +51,7 @@ The user asked for Phases 6, 7, and 8 to be finished, then a proper install to t
   - 7,718 tag rows, unused. Of these, 7,346 are old automatic tags; their cleanup is ready but not run.
   - Bucket membership was migrated by `bf12e07` (151 members across the original 6 buckets).
 - **Backups**, each byte-verified and integrity-checked, in `~/.local/share/`:
+  - `sharpr.backup-20261014-150245`, taken before `ef91d32`, with a dump of the settings
   - `sharpr.backup-20261014-144931`, taken before `8501517`, with a dump of the settings (12 buckets, 814 members)
   - `sharpr.backup-20261014-135326`, taken before `5044c72`, with a dump of the settings (10 buckets, 410 members)
   - `sharpr.backup-20261014-055753`, taken before `baa007d`, with a dump of the settings (`dconf-sharpr.ini`)
