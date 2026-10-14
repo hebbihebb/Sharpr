@@ -17,6 +17,22 @@
   - **All Phase 5 work is built.** Left before acceptance: deploying (with approval), the user's test, and a measured browsing check during indexing.
 - **Open user decision:** keep file-name matches first in results. They stay for now; the user will judge after use.
 
+## Next Milestone: Phases 6–8, Then A Proper Install (User, October 14)
+
+The user asked for Phases 6, 7, and 8 to be finished, then a proper install to test; possibly an adversarial `gpt-6.1-sol` audit after that. Phases 9–10 need more thought first. The install is approved for the end of this work, with the usual backup first.
+
+1. **Phase 6, wallpaper output:**
+   - Batch WebP export (GTK-free engine, then dialog and background job).
+   - Retire Resize Copy and the non-WebP outputs.
+   - Crop at full size in the viewer, with a worker-decoded preview fallback.
+   - The Wallpapers folder as the default and a quick destination.
+2. **Phase 7, cleanup:**
+   - Exact copies by fingerprint.
+   - Resized or converted copies by visual-search vectors (≥ 0.99; 0.95–0.99 only with matching aspect and a pixel check).
+   - A review window, and trash only after confirmation.
+3. **Phase 8, Compare:** N images two at a time, with A/B flip (Space), split, and side by side; knockouts; zoom lock; survivors selected on close.
+4. **Then:** a release install, a smoke test on a copy of the live data, and a backup.
+
 ## State (October 14, 2026)
 
 - **Git:**
