@@ -73,18 +73,27 @@ fn pill_has_class(widget: &gtk4::Widget, path: &Path, class: &str) -> bool {
     false
 }
 
-/// The widget's render node, once it has drawn: right after mapping, or
-/// while the desktop is busy, a frame can take a moment.
-fn render_node(widget: &gtk4::Widget) -> gtk4::gsk::RenderNode {
-    let mut node = None;
-    pump_until(|| {
+/// The widget's render node, once it has drawn. Right after mapping, or
+/// while the desktop is busy, a frame can take a moment; a window the
+/// compositor isn't drawing (covered, on another workspace) may give none.
+fn render_node(widget: &gtk4::Widget) -> Option<gtk4::gsk::RenderNode> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
         let paintable = gtk4::WidgetPaintable::new(Some(widget));
         let snapshot = gtk4::Snapshot::new();
         paintable.snapshot(&snapshot, widget.width() as f64, widget.height() as f64);
-        node = snapshot.to_node();
-        node.is_some()
-    });
-    node.unwrap()
+        if let Some(node) = snapshot.to_node() {
+            return Some(node);
+        }
+        if std::time::Instant::now() > deadline {
+            return None;
+        }
+        let context = glib::MainContext::default();
+        while context.pending() {
+            context.iteration(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 fn screenshot(window: &SharprWindow, path: &Path) {
@@ -92,8 +101,13 @@ fn screenshot(window: &SharprWindow, path: &Path) {
 }
 
 /// Renders a single widget, such as a popover, with the window's renderer.
+/// Screenshots are for people to review, not assertions: when the desktop
+/// gives no frame, the test notes it and carries on.
 fn screenshot_widget(window: &SharprWindow, widget: &gtk4::Widget, path: &Path) {
-    let node = render_node(widget);
+    let Some(node) = render_node(widget) else {
+        eprintln!("screenshot skipped, no frame drawn: {}", path.display());
+        return;
+    };
     let renderer = window.renderer().expect("realized window has a renderer");
     renderer
         .render_texture(&node, None)
@@ -674,8 +688,8 @@ fn visual_search_ranks_by_content() {
             .search_status
             .borrow()
             .as_ref()
-            .filter(|(bar, _, _)| bar.is_visible())
-            .map(|(_, label, _)| label.text().to_string())
+            .filter(|status| status.bar.is_visible())
+            .map(|status| status.label.text().to_string())
     };
     let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
     let paths = || {
@@ -736,8 +750,12 @@ fn visual_search_ranks_by_content() {
         Some(0),
         "ranked results start at the top"
     );
-    let (_, _, more) = window.imp().search_status.borrow().clone().unwrap();
-    assert!(!more.is_visible());
+    let status = window.imp().search_status.borrow().clone().unwrap();
+    assert!(!status.more.is_visible());
+    assert!(
+        status.add.is_visible(),
+        "ranked results can go into a bucket"
+    );
 
     entry.set_text("red");
     pump_until(|| paths().first() == Some(&root.join("one.png")));
@@ -745,6 +763,42 @@ fn visual_search_ranks_by_content() {
     pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
     screenshot(&window, &root.parent().unwrap().join("visual-search.png"));
     eprintln!("status: {}", status_text().unwrap());
+    // Shift-click from the top selects a range, and the line counts it.
+    let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
+    let first = paths()[0].clone();
+    let third = paths()[2].clone();
+    filmstrip.set_action_selection_to_path(&first);
+    *filmstrip.imp().selection_anchor.borrow_mut() = Some(first);
+    filmstrip.select_range_to_path(&third);
+    assert_eq!(window.imp().state.borrow().selected_paths.len(), 3);
+    let status = window.imp().search_status.borrow().clone().unwrap();
+    assert_eq!(status.selected.text().as_str(), "3 selected");
+    // Without a selection, "Add to Bucket…" asks which results, then the
+    // bucket picker opens.
+    filmstrip.clear_multi_selection();
+    window.add_search_results_to_bucket();
+    pump_until(|| window.visible_dialog().is_some());
+    let choice = window
+        .visible_dialog()
+        .unwrap()
+        .downcast::<libadwaita::AlertDialog>()
+        .unwrap();
+    assert_eq!(
+        choice.heading().unwrap().as_str(),
+        "Add Search Results to a Bucket"
+    );
+    choice.emit_by_name::<()>("response", &[&"all"]);
+    choice.close();
+    pump_until(|| {
+        window.visible_dialog().is_some_and(|d| {
+            d.downcast_ref::<libadwaita::AlertDialog>()
+                .and_then(|d| d.heading())
+                .is_some_and(|h| h.as_str() == "Add to Collection")
+        })
+    });
+    window.visible_dialog().unwrap().close();
+    pump_until(|| window.visible_dialog().is_none());
+
     // Escape closes the search, and its status line with it.
     window.close_browse_search();
     pump_until(|| window.imp().state.borrow().library.image_count() == 4);

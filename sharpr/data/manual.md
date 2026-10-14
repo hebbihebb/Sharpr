@@ -4,7 +4,7 @@ Sharpr is a local-first image curation viewer for GNOME. It makes no network con
 
 ## Library And Filmstrip
 
-Choose a folder in the Library sidebar to load its images. Thumbnails decode in the background, with visible images prioritized over preload work. Click an image to view it; Ctrl-click adds or removes images from the action selection.
+Choose a folder in the Library sidebar to load its images. Thumbnails decode in the background, with visible images prioritized over preload work. Click an image to view it; Ctrl-click adds or removes images from the selection, Shift-click selects everything from the last clicked image to this one, and Ctrl+A selects all.
 
 ## Viewer Shortcuts
 
@@ -16,6 +16,7 @@ Choose a folder in the Library sidebar to load its images. Thumbnails decode in 
 | Alt + Return | Toggle metadata overlay |
 | Ctrl + F | Search: describe the images you want; filter words such as 4k, png or 16:9 become chips |
 | Ctrl + B | Add the selected images to a bucket |
+| Ctrl + A | Select all images shown |
 | Ctrl + I | Image info: file, folder, camera, resolution score, buckets |
 | Shift + F10 | Image menu: copies, compare, file actions |
 | F9 | Toggle Library sidebar |
@@ -31,6 +32,8 @@ The line under the search box says how well the results match and how much of th
 Visual search needs the EmbeddingGemma 2 model, installed once into the folder shown in Preferences → Library → Visual Search. Indexing then runs in the background at the lowest priority, on the graphics card when a GPU build is installed (Preferences → Library → Use Graphics Card): about 20 minutes for a library of 6,000 images, against several hours on the processor. It resumes after a restart. Until the model is installed, or before any images are indexed, search matches file names only.
 
 ## Buckets
+
+To keep search results, click **Add to Bucket…** under the search box. With images selected it adds those; otherwise it offers the strong matches or everything shown, then asks for the bucket, where **New Collection…** makes a new one. A quick way to pick: Shift-click the last good result to select everything above it, then Ctrl-click any you don't want. Several searches can fill the same bucket.
 
 Buckets are hand-picked groups of images; the files stay in their folders. A bucket remembers each image by its content, so it keeps it after the file is moved or renamed outside Sharpr. Add the selected images with Ctrl+B or by dragging them onto a bucket in the sidebar.
 

@@ -45,6 +45,11 @@ const GENERIC_PROMPTS: [&str; 10] = [
     "illustration",
 ];
 
+/// A result whose generic-corrected score reaches this is a strong match on
+/// its own, the threshold of `Strength::Strong`. "Add to Bucket…" offers
+/// these by default.
+pub const STRONG_RESULT: f32 = 0.04;
+
 /// Below this many indexed candidates, the fifth-best score says little
 /// about the words, so strength isn't judged.
 pub const JUDGE_FROM: usize = 50;
@@ -88,6 +93,9 @@ impl Strength {
 pub struct Ranked {
     /// Every indexed candidate, closest first.
     pub paths: Vec<PathBuf>,
+    /// Whether each of `paths` is a strong match on its own
+    /// (`STRONG_RESULT`).
+    pub strong: Vec<bool>,
     /// Candidates with a vector; the rest aren't indexed yet.
     pub indexed: usize,
     pub eligible: usize,
@@ -106,17 +114,19 @@ pub fn rank(candidates: &[(PathBuf, Option<String>)], prepared: &Prepared) -> Ra
         .collect();
     let indexed = scored.len();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
-    let mut specific: Vec<f32> = scored
+    let specific: Vec<f32> = scored
         .iter()
         .map(|(_, _, vector)| similarity(&prepared.specific, vector))
         .collect();
-    specific.sort_by(|a, b| b.total_cmp(a));
-    let strength = (indexed >= JUDGE_FROM).then(|| Strength::from_score(specific[4]));
+    let mut sorted = specific.clone();
+    sorted.sort_by(|a, b| b.total_cmp(a));
+    let strength = (indexed >= JUDGE_FROM).then(|| Strength::from_score(sorted[4]));
     Ranked {
         paths: scored
             .into_iter()
             .map(|(_, path, _)| path.clone())
             .collect(),
+        strong: specific.iter().map(|s| *s >= STRONG_RESULT).collect(),
         indexed,
         eligible: candidates.len(),
         strength,
@@ -384,6 +394,11 @@ mod tests {
         );
         assert_eq!((ranked.indexed, ranked.eligible), (4, 6));
         assert_eq!(ranked.strength, None, "too few images to judge");
+        assert_eq!(
+            ranked.strong,
+            vec![true, true, true, true],
+            "each scores 0.2 or more"
+        );
 
         let many: Vec<(PathBuf, Option<String>)> = (0..JUDGE_FROM)
             .map(|i| {

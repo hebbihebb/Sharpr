@@ -53,6 +53,12 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
+                <property name="title">Select all images shown</property>
+                <property name="accelerator">&lt;Control&gt;a</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
                 <property name="title">Duplicate image</property>
                 <property name="accelerator">&lt;Control&gt;d</property>
               </object>

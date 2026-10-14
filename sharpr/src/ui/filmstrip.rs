@@ -202,6 +202,8 @@ mod imp {
         pub copy_requested_cb: RefCell<Option<CopyRequestedCallback>>,
         pub info_requested_cb: RefCell<Option<InfoRequestedCallback>>,
         pub action_selection_changed_cb: RefCell<Option<ActionSelectionChangedCallback>>,
+        /// Where a Shift-click range starts: the last plain or Ctrl-click.
+        pub selection_anchor: RefCell<Option<PathBuf>>,
         pub remove_from_collection_requested_cb:
             RefCell<Option<RemoveFromCollectionRequestedCallback>>,
         pub copy_to_folder_requested_cb: RefCell<Option<CopyToFolderRequestedCallback>>,
@@ -285,6 +287,7 @@ mod imp {
                 copy_requested_cb: RefCell::new(None),
                 info_requested_cb: RefCell::new(None),
                 action_selection_changed_cb: RefCell::new(None),
+                selection_anchor: RefCell::new(None),
                 remove_from_collection_requested_cb: RefCell::new(None),
                 copy_to_folder_requested_cb: RefCell::new(None),
                 move_to_folder_requested_cb: RefCell::new(None),
@@ -662,6 +665,7 @@ impl FilmstripPane {
                 let Some(widget) = widget_weak_ctrl.upgrade() else {
                     return;
                 };
+                *widget.imp().selection_anchor.borrow_mut() = Some(path.clone());
                 widget.toggle_action_selection_path(&path);
             });
 
@@ -681,6 +685,12 @@ impl FilmstripPane {
                 let Some(widget) = widget_weak_primary.upgrade() else {
                     return;
                 };
+                // Shift-click selects everything from the anchor to here.
+                if modifiers.contains(gdk4::ModifierType::SHIFT_MASK) {
+                    widget.select_range_to_path(&path);
+                    return;
+                }
+                *widget.imp().selection_anchor.borrow_mut() = Some(path.clone());
                 widget.set_action_selection_to_path(&path);
             });
 
@@ -1968,6 +1978,46 @@ impl FilmstripPane {
         }
         self.emit_add_to_collection_requested(paths);
         true
+    }
+
+    /// Opens the bucket picker for `paths`, such as chosen search results.
+    pub fn request_add_paths_to_bucket(&self, paths: Vec<PathBuf>) {
+        if !paths.is_empty() {
+            self.emit_add_to_collection_requested(paths);
+        }
+    }
+
+    /// Selects every image from the selection anchor (the last plain or
+    /// Ctrl-click, or else the current image) to `path`, inclusive.
+    pub fn select_range_to_path(&self, path: &Path) {
+        let anchor = self.imp().selection_anchor.borrow().clone();
+        if let Some(state) = self.imp().state.borrow().as_ref() {
+            let mut state = state.borrow_mut();
+            let anchor = anchor
+                .or_else(|| state.library.selected_entry().map(|e| e.path()))
+                .and_then(|anchor| state.library.index_of_path(&anchor));
+            let Some(end) = state.library.index_of_path(path) else {
+                return;
+            };
+            let start = anchor.unwrap_or(end);
+            let range: Vec<PathBuf> = (start.min(end)..=start.max(end))
+                .filter_map(|i| state.library.entry_at(i).map(|e| e.path()))
+                .collect();
+            state.selected_paths = range.into_iter().collect();
+        }
+        self.refresh_multi_selection_visuals();
+    }
+
+    /// Selects every image shown (Ctrl+A).
+    pub fn select_all(&self) {
+        if let Some(state) = self.imp().state.borrow().as_ref() {
+            let mut state = state.borrow_mut();
+            let all: Vec<PathBuf> = (0..state.library.image_count())
+                .filter_map(|i| state.library.entry_at(i).map(|e| e.path()))
+                .collect();
+            state.selected_paths = all.into_iter().collect();
+        }
+        self.refresh_multi_selection_visuals();
     }
 
     pub fn selected_paths_for_action(&self) -> Vec<PathBuf> {

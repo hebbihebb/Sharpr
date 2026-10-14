@@ -379,7 +379,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
   - While indexing runs, the existing background-activity indicator in the header shows a progress ring; its tooltip gives the count, the device, and the time left.
   - Preferences keeps only settings. The visual-search status line moves into the overview.
   - All counting runs off the GTK thread.
-- **Search into buckets (added October 14 at the user's request).** Today, turning results into a bucket means Ctrl-clicking each image (no select-all, no range).
+- **Search into buckets (added October 14 at the user's request; built October 14, committed and verified, not deployed).** Before this, turning results into a bucket meant Ctrl-clicking each image (no select-all, no range).
+  - "Strong matches" are the file-name matches plus visual results whose generic-corrected score reaches `STRONG_RESULT` (0.04, the Strong strength threshold). Only shown results count.
   - **Search into bucket (the user's idea):** one action in the search status line, "Add to Bucket…", turns the current results into a new bucket or adds them to an existing one.
     - Because results run from strong to weak (the closest 200), the dialog says how many images will be added and offers the strong matches by default. It can also use everything shown, or only the selection when there is one.
     - The bucket is a snapshot. It never updates itself; saved or smart searches stay out (D5).
@@ -659,7 +660,7 @@ Optional and unordered. Pick something up only when a phase touches that area, o
 - Guard the startup legacy-bucket migration (`migrate_legacy_collections_to_tags`) with a backup and count check, or retire it, before old databases are treated as a supported upgrade (audit finding 12).
 - Keep thumbnail generations through to completion: a failure or success from an old request must not mark a newer view's row (audit finding 7).
 - Index AVIF and HEIC/HEIF for visual search, with a bounded decoder on the worker (Phase 5 audit, finding 13). The live library has none; weigh the Flatpak cost before adding decoders.
-- GTK test harness: the screenshot helper's `render_node` sometimes times out, and `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs). Make both deterministic.
+- GTK test harness: `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs); make it deterministic. The screenshot timeout is solved (October 14): a window the compositor isn't drawing gives no frame, so screenshots are now best-effort and never fail a test.
 
 ### Considered, Not Planned
 

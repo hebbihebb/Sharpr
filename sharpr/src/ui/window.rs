@@ -396,6 +396,17 @@ fn start_raw_dimension_hydrator(
     });
 }
 
+/// The line under the search box: coverage and strength, the selection
+/// count, "Add to Bucket…", and "Show More".
+#[derive(Clone)]
+pub struct SearchStatus {
+    pub bar: gtk4::Box,
+    pub label: gtk4::Label,
+    pub selected: gtk4::Label,
+    pub add: gtk4::Button,
+    pub more: gtk4::Button,
+}
+
 pub(super) fn load_virtual_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf]) {
     let paths: Vec<PathBuf> = {
         let st = state.borrow();
@@ -503,7 +514,9 @@ mod imp {
         /// How many visual-search results to show; "Show More" raises it.
         pub visual_limit: Cell<usize>,
         /// Coverage and match strength of the current search, with "Show More".
-        pub search_status: RefCell<Option<(gtk4::Box, gtk4::Label, gtk4::Button)>>,
+        pub search_status: RefCell<Option<SearchStatus>>,
+        /// The shown search results that match strongly, for "Add to Bucket…".
+        pub search_strong: RefCell<Vec<PathBuf>>,
     }
 
     impl Default for SharprWindow {
@@ -554,6 +567,7 @@ mod imp {
                 visual_searcher: RefCell::new(None),
                 visual_limit: Cell::new(crate::visual_search::search::PAGE),
                 search_status: RefCell::new(None),
+                search_strong: RefCell::new(Vec::new()),
             }
         }
     }
@@ -2386,14 +2400,38 @@ impl SharprWindow {
                 }
             });
         }
+        let search_selected = gtk4::Label::new(None);
+        search_selected.add_css_class("dim-label");
+        search_selected.add_css_class("numeric");
+        search_selected.set_visible(false);
+        let search_add = gtk4::Button::with_label("Add to Bucket…");
+        search_add.add_css_class("flat");
+        search_add.set_valign(gtk4::Align::Center);
+        search_add.set_tooltip_text(Some("Add these results to a new or existing bucket"));
+        search_add.set_visible(false);
+        {
+            let weak = self.downgrade();
+            search_add.connect_clicked(move |_| {
+                if let Some(win) = weak.upgrade() {
+                    win.add_search_results_to_bucket();
+                }
+            });
+        }
         search_status.append(&search_status_label);
+        search_status.append(&search_selected);
+        search_status.append(&search_add);
         search_status.append(&search_more);
         let chip_bar = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         chip_bar.append(&search_chips);
         chip_bar.append(&search_suggestions);
         chip_bar.append(&search_status);
-        *self.imp().search_status.borrow_mut() =
-            Some((search_status, search_status_label, search_more));
+        *self.imp().search_status.borrow_mut() = Some(SearchStatus {
+            bar: search_status,
+            label: search_status_label,
+            selected: search_selected,
+            add: search_add,
+            more: search_more,
+        });
         let search_chips_revealer = gtk4::Revealer::new();
         search_chips_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideDown);
         search_chips_revealer.set_child(Some(&chip_bar));
@@ -2439,8 +2477,12 @@ impl SharprWindow {
         self.add_action(&compare_action);
         {
             let compare_action = compare_action.clone();
+            let weak = self.downgrade();
             filmstrip.connect_action_selection_changed(move |count| {
                 compare_action.set_enabled(count == 2);
+                if let Some(win) = weak.upgrade() {
+                    win.show_search_selection(count);
+                }
             });
         }
 
@@ -3194,6 +3236,21 @@ impl SharprWindow {
                     } else {
                         glib::Propagation::Proceed
                     }
+                })),
+            ));
+        }
+
+        // Ctrl+A — select every image shown (ignored while typing).
+        {
+            let filmstrip_a = filmstrip.clone();
+            shortcuts.add_shortcut(gtk4::Shortcut::new(
+                Some(gtk4::ShortcutTrigger::parse_string("<Control>a").unwrap()),
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if text_input_has_focus(widget) {
+                        return glib::Propagation::Proceed;
+                    }
+                    filmstrip_a.select_all();
+                    glib::Propagation::Stop
                 })),
             ));
         }

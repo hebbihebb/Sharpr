@@ -7,6 +7,9 @@ type BrowseTask = Box<dyn FnOnce(&mut BrowseCaches) -> Result<BrowseResult, Stri
 pub(super) struct BrowseResult {
     paths: Vec<PathBuf>,
     visual: Option<VisualSummary>,
+    /// The shown results that match strongly: file-name matches, and
+    /// visual results that clear `STRONG_RESULT`.
+    strong: Vec<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -33,6 +36,8 @@ struct RankedSnapshot {
     by_name: Vec<PathBuf>,
     /// Visual results, closest first, without the file-name matches.
     visual: Vec<PathBuf>,
+    /// Visual results that are strong matches on their own.
+    strong: std::collections::HashSet<PathBuf>,
     summary: VisualSummary,
 }
 
@@ -40,6 +45,12 @@ impl RankedSnapshot {
     fn page(&self, limit: usize) -> BrowseResult {
         let mut paths = self.by_name.clone();
         paths.extend(self.visual.iter().take(limit).cloned());
+        let strong = paths
+            .iter()
+            .enumerate()
+            .filter(|(i, path)| *i < self.by_name.len() || self.strong.contains(*path))
+            .map(|(_, path)| path.clone())
+            .collect();
         let mut summary = self.summary.clone();
         if let VisualSummary::Ranked { more, .. } = &mut summary {
             *more = self.visual.len() > limit;
@@ -47,6 +58,7 @@ impl RankedSnapshot {
         BrowseResult {
             paths,
             visual: Some(summary),
+            strong,
         }
     }
 }
@@ -304,7 +316,7 @@ impl SharprWindow {
             .search_status
             .borrow()
             .as_ref()
-            .is_some_and(|(status, _, _)| status.is_visible());
+            .is_some_and(|status| status.bar.is_visible());
         if let Some(bar) = self.imp().search_chip_bar.borrow().as_ref() {
             bar.set_reveal_child(has_chips || has_suggestions || has_status);
         }
@@ -446,17 +458,73 @@ impl SharprWindow {
 
     /// Says how a visual search went, or hides the line.
     pub(super) fn show_search_status(&self, summary: Option<&VisualSummary>) {
-        let Some((bar, label, more)) = self.imp().search_status.borrow().clone() else {
+        let Some(status) = self.imp().search_status.borrow().clone() else {
             return;
         };
         let text = summary.map(visual_summary_text);
-        bar.set_visible(text.is_some());
-        label.set_text(text.as_deref().unwrap_or_default());
-        more.set_visible(matches!(
+        status.bar.set_visible(text.is_some());
+        status.label.set_text(text.as_deref().unwrap_or_default());
+        status.more.set_visible(matches!(
             summary,
             Some(VisualSummary::Ranked { more: true, .. })
         ));
+        let ranked = matches!(summary, Some(VisualSummary::Ranked { .. }));
+        status.add.set_visible(ranked);
+        if !ranked {
+            self.imp().search_strong.borrow_mut().clear();
+        }
         self.sync_search_chip_bar();
+    }
+
+    /// Shows how many images are selected beside the search status.
+    pub(super) fn show_search_selection(&self, selected: usize) {
+        if let Some(status) = self.imp().search_status.borrow().as_ref() {
+            status.selected.set_visible(selected > 1);
+            status.selected.set_text(&format!("{selected} selected"));
+        }
+    }
+
+    /// "Add to Bucket…": the selection when there is one; otherwise the
+    /// user picks the strong matches or everything shown. The bucket picker
+    /// (with "New Collection…") follows, so three actions make a bucket.
+    pub(super) fn add_search_results_to_bucket(&self) {
+        let Some(filmstrip) = self.imp().filmstrip.borrow().clone() else {
+            return;
+        };
+        if self.imp().state.borrow().selected_paths.len() > 1 {
+            filmstrip.request_add_selection_to_bucket();
+            return;
+        }
+        let shown: Vec<PathBuf> = {
+            let st = self.imp().state.borrow();
+            (0..st.library.image_count())
+                .filter_map(|i| st.library.entry_at(i).map(|e| e.path()))
+                .collect()
+        };
+        let strong = self.imp().search_strong.borrow().clone();
+        let dialog = libadwaita::AlertDialog::new(
+            Some("Add Search Results to a Bucket"),
+            Some(
+                "Choose which results to add; the bucket comes next. Strong matches are the \
+                 file-name matches and the images that match these words well on their own.",
+            ),
+        );
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("all", &format!("All Shown ({})", shown.len()));
+        dialog.add_response("strong", &format!("Strong Matches ({})", strong.len()));
+        dialog.set_response_enabled("strong", !strong.is_empty());
+        dialog.set_response_appearance("strong", libadwaita::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some(if strong.is_empty() { "all" } else { "strong" }));
+        dialog.set_close_response("cancel");
+        dialog.connect_response(None, move |_, response| {
+            let paths = match response {
+                "strong" => strong.clone(),
+                "all" => shown.clone(),
+                _ => return,
+            };
+            filmstrip.request_add_paths_to_bucket(paths);
+        });
+        dialog.present(Some(self));
     }
 
     pub(super) fn run_browse_query(&self, query: String, sort_only: bool) {
@@ -623,6 +691,7 @@ impl SharprWindow {
                         other => {
                             crate::model::library::sort_raw_entries(&mut raw, order);
                             return Ok(BrowseResult {
+                                strong: Vec::new(),
                                 paths: raw.into_iter().map(|r| r.path).collect(),
                                 visual: match other {
                                     Some(Err(error)) => Some(VisualSummary::Unavailable(error)),
@@ -652,11 +721,17 @@ impl SharprWindow {
                     // Coverage and strength count every candidate; only the
                     // listing leaves the file-name matches out of the ranking.
                     let ranked = crate::visual_search::search::rank(&candidates, &prepared);
-                    let visual: Vec<PathBuf> = ranked
-                        .paths
-                        .into_iter()
-                        .filter(|path| !name_matches.contains(path))
-                        .collect();
+                    let mut visual = Vec::with_capacity(ranked.paths.len());
+                    let mut strong = std::collections::HashSet::new();
+                    for (path, is_strong) in ranked.paths.into_iter().zip(ranked.strong) {
+                        if name_matches.contains(&path) {
+                            continue;
+                        }
+                        if is_strong {
+                            strong.insert(path.clone());
+                        }
+                        visual.push(path);
+                    }
                     let snapshot = RankedSnapshot {
                         key: snapshot_key,
                         summary: VisualSummary::Ranked {
@@ -668,6 +743,7 @@ impl SharprWindow {
                         },
                         by_name: by_name.into_iter().map(|r| r.path).collect(),
                         visual,
+                        strong,
                     };
                     let page = snapshot.page(visual_limit);
                     cache.ranked = Some(snapshot);
@@ -692,7 +768,12 @@ impl SharprWindow {
                 return;
             }
             match result {
-                Ok(BrowseResult { paths, visual }) => {
+                Ok(BrowseResult {
+                    paths,
+                    visual,
+                    strong,
+                }) => {
+                    *win.imp().search_strong.borrow_mut() = strong;
                     win.show_search_status(visual.as_ref());
                     let selected = win
                         .imp()
@@ -846,6 +927,7 @@ mod tests {
             visual: (0..5)
                 .map(|i| PathBuf::from(format!("/l/{i}.jpg")))
                 .collect(),
+            strong: [PathBuf::from("/l/0.jpg"), PathBuf::from("/l/3.jpg")].into(),
             summary: VisualSummary::Ranked {
                 name_matches: 1,
                 indexed: 6,
@@ -866,6 +948,14 @@ mod tests {
             first.visual,
             Some(VisualSummary::Ranked { more: true, .. })
         ));
+        assert_eq!(
+            first.strong,
+            vec![
+                PathBuf::from("/l/tower-notes.jpg"),
+                PathBuf::from("/l/0.jpg")
+            ],
+            "name matches and strong visual results on the page; 3.jpg isn't shown yet"
+        );
         assert!(matches!(
             snapshot.page(5).visual,
             Some(VisualSummary::Ranked { more: false, .. })
