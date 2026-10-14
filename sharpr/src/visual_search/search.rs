@@ -59,17 +59,23 @@ pub const STRONG_RESULT: f32 = 0.04;
 /// images while keeping relevant ones (ROADMAP Phase 5).
 pub const EXCLUDE_SHARE: f64 = 0.10;
 
-/// Fingerprints of the `EXCLUDE_SHARE` of all indexed images most like a
-/// negative word, by generic-corrected closeness. The cut-off comes from
-/// the whole library, so a scope full of water still loses its water.
-pub fn most_alike(negative: &Prepared) -> std::collections::HashSet<String> {
+/// A strict negative word (`--water`) leaves out this share instead: on
+/// the judged sample, unwanted images in the top 20 fell from 4 to 2, at
+/// the cost of 111 relevant images down to 69 (ROADMAP Phase 5).
+pub const STRICT_EXCLUDE_SHARE: f64 = 0.30;
+
+/// Fingerprints of the `share` of all indexed images most like a negative
+/// word (`EXCLUDE_SHARE`, or `STRICT_EXCLUDE_SHARE`), by generic-corrected
+/// closeness. The cut-off comes from the whole library, so a scope full of
+/// water still loses its water.
+pub fn most_alike(negative: &Prepared, share: f64) -> std::collections::HashSet<String> {
     let mut scored: Vec<(f32, &String)> = negative
         .vectors
         .iter()
         .map(|(fingerprint, vector)| (similarity(&negative.specific, vector), fingerprint))
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let keep = ((scored.len() as f64) * EXCLUDE_SHARE).ceil() as usize;
+    let keep = ((scored.len() as f64) * share).ceil() as usize;
     scored
         .into_iter()
         .take(keep)
@@ -498,12 +504,14 @@ mod tests {
             specific: axis(0, 1.0),
             vectors: Arc::new(vectors),
         };
-        let alike = most_alike(&negative);
+        let alike = most_alike(&negative, EXCLUDE_SHARE);
         assert_eq!(
             alike,
             ["f19".to_string(), "f18".to_string()].into(),
             "the 2 of 20 closest"
         );
+        // Strict (`--word`): the closest 30%.
+        assert_eq!(most_alike(&negative, STRICT_EXCLUDE_SHARE).len(), 6);
     }
 
     #[test]

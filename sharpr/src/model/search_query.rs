@@ -173,6 +173,9 @@ pub enum Chip {
     Not(Box<Chip>),
     /// A negative word (`-water`), lowercase.
     Without(String),
+    /// A strict negative word (`--water`): leaves out more of what looks
+    /// like it, at the cost of some good results.
+    WithoutStrictly(String),
 }
 
 impl Chip {
@@ -185,13 +188,15 @@ impl Chip {
             Self::Aspect(aspect) => aspect.label(),
             Self::Not(inner) => format!("Not {}", inner.label()),
             Self::Without(word) => format!("Not {word}"),
+            Self::WithoutStrictly(word) => format!("Strictly not {word}"),
         }
     }
 
-    /// A negative word, if this chip is one.
-    pub fn without(&self) -> Option<&str> {
+    /// A negative word, if this chip is one, and whether it is strict.
+    pub fn without(&self) -> Option<(&str, bool)> {
         match self {
-            Self::Without(word) => Some(word),
+            Self::Without(word) => Some((word, false)),
+            Self::WithoutStrictly(word) => Some((word, true)),
             _ => None,
         }
     }
@@ -202,6 +207,7 @@ impl Chip {
         match self {
             Self::Not(inner) => return format!("-{}", inner.as_literal().trim_matches('"')),
             Self::Without(word) => return format!("-{word}"),
+            Self::WithoutStrictly(word) => return format!("--{word}"),
             _ => {}
         }
         let word = match self {
@@ -213,7 +219,9 @@ impl Chip {
                 Aspect::Square => "square".into(),
                 Aspect::Ratio(a, b) => format!("{a}:{b}"),
             },
-            Self::Not(_) | Self::Without(_) => unreachable!("returned above"),
+            Self::Not(_) | Self::Without(_) | Self::WithoutStrictly(_) => {
+                unreachable!("returned above")
+            }
         };
         format!("\"{word}\"")
     }
@@ -225,13 +233,13 @@ impl Chip {
             Self::Format(_) => Some(0),
             Self::AtLeast(_) | Self::Below(_) => Some(1),
             Self::Aspect(_) => Some(2),
-            Self::Not(_) | Self::Without(_) => None,
+            Self::Not(_) | Self::Without(_) | Self::WithoutStrictly(_) => None,
         }
     }
 
     fn needs_dimensions(&self) -> bool {
         match self {
-            Self::Format(_) | Self::Without(_) => false,
+            Self::Format(_) | Self::Without(_) | Self::WithoutStrictly(_) => false,
             Self::Not(inner) => inner.needs_dimensions(),
             _ => true,
         }
@@ -250,7 +258,7 @@ impl Chip {
                 .is_some_and(|d| aspect.matches(d)),
             Self::Not(inner) => !inner.matches(path, dimensions),
             // The visual part of a negative word is applied by the search.
-            Self::Without(word) => !path
+            Self::Without(word) | Self::WithoutStrictly(word) => !path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|name| name.to_lowercase().contains(word.as_str())),
@@ -290,11 +298,12 @@ impl ChipFilters {
                 .all(|chip| chip.matches(path, dimensions))
     }
 
-    /// The negative words, whose visual part the search applies.
-    pub fn without_words(&self) -> Vec<String> {
+    /// The negative words, and whether each is strict, whose visual part
+    /// the search applies.
+    pub fn without_words(&self) -> Vec<(String, bool)> {
         self.chips
             .iter()
-            .filter_map(|c| c.without().map(str::to_string))
+            .filter_map(|c| c.without().map(|(w, strict)| (w.to_string(), strict)))
             .collect()
     }
 }
@@ -322,7 +331,21 @@ fn parse_words(words: &[&str]) -> ParsedQuery {
             Some(Chip::Below(resolution))
         } else if let Some(rest) = lower.strip_prefix('<') {
             Resolution::parse(rest).map(Chip::Below)
-        } else if let Some(rest) = lower.strip_prefix('-').filter(|r| !r.is_empty()) {
+        } else if let Some(rest) = lower
+            .strip_prefix("--")
+            .filter(|r| !r.is_empty() && !r.starts_with('-'))
+            .filter(|r| {
+                Format::parse(r).is_none()
+                    && Resolution::parse(r).is_none()
+                    && Aspect::parse(r).is_none()
+            })
+        {
+            Some(Chip::WithoutStrictly(rest.to_string()))
+        } else if let Some(rest) = lower
+            .strip_prefix("--")
+            .or_else(|| lower.strip_prefix('-'))
+            .filter(|r| !r.is_empty() && !r.starts_with('-'))
+        {
             Some(
                 Format::parse(rest)
                     .map(Chip::Format)
@@ -627,7 +650,7 @@ mod tests {
         let filters = ChipFilters {
             chips: parsed.chips.clone(),
         };
-        assert_eq!(filters.without_words(), vec!["water".to_string()]);
+        assert_eq!(filters.without_words(), vec![("water".to_string(), false)]);
         let wide = Some((1920, 1080));
         let boxy = Some((1600, 1200));
         assert!(filters.matches(Path::new("/l/tower.jpg"), boxy));
@@ -659,6 +682,24 @@ mod tests {
         assert!(!mixed.matches(Path::new("/l/a.webp"), wide));
         assert!(parse("\"-water\"").chips.is_empty(), "quoted stays text");
         assert!(parse("-").chips.is_empty());
+    }
+
+    #[test]
+    fn a_double_minus_is_strict_for_words_only() {
+        let parsed = parse("tower --water --png");
+        assert_eq!(parsed.text, "tower");
+        assert_eq!(
+            parsed.chips,
+            vec![
+                Chip::WithoutStrictly("water".into()),
+                Chip::Not(Box::new(Chip::Format(Format::Png))),
+            ]
+        );
+        let strict = Chip::WithoutStrictly("water".into());
+        assert_eq!(strict.label(), "Strictly not water");
+        assert_eq!(strict.as_literal(), "--water");
+        assert_eq!(parse(&strict.as_literal()).chips, vec![strict]);
+        assert!(parse("---").chips.is_empty());
     }
 
     #[test]

@@ -449,7 +449,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
       | Top 30% of the word's own top 100 results | 4 | 107 |
       | "pos neg" scores higher than "pos" (contrastive) | 16 | 129 |
 
-      Stronger cut-offs cost far more relevant images than they remove. The image vectors mostly describe the main subject, so water that is only part of a tower picture scores low. The 10% rule stays unless the user prefers a stronger, costlier option.
+      Stronger cut-offs cost far more relevant images than they remove. The image vectors mostly describe the main subject, so water that is only part of a tower picture scores low. The 10% rule stays the default; at the user's request, `--water` ("Strictly not water") leaves out 30% for when the user accepts that cost.
     - Sending "woman without beach" backfires: the model looks for beaches.
     - Subtracting the negative word's vector sat in between (woman −beach 0 / 14, robot −gun 5 / 13).
     - Both columns are lower bounds, because images outside the judged pool count as neither.

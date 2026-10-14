@@ -722,10 +722,16 @@ impl SharprWindow {
                         (without.is_empty(), searcher.as_ref(), index.as_ref())
                     {
                         let mut alike = std::collections::HashSet::new();
-                        for word in &without {
+                        for (word, strict) in &without {
+                            let share = if *strict {
+                                crate::visual_search::search::STRICT_EXCLUDE_SHARE
+                            } else {
+                                crate::visual_search::search::EXCLUDE_SHARE
+                            };
                             match searcher.prepare(word, &superseded) {
-                                Ok(negative) => alike
-                                    .extend(crate::visual_search::search::most_alike(&negative)),
+                                Ok(negative) => alike.extend(
+                                    crate::visual_search::search::most_alike(&negative, share),
+                                ),
                                 Err(error) => {
                                     not_applied.get_or_insert(error);
                                 }
