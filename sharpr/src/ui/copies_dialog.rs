@@ -60,8 +60,39 @@ fn folder_of(path: &std::path::Path) -> String {
     }
 }
 
-/// Opens the window and looks for copies on a worker.
+/// What is in view, for the window's wording: "in “Wallpapers”".
+fn scope_label(state: &crate::ui::state::AppState) -> String {
+    use crate::ui::state::ViewScope;
+    match &state.scope {
+        ViewScope::Folder(folder) => format!(
+            "in \u{201c}{}\u{201d}",
+            folder
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| folder.display().to_string())
+        ),
+        ViewScope::Collection(id) => state
+            .collections
+            .iter()
+            .find(|c| c.id == *id)
+            .map(|c| format!("in the bucket \u{201c}{}\u{201d}", c.name))
+            .unwrap_or_else(|| "in this bucket".into()),
+        ViewScope::Search => "among the search results".into(),
+        _ => "among the images shown".into(),
+    }
+}
+
+/// Opens the window and looks for copies among the images in view (the
+/// folder, bucket, or search results shown) on a worker.
 pub fn present(window: &SharprWindow) {
+    let (paths, scope, index) = {
+        let state = window.app_state();
+        let st = state.borrow();
+        let paths: Vec<PathBuf> = (0..st.library.image_count())
+            .filter_map(|i| st.library.entry_at(i).map(|e| e.path()))
+            .collect();
+        (paths, scope_label(&st), st.library_index.clone())
+    };
     let dialog = libadwaita::Dialog::new();
     dialog.set_title("Copies");
     dialog.set_content_width(760);
@@ -70,7 +101,7 @@ pub fn present(window: &SharprWindow) {
     toolbar.add_top_bar(&libadwaita::HeaderBar::new());
     let stack = gtk4::Stack::new();
     let searching = libadwaita::StatusPage::new();
-    searching.set_title("Looking for Copies…");
+    searching.set_title(&format!("Looking for Copies {scope}…"));
     searching.set_description(Some(
         "Exact copies, and resized or converted copies of the same picture",
     ));
@@ -83,20 +114,17 @@ pub fn present(window: &SharprWindow) {
     dialog.set_child(Some(&toolbar));
     dialog.present(Some(window));
 
-    let (root, disabled, index) = {
-        let state = window.app_state();
-        let st = state.borrow();
-        (
-            st.settings.active_library().map(|l| l.root.clone()),
-            st.disabled_folders.clone(),
-            st.library_index.clone(),
-        )
-    };
-    let (Some(root), Some(index)) = (root, index) else {
+    let Some(index) = index else {
         searching.set_title("No Library");
         spinner.stop();
         return;
     };
+    if paths.len() < 2 {
+        searching.set_title("Nothing to Compare");
+        searching.set_description(Some("Open a folder with at least two images first."));
+        spinner.stop();
+        return;
+    }
     // Closing the window stops the search; the count shows it's moving.
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -142,8 +170,7 @@ pub fn present(window: &SharprWindow) {
             .unwrap_or_default();
         let result = crate::copies::find(
             &index,
-            &root,
-            &disabled,
+            &paths,
             &vectors,
             &|| canceled.load(Ordering::Relaxed),
             &|done, total| {
@@ -168,13 +195,13 @@ pub fn present(window: &SharprWindow) {
             Ok(report) if report.groups.is_empty() => {
                 let empty = libadwaita::StatusPage::new();
                 empty.set_icon_name(Some("emblem-ok-symbolic"));
-                empty.set_title("No Copies Found");
+                empty.set_title(&format!("No Copies Found {scope}"));
                 empty.set_description(Some(&checked_note(&report)));
                 stack.add_named(&empty, Some("empty"));
                 stack.set_visible_child_name("empty");
             }
             Ok(report) => {
-                let results = results_page(&window, &dialog, &report);
+                let results = results_page(&window, &dialog, &report, &scope);
                 stack.add_named(&results, Some("results"));
                 stack.set_visible_child_name("results");
             }
@@ -207,6 +234,7 @@ fn results_page(
     window: &SharprWindow,
     dialog: &libadwaita::Dialog,
     report: &CopyReport,
+    scope: &str,
 ) -> gtk4::Widget {
     let page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     let scroller = gtk4::ScrolledWindow::new();
@@ -216,7 +244,7 @@ fn results_page(
     let extras: usize = report.groups.iter().map(|g| g.files.len() - 1).sum();
     let summary = libadwaita::PreferencesGroup::new();
     summary.set_title(&format!(
-        "{} {} of copies",
+        "{} {} of copies {scope}",
         count(report.groups.len()),
         if report.groups.len() == 1 {
             "group"
@@ -225,7 +253,8 @@ fn results_page(
         }
     ));
     summary.set_description(Some(&format!(
-        "{} beyond the first of each group; the highest resolution comes first and is kept. {}",
+        "{} beyond the first of each group. The highest resolution comes first, marked Keep. \
+         Nothing is ticked: tick what should go, or use Select All Extras. {}",
         images_text(extras),
         checked_note(report)
     )));
@@ -245,6 +274,28 @@ fn results_page(
     bar.set_margin_bottom(12);
     bar.set_margin_start(12);
     bar.set_margin_end(12);
+    let select_extras = gtk4::Button::with_label("Select All Extras");
+    select_extras.set_tooltip_text(Some("Tick every file except the one marked Keep"));
+    let select_none = gtk4::Button::with_label("Select None");
+    {
+        let all = checks.clone();
+        select_extras.connect_clicked(move |_| {
+            let checks = all.borrow();
+            for (i, choice) in checks.iter().enumerate() {
+                // The first of each group is the one to keep.
+                let first = i == 0 || checks[i - 1].group != choice.group;
+                choice.check.set_active(!first);
+            }
+        });
+        let checks = checks.clone();
+        select_none.connect_clicked(move |_| {
+            for choice in checks.borrow().iter() {
+                choice.check.set_active(false);
+            }
+        });
+    }
+    bar.append(&select_extras);
+    bar.append(&select_none);
     let selected = gtk4::Label::new(None);
     selected.add_css_class("dim-label");
     selected.add_css_class("numeric");
@@ -358,7 +409,8 @@ fn group_rows(
         let check = gtk4::CheckButton::new();
         check.set_valign(gtk4::Align::Center);
         check.set_tooltip_text(Some("Move to the trash"));
-        check.set_active(i > 0);
+        // Nothing is ticked until the user chooses.
+        check.set_active(false);
         row.add_suffix(&check);
         row.set_activatable_widget(Some(&check));
         rows.add(&row);
@@ -385,14 +437,19 @@ fn load_thumbnails(rows: Vec<(PathBuf, gtk4::Picture)>) {
     let (tx, rx) = async_channel::bounded(4);
     std::thread::spawn(move || {
         for (i, path) in paths.into_iter().enumerate() {
-            let thumbnail = crate::thumbnails::worker::load_cached_rgba(&path).or_else(|| {
-                let png = crate::visual_search::prepare::prepare_png(&path).ok()?;
-                let image = image::load_from_memory(&png)
-                    .ok()?
-                    .thumbnail(160, 160)
-                    .to_rgba8();
-                let (w, h) = image.dimensions();
-                Some((image.into_raw(), w, h))
+            // Small, so every row's picture is the same modest size.
+            let image = crate::thumbnails::worker::load_cached_rgba(&path)
+                .and_then(|(rgba, w, h)| {
+                    image::RgbaImage::from_raw(w, h, rgba).map(image::DynamicImage::ImageRgba8)
+                })
+                .or_else(|| {
+                    let png = crate::visual_search::prepare::prepare_png(&path).ok()?;
+                    image::load_from_memory(&png).ok()
+                });
+            let thumbnail = image.map(|image| {
+                let small = image.thumbnail(96, 64).to_rgba8();
+                let (w, h) = small.dimensions();
+                (small.into_raw(), w, h)
             });
             if tx.send_blocking((i, thumbnail)).is_err() {
                 return;

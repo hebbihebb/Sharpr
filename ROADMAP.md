@@ -500,6 +500,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - **Fixture with the real model:** the 1080p JPEG (0.9959) and the WebP conversion (0.9970) of a 4K picture group with it and its exact copy. A same-shape 16:9 crop (0.9711) and a mirrored copy (0.9892) fail the pixel check and stay out.
 - **Every vector pair also needs the same aspect ratio,** because a test showed a crop could otherwise chain in through a close copy.
 - **User test, October 14 (`baa007d`): the window never got past its spinner.** Cause: the real library has 5,383 pairs between 0.95 and 0.99 (involving 1,401 pictures), and each pixel check decoded both full-size files, one pair at a time, with no reuse and no way to cancel: up to about 10,000 full decodes. Fixed: each picture's 32×32 version is made once, in parallel, from the thumbnail cache where possible. Closing the window cancels, and the window counts progress.
+- **User test, October 14 (`5044c72`):** it scanned the whole library and ticked the extras. Now it looks among the images in view (the open folder, bucket, or search results), ticks nothing, and offers Select All Extras and Select None.
 - **Every vector match now gets the pixel check,** not only those below 0.99: the library has 1,031 pairs above 0.99, too many to trust the score alone with files headed for the trash. The real-model fixture still groups the 1080p and WebP copies and leaves out the crop and the mirrored copy.
 - **Left for acceptance:** the user reviews groups on the real library, and the thresholds are tuned on those real examples.
 

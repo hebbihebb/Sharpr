@@ -1219,9 +1219,38 @@ fn copies_are_found_and_trashed_only_on_request() {
         row_subtitle(&dialog, "other.png").is_none(),
         "a different picture"
     );
+    // Nothing is ticked at first; the buttons tick the extras or nothing.
+    fn descendants(widget: &gtk4::Widget, out: &mut Vec<gtk4::Widget>) {
+        let mut child = widget.first_child();
+        while let Some(c) = child {
+            out.push(c.clone());
+            descendants(&c, out);
+            child = c.next_sibling();
+        }
+    }
+    let mut all = Vec::new();
+    descendants(&dialog, &mut all);
+    let checks: Vec<gtk4::CheckButton> = all
+        .iter()
+        .filter_map(|w| w.clone().downcast::<gtk4::CheckButton>().ok())
+        .collect();
+    let ticked = || checks.iter().filter(|c| c.is_active()).count();
+    assert_eq!(checks.len(), 2, "one group of two");
+    assert_eq!(ticked(), 0, "nothing is ticked for deletion");
+    let button = |label: &str| {
+        all.iter()
+            .filter_map(|w| w.clone().downcast::<gtk4::Button>().ok())
+            .find(|b| b.label().as_deref() == Some(label))
+            .unwrap()
+    };
+    button("Select All Extras").emit_clicked();
+    assert_eq!(ticked(), 1, "every file but the one to keep");
+    assert!(!checks[0].is_active(), "the keeper stays unticked");
     let settle = std::time::Instant::now();
     pump_until(|| settle.elapsed() > std::time::Duration::from_millis(500));
     screenshot(&window, &root.parent().unwrap().join("copies.png"));
+    button("Select None").emit_clicked();
+    assert_eq!(ticked(), 0);
     assert!(
         root.join("keep copy.png").exists(),
         "nothing moves before confirming"

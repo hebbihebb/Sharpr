@@ -20,7 +20,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use crate::config::FolderMode;
 use crate::library_index::LibraryIndex;
 
 /// At or above this cosine, two images may be the same picture; the aspect
@@ -292,30 +291,19 @@ pub fn identical_elsewhere(index: &LibraryIndex, path: &Path) -> usize {
         .count()
 }
 
-/// Finds every group of copies in the enabled library under `root`, using
+/// Finds every group of copies among `paths` (the images in view), using
 /// the visual-search vectors in `vectors` (empty without the model).
 pub fn find(
     index: &LibraryIndex,
-    root: &Path,
-    disabled: &[PathBuf],
+    paths: &[PathBuf],
     vectors: &HashMap<String, Vec<f32>>,
     canceled: &(dyn Fn() -> bool + Sync),
     progress: &(dyn Fn(usize, usize) + Sync),
 ) -> Result<CopyReport, String> {
-    let paths = crate::model::library::collect_library_image_paths_cancellable(
-        Some(root.to_path_buf()),
-        FolderMode::DrillDown,
-        None,
-        disabled,
-        canceled,
-    );
-    if canceled() {
-        return Err("Canceled".into());
-    }
     let cached = index.cached_fingerprints().map_err(|e| e.to_string())?;
     let mut fingerprints = BTreeMap::new();
     let mut stamps = HashMap::new();
-    for path in &paths {
+    for path in paths {
         let Ok(metadata) = std::fs::metadata(path) else {
             continue;
         };
@@ -687,7 +675,15 @@ mod tests {
         drop(embedder);
         let vectors = store.vectors("m").unwrap();
 
-        let report = find(&index, &root, &[], &vectors, &|| false, &|_, _| {}).unwrap();
+        let paths: Vec<PathBuf> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|e| ["png", "jpg", "webp"].contains(&e.to_str().unwrap()))
+            })
+            .collect();
+        let report = find(&index, &paths, &vectors, &|| false, &|_, _| {}).unwrap();
         for group in &report.groups {
             eprintln!(
                 "group: {:?}",
