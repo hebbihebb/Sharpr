@@ -2957,15 +2957,27 @@ impl SharprWindow {
                     collections_for_sidebar(&state)
                 };
 
-                let dialog = libadwaita::AlertDialog::new(Some("Add to Collection"), None);
-                dialog.add_response("done", "Done");
-                dialog.set_default_response(Some("done"));
-                dialog.set_close_response("done");
-                dialog.set_response_appearance("done", libadwaita::ResponseAppearance::Suggested);
+                // Clicking a bucket only ticks it; nothing is added until
+                // "Add", so a stray click can't add to the wrong one.
+                let dialog = libadwaita::AlertDialog::new(
+                    Some("Add to Collection"),
+                    Some(&format!(
+                        "Tick the buckets for {} {}, then choose Add.",
+                        paths.len(),
+                        if paths.len() == 1 { "image" } else { "images" }
+                    )),
+                );
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("add", "Add");
+                dialog.set_response_enabled("add", false);
+                dialog.set_default_response(Some("add"));
+                dialog.set_close_response("cancel");
+                dialog.set_response_appearance("add", libadwaita::ResponseAppearance::Suggested);
+                let ticks: Rc<RefCell<Vec<(i64, gtk4::CheckButton)>>> = Rc::default();
 
                 let list_box = gtk4::ListBox::new();
                 list_box.add_css_class("boxed-list");
-                list_box.set_selection_mode(gtk4::SelectionMode::Single);
+                list_box.set_selection_mode(gtk4::SelectionMode::None);
 
                 // "New Collection…" entry at top
                 let new_row = gtk4::ListBoxRow::new();
@@ -2982,13 +2994,28 @@ impl SharprWindow {
                     unsafe {
                         row.set_data("collection-id", collection_id);
                     }
+                    let line = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+                    line.set_margin_top(6);
+                    line.set_margin_bottom(6);
+                    line.set_margin_start(12);
+                    line.set_margin_end(12);
+                    let check = gtk4::CheckButton::new();
+                    {
+                        let dialog = dialog.downgrade();
+                        let ticks = ticks.clone();
+                        check.connect_toggled(move |_| {
+                            if let Some(dialog) = dialog.upgrade() {
+                                let any = ticks.borrow().iter().any(|(_, c)| c.is_active());
+                                dialog.set_response_enabled("add", any);
+                            }
+                        });
+                    }
+                    ticks.borrow_mut().push((collection_id, check.clone()));
                     let lbl = gtk4::Label::new(Some(&label));
                     lbl.set_halign(gtk4::Align::Start);
-                    lbl.set_margin_top(8);
-                    lbl.set_margin_bottom(8);
-                    lbl.set_margin_start(12);
-                    lbl.set_margin_end(12);
-                    row.set_child(Some(&lbl));
+                    line.append(&check);
+                    line.append(&lbl);
+                    row.set_child(Some(&line));
                     list_box.append(&row);
                 }
 
@@ -3001,19 +3028,25 @@ impl SharprWindow {
                 let extra = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
                 extra.set_margin_top(6);
                 extra.append(&scroll);
-                let done_shortcut = gtk4::EventControllerKey::new();
-                let dialog_weak = dialog.downgrade();
-                done_shortcut.connect_key_pressed(move |_, key, _, _| {
-                    if key == gtk4::gdk::Key::Return || key == gtk4::gdk::Key::KP_Enter {
-                        if let Some(dialog) = dialog_weak.upgrade() {
-                            dialog.close();
-                        }
-                        return glib::Propagation::Stop;
-                    }
-                    glib::Propagation::Proceed
-                });
-                extra.add_controller(done_shortcut);
                 dialog.set_extra_child(Some(&extra));
+                {
+                    let ticks = ticks.clone();
+                    let paths = paths.clone();
+                    let win_weak = win.downgrade();
+                    dialog.connect_response(None, move |_, response| {
+                        let Some(win) = win_weak.upgrade() else {
+                            return;
+                        };
+                        if response != "add" {
+                            return;
+                        }
+                        for (id, check) in ticks.borrow().iter() {
+                            if check.is_active() {
+                                win.change_collection_tags(*id, paths.clone(), false);
+                            }
+                        }
+                    });
+                }
 
                 let paths_c = paths.clone();
                 let win_weak2 = win.downgrade();
@@ -3069,8 +3102,11 @@ impl SharprWindow {
                         entry.grab_focus();
                         return;
                     }
-                    if let (Some(id), Some(win)) = (coll_id, win_weak2.upgrade()) {
-                        win.change_collection_tags(id, paths_c.clone(), false);
+                    // A bucket row only toggles its tick.
+                    if let Some(id) = coll_id {
+                        if let Some((_, check)) = ticks.borrow().iter().find(|(i, _)| *i == id) {
+                            check.set_active(!check.is_active());
+                        }
                     }
                 });
 

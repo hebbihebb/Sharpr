@@ -834,6 +834,16 @@ fn visual_search_ranks_by_content() {
     assert!(!status.selected.is_visible());
     // Without a selection, "Add to Bucket…" asks which results, then the
     // bucket picker opens.
+    window.create_collection_with_paths("Picked".into(), Vec::new(), Vec::new());
+    pump_until(|| {
+        window
+            .imp()
+            .state
+            .borrow()
+            .collections
+            .iter()
+            .any(|c| c.name == "Picked")
+    });
     filmstrip.clear_multi_selection();
     window.add_search_results_to_bucket();
     pump_until(|| window.visible_dialog().is_some());
@@ -855,7 +865,35 @@ fn visual_search_ranks_by_content() {
                 .is_some_and(|h| h.as_str() == "Add to Collection")
         })
     });
-    window.visible_dialog().unwrap().close();
+    // Clicking a bucket only ticks it; "Add" adds.
+    let picker = window
+        .visible_dialog()
+        .unwrap()
+        .downcast::<libadwaita::AlertDialog>()
+        .unwrap();
+    let mut widget = picker.extra_child();
+    let list = loop {
+        let w = widget.expect("the picker has a list");
+        if let Ok(list) = w.clone().downcast::<gtk4::ListBox>() {
+            break list;
+        }
+        widget = w.first_child();
+    };
+    let members = || {
+        let index = window.imp().state.borrow().library_index.clone().unwrap();
+        index.all_bucket_members().unwrap().len()
+    };
+    let before = members();
+    let row = list
+        .row_at_index(1)
+        .expect("a bucket row after New Collection");
+    list.emit_by_name::<()>("row-activated", &[&row]);
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(300));
+    assert_eq!(members(), before, "a click alone adds nothing");
+    picker.emit_by_name::<()>("response", &[&"add"]);
+    picker.close();
+    pump_until(|| members() > before);
     pump_until(|| window.visible_dialog().is_none());
 
     // A negative word leaves out the most alike images (here 1 of 4) and
