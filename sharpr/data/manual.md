@@ -17,6 +17,7 @@ Choose a folder in the Library sidebar to load its images. Thumbnails decode in 
 | Ctrl + F | Search: describe the images you want; filter words such as 4k, png or 16:9 become chips |
 | Ctrl + B | Add the selected images to a bucket |
 | Ctrl + A | Select all images shown |
+| Ctrl + E | Export the selection as WebP |
 | Ctrl + I | Image info: file, folder, camera, resolution score, buckets |
 | Shift + F10 | Image menu: copies, compare, file actions |
 | F9 | Toggle Library sidebar |
@@ -49,18 +50,11 @@ Duplicates uses perceptual hashes to group visually similar files and loads them
 
 Ctrl-click until exactly two filmstrip images are selected, then right-click one of them and choose **Compare Selected Images**. The images appear as neutral left and right panes. Close Compare to return to the viewer. Missing or corrupt files show an error in their pane.
 
-## Resize Copy
+## Export As WebP
 
-Right-click an image in the filmstrip and choose **Resize Copy…**. Crop Copy and WebP Copy are in the same menu. Shift+F10 or the Menu key opens it for the current image.
+Select images and press Ctrl+E, or right-click → **Export as WebP…**. Choose the folder (**Wallpapers** is one click), lossless or a lossy quality, and optionally **Fit Within** a size such as 3840×2160, which shrinks larger images and never enlarges smaller ones. The export runs in the background: a notification counts progress and can cancel it, keeping the images already finished and leaving no partial file. Each copy is a new file (`name.webp`, `name-1.webp`, …); originals are never changed.
 
-- Width and height start at the displayed, orientation-corrected dimensions.
-- Aspect ratio is locked by default and can be unlocked.
-- Enlargement and reduction use Lanczos resampling.
-- Formats are JPEG, PNG, WebP, and JPEG XL. Quality is disabled for PNG.
-- The default folder is `~/Pictures/Resized`; the chosen folder is remembered.
-- Names use `<name>-resized-<width>x<height>.<ext>` with a numeric suffix when needed.
-
-Resize Copy writes a new file, does not copy embedded metadata, removes partial output after failure, and never changes the source.
+**Crop Copy…** on the right-click menu saves the chosen part of an image as a new lossless WebP in the same folder.
 
 ## Preferences
 

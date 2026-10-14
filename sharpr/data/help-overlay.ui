@@ -59,6 +59,12 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
+                <property name="title">Export the selection as WebP</property>
+                <property name="accelerator">&lt;Control&gt;e</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
                 <property name="title">Duplicate image</property>
                 <property name="accelerator">&lt;Control&gt;d</property>
               </object>

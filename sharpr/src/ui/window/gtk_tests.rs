@@ -485,19 +485,21 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
         Some(sea.clone())
     );
     // The right-click menu opens copies through this entry point (D21).
-    window.present_copy_dialog(crate::ui::filmstrip::CopyKind::Crop, sea.clone());
+    window.present_copy_dialog(crate::ui::filmstrip::CopyKind::Crop, vec![sea.clone()]);
     pump_until(|| window.visible_dialog().is_some());
     let ready = std::time::Instant::now() + std::time::Duration::from_secs(2);
     pump_until(|| std::time::Instant::now() > ready);
     screenshot(&window, &root.parent().unwrap().join("crop-dialog.png"));
     window.visible_dialog().unwrap().close();
-    let output = crate::export::resize_copy(&crate::export::ResizeConfig {
+    let output = crate::export::crop_copy(&crate::export::CropConfig {
         source: sea.clone(),
         destination_dir: root.join("outputs"),
-        target_width: 160,
-        target_height: 120,
-        format: crate::export::ResizeFormat::Webp,
-        quality: 90,
+        rectangle: crate::export::CropRect {
+            x: 0,
+            y: 0,
+            width: 160,
+            height: 120,
+        },
     })
     .unwrap()
     .output;
@@ -1003,5 +1005,77 @@ fn library_overview_counts_the_library() {
         &window,
         &root.parent().unwrap().join("library-overview.png"),
     );
+    window.close();
+}
+
+/// Phase 6: the export dialog opens for the selection, and the background
+/// job writes lossless WebP copies without touching the originals.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn webp_export_runs_in_the_background() {
+    let root = isolated_fixture("export");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut sources = Vec::new();
+    for (name, colour) in [("a.png", [200, 40, 40]), ("b.png", [40, 40, 200])] {
+        image::RgbImage::from_pixel(96, 54, image::Rgb(colour))
+            .save(root.join(name))
+            .unwrap();
+        sources.push(root.join(name));
+    }
+    let originals: Vec<Vec<u8>> = sources.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 2 && window.is_mapped());
+
+    crate::ui::export_dialog::present(&window, sources.clone());
+    pump_until(|| window.visible_dialog().is_some());
+    let dialog = window
+        .visible_dialog()
+        .unwrap()
+        .downcast::<libadwaita::AlertDialog>()
+        .unwrap();
+    assert_eq!(
+        dialog.heading().unwrap().as_str(),
+        "Export 2 Images as WebP"
+    );
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
+    screenshot(&window, &root.parent().unwrap().join("export-dialog.png"));
+    // Cancel: an export from the dialog would go to the real Pictures folder,
+    // which an isolated test must never touch.
+    dialog.close();
+    pump_until(|| window.visible_dialog().is_none());
+
+    let out = root.parent().unwrap().join("export-out");
+    window.start_webp_export(
+        sources.clone(),
+        crate::export::batch::WebpOptions {
+            destination: out.clone(),
+            lossless: true,
+            quality: 90,
+            fit: Some((48, 48)),
+        },
+    );
+    pump_until(|| out.join("a.webp").exists() && out.join("b.webp").exists());
+    let exported = image::open(out.join("a.webp")).unwrap();
+    assert_eq!((exported.width(), exported.height()), (48, 27), "fitted");
+    for (source, original) in sources.iter().zip(&originals) {
+        assert_eq!(&std::fs::read(source).unwrap(), original);
+    }
     window.close();
 }

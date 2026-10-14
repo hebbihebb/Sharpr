@@ -621,38 +621,148 @@ impl SharprWindow {
         }
     }
 
-    /// Opens Crop, WebP or Resize Copy for `source`, the image the user
-    /// right-clicked (decision D21).
-    pub fn present_copy_dialog(&self, kind: crate::ui::filmstrip::CopyKind, source: PathBuf) {
-        use crate::ui::filmstrip::CopyKind;
-        let state = self.imp().state.clone();
-        match kind {
-            CopyKind::Crop => crate::ui::crop_dialog::present_crop_dialog(self, source, state),
-            CopyKind::Webp => {
-                let weak = self.downgrade();
-                let refresh = Rc::new(move |path| {
-                    if let Some(window) = weak.upgrade() {
-                        window.show_created_copy(path);
-                    }
-                });
-                crate::ui::resize_dialog::present_webp_dialog(self, source, state, refresh);
+    /// Exports `sources` as WebP in the background (ROADMAP Phase 6). A toast
+    /// counts progress and can cancel; cancelling keeps finished images and
+    /// leaves no partial file. The summary opens the folder, or lists
+    /// failures.
+    pub fn start_webp_export(
+        &self,
+        sources: Vec<PathBuf>,
+        options: crate::export::batch::WebpOptions,
+    ) {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let total = sources.len();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicUsize::new(0));
+        let operation = self.imp().state.borrow().ops.add("Exporting WebP…");
+        let toast = libadwaita::Toast::new(&format!("Exporting {total} images as WebP…"));
+        toast.set_timeout(0);
+        toast.set_button_label(Some("Cancel"));
+        {
+            let cancel = cancel.clone();
+            toast.connect_button_clicked(move |_| cancel.store(true, Ordering::Relaxed));
+        }
+        self.add_toast(toast.clone());
+        let finished = Rc::new(std::cell::Cell::new(false));
+        let (tx, rx) = async_channel::bounded(1);
+        let destination = options.destination.clone();
+        {
+            let (cancel, done) = (cancel.clone(), done.clone());
+            std::thread::spawn(move || {
+                // Export yields to browsing: lowest CPU and I/O priority.
+                #[cfg(not(test))]
+                crate::fingerprint::lower_thread_priority();
+                let report = crate::export::batch::export_webp(
+                    &sources,
+                    &options,
+                    &|| cancel.load(Ordering::Relaxed),
+                    &|finished, _| done.store(finished, Ordering::Relaxed),
+                );
+                let _ = tx.send_blocking(report);
+            });
+        }
+        {
+            let toast = toast.clone();
+            let done = done.clone();
+            let finished = finished.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+                if finished.get() {
+                    return glib::ControlFlow::Break;
+                }
+                let finished = done.load(Ordering::Relaxed);
+                toast.set_title(&format!(
+                    "Exporting {} of {total} images as WebP…",
+                    finished + 1
+                ));
+                glib::ControlFlow::Continue
+            });
+        }
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(report) = rx.recv().await else {
+                operation.fail("Export worker stopped");
+                return;
+            };
+            finished.set(true);
+            toast.dismiss();
+            operation.complete();
+            let Some(win) = weak.upgrade() else { return };
+            let written = report.written.len();
+            let place = destination
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| destination.display().to_string());
+            let mut message = if report.canceled {
+                format!("Export stopped: {written} of {total} images exported to {place}")
+            } else {
+                format!(
+                    "Exported {written} {} to {place}",
+                    if written == 1 { "image" } else { "images" }
+                )
+            };
+            if !report.failed.is_empty() {
+                message.push_str(&format!("; {} couldn't be exported", report.failed.len()));
             }
-            CopyKind::Resize => {
-                let weak = self.downgrade();
-                let state_for_refresh = state.clone();
-                let refresh = Rc::new(move |output: PathBuf| {
-                    let folder = output.parent().map(Path::to_path_buf);
-                    let current = state_for_refresh.borrow().library.current_folder.clone();
-                    if folder == current {
-                        if let (Some(window), Some(folder)) = (weak.upgrade(), folder) {
-                            if let Some(callback) = window.imp().open_folder_cb.borrow().as_ref() {
-                                callback(folder);
-                            }
+            let summary = libadwaita::Toast::new(&message);
+            summary.set_timeout(8);
+            if report.failed.is_empty() {
+                if written > 0 {
+                    summary.set_button_label(Some("Show"));
+                    let weak = win.downgrade();
+                    let first = report.written[0].clone();
+                    summary.connect_button_clicked(move |_| {
+                        if let Some(win) = weak.upgrade() {
+                            win.show_created_copy(first.clone());
                         }
-                    }
+                    });
+                }
+            } else {
+                summary.set_button_label(Some("Details"));
+                let weak = win.downgrade();
+                let failed = report.failed.clone();
+                summary.connect_button_clicked(move |_| {
+                    let Some(win) = weak.upgrade() else { return };
+                    let body = failed
+                        .iter()
+                        .take(20)
+                        .map(|(path, error)| {
+                            format!(
+                                "{}: {error}",
+                                path.file_name().unwrap_or_default().to_string_lossy()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let more = failed.len().saturating_sub(20);
+                    let body = if more > 0 {
+                        format!("{body}\n…and {more} more")
+                    } else {
+                        body
+                    };
+                    let alert = libadwaita::AlertDialog::new(
+                        Some("Images That Couldn't Be Exported"),
+                        Some(&body),
+                    );
+                    alert.add_response("close", "Close");
+                    alert.present(Some(&win));
                 });
-                crate::ui::resize_dialog::present_resize_dialog(self, source, state, refresh);
             }
+            win.add_toast(summary);
+        });
+    }
+
+    /// Opens Crop Copy for the image the user right-clicked, or WebP
+    /// export for the images the action covers (decision D21).
+    pub fn present_copy_dialog(&self, kind: crate::ui::filmstrip::CopyKind, sources: Vec<PathBuf>) {
+        use crate::ui::filmstrip::CopyKind;
+        match kind {
+            CopyKind::Crop => {
+                if let Some(source) = sources.into_iter().next() {
+                    let state = self.imp().state.clone();
+                    crate::ui::crop_dialog::present_crop_dialog(self, source, state);
+                }
+            }
+            CopyKind::Export => crate::ui::export_dialog::present(self, sources),
         }
     }
 
@@ -2755,9 +2865,9 @@ impl SharprWindow {
         // Crop, WebP and Resize Copy from the right-click menu.
         {
             let window_weak = self.downgrade();
-            filmstrip.connect_copy_requested(move |kind, source| {
+            filmstrip.connect_copy_requested(move |kind, sources| {
                 if let Some(window) = window_weak.upgrade() {
-                    window.present_copy_dialog(kind, source);
+                    window.present_copy_dialog(kind, sources);
                 }
             });
         }
@@ -3232,6 +3342,24 @@ impl SharprWindow {
                 Some(gtk4::ShortcutTrigger::parse_string("<Control>b").unwrap()),
                 Some(gtk4::CallbackAction::new(move |_, _| {
                     if filmstrip_b.request_add_selection_to_bucket() {
+                        glib::Propagation::Stop
+                    } else {
+                        glib::Propagation::Proceed
+                    }
+                })),
+            ));
+        }
+
+        // Ctrl+E — export the selection as WebP.
+        {
+            let filmstrip_e = filmstrip.clone();
+            shortcuts.add_shortcut(gtk4::Shortcut::new(
+                Some(gtk4::ShortcutTrigger::parse_string("<Control>e").unwrap()),
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if text_input_has_focus(widget) {
+                        return glib::Propagation::Proceed;
+                    }
+                    if filmstrip_e.request_export_selection() {
                         glib::Propagation::Stop
                     } else {
                         glib::Propagation::Proceed

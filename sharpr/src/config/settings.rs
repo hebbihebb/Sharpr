@@ -58,6 +58,8 @@ pub struct AppSettings {
     pub active_library_id: Option<String>,
     /// Optional custom folder for resized copies.
     pub resize_output_dir: Option<PathBuf>,
+    /// The last choices in the WebP export dialog (ROADMAP Phase 6).
+    pub webp_export: WebpExportSettings,
     /// Maximum thumbnail entries to retain in memory.
     pub thumbnail_cache_max: i32,
     settings: gio::Settings,
@@ -118,6 +120,7 @@ impl Default for AppSettings {
             active_library_id: Some(library.id.clone()),
             libraries: vec![library],
             resize_output_dir: None,
+            webp_export: WebpExportSettings::default(),
             thumbnail_cache_max: 500,
             settings: settings_for_app(),
         }
@@ -154,6 +157,14 @@ impl AppSettings {
             libraries,
             active_library_id,
             resize_output_dir: string_path(&settings, "resize-output-dir"),
+            webp_export: WebpExportSettings {
+                dir: string_path(&settings, "webp-export-dir"),
+                lossless: settings.boolean("webp-export-lossless"),
+                quality: settings.int("webp-export-quality").clamp(1, 100) as u8,
+                fit: settings.boolean("webp-export-fit"),
+                fit_width: settings.int("webp-export-fit-width").clamp(16, 16_383) as u32,
+                fit_height: settings.int("webp-export-fit-height").clamp(16, 16_383) as u32,
+            },
             thumbnail_cache_max: settings.int("thumbnail-cache-max").clamp(100, 2000),
             settings,
         }
@@ -315,6 +326,29 @@ impl AppSettings {
             .set_int("thumbnail-cache-max", self.thumbnail_cache_max);
     }
 
+    pub fn set_webp_export(&mut self, export: WebpExportSettings) {
+        let dir = export
+            .dir
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let _ = self.settings.set_string("webp-export-dir", &dir);
+        let _ = self
+            .settings
+            .set_boolean("webp-export-lossless", export.lossless);
+        let _ = self
+            .settings
+            .set_int("webp-export-quality", i32::from(export.quality));
+        let _ = self.settings.set_boolean("webp-export-fit", export.fit);
+        let _ = self
+            .settings
+            .set_int("webp-export-fit-width", export.fit_width as i32);
+        let _ = self
+            .settings
+            .set_int("webp-export-fit-height", export.fit_height as i32);
+        self.webp_export = export;
+    }
+
     pub fn set_resize_output_dir(&mut self, path: Option<PathBuf>) {
         self.resize_output_dir = path;
         let value = self
@@ -328,6 +362,39 @@ impl AppSettings {
 
 fn library_by_id<'a>(libraries: &'a [LibraryConfig], id: &str) -> Option<&'a LibraryConfig> {
     libraries.iter().find(|library| library.id == id)
+}
+
+/// The WebP export dialog's remembered choices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebpExportSettings {
+    /// `None` means the Wallpapers folder.
+    pub dir: Option<PathBuf>,
+    pub lossless: bool,
+    pub quality: u8,
+    pub fit: bool,
+    pub fit_width: u32,
+    pub fit_height: u32,
+}
+
+impl Default for WebpExportSettings {
+    fn default() -> Self {
+        Self {
+            dir: None,
+            lossless: true,
+            quality: 90,
+            fit: false,
+            fit_width: 3840,
+            fit_height: 2160,
+        }
+    }
+}
+
+/// `~/Pictures/Wallpapers`, the default home of exports and crop copies.
+pub fn wallpapers_dir() -> PathBuf {
+    dirs::picture_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join("Pictures")))
+        .unwrap_or_else(|| PathBuf::from("Pictures"))
+        .join("Wallpapers")
 }
 
 fn string_path(settings: &gio::Settings, key: &str) -> Option<PathBuf> {
@@ -510,6 +577,7 @@ mod tests {
             libraries: vec![library],
             active_library_id: Some("library-1".into()),
             resize_output_dir: Some(PathBuf::from("/tmp/resized")),
+            webp_export: WebpExportSettings::default(),
             thumbnail_cache_max: -5,
             settings: settings.clone(),
         };

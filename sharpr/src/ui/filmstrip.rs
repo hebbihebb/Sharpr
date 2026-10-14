@@ -23,15 +23,16 @@ type SearchActivateCallback = Box<dyn Fn(&str) + 'static>;
 type SearchDismissedCallback = Box<dyn Fn() + 'static>;
 type TrashRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type AddToCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
-type CopyRequestedCallback = Box<dyn Fn(CopyKind, PathBuf) + 'static>;
+type CopyRequestedCallback = Box<dyn Fn(CopyKind, Vec<PathBuf>) + 'static>;
 type InfoRequestedCallback = Box<dyn Fn(PathBuf) + 'static>;
 
-/// Copy dialogs offered on an image's right-click menu (decision D21).
+/// Copies offered on an image's right-click menu (decision D21).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyKind {
+    /// Crop the clicked image.
     Crop,
-    Webp,
-    Resize,
+    /// Export the clicked image, or the selection, as WebP (Phase 6).
+    Export,
 }
 type ActionSelectionChangedCallback = Box<dyn Fn(usize) + 'static>;
 type RemoveFromCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
@@ -82,13 +83,12 @@ fn build_context_menu_model(in_collection: bool, is_multi: bool) -> gio::Menu {
         image.append_item(&menu_item("Compare Selected Images", "win.compare", None));
     } else {
         image.append_item(&menu_item("Crop Copy\u{2026}", "filmstrip.crop-copy", None));
-        image.append_item(&menu_item("WebP Copy\u{2026}", "filmstrip.webp-copy", None));
-        image.append_item(&menu_item(
-            "Resize Copy\u{2026}",
-            "filmstrip.resize-copy",
-            None,
-        ));
     }
+    image.append_item(&menu_item(
+        "Export as WebP\u{2026}",
+        "filmstrip.export-webp",
+        Some("<Control>e"),
+    ));
     menu.append_section(None, &image);
 
     let sec2 = gio::Menu::new();
@@ -1095,22 +1095,19 @@ impl FilmstripPane {
 
         for (name, kind) in [
             ("crop-copy", CopyKind::Crop),
-            ("webp-copy", CopyKind::Webp),
-            ("resize-copy", CopyKind::Resize),
+            ("export-webp", CopyKind::Export),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let w = self.downgrade();
             action.connect_activate(move |_, _| {
                 let Some(widget) = w.upgrade() else { return };
-                let path = widget
-                    .imp()
-                    .menu_ctx
-                    .borrow()
-                    .as_ref()
-                    .map(|c| c.clicked_path.clone());
-                if let Some(path) = path {
+                let paths = widget.imp().menu_ctx.borrow().as_ref().map(|c| match kind {
+                    CopyKind::Crop => vec![c.clicked_path.clone()],
+                    CopyKind::Export => c.action_paths.clone(),
+                });
+                if let Some(paths) = paths {
                     if let Some(cb) = widget.imp().copy_requested_cb.borrow().as_ref() {
-                        cb(kind, path);
+                        cb(kind, paths);
                     }
                 }
             });
@@ -1894,7 +1891,7 @@ impl FilmstripPane {
         *self.imp().info_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_copy_requested<F: Fn(CopyKind, PathBuf) + 'static>(&self, f: F) {
+    pub fn connect_copy_requested<F: Fn(CopyKind, Vec<PathBuf>) + 'static>(&self, f: F) {
         *self.imp().copy_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
@@ -1971,6 +1968,18 @@ impl FilmstripPane {
     /// full multi-selection if more than one item is selected, otherwise the
     /// single currently focused image.
     /// Opens the bucket picker for the current selection (Ctrl+B).
+    /// Opens WebP export for the current selection (Ctrl+E).
+    pub fn request_export_selection(&self) -> bool {
+        let paths = self.selected_paths_for_action();
+        if paths.is_empty() {
+            return false;
+        }
+        if let Some(cb) = self.imp().copy_requested_cb.borrow().as_ref() {
+            cb(CopyKind::Export, paths);
+        }
+        true
+    }
+
     pub fn request_add_selection_to_bucket(&self) -> bool {
         let paths = self.selected_paths_for_action();
         if paths.is_empty() {

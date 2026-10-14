@@ -1,13 +1,18 @@
 use std::mem::MaybeUninit;
 use std::path::Path;
 use std::ptr;
+#[cfg(test)]
 use std::time::Instant;
 
 use image::DynamicImage;
+use jpegxl_rs::decoder_builder;
+#[cfg(test)]
 use jpegxl_rs::encode::{EncoderFrame, EncoderResult, EncoderSpeed};
+#[cfg(test)]
+use jpegxl_rs::encoder_builder;
 use jpegxl_rs::image::ToDynamic;
+#[cfg(test)]
 use jpegxl_rs::parallel::threads_runner::ThreadsRunner;
-use jpegxl_rs::{decoder_builder, encoder_builder};
 use jpegxl_sys::common::types::{JxlBool, JxlDataType, JxlEndianness, JxlPixelFormat};
 use jpegxl_sys::decode::{
     JxlDecoderCloseInput, JxlDecoderCreate, JxlDecoderDestroy, JxlDecoderGetBasicInfo,
@@ -170,6 +175,9 @@ pub fn image_dimensions(path: &Path) -> Result<(u32, u32), String> {
     }
 }
 
+/// Builds JPEG XL test files; Sharpr itself no longer writes JPEG XL
+/// (`ROADMAP.md` Phase 6).
+#[cfg(test)]
 pub fn encode_path(
     image: &DynamicImage,
     output: &Path,
@@ -259,6 +267,7 @@ pub fn encode_path(
     Ok(())
 }
 
+#[cfg(test)]
 fn speed_for_effort(effort: u8) -> EncoderSpeed {
     match effort.clamp(1, 10) {
         1 => EncoderSpeed::Lightning,

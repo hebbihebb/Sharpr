@@ -13,7 +13,7 @@ Sharpr is for people with thousands of downloaded images, generated artwork, and
 - **Filter by typing.** Words such as `4k`, `below 4k`, `png`, `jxl`, `16:9`, `portrait`, or `landscape` become removable chips: `mountains 4k png 16:9` finds 4K PNG mountains in 16:9. Search covers the current folder or bucket, with a switch for the whole library.
 - **Keep images in buckets.** Buckets are hand-picked groups, nested if you like, and they never move or copy your files. A bucket remembers each image by its content, so it keeps it after the file is moved or renamed outside Sharpr.
 - **Compare two images** side by side.
-- **Make copies safely.** Crop, WebP, and resized copies (JPEG, PNG, WebP, or JPEG XL) are always new, uniquely named files.
+- **Prepare wallpapers.** Crop a copy, or batch-export a selection as WebP (lossless by default, optionally fitted within a size such as 3840×2160) in the background. Every copy is a new, uniquely named file.
 - **Find duplicates**, and move files to the system trash after you confirm.
 - **View** JPEG, PNG, WebP, JPEG XL, GIF, TIFF, and BMP, with zoom, fullscreen, and an Info panel for file details and EXIF.
 
@@ -79,6 +79,8 @@ Indexing then starts on its own. Preferences → Library → Visual Search shows
 | Start typing, or Ctrl+F | Search |
 | Alt+← / Alt+→ | Previous / next image |
 | Ctrl+B | Add the selection to a bucket |
+| Ctrl+A | Select all images shown |
+| Ctrl+E | Export the selection as WebP |
 | Ctrl+I | Image info |
 | Shift+F10 or Menu | Image menu: copies, Compare, file actions |
 | Ctrl+Scroll / Ctrl+0 | Zoom / fit the image |

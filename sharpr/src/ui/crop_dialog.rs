@@ -94,7 +94,7 @@ fn build_dialog(
     });
     content.append(&overlay);
     let explanation = gtk4::Label::new(Some(
-        "Drag to move the crop. Position and size are in displayed image pixels. Saves a new PNG.",
+        "Drag to move the crop. Position and size are in displayed image pixels. Saves a new lossless WebP.",
     ));
     explanation.set_wrap(true);
     explanation.add_css_class("dim-label");
@@ -222,9 +222,10 @@ fn build_dialog(
         &state
             .borrow()
             .settings
-            .resize_output_dir
+            .webp_export
+            .dir
             .clone()
-            .unwrap_or_else(crate::export::default_resize_output_dir)
+            .unwrap_or_else(crate::config::settings::wallpapers_dir)
             .to_string_lossy(),
     );
     let choose = gtk4::Button::with_label("Choose…");
@@ -249,7 +250,7 @@ fn build_dialog(
     let group = libadwaita::PreferencesGroup::new();
     group.add(&destination);
     content.append(&group);
-    let save = gtk4::Button::with_label("Create PNG Copy");
+    let save = gtk4::Button::with_label("Create WebP Copy");
     save.add_css_class("suggested-action");
     save.set_halign(gtk4::Align::End);
     save.set_sensitive(false);
@@ -267,10 +268,12 @@ fn build_dialog(
             destination_dir: folder.clone(),
             rectangle: selection.get(),
         };
-        state
-            .borrow_mut()
-            .settings
-            .set_resize_output_dir(Some(folder));
+        {
+            let mut st = state.borrow_mut();
+            let mut export = st.settings.webp_export.clone();
+            export.dir = (folder != crate::config::settings::wallpapers_dir()).then_some(folder);
+            st.settings.set_webp_export(export);
+        }
         let operation = state.borrow().ops.add("Creating crop copy…");
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {

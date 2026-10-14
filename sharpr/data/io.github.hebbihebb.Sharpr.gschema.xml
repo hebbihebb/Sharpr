@@ -31,6 +31,36 @@
       <summary>Active library identifier</summary>
       <description>The id of the currently selected library.</description>
     </key>
+    <key name="webp-export-dir" type="s">
+      <default>""</default>
+      <summary>Folder for WebP exports and crop copies</summary>
+      <description>If empty, ~/Pictures/Wallpapers.</description>
+    </key>
+    <key name="webp-export-lossless" type="b">
+      <default>true</default>
+      <summary>Export WebP losslessly</summary>
+      <description>Lossless keeps every pixel; otherwise the quality setting applies.</description>
+    </key>
+    <key name="webp-export-quality" type="i">
+      <default>90</default>
+      <summary>Lossy WebP quality</summary>
+      <description>From 1 to 100, used when lossless export is off.</description>
+    </key>
+    <key name="webp-export-fit" type="b">
+      <default>false</default>
+      <summary>Fit exports within a size</summary>
+      <description>Shrink larger images to fit within the fit width and height; never enlarge.</description>
+    </key>
+    <key name="webp-export-fit-width" type="i">
+      <default>3840</default>
+      <summary>Fit width</summary>
+      <description>Width of the box exports are fitted within.</description>
+    </key>
+    <key name="webp-export-fit-height" type="i">
+      <default>2160</default>
+      <summary>Fit height</summary>
+      <description>Height of the box exports are fitted within.</description>
+    </key>
     <key name="resize-output-dir" type="s">
       <default>""</default>
       <summary>Folder for resized copies</summary>
