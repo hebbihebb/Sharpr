@@ -17,6 +17,9 @@ use super::runtime::{Mode, Server};
 use super::similarity;
 use super::store::Store;
 
+/// The error `Searcher::prepare` returns when a newer search took over.
+pub const SUPERSEDED: &str = "Search superseded";
+
 /// Results are shown this many at a time (`ROADMAP.md` Phase 5).
 pub const PAGE: usize = 200;
 
@@ -166,9 +169,11 @@ impl Searcher {
         Self { requests: tx }
     }
 
-    /// Blocks until the query is embedded. Errors explain why visual search
-    /// can't run, in words for the user.
-    pub fn prepare(&self, text: &str) -> Result<Prepared, String> {
+    /// Waits until the query is embedded, or until `superseded` says a newer
+    /// search replaced this one, so a slow or stalled model never holds up
+    /// newer searches and filters. Errors explain why visual search can't
+    /// run, in words for the user.
+    pub fn prepare(&self, text: &str, superseded: &dyn Fn() -> bool) -> Result<Prepared, String> {
         let (reply, response) = mpsc::channel();
         self.requests
             .send(Request {
@@ -176,9 +181,18 @@ impl Searcher {
                 reply,
             })
             .map_err(|_| "Visual search stopped".to_string())?;
-        response
-            .recv()
-            .map_err(|_| "Visual search stopped".to_string())?
+        loop {
+            match response.recv_timeout(Duration::from_millis(50)) {
+                Ok(result) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) if superseded() => {
+                    return Err(SUPERSEDED.into())
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("Visual search stopped".into())
+                }
+            }
+        }
     }
 }
 
@@ -493,7 +507,7 @@ mod tests {
         );
         // Tests run with an isolated data folder that has no model.
         if super::super::files::locate().is_err() {
-            let error = searcher.prepare("beach").err().unwrap();
+            let error = searcher.prepare("beach", &|| false).err().unwrap();
             assert!(error.contains("EmbeddingGemma 2") || error.contains("llama-server"));
         }
     }

@@ -53,6 +53,8 @@ pub struct Server {
 const START_TIMEOUT: Duration = Duration::from_secs(120);
 /// Long enough for one image on a slow, busy CPU.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+/// A query takes about 15 ms; anything near this means a stalled server.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// A graphics card `llama-server` can run on, from `--list-devices`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -257,26 +259,28 @@ impl Server {
         let content = serde_json::json!([
             {"type": "text", "text": format!("{}{text}", super::QUERY_PROMPT)}
         ]);
-        self.embed(content)
+        self.embed(content, QUERY_TIMEOUT)
     }
 
     /// The vector of an image prepared by `prepare::prepare_png`.
     pub fn embed_png(&mut self, png: &[u8]) -> Result<Vec<f32>, String> {
         let url = format!("data:image/png;base64,{}", base64(png));
-        self.embed(serde_json::json!([
-            {"type": "image_url", "image_url": {"url": url}}
-        ]))
+        self.embed(
+            serde_json::json!([
+                {"type": "image_url", "image_url": {"url": url}}
+            ]),
+            REQUEST_TIMEOUT,
+        )
     }
 
-    fn embed(&mut self, content: serde_json::Value) -> Result<Vec<f32>, String> {
+    fn embed(&mut self, content: serde_json::Value, timeout: Duration) -> Result<Vec<f32>, String> {
         let body = serde_json::json!({
             "model": "embeddinggemma-2",
             "input": [{"content": content}],
             "encoding_format": "float",
         });
         let body = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
-        let (status, response) =
-            self.request("POST", "/v1/embeddings", Some(&body), REQUEST_TIMEOUT)?;
+        let (status, response) = self.request("POST", "/v1/embeddings", Some(&body), timeout)?;
         if status != 200 {
             let text = String::from_utf8_lossy(&response);
             return Err(format!(
@@ -380,7 +384,8 @@ fn server_log(mode: Mode) -> Stdio {
 }
 
 /// One HTTP/1.1 exchange with a loopback server, closing the connection
-/// afterwards.
+/// afterwards. `timeout` bounds the whole exchange, so a server that
+/// trickles its answer can't stretch it.
 pub fn http_request(
     port: u16,
     key: &str,
@@ -390,6 +395,7 @@ pub fn http_request(
     timeout: Duration,
 ) -> Result<(u16, Vec<u8>), String> {
     let error = |e: std::io::Error| format!("llama-server connection: {e}");
+    let deadline = Instant::now() + timeout;
     let mut stream =
         TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), timeout).map_err(error)?;
     stream.set_read_timeout(Some(timeout)).map_err(error)?;
@@ -403,7 +409,20 @@ pub fn http_request(
     stream.write_all(head.as_bytes()).map_err(error)?;
     stream.write_all(body).map_err(error)?;
     let mut response = Vec::new();
-    stream.read_to_end(&mut response).map_err(error)?;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or("llama-server took too long to answer")?;
+        stream.set_read_timeout(Some(left)).map_err(error)?;
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => response.extend_from_slice(&buffer[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(error(e)),
+        }
+    }
     parse_response(&response)
 }
 
@@ -553,6 +572,31 @@ mod tests {
         assert!(recorded.contains("SHARPR_KEEP_ME=yes"));
         assert!(is_runtime_setting("LLAMA_ARG_HF_REPO") && !is_runtime_setting("PATH"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_trickling_server_cannot_stretch_a_request() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\n");
+            // One byte every 100 ms: each read succeeds, the whole never ends.
+            for _ in 0..50 {
+                std::thread::sleep(Duration::from_millis(100));
+                if stream.write_all(b"x").is_err() {
+                    return;
+                }
+            }
+        });
+        let started = Instant::now();
+        let result = http_request(port, "k", "GET", "/", None, Duration::from_millis(500));
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

@@ -561,7 +561,10 @@ impl SharprWindow {
                     let visual = (!search_terms(&text).is_empty())
                         .then_some(searcher.as_ref())
                         .flatten()
-                        .map(|searcher| searcher.prepare(&text));
+                        .map(|searcher| searcher.prepare(&text, &superseded));
+                    if superseded() {
+                        return Err("Search superseded".into());
+                    }
                     let name_only = !matches!(visual, Some(Ok(_)));
                     let name_matches: std::collections::HashSet<PathBuf> =
                         match_candidates(&candidates, &text).into_iter().collect();

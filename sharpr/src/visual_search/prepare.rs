@@ -42,6 +42,22 @@ pub fn prepare_png(path: &Path) -> Result<Vec<u8>, String> {
     Ok(png)
 }
 
+/// Whether a full decode of `width`×`height` stays within the budget, at up
+/// to 8 bytes per pixel (16-bit RGBA, the most a decode here produces).
+fn fits_decode_budget(width: u32, height: u32) -> bool {
+    u64::from(width) * u64::from(height) * 8 <= MAX_DECODE_BYTES
+}
+
+/// Formats the library shows but indexing can't decode yet; reported as
+/// unsupported rather than unreadable (Phase 5 audit, finding 13).
+fn unsupported_format(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "avif" => Some("AVIF"),
+        "heic" | "heif" => Some("HEIC"),
+        _ => None,
+    }
+}
+
 /// The size that fits `width`×`height` within `edge`×`edge`, keeping the
 /// aspect ratio and never enlarging.
 pub fn fit_within(width: u32, height: u32, edge: u32) -> (u32, u32) {
@@ -59,9 +75,23 @@ pub fn fit_within(width: u32, height: u32, edge: u32) -> (u32, u32) {
 
 fn decode_upright(path: &Path) -> Result<DynamicImage, String> {
     let error = |e: String| format!("Could not read {}: {e}", path.display());
-    // libjxl already applies the image's orientation.
+    // libjxl already applies the image's orientation. It decodes the
+    // whole image, outside the limits below, so check its size first.
     if crate::jxl::is_jxl_path(path) {
+        let (width, height) = crate::jxl::image_dimensions(path).map_err(error)?;
+        if !fits_decode_budget(width, height) {
+            return Err(error(format!(
+                "{width}×{height} is too large to index (over {} GB to decode)",
+                MAX_DECODE_BYTES >> 30
+            )));
+        }
         return crate::jxl::decode_path(path).map_err(error);
+    }
+    if let Some(format) = unsupported_format(path) {
+        return Err(format!(
+            "{format} images can't be indexed yet: {}",
+            path.display()
+        ));
     }
     let image = decode_jpeg_reduced(path)
         .map(Ok)
@@ -125,6 +155,20 @@ fn decode_jpeg_reduced(path: &Path) -> Option<DynamicImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn huge_images_and_unsupported_formats_are_turned_away_before_decoding() {
+        assert!(fits_decode_budget(12_000, 8_000));
+        assert!(!fits_decode_budget(60_000, 60_000));
+        assert_eq!(unsupported_format(Path::new("/l/a.AVIF")), Some("AVIF"));
+        assert_eq!(unsupported_format(Path::new("/l/a.heif")), Some("HEIC"));
+        assert_eq!(unsupported_format(Path::new("/l/a.jpg")), None);
+        let error = prepare_png(Path::new("/l/missing.avif")).unwrap_err();
+        assert!(
+            error.starts_with("AVIF images can't be indexed yet"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn images_fit_within_the_edge_without_enlarging() {
