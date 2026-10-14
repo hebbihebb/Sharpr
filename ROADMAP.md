@@ -324,8 +324,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 ## Phase 5: Visual Search And Tag Retirement
 
-**Status (October 13): implemented and committed; not deployed or accepted.** Phase 3 said go (D22).
-- **Units:** indexing and search (`58ac0ef`), tag retirement (`78a0639`), and packaging (installer script and Flatpak module).
+**Status (October 14): deployed in `c176934` with the model installed; the user is testing; not accepted.** Phase 3 said go (D22). The Library Overview (scope item below) is planned, not built.
+- **Units:** indexing and search (`58ac0ef`), tag retirement (`78a0639`), packaging (`b07a226`), and GPU indexing (`c176934`).
 - **Verified in tests:**
   - A GTK test with the real model indexes synthetic images in the background and ranks them by content, file-name matches first.
   - Without a model, search falls back to file names and says so.
@@ -340,9 +340,9 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - **Match strength** is calibrated on the judged sample: the fifth-best score after subtracting each image's closeness to generic prompts. It separates 28 of 30 real queries from 13 of 15 absent subjects. It isn't judged below 50 indexed images.
 - **Decision for the user:** whether file names should still match, first, alongside visual results (implemented that way for now, so names like `seedvr2-…` stay findable).
 - **Left for acceptance:**
-  - Install the model and index the real library overnight.
-  - Measure browsing during indexing against the 10% limit with the real build.
-  - The user's own search check.
+  - The Library Overview (scope below).
+  - Measure browsing during GPU indexing against the 10% limit with the real build.
+  - The user's own search check. Indexing of the real library started on October 14; after the first minutes, 1,860 of 5,854 images were indexed with no failures.
 
 **Outcome:** Words typed in the search box find images by content. Tags disappear from the interface without losing any data.
 
@@ -366,6 +366,16 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
   - The app manages a local child process and talks to it only over authenticated loopback.
   - The user supplies the model files at a documented path; the app downloads nothing.
   - Native builds are supported. The Flatpak is supported only if Phase 3 proved it feasible.
+- **Library Overview (added October 14 at the user's request).** Show the user how big the library is and what the indexes hold.
+  - A window from Main menu → Library → Library Overview…, built from standard Libadwaita rows, updating live while open. Its groups:
+    - **Library:** total images and size, a breakdown by format, the count below 4K, and disabled folders with how many images they hide.
+    - **Fingerprints:** images fingerprinted, and exact-copy groups.
+    - **Visual search:** indexed, waiting, and couldn't be read; the device in use, speed, and time left; the model, the vector file's size, and when the last pass finished.
+    - **Buckets:** buckets, images, and members that can't be found.
+  - Actions: "Rebuild Index…" (confirm, delete the vector file, reindex) and "Open Model Folder". Not included (the user's choice): opening failed or unindexed images in the filmstrip.
+  - While indexing runs, the existing background-activity indicator in the header shows a progress ring; its tooltip gives the count, the device, and the time left.
+  - Preferences keeps only settings. The visual-search status line moves into the overview.
+  - All counting runs off the GTK thread.
 - **Retire tags (D1, D2).**
   - Remove the tag popover and editor, tag pills, and Ctrl+T. The Tags page and the page switcher were already removed on 2026-10-13 (D20).
   - Offer each manual tag that no bucket uses (`nsfw`, `nude`, `mountain`, `nature`, `comics`, …) as a new bucket.
@@ -378,6 +388,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - A missing or mismatched model shows a clear message, and name search and filters keep working.
 - Deleting the vector file loses nothing else.
 - After retirement, bucket counts are unchanged, offered conversions create correct buckets, and tag row counts are unchanged.
+- The Library Overview's counts match the index files, update while it is open, and never block the GTK thread. The header ring appears only while indexing runs.
 
 **Later (optional):** Find similar, per-folder indexing, scheduling controls, and incremental updates when files change.
 
@@ -418,9 +429,16 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 **Scope:**
 
-1. **Find out why the current duplicate finder is inconsistent.** Suspects are incomplete perceptual-hash coverage, the threshold, and orientation. Confirm the cause before fixing it.
+1. **Replace the current, inconsistent perceptual-hash finder** if the vector method in item 3 passes this phase's acceptance. Only if it doesn't, find the cause of the inconsistency (suspects: incomplete hash coverage, the threshold, orientation) and fix that instead.
 2. **Exact copies:** group by the Phase 4 fingerprint.
-3. **Resized and converted copies:** a perceptual hash covering the whole enabled library, with the threshold tuned on the user's real examples. Crops and near-identical variants are not grouped.
+3. **Resized and converted copies: use the Phase 5 visual-search vectors.** They already exist for the whole enabled library, and comparing every pair is a few seconds on a worker.
+   - **Evidence (October 14, the judged 1,000-image sample, from file metadata only):**
+     - 60 pairs scored a cosine of at least 0.99. 41 of them were identical files, which fingerprints already catch. The other 19 were copies the fingerprint misses: 15 converted to another format, 3 resized, and 1 re-encoded.
+     - There is a clear gap below that: 13 pairs between 0.95 and 0.99, then 372 pairs at 0.90 (merely similar pictures).
+   - **Rule:**
+     - At 0.99 or higher, group as copies.
+     - Between 0.95 and 0.99, group only if the aspect ratio matches (which excludes crops) and a pixel check at thumbnail size agrees.
+     - Tune both thresholds on the user's real examples. Crops and near-identical variants are not grouped (D14).
 4. **Review groups.** Each group shows resolution, format, and size, and suggests keeping the highest resolution. Trash only after confirmation, and report trash failures.
 
 **Acceptance:**
@@ -459,6 +477,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - **One version:** a single version source for `build.rs`, metainfo, and the bundle name.
 - **Flatpak:**
   - Build it from clean source pinned to a commit (a Git source, or a sync using `--delete-excluded`).
+  - GPU indexing: also bundle a Vulkan build of llama.cpp. Today the Flatpak indexes on the processor only; the native build uses the GPU (Phase 5).
   - Document or fix the `home:ro` limits on move and rename.
 - **Desktop integration:**
   - Make "Open with Sharpr" work: handle opened files, or drop `%F` and `MimeType`.
@@ -491,6 +510,14 @@ Optional and unordered. Pick something up only when a phase touches that area, o
 - Make Flatpak `home` access writable for move and rename, if the user needs it.
 - Guard the startup legacy-bucket migration (`migrate_legacy_collections_to_tags`) with a backup and count check, or retire it, before old databases are treated as a supported upgrade (audit finding 12).
 - Keep thumbnail generations through to completion: a failure or success from an old request must not mark a newer view's row (audit finding 7).
+
+### Considered, Not Planned
+
+Ideas weighed and set aside, with the reason, so they aren't proposed again without new facts.
+
+- **Running the embedding model on another machine** (a LAN server or an internet API, October 14). It would break the offline invariant and would need a decision-log entry. Images would leave the machine, and a remote model can't prove which files it runs, so mismatched vectors could mix into the index. GPU indexing on the laptop covered the speed need. If it ever comes back: LAN only, opt-in, and checked against a reference image.
+- **Shorter vectors** (256 of the 768 numbers, Matryoshka truncation). The whole index is about 18 MB, too small for the saving to be worth the lost accuracy.
+- **Indexing file and folder names together with each image** (interleaved input). It would change the vectors the user judged in Phase 3, and most file names say nothing about the picture. Separate file-name matching covers it.
 
 ## Out Of Scope
 
