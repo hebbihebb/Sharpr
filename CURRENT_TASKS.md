@@ -2,7 +2,7 @@
 
 ## Active Milestone
 
-**Phase 5: visual search and tag retirement** (`ROADMAP.md`). All units are committed and deployed in `c176934` (October 14), waiting on the user's test. The user is still to decide whether file-name matches stay first in results; they stay for now.
+**Phase 5: visual search and tag retirement** (`ROADMAP.md`). All units are committed and deployed in `c176934` (October 14). The user tested search while indexing ran: "working really well, I am totally impressed and happy". Acceptance still needs the Library Overview and the browsing-speed check. The user is still to decide whether file-name matches stay first in results; they stay for now.
 
 Plan, one commit per unit:
 1. **Runtime and index (GTK-free `src/visual_search/`).** Done with unit 2 in one commit (committed, verified, not deployed).
