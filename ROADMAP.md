@@ -341,7 +341,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - **Decision for the user:** whether file names should still match, first, alongside visual results (implemented that way for now, so names like `seedvr2-…` stay findable).
 - **Left for acceptance:**
   - The Library Overview (scope below).
-  - Measure browsing during GPU indexing against the 10% limit with the real build.
+  - Browsing during GPU indexing: the user reported it "feels smooth" (October 14, manual check). A measured comparison against the 10% limit is still open.
+  - Search into buckets (scope below).
   - The user's own search check. Indexing of the real library started on October 14; after the first minutes, 1,860 of 5,854 images were indexed with no failures.
 
 **Outcome:** Words typed in the search box find images by content. Tags disappear from the interface without losing any data.
@@ -376,6 +377,13 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
   - While indexing runs, the existing background-activity indicator in the header shows a progress ring; its tooltip gives the count, the device, and the time left.
   - Preferences keeps only settings. The visual-search status line moves into the overview.
   - All counting runs off the GTK thread.
+- **Search into buckets (added October 14 at the user's request).** Today, turning results into a bucket means Ctrl-clicking each image (no select-all, no range).
+  - **Search into bucket (the user's idea):** one action in the search status line, "Add to Bucket…", turns the current results into a new bucket or adds them to an existing one.
+    - Because results run from strong to weak (the closest 200), the dialog says how many images will be added and offers the strong matches by default. It can also use everything shown, or only the selection when there is one.
+    - The bucket is a snapshot. It never updates itself; saved or smart searches stay out (D5).
+    - Several searches can fill one bucket, such as `tower`, then `plane`. A single query `tower and plane` instead finds images showing both.
+  - **Selection tools:** Shift-click selects a range (pick down to the last good result), Ctrl+A selects all, and Ctrl-click drops images. The status line shows "N selected".
+  - All membership writes run off the GTK thread, through `buckets::add_to_bucket`.
 - **Retire tags (D1, D2).**
   - Remove the tag popover and editor, tag pills, and Ctrl+T. The Tags page and the page switcher were already removed on 2026-10-13 (D20).
   - Offer each manual tag that no bucket uses (`nsfw`, `nude`, `mountain`, `nature`, `comics`, …) as a new bucket.
@@ -389,6 +397,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - Deleting the vector file loses nothing else.
 - After retirement, bucket counts are unchanged, offered conversions create correct buckets, and tag row counts are unchanged.
 - The Library Overview's counts match the index files, update while it is open, and never block the GTK thread. The header ring appears only while indexing runs.
+- From one search, a new bucket with the chosen results takes at most three actions. A second search adds to the same bucket, and no image is added twice.
 
 **Later (optional):** Find similar, per-folder indexing, scheduling controls, and incremental updates when files change.
 
