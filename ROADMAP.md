@@ -73,7 +73,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 ## Phase 1: Data-Safety Repairs
 
-**Status:** accepted by the user on October 13, 2026 (build `66f3d94`); `main` is at `1924346`. The audit fixes of October 13 (`e9c142f`) are deployed for the next test.
+**Status:** accepted by the user on October 13, 2026 (build `66f3d94`); `main` is at `1924346`. The audit fixes of October 13 (`e9c142f`) have been in every deployed build since.
 
 **Outcome:** No Sharpr action can silently lose tags, bucket membership, or image files. Every defect below is verified in the code and exists at committed `HEAD`.
 
@@ -124,8 +124,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - **RSS peak:** 3,383 MB (baseline 2,345 MB). The session applied 14,608 thumbnails (baseline about 8,000), plus the viewer jumps above.
 
 **Follow-ups (next):**
-- ~~Show large images in the viewer at screen size first, with full resolution only when zooming in.~~ Done October 13 (committed, not deployed). For a 12,000 × 8,000 JPEG, the longest main-loop step fell from 0.8–2.2 s to under 40 ms.
-- Time the pool wait and the query separately in the folder-open read. Fix the cause of the multi-second wait.
+- ~~Show large images in the viewer at screen size first, with full resolution only when zooming in.~~ Done October 13, deployed since `bf12e07`. For a 12,000 × 8,000 JPEG, the longest main-loop step fell from 0.8–2.2 s to under 40 ms.
+- Time the pool wait and the query separately in the folder-open read. **Instrumented** (`8cb13f5`, `index.pool_wait`) and deployed; still needs one real session's log to find the cause of the multi-second wait.
 - Re-measure on a release build and compare with both logs.
 
 **Outcome:** In a library of 5,000–50,000 images, the user finds images quickly with one search box, typed filters, and a quiet interface, without stalling the filmstrip. Decisions: D5–D7, D12, D16–D18.
@@ -285,14 +285,14 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 **Outcome:** Bucket membership survives moves and renames made outside Sharpr (D3), keeps inheritance (D4), and stops depending on tags. Every image gets a content fingerprint, which Phase 5 and Phase 7 reuse.
 
-**Status (October 13): done, committed and verified, not deployed.** All acceptance criteria are met in tests.
+**Status (October 14): deployed and in daily use since `bf12e07`; not yet formally accepted.** All acceptance criteria are met in tests. On the user's first launch, the migration ran on the live data: 151 members across the original 6 buckets, matching the copy test exactly. The user has since created 3 more buckets.
 - **Unit 1, fingerprints:** a background pass at nice 19 and idle I/O; progress shows in Preferences.
 - **Unit 2, membership:** the `bucket_members` table and the migration. Every reader and editor has switched over.
 - **Unit 3, re-linking:** after each pass, members follow moved and edited files, and missing ones are counted.
 - **Acceptance on a copy of the live databases:** all 6 buckets were identical before and after, image for image, including Art › Diffusion. The counts: Model 95, CSR 44, upgrade? 4, Art 3, Trash? 3, Diffusion 2, none missing. All 7,718 tag rows were unchanged, the backup was written first, and the index was stamped version 2.
 - **Moved files:** a file moved and renamed outside Sharpr stays in its bucket after the next pass (unit and GTK tests). A deleted file counts as missing and is kept. Removing an image from Diffusion leaves it in Art when Art holds it directly.
 - **Rollback note:** older builds refuse the version-2 index. Going back means restoring the `before-bucket-membership-*` backup.
-- **Waiting on the user:** deployment, and their check on the real library.
+- **Waiting on the user:** formal acceptance.
 
 **Scope:**
 
@@ -326,7 +326,10 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 ## Phase 5: Visual Search And Tag Retirement
 
-**Status (October 14): deployed in `c176934` with the model installed; the user is testing; not accepted.** Phase 3 said go (D22). The Library Overview (scope item below) is planned, not built.
+**Status (October 14): every scope item is built and committed; the core is deployed in `c176934`; not accepted.** Phase 3 said go (D22).
+- **Deployed in `c176934`** with the model installed: visual search, GPU indexing, and tag retirement.
+- **Committed, not deployed:** the audit fixes, the Library Overview, search into buckets, and negative search. The user chose not to deploy them yet (October 14).
+- **The user's hands-on verdict on `c176934`** (October 14): Sharpr "seems to run even better than it did before this recent work started, regardless of indexing work".
 - **Units:** indexing and search (`58ac0ef`), tag retirement (`78a0639`), packaging (`b07a226`), and GPU indexing (`c176934`).
 - **Verified in tests:**
   - A GTK test with the real model indexes synthetic images in the background and ranks them by content, file-name matches first.
@@ -342,10 +345,9 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - **Match strength** is calibrated on the judged sample: the fifth-best score after subtracting each image's closeness to generic prompts. It separates 28 of 30 real queries from 13 of 15 absent subjects. It isn't judged below 50 indexed images.
 - **Decision for the user:** whether file names should still match, first, alongside visual results (implemented that way for now, so names like `seedvr2-…` stay findable).
 - **Left for acceptance:**
-  - The Library Overview (scope below).
-  - Browsing during GPU indexing: the user reported it "feels smooth" (October 14, manual check). A measured comparison against the 10% limit is still open.
-  - Search into buckets (scope below).
-  - The user's own search check. Indexing of the real library started on October 14; after the first minutes, 1,860 of 5,854 images were indexed with no failures.
+  - Deploy the undeployed work and have the user check it.
+  - Browsing during indexing: the user reports it smooth, and the app better than before (manual checks). A measured comparison against the 10% limit is still open, unless the user accepts the manual checks.
+  - The real library is fully indexed: 5,178 vectors, no failures.
 
 **Outcome:** Words typed in the search box find images by content. Tags disappear from the interface without losing any data.
 
@@ -660,7 +662,7 @@ Optional and unordered. Pick something up only when a phase touches that area, o
 - Guard the startup legacy-bucket migration (`migrate_legacy_collections_to_tags`) with a backup and count check, or retire it, before old databases are treated as a supported upgrade (audit finding 12).
 - Keep thumbnail generations through to completion: a failure or success from an old request must not mark a newer view's row (audit finding 7).
 - Index AVIF and HEIC/HEIF for visual search, with a bounded decoder on the worker (Phase 5 audit, finding 13). The live library has none; weigh the Flatpak cost before adding decoders.
-- GTK test harness: `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs); make it deterministic. The screenshot timeout is solved (October 14): a window the compositor isn't drawing gives no frame, so screenshots are now best-effort and never fail a test.
+- GTK test harness: `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs); make it deterministic. The screenshot timeout is solved (October 14): a window the compositor isn't drawing (covered, for example by a fullscreen video while the user works) gives no frame, so screenshots are now best-effort and never fail a test.
 
 ### Considered, Not Planned
 

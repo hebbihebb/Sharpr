@@ -5,6 +5,7 @@
 **Phase 5: visual search and tag retirement** (`ROADMAP.md`). Deployed in `c176934` on October 14 and in use; not yet accepted.
 - **Built:** indexing and search (`58ac0ef`), tag retirement (`78a0639`), packaging (`b07a226`), and GPU indexing (`c176934`).
 - **The user's test so far:**
+  - Overall (October 14): Sharpr "seems to run even better than it did before this recent work started, regardless of indexing work".
   - Search while indexing: "working really well, I am totally impressed and happy".
   - Browsing during GPU indexing "feels smooth". This is a manual check; the measured 10% check is still open.
   - The real library is fully indexed: 5,178 vectors (identical copies share one) and 0 failures. It has no AVIF or HEIC files.
