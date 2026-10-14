@@ -386,7 +386,10 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
     - Several searches can fill one bucket, such as `tower`, then `plane`. A single query `tower and plane` instead finds images showing both.
   - **Selection tools:** Shift-click selects a range (pick down to the last good result), Ctrl+A selects all, and Ctrl-click drops images. The status line shows "N selected".
   - All membership writes run off the GTK thread, through `buckets::add_to_bucket`.
-- **Audit fixes (next; audit of October 14, `docs/archive/audit-2026-10-14-phase5.md`).** 17 findings, with 0 critical. Claude reviewed them and agrees with all 17. Fix them in this order:
+- **Audit fixes (done October 14, committed and verified, not deployed; audit `docs/archive/audit-2026-10-14-phase5.md`).** 17 findings, with 0 critical. Claude reviewed them and agrees with all 17.
+  - Fixed in `df82623` (offline), `aab73e0` (vector integrity), `ea7aa90` (failures), `b15b151` (tag conversion and scope), `6dddb45` (search stability and status line), and `cf438a9` (query deadlines, JPEG XL budget, unsupported formats).
+  - Every fix has a regression test. `./check.sh` passes 190 tests; with the real model, the indexing service and all four GTK tests pass.
+  - The planned order, kept for reference:
   1. **Offline guarantee (finding 3, high).** Pass `--offline` to every managed `llama-server`, and strip inherited `LLAMA_ARG_*` and other remote-model environment variables. Today an inherited `LLAMA_ARG_MODEL_URL` could make the child download, and even replace the installed model. Also correct the Flatpak docs: they disable HTTPS and UI fetches, not every network capability.
   2. **Vector integrity:**
      - **Finding 1, high.** Keep each file's stamp in the indexing queue. Recheck it before decoding and before saving a vector or failure. A file changed mid-pass waits for a fresh fingerprint and is never saved under the old one.

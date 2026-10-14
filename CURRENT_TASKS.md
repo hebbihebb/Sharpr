@@ -9,7 +9,7 @@
   - Browsing during GPU indexing "feels smooth". This is a manual check; the measured 10% check is still open.
   - The real library is fully indexed: 5,178 vectors (identical copies share one) and 0 failures. It has no AVIF or HEIC files.
 - **Next, in order:**
-  1. Fix the findings of the Phase 5 audit, `docs/archive/audit-2026-10-14-phase5.md` (Codex `gpt-6.1-sol`, 17 findings). The order is in ROADMAP Phase 5, "Audit fixes".
+  1. ~~Fix the Phase 5 audit's findings~~: done October 14 in six commits (`df82623`..`cf438a9`), verified, and **not deployed**. Deploying needs the user's approval.
   2. The Library Overview.
   3. Search into buckets, with selection tools.
   4. Negative search (`tower -water`).
