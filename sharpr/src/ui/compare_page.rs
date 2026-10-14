@@ -36,8 +36,15 @@ impl ComparePage {
         let Some(knockout) = Knockout::new(paths) else {
             return;
         };
+        let all: Vec<PathBuf> = knockout
+            .candidates()
+            .into_iter()
+            .map(|(_, p)| p.to_path_buf())
+            .collect();
         *self.imp().knockout.borrow_mut() = Some(knockout);
         self.imp().shown.replace([None, None]);
+        self.imp().thumbs.borrow_mut().clear();
+        self.load_thumbnails(all);
         let view = &self.imp().view;
         view.set_mode(Mode::SideBySide);
         view.set_zoom(None);
@@ -62,6 +69,19 @@ impl ComparePage {
 
     pub fn view(&self) -> CompareView {
         self.imp().view.clone()
+    }
+
+    /// Shows image `number` on `side`, as the side's picker does.
+    pub fn choose(&self, side: Side, number: usize) {
+        let changed = self
+            .imp()
+            .knockout
+            .borrow_mut()
+            .as_mut()
+            .is_some_and(|k| k.choose(side, number));
+        if changed {
+            self.refresh();
+        }
     }
 
     /// Dismisses one side; the next image takes its place.
@@ -158,12 +178,7 @@ impl ComparePage {
             match &pair[side] {
                 Some(path) => {
                     if imp.shown.borrow()[side].as_ref() != Some(path) {
-                        label.set_text(
-                            &path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_default(),
-                        );
+                        label.set_text("…");
                     }
                     label.set_tooltip_text(Some(&path.display().to_string()));
                     dismiss.set_visible(pair[1].is_some());
@@ -180,6 +195,7 @@ impl ComparePage {
                 self.load(side, path);
             }
         }
+        self.sync_pickers();
         // A lone survivor fills the canvas.
         if pair[1].is_none() {
             if imp.view.flipped() {
@@ -188,6 +204,92 @@ impl ComparePage {
             imp.mode_buttons.borrow()[2].set_active(true);
         }
         self.update_badges();
+    }
+
+    /// Fills each side's picker with the images not dismissed, showing the
+    /// one on that side.
+    fn sync_pickers(&self) {
+        let imp = self.imp();
+        let knockout = imp.knockout.borrow();
+        let Some(k) = knockout.as_ref() else { return };
+        let entries: Vec<(usize, PathBuf)> = k
+            .candidates()
+            .into_iter()
+            .map(|(i, p)| (i, p.to_path_buf()))
+            .collect();
+        let labels: Vec<String> = entries.iter().map(|(i, p)| picker_label(*i, p)).collect();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        imp.syncing.set(true);
+        for (side, which) in [Side::Left, Side::Right].into_iter().enumerate() {
+            let picker = &imp.pickers[side];
+            // Replace the list only when the images left changed; a new
+            // choice just moves the selection.
+            if imp.picker_entries.borrow()[side] != entries || picker.model().is_none() {
+                imp.picker_entries.borrow_mut()[side] = entries.clone();
+                picker.set_model(Some(&gtk4::StringList::new(&labels)));
+            }
+            if let Some(position) = k
+                .shown(which)
+                .and_then(|n| entries.iter().position(|(i, _)| *i == n))
+            {
+                picker.set_selected(position as u32);
+            }
+        }
+        imp.syncing.set(false);
+    }
+
+    /// Cached thumbnails for the pickers, on one worker; images without
+    /// one simply show none.
+    fn load_thumbnails(&self, paths: Vec<PathBuf>) {
+        let generation = self.imp().load_generation.get();
+        let (tx, rx) = async_channel::bounded(8);
+        std::thread::spawn(move || {
+            for path in paths {
+                let Some((rgba, w, h)) = crate::thumbnails::worker::load_cached_rgba(&path) else {
+                    continue;
+                };
+                let Some(image) = image::RgbaImage::from_raw(w, h, rgba) else {
+                    continue;
+                };
+                let small = image::DynamicImage::ImageRgba8(image)
+                    .thumbnail(96, 64)
+                    .to_rgba8();
+                if tx.send_blocking((path, small)).is_err() {
+                    return;
+                }
+            }
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok((path, small)) = rx.recv().await {
+                let Some(page) = weak.upgrade() else { return };
+                let imp = page.imp();
+                if imp.load_generation.get() != generation {
+                    return;
+                }
+                let (w, h) = small.dimensions();
+                let texture: gdk4::Texture = gdk4::MemoryTexture::new(
+                    w as i32,
+                    h as i32,
+                    gdk4::MemoryFormat::R8g8b8a8,
+                    &glib::Bytes::from_owned(small.into_raw()),
+                    w as usize * 4,
+                )
+                .upcast();
+                imp.bound
+                    .borrow_mut()
+                    .retain(|(bound, picture)| match picture.upgrade() {
+                        Some(picture) => {
+                            if *bound == path {
+                                picture.set_paintable(Some(&texture));
+                            }
+                            true
+                        }
+                        None => false,
+                    });
+                imp.thumbs.borrow_mut().insert(path, texture);
+            }
+        });
     }
 
     /// In Flip mode, the badge of the image not on screen is dimmed.
@@ -245,15 +347,21 @@ impl Default for ComparePage {
     }
 }
 
+/// Size and format; the picker beside it names the image.
 fn summary(path: &Path) -> String {
+    let size = crate::export::oriented_source_dimensions(path)
+        .map(|(w, h)| format!("{w} × {h}"))
+        .unwrap_or_else(|_| "size unknown".into());
+    format!("{size} · {}", compare_asset_format(path))
+}
+
+/// "3 · name.jpg": the image's number in the selection, from 1.
+fn picker_label(number: usize, path: &Path) -> String {
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
-    let size = crate::export::oriented_source_dimensions(path)
-        .map(|(w, h)| format!("{w} × {h}"))
-        .unwrap_or_else(|_| "size unknown".into());
-    format!("{name} · {size} · {}", compare_asset_format(path))
+    format!("{} · {name}", number + 1)
 }
 
 struct DecodedImage {
@@ -291,6 +399,15 @@ mod imp {
         pub mode_buttons: RefCell<Vec<gtk4::ToggleButton>>,
         pub close_cb: RefCell<Option<CloseCallback>>,
         pub load_generation: Cell<u64>,
+        /// Each side's picker of the images not dismissed.
+        pub pickers: [gtk4::DropDown; 2],
+        /// What each picker lists: (number, path), in its order.
+        pub picker_entries: RefCell<[Vec<(usize, PathBuf)>; 2]>,
+        /// Set while the pickers are refilled, so that isn't a choice.
+        pub syncing: Cell<bool>,
+        pub thumbs: RefCell<std::collections::HashMap<PathBuf, gdk4::Texture>>,
+        /// Picker rows on screen, to show thumbnails that arrive later.
+        pub bound: RefCell<Vec<(PathBuf, glib::WeakRef<gtk4::Picture>)>>,
     }
 
     impl Default for ComparePage {
@@ -314,6 +431,14 @@ mod imp {
                 mode_buttons: RefCell::new(Vec::new()),
                 close_cb: RefCell::new(None),
                 load_generation: Cell::new(0),
+                pickers: [
+                    gtk4::DropDown::new(None::<gtk4::gio::ListModel>, None::<gtk4::Expression>),
+                    gtk4::DropDown::new(None::<gtk4::gio::ListModel>, None::<gtk4::Expression>),
+                ],
+                picker_entries: RefCell::new([Vec::new(), Vec::new()]),
+                syncing: Cell::new(false),
+                thumbs: RefCell::new(std::collections::HashMap::new()),
+                bound: RefCell::new(Vec::new()),
             }
         }
     }
@@ -484,10 +609,111 @@ fn build(page: &ComparePage) {
                 page.dismiss(which);
             }
         });
+        let picker = &imp.pickers[side];
+        build_picker(page, picker, side, which);
+        badge.append(picker);
         badge.append(label);
         badge.append(dismiss);
         imp.root.add_overlay(badge);
     }
+}
+
+/// A side's picker: the button names the image shown; the list shows
+/// every image not dismissed, numbered, with its thumbnail. Typing filters.
+fn build_picker(page: &ComparePage, picker: &gtk4::DropDown, side: usize, which: Side) {
+    picker.set_tooltip_text(Some("Choose the image for this side"));
+    picker.set_expression(Some(gtk4::PropertyExpression::new(
+        gtk4::StringObject::static_type(),
+        None::<gtk4::Expression>,
+        "string",
+    )));
+    picker.set_enable_search(true);
+    let button = gtk4::SignalListItemFactory::new();
+    button.connect_setup(|_, item| {
+        let label = gtk4::Label::new(None);
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+        label.set_max_width_chars(28);
+        label.set_xalign(0.0);
+        if let Some(item) = item.downcast_ref::<gtk4::ListItem>() {
+            item.set_child(Some(&label));
+        }
+    });
+    button.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        let text = item
+            .item()
+            .and_downcast::<gtk4::StringObject>()
+            .map(|o| o.string().to_string())
+            .unwrap_or_default();
+        if let Some(label) = item.child().and_downcast::<gtk4::Label>() {
+            label.set_text(&text);
+        }
+    });
+    picker.set_factory(Some(&button));
+    let rows = gtk4::SignalListItemFactory::new();
+    rows.connect_setup(|_, item| {
+        let line = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        let picture = gtk4::Picture::new();
+        picture.set_size_request(64, 40);
+        picture.set_can_shrink(true);
+        picture.set_content_fit(gtk4::ContentFit::Cover);
+        let label = gtk4::Label::new(None);
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+        label.set_max_width_chars(36);
+        label.set_xalign(0.0);
+        line.append(&picture);
+        line.append(&label);
+        if let Some(item) = item.downcast_ref::<gtk4::ListItem>() {
+            item.set_child(Some(&line));
+        }
+    });
+    let weak = page.downgrade();
+    rows.connect_bind(move |_, item| {
+        let (Some(page), Some(item)) = (weak.upgrade(), item.downcast_ref::<gtk4::ListItem>())
+        else {
+            return;
+        };
+        let Some(line) = item.child() else { return };
+        let (Some(picture), Some(label)) = (
+            line.first_child().and_downcast::<gtk4::Picture>(),
+            line.last_child().and_downcast::<gtk4::Label>(),
+        ) else {
+            return;
+        };
+        let text = item
+            .item()
+            .and_downcast::<gtk4::StringObject>()
+            .map(|o| o.string().to_string())
+            .unwrap_or_default();
+        label.set_text(&text);
+        let imp = page.imp();
+        // The filtered list's rows are found by their label.
+        let path = imp.picker_entries.borrow()[side]
+            .iter()
+            .find(|(i, p)| picker_label(*i, p) == text)
+            .map(|(_, p)| p.clone());
+        let Some(path) = path else { return };
+        picture.set_paintable(imp.thumbs.borrow().get(&path));
+        imp.bound.borrow_mut().push((path, picture.downgrade()));
+    });
+    picker.set_list_factory(Some(&rows));
+    let weak = page.downgrade();
+    picker.connect_selected_notify(move |picker| {
+        let Some(page) = weak.upgrade() else { return };
+        if page.imp().syncing.get() {
+            return;
+        }
+        let number = page.imp().picker_entries.borrow()[side]
+            .get(picker.selected() as usize)
+            .map(|(i, _)| *i);
+        // Applied after this signal: refilling a drop-down from inside its
+        // own selection change makes GTK loop.
+        if let Some(number) = number {
+            glib::idle_add_local_once(move || page.choose(which, number));
+        }
+    });
 }
 
 #[cfg(test)]

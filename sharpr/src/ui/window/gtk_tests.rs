@@ -1363,6 +1363,18 @@ fn compare_narrows_five_images_to_one() {
         focus.is_ancestor(&page) || focus == *page.upcast_ref::<gtk4::Widget>(),
         "focus is on {focus:?}"
     );
+    // Each side's picker shows any image not dismissed; picking the other
+    // side's image swaps them.
+    let pickers = page.imp().pickers.clone();
+    assert_eq!(pickers[1].model().unwrap().n_items(), 5);
+    pickers[1].set_selected(3);
+    pump_until(|| page.imp().shown.borrow()[1].as_ref() == Some(&paths[3]));
+    pickers[0].set_selected(3);
+    pump_until(|| page.imp().shown.borrow()[0].as_ref() == Some(&paths[3]));
+    assert_eq!(page.imp().shown.borrow()[1].as_ref(), Some(&paths[0]));
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
+    screenshot(&window, &root.parent().unwrap().join("compare-pickers.png"));
     let none = gdk4::ModifierType::empty();
     for key in [
         gdk4::Key::bracketleft,

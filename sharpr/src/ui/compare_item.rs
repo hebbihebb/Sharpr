@@ -29,93 +29,142 @@ pub enum Side {
 }
 
 /// Choosing the best of several (decision D8): two images on screen at a
-/// time; dismissing one brings in the next contender on its side. Whoever
-/// hasn't been dismissed when Compare closes stays selected.
+/// time; dismissing one brings in the next contender on its side, and
+/// either side can show any image not yet dismissed. Whoever hasn't been
+/// dismissed when Compare closes stays selected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Knockout {
-    left: PathBuf,
-    right: Option<PathBuf>,
-    waiting: std::collections::VecDeque<PathBuf>,
-    dismissed: Vec<PathBuf>,
-    total: usize,
+    /// Every image, in filmstrip order; positions are their numbers.
+    order: Vec<PathBuf>,
+    left: usize,
+    right: Option<usize>,
+    /// Dismissed images, latest last, with the side each left from.
+    dismissed: Vec<(usize, Side)>,
 }
 
 impl Knockout {
     /// `None` for fewer than two images.
     pub fn new(paths: Vec<PathBuf>) -> Option<Self> {
-        let total = paths.len();
-        let mut waiting: std::collections::VecDeque<PathBuf> = paths.into();
-        let left = waiting.pop_front()?;
-        let right = Some(waiting.pop_front()?);
-        Some(Self {
-            left,
-            right,
-            waiting,
+        (paths.len() >= 2).then(|| Self {
+            order: paths,
+            left: 0,
+            right: Some(1),
             dismissed: Vec::new(),
-            total,
         })
     }
 
     pub fn left(&self) -> &Path {
-        &self.left
+        &self.order[self.left]
     }
 
     /// `None` once a single image is left.
     pub fn right(&self) -> Option<&Path> {
-        self.right.as_deref()
+        self.right.map(|i| self.order[i].as_path())
+    }
+
+    /// The number (from 0) of the image on `side`.
+    pub fn shown(&self, side: Side) -> Option<usize> {
+        match side {
+            Side::Left => Some(self.left),
+            Side::Right => self.right,
+        }
+    }
+
+    fn is_dismissed(&self, i: usize) -> bool {
+        self.dismissed.iter().any(|(d, _)| *d == i)
+    }
+
+    /// The images not dismissed, with their numbers, in order.
+    pub fn candidates(&self) -> Vec<(usize, &Path)> {
+        self.order
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.is_dismissed(*i))
+            .map(|(i, p)| (i, p.as_path()))
+            .collect()
+    }
+
+    /// The first image neither on screen nor dismissed.
+    fn next_waiting(&self) -> Option<usize> {
+        (0..self.order.len())
+            .find(|i| *i != self.left && Some(*i) != self.right && !self.is_dismissed(*i))
     }
 
     /// Dismisses one side; the next contender, if any, takes its place.
     /// Returns false when only one image was left to dismiss.
     pub fn dismiss(&mut self, side: Side) -> bool {
-        let Some(right) = self.right.take() else {
+        let Some(right) = self.right else {
             return false;
         };
-        let next = self.waiting.pop_front();
         match side {
             Side::Left => {
-                self.dismissed
-                    .push(std::mem::replace(&mut self.left, right));
-                self.right = next;
-                // Keep the newcomer on the side that was dismissed.
-                if let Some(newcomer) = self.right.take() {
-                    self.right = Some(std::mem::replace(&mut self.left, newcomer));
+                self.dismissed.push((self.left, Side::Left));
+                match self.next_waiting() {
+                    Some(next) => self.left = next,
+                    None => {
+                        self.left = right;
+                        self.right = None;
+                    }
                 }
             }
             Side::Right => {
-                self.dismissed.push(right);
-                self.right = next;
+                self.dismissed.push((right, Side::Right));
+                self.right = self.next_waiting();
             }
+        }
+        true
+    }
+
+    /// Shows image `number` on `side`. The image on the other side swaps
+    /// over; a dismissed image can't be chosen.
+    pub fn choose(&mut self, side: Side, number: usize) -> bool {
+        if number >= self.order.len() || self.is_dismissed(number) {
+            return false;
+        }
+        let Some(right) = self.right else {
+            return false;
+        };
+        match side {
+            Side::Left if number == right => (self.left, self.right) = (right, Some(self.left)),
+            Side::Left => self.left = number,
+            Side::Right if number == self.left => {
+                (self.left, self.right) = (right, Some(self.left))
+            }
+            Side::Right => self.right = Some(number),
         }
         true
     }
 
     /// Brings back the last dismissed image on the side it left.
     pub fn undo(&mut self) -> bool {
-        let Some(back) = self.dismissed.pop() else {
+        let Some((back, side)) = self.dismissed.pop() else {
             return false;
         };
-        if let Some(right) = self.right.take() {
-            self.waiting.push_front(right);
+        match (side, self.right) {
+            (Side::Left, Some(_)) => self.left = back,
+            (Side::Left, None) => {
+                self.right = Some(self.left);
+                self.left = back;
+            }
+            (Side::Right, _) => self.right = Some(back),
         }
-        self.right = Some(back);
         true
     }
 
-    /// Images not dismissed, on screen or still waiting.
+    /// Images not dismissed, in order.
     pub fn survivors(&self) -> Vec<PathBuf> {
-        std::iter::once(self.left.clone())
-            .chain(self.right.clone())
-            .chain(self.waiting.iter().cloned())
+        self.candidates()
+            .into_iter()
+            .map(|(_, p)| p.to_path_buf())
             .collect()
     }
 
     pub fn remaining(&self) -> usize {
-        self.total - self.dismissed.len()
+        self.order.len() - self.dismissed.len()
     }
 
     pub fn total(&self) -> usize {
-        self.total
+        self.order.len()
     }
 }
 
@@ -171,6 +220,34 @@ mod tests {
             (k.left(), k.right()),
             (Path::new("e"), Some(Path::new("d")))
         );
+    }
+
+    #[test]
+    fn either_side_can_show_any_image_not_dismissed() {
+        let mut k = Knockout::new(paths(&["a", "b", "c", "d"])).unwrap();
+        assert!(k.choose(Side::Right, 3));
+        assert_eq!(
+            (k.left(), k.right()),
+            (Path::new("a"), Some(Path::new("d")))
+        );
+        // Choosing the other side's image swaps them.
+        assert!(k.choose(Side::Left, 3));
+        assert_eq!(
+            (k.left(), k.right()),
+            (Path::new("d"), Some(Path::new("a")))
+        );
+        assert!(k.dismiss(Side::Right)); // a goes; b is the next waiting
+        assert_eq!(k.right(), Some(Path::new("b")));
+        assert!(
+            !k.choose(Side::Left, 0),
+            "a dismissed image can't come back this way"
+        );
+        assert_eq!(
+            k.candidates().iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert!(k.undo());
+        assert_eq!(k.right(), Some(Path::new("a")));
     }
 
     #[test]
