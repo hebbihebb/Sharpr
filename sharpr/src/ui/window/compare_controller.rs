@@ -17,6 +17,11 @@ impl SharprWindow {
         if let Some(page) = self.imp().compare_page.borrow().as_ref() {
             page.start(paths);
         }
+        // The side panels make way, which also keeps the filmstrip's file
+        // actions out of reach.
+        if self.imp().compare_panels.get().is_none() {
+            self.imp().compare_panels.set(Some(self.hide_side_panels()));
+        }
         if let Some(stack) = self.imp().content_stack.borrow().as_ref() {
             stack.set_transition_type(gtk4::StackTransitionType::SlideLeft);
             stack.set_visible_child_name("compare");
@@ -46,6 +51,9 @@ impl SharprWindow {
             stack.set_transition_type(gtk4::StackTransitionType::SlideRight);
             stack.set_visible_child_name("viewer");
         }
+        if let Some(panels) = self.imp().compare_panels.take() {
+            self.restore_side_panels(panels);
+        }
         let first = survivors
             .first()
             .and_then(|path| self.imp().state.borrow().library.index_of_path(path));
@@ -58,9 +66,19 @@ impl SharprWindow {
     }
 }
 
-/// Compare never changes files, so shortcuts that do are off while it's open.
+/// Whether Compare is open.
 pub(super) fn is_comparing(widget: &gtk4::Widget) -> bool {
     widget
         .downcast_ref::<SharprWindow>()
         .is_some_and(|win| win.app_state().borrow().scope == ViewScope::Compare)
+}
+
+/// Compare never changes files, and a crop works on one chosen image, so
+/// the shortcuts and menus that change files are off during either (and
+/// while a crop is being prepared).
+pub(super) fn file_actions_blocked(widget: &gtk4::Widget) -> bool {
+    is_comparing(widget)
+        || widget.downcast_ref::<SharprWindow>().is_some_and(|win| {
+            win.imp().crop_session.borrow().is_some() || win.imp().crop_preparing.get()
+        })
 }

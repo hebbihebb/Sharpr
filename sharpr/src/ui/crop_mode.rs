@@ -26,6 +26,8 @@ enum Drag {
 
 struct Crop {
     source: PathBuf,
+    /// The source's size and modification time when cropping started.
+    stamp: (u64, i64),
     dims: (u32, u32),
     rect: Cell<CropRect>,
     aspect: Cell<Option<(u32, u32)>>,
@@ -53,11 +55,20 @@ pub fn start(window: &SharprWindow, source: PathBuf) {
         .then(|| viewer.imp().picture.paintable())
         .flatten();
     let need_preview = shown.is_none();
+    // A later request, or moving to another image, makes this one stale.
+    let request = window.imp().crop_request.get().wrapping_add(1);
+    window.imp().crop_request.set(request);
+    window.imp().crop_preparing.set(true);
+    let viewing = viewer.current_path();
     let (tx, rx) = async_channel::bounded(1);
     let worker_source = source.clone();
     std::thread::spawn(move || {
-        type Preview = Option<(u32, u32, Vec<u8>)>;
-        let result = (|| -> Result<((u32, u32), Preview), String> {
+        // Displayed size, file stamp, and a preview when one is needed.
+        type Prepared = ((u32, u32), (u64, i64), Option<(u32, u32, Vec<u8>)>);
+        let result = (|| -> Result<Prepared, String> {
+            let stamp = std::fs::metadata(&worker_source)
+                .map(|m| crate::fingerprint::file_stamp(&m))
+                .map_err(|e| e.to_string())?;
             let dims = crate::export::oriented_source_dimensions(&worker_source)
                 .map_err(|e| e.to_string())?;
             let preview = if need_preview {
@@ -77,7 +88,7 @@ pub fn start(window: &SharprWindow, source: PathBuf) {
             } else {
                 None
             };
-            Ok((dims, preview))
+            Ok((dims, stamp, preview))
         })();
         let _ = tx.send_blocking(result);
     });
@@ -85,8 +96,18 @@ pub fn start(window: &SharprWindow, source: PathBuf) {
     glib::MainContext::default().spawn_local(async move {
         let Ok(result) = rx.recv().await else { return };
         let Some(window) = weak.upgrade() else { return };
+        if window.imp().crop_request.get() != request {
+            return;
+        }
+        window.imp().crop_preparing.set(false);
+        let moved_on = window
+            .imp_viewer()
+            .is_none_or(|viewer| viewer.current_path() != viewing);
+        if moved_on || window.crop_session().is_some() {
+            return;
+        }
         match result {
-            Ok((dims, preview)) => {
+            Ok((dims, stamp, preview)) => {
                 let paintable = shown.or_else(|| {
                     preview.map(|(w, h, rgba)| {
                         gdk4::MemoryTexture::new(
@@ -100,7 +121,7 @@ pub fn start(window: &SharprWindow, source: PathBuf) {
                     })
                 });
                 if let Some(paintable) = paintable {
-                    open(&window, source, dims, &paintable);
+                    open(&window, source, dims, stamp, &paintable);
                 }
             }
             Err(error) => {
@@ -110,13 +131,20 @@ pub fn start(window: &SharprWindow, source: PathBuf) {
     });
 }
 
-fn open(window: &SharprWindow, source: PathBuf, dims: (u32, u32), paintable: &gdk4::Paintable) {
+fn open(
+    window: &SharprWindow,
+    source: PathBuf,
+    dims: (u32, u32),
+    stamp: (u64, i64),
+    paintable: &gdk4::Paintable,
+) {
     let Some(viewer) = window.imp_viewer() else {
         return;
     };
     let aspect = (dims.0 >= 16 && dims.1 >= 9).then_some((16, 9));
     let crop = Rc::new(Crop {
         source,
+        stamp,
         dims,
         rect: Cell::new(CropRect::centered(dims, aspect)),
         aspect: Cell::new(aspect),
@@ -337,6 +365,7 @@ fn open(window: &SharprWindow, source: PathBuf, dims: (u32, u32), paintable: &gd
             }
             if let Some(window) = window.upgrade() {
                 window.restore_side_panels(panels);
+                window.set_crop_session(None);
             }
         })
     };
@@ -349,6 +378,16 @@ fn open(window: &SharprWindow, source: PathBuf, dims: (u32, u32), paintable: &gd
             let Some(window) = window.upgrade() else {
                 return;
             };
+            let changed = std::fs::metadata(&crop.source)
+                .map(|m| crate::fingerprint::file_stamp(&m))
+                .ok()
+                != Some(crop.stamp);
+            if changed {
+                window.add_toast(libadwaita::Toast::new(
+                    "Not saved: the image changed since cropping started",
+                ));
+                return;
+            }
             let folder = destination.borrow().clone();
             let config = CropConfig {
                 source: crop.source.clone(),

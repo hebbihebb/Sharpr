@@ -30,7 +30,7 @@ use crate::ui::state::{AppState, ViewScope};
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 
 mod compare_controller;
-use compare_controller::is_comparing;
+use compare_controller::{file_actions_blocked, is_comparing};
 #[cfg(test)]
 mod gtk_tests;
 mod search_controller;
@@ -519,6 +519,13 @@ mod imp {
         pub search_strong: RefCell<Vec<PathBuf>>,
         /// The crop in progress in the viewer, if any (Phase 6).
         pub crop_session: RefCell<Option<crate::ui::crop_mode::CropSession>>,
+        /// Counts crop requests; a preview that arrives after another
+        /// request, or after the image changed, is dropped.
+        pub crop_request: Cell<u64>,
+        /// A crop's preview is being prepared.
+        pub crop_preparing: Cell<bool>,
+        /// Which side panels Compare hid, to show them again.
+        pub compare_panels: Cell<Option<(bool, bool)>>,
     }
 
     impl Default for SharprWindow {
@@ -571,6 +578,9 @@ mod imp {
                 search_status: RefCell::new(None),
                 search_strong: RefCell::new(Vec::new()),
                 crop_session: RefCell::new(None),
+                crop_request: Cell::new(0),
+                crop_preparing: Cell::new(false),
+                compare_panels: Cell::new(None),
             }
         }
     }
@@ -652,7 +662,6 @@ impl SharprWindow {
         if let Some(inner) = imp.presentation_inner_split.borrow().as_ref() {
             inner.set_show_sidebar(inner_shown);
         }
-        *imp.crop_session.borrow_mut() = None;
     }
 
     pub(crate) fn set_crop_session(&self, session: Option<crate::ui::crop_mode::CropSession>) {
@@ -666,7 +675,9 @@ impl SharprWindow {
 
     /// Moves copies chosen in "Find Copies…" to the trash on a worker, drops
     /// them from the view, and reports what happened (Phase 7).
-    pub(crate) fn trash_copies(&self, paths: Vec<PathBuf>) {
+    /// Trashes the confirmed copies, after checking each against what was
+    /// reviewed (`copies::verify`).
+    pub(crate) fn trash_copies(&self, groups: Vec<crate::copies::TrashGroup>) {
         let operation = self
             .imp()
             .state
@@ -677,10 +688,19 @@ impl SharprWindow {
         std::thread::spawn(move || {
             let mut trashed = Vec::new();
             let mut failed = Vec::new();
-            for path in paths {
-                match gio::File::for_path(&path).trash(None::<&gio::Cancellable>) {
-                    Ok(()) => trashed.push(path),
-                    Err(error) => failed.push((path, error.to_string())),
+            for group in &groups {
+                for verdict in crate::copies::verify(group) {
+                    match verdict {
+                        crate::copies::Verdict::Trash(path) => {
+                            match gio::File::for_path(&path).trash(None::<&gio::Cancellable>) {
+                                Ok(()) => trashed.push(path),
+                                Err(error) => failed.push((path, error.to_string())),
+                            }
+                        }
+                        crate::copies::Verdict::Skip(path, reason) => {
+                            failed.push((path, reason.to_string()))
+                        }
+                    }
                 }
             }
             let _ = tx.send_blocking((trashed, failed));
@@ -3335,7 +3355,7 @@ impl SharprWindow {
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("Delete").unwrap()),
                 Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if text_input_has_focus(widget) || is_comparing(widget) {
+                    if text_input_has_focus(widget) || file_actions_blocked(widget) {
                         return glib::Propagation::Proceed;
                     }
                     let paths = filmstrip_d.selected_paths_for_action();
@@ -3360,7 +3380,9 @@ impl SharprWindow {
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("<Shift>F10|Menu").unwrap()),
                 Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if !text_input_has_focus(widget) && filmstrip_m.open_context_menu_for_current()
+                    if !text_input_has_focus(widget)
+                        && !file_actions_blocked(widget)
+                        && filmstrip_m.open_context_menu_for_current()
                     {
                         glib::Propagation::Stop
                     } else {
@@ -3436,7 +3458,7 @@ impl SharprWindow {
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("F2").unwrap()),
                 Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if text_input_has_focus(widget) || is_comparing(widget) {
+                    if text_input_has_focus(widget) || file_actions_blocked(widget) {
                         return glib::Propagation::Proceed;
                     }
                     if let Some(path) = filmstrip_f2.selected_single_path() {
@@ -3455,7 +3477,7 @@ impl SharprWindow {
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("<Control>d").unwrap()),
                 Some(gtk4::CallbackAction::new(move |widget, _| {
-                    if is_comparing(widget) {
+                    if file_actions_blocked(widget) {
                         return glib::Propagation::Proceed;
                     }
                     if let Some(path) = filmstrip_dup.selected_single_path() {

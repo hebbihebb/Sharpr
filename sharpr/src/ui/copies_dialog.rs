@@ -4,7 +4,6 @@
 //! confirms, and failures are reported.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -15,8 +14,15 @@ use crate::copies::{CopyGroup, CopyReport};
 use crate::ui::library_overview::count;
 use crate::ui::window::SharprWindow;
 
-/// Each file's path, size in bytes, group, and "move to the trash" check.
-type Checks = Rc<RefCell<Vec<(PathBuf, u64, usize, gtk4::CheckButton)>>>;
+/// One reviewed file and its "move to the trash" check.
+struct Choice {
+    path: PathBuf,
+    stamp: (u64, i64),
+    group: usize,
+    check: gtk4::CheckButton,
+}
+
+type Checks = Rc<RefCell<Vec<Choice>>>;
 
 fn bytes(n: u64) -> String {
     let n = n as f64;
@@ -150,7 +156,10 @@ pub fn present(window: &SharprWindow) {
     let window = window.downgrade();
     let dialog_weak = dialog.downgrade();
     glib::MainContext::default().spawn_local(async move {
-        let Ok(result) = rx.recv().await else { return };
+        let result = rx
+            .recv()
+            .await
+            .unwrap_or_else(|_| Err("The search stopped unexpectedly.".into()));
         let (Some(window), Some(dialog)) = (window.upgrade(), dialog_weak.upgrade()) else {
             return;
         };
@@ -223,10 +232,11 @@ fn results_page(
     list.add(&summary);
 
     let checks: Checks = Rc::default();
-    let thumbnails: Rc<RefCell<HashMap<PathBuf, gtk4::Picture>>> = Rc::default();
+    let mut thumbnails = Vec::new();
     for (group_index, group) in report.groups.iter().enumerate() {
-        list.add(&group_rows(group, group_index, &checks, &thumbnails));
+        list.add(&group_rows(group, group_index, &checks, &mut thumbnails));
     }
+    load_thumbnails(thumbnails);
     scroller.set_child(Some(&list));
     page.append(&scroller);
 
@@ -252,8 +262,8 @@ fn results_page(
         let trash = trash.clone();
         move || {
             let checks = checks.borrow();
-            let chosen: Vec<_> = checks.iter().filter(|(.., c)| c.is_active()).collect();
-            let size: u64 = chosen.iter().map(|(_, b, ..)| *b).sum();
+            let chosen: Vec<_> = checks.iter().filter(|c| c.check.is_active()).collect();
+            let size: u64 = chosen.iter().map(|c| c.stamp.0).sum();
             selected.set_text(&format!(
                 "{} ticked · {}",
                 images_text(chosen.len()),
@@ -263,9 +273,9 @@ fn results_page(
         }
     };
     refresh();
-    for (.., check) in checks.borrow().iter() {
+    for choice in checks.borrow().iter() {
         let refresh = refresh.clone();
-        check.connect_toggled(move |_| refresh());
+        choice.check.connect_toggled(move |_| refresh());
     }
 
     {
@@ -278,20 +288,17 @@ fn results_page(
                 return;
             };
             let checks = checks.borrow();
-            let chosen: Vec<(PathBuf, u64, usize)> = checks
-                .iter()
-                .filter(|(.., c)| c.is_active())
-                .map(|(p, b, g, _)| (p.clone(), *b, *g))
-                .collect();
-            let emptied = (0..groups)
-                .filter(|g| {
-                    checks
-                        .iter()
-                        .filter(|(_, _, cg, _)| cg == g)
-                        .all(|(.., c)| c.is_active())
-                })
-                .count();
-            confirm_trash(&window, &dialog, chosen, emptied);
+            let mut plan = vec![crate::copies::TrashGroup::default(); groups];
+            for choice in checks.iter() {
+                let entry = (choice.path.clone(), choice.stamp);
+                if choice.check.is_active() {
+                    plan[choice.group].extras.push(entry);
+                } else {
+                    plan[choice.group].kept.push(entry);
+                }
+            }
+            plan.retain(|group| !group.extras.is_empty());
+            confirm_trash(&window, &dialog, plan);
         });
     }
     page.upcast()
@@ -301,7 +308,7 @@ fn group_rows(
     group: &CopyGroup,
     group_index: usize,
     checks: &Checks,
-    thumbnails: &Rc<RefCell<HashMap<PathBuf, gtk4::Picture>>>,
+    thumbnails: &mut Vec<(PathBuf, gtk4::Picture)>,
 ) -> libadwaita::PreferencesGroup {
     let rows = libadwaita::PreferencesGroup::new();
     rows.set_title(if group.identical {
@@ -341,10 +348,7 @@ fn group_rows(
         picture.set_can_shrink(true);
         picture.add_css_class("card");
         row.add_prefix(&picture);
-        thumbnails
-            .borrow_mut()
-            .insert(file.path.clone(), picture.clone());
-        load_thumbnail(file.path.clone(), picture);
+        thumbnails.push((file.path.clone(), picture));
         if i == 0 {
             let keep = gtk4::Label::new(Some("Keep"));
             keep.add_css_class("success");
@@ -358,53 +362,75 @@ fn group_rows(
         row.add_suffix(&check);
         row.set_activatable_widget(Some(&check));
         rows.add(&row);
-        checks
-            .borrow_mut()
-            .push((file.path.clone(), file.bytes, group_index, check));
+        checks.borrow_mut().push(Choice {
+            path: file.path.clone(),
+            stamp: file.stamp,
+            group: group_index,
+            check,
+        });
     }
     rows
 }
 
-/// A thumbnail from Sharpr's or the system's cache, or else a small preview
-/// decoded here; all on a worker.
-fn load_thumbnail(path: PathBuf, picture: gtk4::Picture) {
-    let (tx, rx) = async_channel::bounded(1);
+/// Each row's thumbnail, from Sharpr's or the system's cache, or else a
+/// small preview decoded here. One worker takes them in list order, so a
+/// long list never starts thousands of decodes at once; it stops when the
+/// window closes.
+fn load_thumbnails(rows: Vec<(PathBuf, gtk4::Picture)>) {
+    let paths: Vec<PathBuf> = rows.iter().map(|(path, _)| path.clone()).collect();
+    let pictures: Vec<glib::WeakRef<gtk4::Picture>> = rows
+        .iter()
+        .map(|(_, picture)| picture.downgrade())
+        .collect();
+    let (tx, rx) = async_channel::bounded(4);
     std::thread::spawn(move || {
-        let thumbnail = crate::thumbnails::worker::load_cached_rgba(&path).or_else(|| {
-            let png = crate::visual_search::prepare::prepare_png(&path).ok()?;
-            let image = image::load_from_memory(&png)
-                .ok()?
-                .thumbnail(160, 160)
-                .to_rgba8();
-            Some((image.width(), image.height(), image.into_raw())).map(|(w, h, rgba)| (rgba, w, h))
-        });
-        let _ = tx.send_blocking(thumbnail);
+        for (i, path) in paths.into_iter().enumerate() {
+            let thumbnail = crate::thumbnails::worker::load_cached_rgba(&path).or_else(|| {
+                let png = crate::visual_search::prepare::prepare_png(&path).ok()?;
+                let image = image::load_from_memory(&png)
+                    .ok()?
+                    .thumbnail(160, 160)
+                    .to_rgba8();
+                let (w, h) = image.dimensions();
+                Some((image.into_raw(), w, h))
+            });
+            if tx.send_blocking((i, thumbnail)).is_err() {
+                return;
+            }
+        }
     });
     glib::MainContext::default().spawn_local(async move {
-        let Ok(Some((rgba, width, height))) = rx.recv().await else {
-            return;
-        };
-        let texture = gdk4::MemoryTexture::new(
-            width as i32,
-            height as i32,
-            gdk4::MemoryFormat::R8g8b8a8,
-            &glib::Bytes::from_owned(rgba),
-            width as usize * 4,
-        );
-        picture.set_paintable(Some(&texture));
+        while let Ok((i, thumbnail)) = rx.recv().await {
+            // Closed: dropping the receiver stops the worker.
+            let Some(picture) = pictures[i].upgrade() else {
+                return;
+            };
+            let Some((rgba, width, height)) = thumbnail else {
+                continue;
+            };
+            let texture = gdk4::MemoryTexture::new(
+                width as i32,
+                height as i32,
+                gdk4::MemoryFormat::R8g8b8a8,
+                &glib::Bytes::from_owned(rgba),
+                width as usize * 4,
+            );
+            picture.set_paintable(Some(&texture));
+        }
     });
 }
 
 fn confirm_trash(
     window: &SharprWindow,
     dialog: &libadwaita::Dialog,
-    chosen: Vec<(PathBuf, u64, usize)>,
-    emptied_groups: usize,
+    plan: Vec<crate::copies::TrashGroup>,
 ) {
-    let size: u64 = chosen.iter().map(|(_, b, _)| *b).sum();
+    let files: Vec<_> = plan.iter().flat_map(|g| &g.extras).collect();
+    let size: u64 = files.iter().map(|(_, stamp)| stamp.0).sum();
+    let emptied_groups = plan.iter().filter(|g| g.kept.is_empty()).count();
     let mut body = format!(
-        "{} ({}) will move to the trash, where you can restore them.",
-        images_text(chosen.len()),
+        "{} ({}) will move to the trash, where you can restore them. Any file that changes before then stays.",
+        images_text(files.len()),
         bytes(size)
     );
     if emptied_groups > 0 {
@@ -439,8 +465,7 @@ fn confirm_trash(
             return;
         };
         dialog.close();
-        let paths: Vec<PathBuf> = chosen.iter().map(|(p, ..)| p.clone()).collect();
-        window.trash_copies(paths);
+        window.trash_copies(plan.clone());
     });
     alert.present(Some(dialog));
 }

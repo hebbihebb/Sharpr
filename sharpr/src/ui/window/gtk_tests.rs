@@ -497,6 +497,10 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     window.present_copy_dialog(crate::ui::filmstrip::CopyKind::Crop, vec![sea.clone()]);
     pump_until(|| window.crop_session().is_some());
     let session = window.crop_session().unwrap();
+    assert!(
+        super::file_actions_blocked(window.upcast_ref()),
+        "Delete, F2, Ctrl+D, and Shift+F10 are off while cropping"
+    );
     assert_eq!(
         session.rect(),
         crate::export::CropRect {
@@ -518,6 +522,7 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     screenshot(&window, &root.parent().unwrap().join("crop-mode.png"));
     session.save();
     assert!(window.crop_session().is_none(), "saving leaves crop mode");
+    assert!(!super::file_actions_blocked(window.upcast_ref()));
     pump_until(|| {
         std::fs::read_dir(root.join("crops"))
             .map(|entries| entries.count() == 1)
@@ -1172,7 +1177,15 @@ fn copies_are_found_and_trashed_only_on_request() {
     );
     window.visible_dialog().unwrap().close();
 
-    window.trash_copies(vec![root.join("keep copy.png")]);
+    let stamp = |name: &str| {
+        let path = root.join(name);
+        let stamp = crate::fingerprint::file_stamp(&std::fs::metadata(&path).unwrap());
+        (path, stamp)
+    };
+    window.trash_copies(vec![crate::copies::TrashGroup {
+        extras: vec![stamp("keep copy.png")],
+        kept: vec![stamp("keep.png")],
+    }]);
     pump_until(|| !root.join("keep copy.png").exists());
     assert!(root.join("keep.png").exists());
     assert!(root.join("other.png").exists());
@@ -1256,6 +1269,14 @@ fn compare_narrows_five_images_to_one() {
     });
     screenshot(&window, &root.parent().unwrap().join("compare-split.png"));
 
+    assert!(super::file_actions_blocked(window.upcast_ref()));
+    let inner = window
+        .imp()
+        .presentation_inner_split
+        .borrow()
+        .clone()
+        .unwrap();
+    assert!(!inner.shows_sidebar(), "the filmstrip makes way");
     // The focus moved into Compare, off the filmstrip.
     let focus = gtk4::prelude::GtkWindowExt::focus(&window).expect("something has focus");
     assert!(
@@ -1299,6 +1320,8 @@ fn compare_narrows_five_images_to_one() {
     pump_until(|| window.imp().state.borrow().scope != ViewScope::Compare);
     assert_eq!(window.imp().state.borrow().selected_paths.len(), 4);
     assert!(page.survivors().is_empty(), "Compare was closed");
+    assert!(!super::file_actions_blocked(window.upcast_ref()));
+    assert!(inner.shows_sidebar(), "the filmstrip is back");
 
     for (path, original) in paths.iter().zip(&originals) {
         assert_eq!(

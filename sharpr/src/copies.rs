@@ -8,11 +8,14 @@
 //!   of 0.95 or more makes a candidate. A candidate also needs the same
 //!   aspect ratio, since a crop changes it and copies keep it (without
 //!   that, a crop could chain into a group through a close copy), and
-//!   32×32 grey versions that look the same. The pixel check applies to
+//!   32×32 colour versions that look the same. The pixel check applies to
 //!   every candidate: a real library had over a thousand pairs above 0.99,
 //!   too many to trust the score alone with files headed for the trash.
 //!   The small versions come from the thumbnail cache where possible, and
 //!   each image is shrunk once.
+//! - Matches can chain (A like B, B like C), so every member of a group is
+//!   finally checked directly against the copy to keep, the one with the
+//!   most pixels; one that doesn't match it leaves the group.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -23,8 +26,8 @@ use crate::library_index::LibraryIndex;
 /// At or above this cosine, two images may be the same picture; the aspect
 /// and pixel checks decide.
 pub const MAYBE_SAME: f32 = 0.95;
-/// The largest mean difference, out of 255, between 32×32 grey versions of
-/// two images that still counts as the same picture.
+/// The largest mean difference, out of 255, between 32×32 colour versions
+/// of two images that still counts as the same picture.
 const PIXEL_TOLERANCE: f64 = 10.0;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -33,6 +36,9 @@ pub struct CopyFile {
     /// Displayed (oriented) size, if it could be read.
     pub size: Option<(u32, u32)>,
     pub bytes: u64,
+    /// Size and modification time when found (`fingerprint::file_stamp`),
+    /// checked again before the file is trashed.
+    pub stamp: (u64, i64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,9 +98,9 @@ fn same_aspect(a: (u32, u32), b: (u32, u32)) -> bool {
     (ratio(a) / ratio(b) - 1.0).abs() <= 0.02
 }
 
-/// A 32×32 grey version of `path`, upright, for the pixel check: from a
+/// A 32×32 colour version of `path`, upright, for the pixel check: from a
 /// cached thumbnail when there is one, which is far cheaper than decoding.
-pub fn tiny_grey(path: &Path) -> Option<Vec<u8>> {
+pub fn tiny_version(path: &Path) -> Option<Vec<u8>> {
     let image = match crate::thumbnails::worker::load_cached_rgba(path) {
         Some((rgba, width, height)) => {
             image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(width, height, rgba)?)
@@ -107,12 +113,12 @@ pub fn tiny_grey(path: &Path) -> Option<Vec<u8>> {
     Some(
         image
             .resize_exact(32, 32, image::imageops::FilterType::Triangle)
-            .to_luma8()
+            .to_rgb8()
             .into_raw(),
     )
 }
 
-/// Whether two 32×32 grey versions show the same picture.
+/// Whether two 32×32 versions show the same picture.
 fn look_the_same(a: &[u8], b: &[u8]) -> bool {
     let diff: f64 = a
         .iter()
@@ -127,7 +133,7 @@ fn look_the_same(a: &[u8], b: &[u8]) -> bool {
 pub struct Readers<'a> {
     /// Displayed (oriented) size.
     pub size_of: &'a (dyn Fn(&Path) -> Option<(u32, u32)> + Sync),
-    /// A 32×32 grey version, as from `tiny_grey`.
+    /// A 32×32 version, as from `tiny_version`.
     pub tiny: &'a (dyn Fn(&Path) -> Option<Vec<u8>> + Sync),
     pub canceled: &'a (dyn Fn() -> bool + Sync),
     /// (images checked, images to check) during the pixel checks.
@@ -211,12 +217,47 @@ pub fn group(
             }
         }
     }
+    let mut components: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..nodes.len() {
+        components.entry(sets.find(i)).or_default().push(i);
+    }
+    // Each member must match the copy to keep directly, not only through
+    // a chain; one that doesn't stands alone (with its exact copies).
+    let pixels = |i: &usize| {
+        sizes
+            .get(i)
+            .copied()
+            .flatten()
+            .map_or(0, |(w, h)| u64::from(w) * u64::from(h))
+    };
     let mut groups: BTreeMap<usize, Vec<PathBuf>> = BTreeMap::new();
-    for (i, (_, paths)) in nodes.iter().enumerate() {
-        groups
-            .entry(sets.find(i))
-            .or_default()
-            .extend(paths.iter().map(|p| (*p).clone()));
+    for members in components.into_values() {
+        // As the review window orders them: most pixels, then the bigger
+        // file, then the first.
+        let bytes = |i: usize| std::fs::metadata(first(i)).map_or(0, |m| m.len());
+        let keeper = *members
+            .iter()
+            .max_by_key(|&&i| (pixels(&i), bytes(i), std::cmp::Reverse(i)))
+            .expect("not empty");
+        for i in members {
+            let with_keeper = i == keeper
+                || match (
+                    &tiny.get(&i),
+                    &tiny.get(&keeper),
+                    sizes.get(&i),
+                    sizes.get(&keeper),
+                ) {
+                    (Some(Some(a)), Some(Some(b)), Some(Some(sa)), Some(Some(sb))) => {
+                        look_the_same(a, b) && same_aspect(*sa, *sb)
+                    }
+                    _ => false,
+                };
+            let group = if with_keeper { keeper } else { i };
+            groups
+                .entry(group)
+                .or_default()
+                .extend(nodes[i].1.iter().map(|p| (*p).clone()));
+        }
     }
     Some(
         groups
@@ -273,7 +314,7 @@ pub fn find(
     }
     let cached = index.cached_fingerprints().map_err(|e| e.to_string())?;
     let mut fingerprints = BTreeMap::new();
-    let mut bytes = HashMap::new();
+    let mut stamps = HashMap::new();
     for path in &paths {
         let Ok(metadata) = std::fs::metadata(path) else {
             continue;
@@ -282,7 +323,7 @@ pub fn find(
         if let Some((size, mtime, hash)) = cached.get(path.to_string_lossy().as_ref()) {
             if (*size, *mtime) == stamp {
                 fingerprints.insert(path.clone(), hash.clone());
-                bytes.insert(path.clone(), metadata.len());
+                stamps.insert(path.clone(), stamp);
             }
         }
     }
@@ -293,7 +334,7 @@ pub fn find(
     let size_of = |path: &Path| crate::export::oriented_source_dimensions(path).ok();
     let read = Readers {
         size_of: &size_of,
-        tiny: &tiny_grey,
+        tiny: &tiny_version,
         canceled,
         progress,
     };
@@ -306,10 +347,14 @@ pub fn find(
                 .all(|p| fingerprints.get(p) == fingerprints.get(&paths[0]));
             let mut files: Vec<CopyFile> = paths
                 .into_iter()
-                .map(|path| CopyFile {
-                    size: size_of(&path),
-                    bytes: bytes.get(&path).copied().unwrap_or(0),
-                    path,
+                .map(|path| {
+                    let stamp = stamps.get(&path).copied().unwrap_or_default();
+                    CopyFile {
+                        size: size_of(&path),
+                        bytes: stamp.0,
+                        stamp,
+                        path,
+                    }
                 })
                 .collect();
             // Keep the most pixels; then the bigger file (less compressed);
@@ -331,6 +376,52 @@ pub fn find(
         not_indexed,
         images: paths.len(),
     })
+}
+
+/// One group's part of a confirmed trash request: the ticked files and
+/// the ones left unticked, each with the stamp it had when reviewed.
+#[derive(Clone, Debug, Default)]
+pub struct TrashGroup {
+    pub extras: Vec<(PathBuf, (u64, i64))>,
+    pub kept: Vec<(PathBuf, (u64, i64))>,
+}
+
+/// What to do with each ticked file of a confirmed request.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Verdict {
+    Trash(PathBuf),
+    /// Left alone, with the reason.
+    Skip(PathBuf, &'static str),
+}
+
+fn unchanged(path: &Path, stamp: (u64, i64)) -> bool {
+    std::fs::symlink_metadata(path)
+        .is_ok_and(|m| m.is_file() && crate::fingerprint::file_stamp(&m) == stamp)
+}
+
+/// Checks a confirmed request against the files as they are now, just
+/// before trashing: a file that changed since the review (replaced,
+/// edited, or gone) stays, and a group whose kept copies are all gone or
+/// changed keeps its extras too, unless the user ticked the whole group.
+pub fn verify(group: &TrashGroup) -> Vec<Verdict> {
+    let keeper_ok = group.kept.is_empty()
+        || group
+            .kept
+            .iter()
+            .any(|(path, stamp)| unchanged(path, *stamp));
+    group
+        .extras
+        .iter()
+        .map(|(path, stamp)| {
+            if !keeper_ok {
+                Verdict::Skip(path.clone(), "the copy to keep changed or is gone")
+            } else if !unchanged(path, *stamp) {
+                Verdict::Skip(path.clone(), "it changed since the review")
+            } else {
+                Verdict::Trash(path.clone())
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -428,6 +519,65 @@ mod tests {
             },
         );
         assert!(canceled.is_none());
+
+        // A chain: the 1080p copy is like both the original and the WebP,
+        // but the WebP doesn't match the original directly, so it leaves.
+        let chained = |path: &Path| {
+            let shade = if path.ends_with("a.webp") {
+                144u8
+            } else if path.ends_with("a-1080p.jpg") {
+                136
+            } else {
+                128
+            };
+            Some(vec![shade; 1024])
+        };
+        let groups = read(&chained);
+        let mut members = groups[0].clone();
+        members.sort();
+        assert_eq!(members, vec![p("a-1080p.jpg"), p("a-copy.png"), p("a.png")]);
+    }
+
+    #[test]
+    fn trashing_skips_files_that_changed_and_groups_that_lost_their_keeper() {
+        let dir = std::env::temp_dir().join(format!("sharpr-verify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, bytes: &[u8]| {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let stamp = crate::fingerprint::file_stamp(&std::fs::metadata(&path).unwrap());
+            (path, stamp)
+        };
+        let keep = file("keep.png", b"keeper");
+        let extra = file("extra.png", b"copy");
+        let swapped = file("swapped.png", b"copy");
+        let group = TrashGroup {
+            extras: vec![extra.clone(), swapped.clone()],
+            kept: vec![keep.clone()],
+        };
+        // Something else now sits where a reviewed extra was.
+        std::fs::remove_file(&swapped.0).unwrap();
+        std::fs::write(&swapped.0, b"an unrelated picture").unwrap();
+        assert_eq!(
+            verify(&group),
+            vec![
+                Verdict::Trash(extra.0.clone()),
+                Verdict::Skip(swapped.0.clone(), "it changed since the review"),
+            ]
+        );
+        // The kept copy went away during the review: nothing goes.
+        std::fs::remove_file(&keep.0).unwrap();
+        assert!(verify(&group)
+            .iter()
+            .all(|v| matches!(v, Verdict::Skip(_, "the copy to keep changed or is gone"))));
+        // Unless the user ticked the whole group.
+        let whole = TrashGroup {
+            extras: vec![extra.clone()],
+            kept: vec![],
+        };
+        assert_eq!(verify(&whole), vec![Verdict::Trash(extra.0.clone())]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -592,6 +742,10 @@ mod tests {
         assert!(
             !names.contains(&"crop-16x9.png".to_string()),
             "a crop is not a copy"
+        );
+        assert!(
+            !names.contains(&"mirrored.jpg".to_string()),
+            "a mirrored version is not a copy"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
