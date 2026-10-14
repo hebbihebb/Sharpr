@@ -45,9 +45,11 @@ modules:
         sha256: 21e64d2c56e9b333d44fef3f2a4b25653d922c419acd972fa96fab695217e2c8
 
   # Visual search runtime (decision D24): only llama-server, CPU only, with
-  # every CPU variant picked at run time. Built without network features:
-  # no OpenSSL, no web UI download, no OpenMP fetch. The model itself is
-  # installed by the user (D23), never bundled or downloaded.
+  # every CPU variant picked at run time. The build fetches nothing (no web
+  # UI download, no OpenMP fetch) and has no HTTPS (no OpenSSL). Its plain
+  # HTTP downloader remains, so Sharpr always starts it with --offline and
+  # without inherited LLAMA_*/HF_* settings. The model itself is installed
+  # by the user (D23), never bundled or downloaded.
   - name: llama-cpp
     buildsystem: simple
     sources:

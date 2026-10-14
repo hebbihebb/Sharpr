@@ -130,7 +130,7 @@ flatpak run io.github.hebbihebb.Sharpr
 ```
 
 - **Runtime:** GNOME 50 plus the rust-stable SDK extension.
-- **Visual search:** the `llama-cpp` module builds `llama-server` from the pinned source tarball into `/app/libexec/sharpr-llama/`, without network features. The model is not bundled: the Flatpak reads `~/.var/app/io.github.hebbihebb.Sharpr/data/sharpr-models/embeddinggemma-2/`, or else the native install's folder through `home:ro`.
+- **Visual search:** the `llama-cpp` module builds `llama-server` from the pinned source tarball into `/app/libexec/sharpr-llama/`. The build fetches nothing and has no HTTPS. llama.cpp's plain HTTP downloader remains, so Sharpr starts every server with `--offline` and strips inherited `LLAMA_*`, `HF_*`, and `MTMD_*` settings. The model is not bundled: the Flatpak reads `~/.var/app/io.github.hebbihebb.Sharpr/data/sharpr-models/embeddinggemma-2/`, or else the native install's folder through `home:ro`.
 - **Memory:** the manifest caps cargo at `--jobs 4` to avoid running out of memory while libjxl compiles. Keep the cap.
 - **No version pinning:** the build uses whatever is in the working tree, uncommitted changes included, so record the commit you built.
 - **Stale target data:** `.flatpak-source` keeps an old `target/` from earlier syncs because the script does not delete excluded files (`ROADMAP.md` Phase 10).

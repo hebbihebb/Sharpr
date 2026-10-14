@@ -72,10 +72,12 @@ pub fn pick_gpu(gpu_server: &std::path::Path) -> Option<GpuDevice> {
     let mut command = Command::new(gpu_server);
     command
         .arg("--list-devices")
+        .arg("--offline")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     set_library_path(&mut command, gpu_server);
+    isolate_environment(&mut command);
     let mut child = command.spawn().ok()?;
     let started = Instant::now();
     while matches!(child.try_wait(), Ok(None)) {
@@ -112,6 +114,31 @@ pub fn parse_devices(text: &str) -> Vec<GpuDevice> {
             })
         })
         .collect()
+}
+
+/// Environment variables through which llama.cpp takes settings, including
+/// remote models, Hugging Face repositories, and router directories
+/// (`LLAMA_ARG_MODEL_URL`, `HF_TOKEN`, …). None of Sharpr's own settings
+/// travel this way, so the children never see any of them.
+fn is_runtime_setting(name: &str) -> bool {
+    [
+        "LLAMA_",
+        "LLAMACPP_",
+        "HF_",
+        "HUGGING",
+        "MTMD_",
+        "MODEL_ENDPOINT",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
+}
+
+fn isolate_environment(command: &mut Command) {
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(is_runtime_setting) {
+            command.env_remove(&name);
+        }
+    }
 }
 
 /// The prebuilt runtimes keep their libraries beside the binary.
@@ -155,6 +182,10 @@ impl Server {
         let key = random_key()?;
         let threads = mode.threads().to_string();
         let mut command = Command::new(server_path);
+        // Offline always: llama.cpp can otherwise download, and replace the
+        // installed model, when its environment names a remote model.
+        command.arg("--offline");
+        isolate_environment(&mut command);
         if let Some(device) = device {
             command.args(["--device", device, "--n-gpu-layers", "99"]);
         } else {
@@ -475,6 +506,53 @@ mod tests {
         );
         assert_eq!(devices[1].name, "AMD Radeon 780M Graphics (RADV PHOENIX)");
         assert!(parse_devices("Available devices:\n").is_empty());
+    }
+
+    #[test]
+    fn children_run_offline_without_inherited_runtime_settings() {
+        // A stand-in server records its arguments and environment, then exits.
+        let dir = std::env::temp_dir().join(format!(
+            "sharpr-runtime-env-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let record = dir.join("record.txt");
+        let server = dir.join("llama-server");
+        std::fs::write(
+            &server,
+            format!(
+                "#!/bin/sh\necho \"$@\" > {0}\nenv >> {0}\n",
+                record.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Nextest runs each test in its own process, so this stays local.
+        std::env::set_var("LLAMA_ARG_MODEL_URL", "http://example.invalid/m.gguf");
+        std::env::set_var("HF_TOKEN", "secret");
+        std::env::set_var("SHARPR_KEEP_ME", "yes");
+        let files = ModelFiles {
+            model: dir.join("model.gguf"),
+            projector: dir.join("projector.gguf"),
+            server: server.clone(),
+            gpu_server: None,
+        };
+        assert!(
+            Server::start(&files, Mode::Queries).is_err(),
+            "the stand-in exits"
+        );
+        let recorded = std::fs::read_to_string(&record).unwrap();
+        assert!(recorded.lines().next().unwrap().contains("--offline"));
+        assert!(!recorded.contains("LLAMA_ARG_MODEL_URL"));
+        assert!(!recorded.contains("HF_TOKEN"));
+        assert!(recorded.contains("SHARPR_KEEP_ME=yes"));
+        assert!(is_runtime_setting("LLAMA_ARG_HF_REPO") && !is_runtime_setting("PATH"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

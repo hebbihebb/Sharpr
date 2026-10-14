@@ -54,7 +54,7 @@ flatpak-builder --force-clean --user --install build-dir io.github.hebbihebb.Sha
 flatpak run io.github.hebbihebb.Sharpr
 ```
 
-This needs the GNOME 50 SDK and the Rust stable SDK extension. The Flatpak builds its own `llama-server` from pinned source, without network features, and indexes on the processor.
+This needs the GNOME 50 SDK and the Rust stable SDK extension. The Flatpak builds its own `llama-server` from pinned source and indexes on the processor. Sharpr always runs it offline.
 
 ## Setting Up Visual Search
 
