@@ -574,6 +574,19 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
   - **"Collection" or "bucket".** The interface still says "Collection" (menus, dialogs, tooltips) where the product, the docs, and the user say "bucket". Pick one word everywhere.
   - **The Info panel** opens as a second, bigger pill above the small corner chip. A better design is for the chip itself to expand on hover (the context idea above). This revisits D18, which put details in an Info panel opened by a key or the context menu, so it needs a decision.
   - **Fullscreen:** the corner chip should hide, and reappear on mouse movement, like a video player's controls.
+- **One library root (user, October 14).** Carry out D11 ("One library"). Today Sharpr keeps a list of libraries, each with its own root and a "top level" or "drill down" mode, plus a switcher. The live settings hold three: Pictures (active, with all 9 buckets), Downloads, and a "test" library on a network share.
+  - **Target:** one action, "Open Library Root…". Every subfolder of the root that contains images belongs to the library and its index. Remove the library list, the switcher, and the folder-mode option. Disabled folders stay the way to leave parts of the tree out.
+  - **Changing the root keeps what is known.** Nothing is re-read just because the root moved:
+    - Fingerprints are cached by path, vectors by fingerprint, and bucket members by path and fingerprint, so none of them depend on the root.
+    - Moving the root up a level (say `~/Pictures` → `~`) keeps every existing fingerprint, vector, and bucket. Only the newly included folders are fingerprinted and indexed.
+    - Moving it down hides what falls outside without deleting anything. Bucket members outside the root are hidden, not counted as missing; this is checked in `buckets::resolve`. Moving back shows them again.
+    - Keep the same library identity when the root changes. Buckets carry a `library_id`, so changing the root must edit the one library, never create a new one.
+  - **Migration:** the active library becomes the single library. The others' settings stay stored, unused, under the "user data survives" rule; nothing is deleted. If the user wants Downloads included, the choice is a common parent root with disabled folders. That is the user's decision at migration time, since a wider root means more indexing.
+  - **Acceptance:**
+    - Changing the root to its parent keeps every bucket's members and every fingerprint and vector, with no re-indexing of known files.
+    - Narrowing the root hides, and widening restores.
+    - No library data is deleted.
+    - The library list and folder-mode controls are gone from the interface.
 - **Phase 5 and later additions:** the search status line, "Show More", and "Add to Bucket…"; the Library Overview and its header ring; the Phase 6 export and Phase 7 cleanup controls. All are reviewed here, wherever they first landed.
 
 **Visual polish from the Strata research** (`docs/research/strata-design-and-agent-setup.md`, Tier 1). The finding: Strata's clean look comes from discipline, not from dropping Libadwaita. Sharpr's "default GNOME" look comes from these gaps:
