@@ -44,6 +44,30 @@ modules:
         url: https://download.gnome.org/sources/gexiv2/0.14/gexiv2-0.14.3.tar.xz
         sha256: 21e64d2c56e9b333d44fef3f2a4b25653d922c419acd972fa96fab695217e2c8
 
+  # Visual search runtime (decision D24): only llama-server, CPU only, with
+  # every CPU variant picked at run time. Built without network features:
+  # no OpenSSL, no web UI download, no OpenMP fetch. The model itself is
+  # installed by the user (D23), never bundled or downloaded.
+  - name: llama-cpp
+    buildsystem: simple
+    sources:
+      - type: archive
+        url: https://github.com/ggml-org/llama.cpp/archive/refs/tags/b11457.tar.gz
+        sha256: 5c054b32f75fd774370329bab3cecd68f7dcc0a462eeb82b79aded501d47479e
+    build-commands:
+      - >-
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_RPATH='$ORIGIN'
+        -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON
+        -DGGML_OPENMP=OFF -DLLAMA_OPENSSL=OFF
+        -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
+        -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_APP=OFF
+        -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TOOLS=ON
+      - cmake --build build --target llama-server
+      - install -Dm755 build/bin/llama-server /app/libexec/sharpr-llama/llama-server
+      - cp -a build/bin/lib*.so* /app/libexec/sharpr-llama/
+      - install -Dm644 LICENSE /app/share/licenses/sharpr-llama/LICENSE
+
   - name: sharpr
     buildsystem: simple
     sources:

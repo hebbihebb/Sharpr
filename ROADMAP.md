@@ -324,7 +324,19 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 ## Phase 5: Visual Search And Tag Retirement
 
-**Status:** conditional on a Phase 3 go.
+**Status (October 13): implemented and committed; not deployed or accepted.** Phase 3 said go (D22).
+- **Units:** indexing and search (`58ac0ef`), tag retirement (`78a0639`), and packaging (installer script and Flatpak module).
+- **Verified in tests:**
+  - A GTK test with the real model indexes synthetic images in the background and ranks them by content, file-name matches first.
+  - Without a model, search falls back to file names and says so.
+  - Turning a tag into a bucket keeps every tag row unchanged.
+- **Parity:** a 10-image pilot of the app's own pipeline matched the judged benchmark vectors at cosine 0.997–0.9998; PARITY_PENDING.
+- **Match strength** is calibrated on the judged sample: the fifth-best score after subtracting each image's closeness to generic prompts. It separates 28 of 30 real queries from 13 of 15 absent subjects. It isn't judged below 50 indexed images.
+- **Decision for the user:** whether file names should still match, first, alongside visual results (implemented that way for now, so names like `seedvr2-…` stay findable).
+- **Left for acceptance:**
+  - Install the model and index the real library overnight.
+  - Measure browsing during indexing against the 10% limit with the real build.
+  - The user's own search check.
 
 **Outcome:** Words typed in the search box find images by content. Tags disappear from the interface without losing any data.
 

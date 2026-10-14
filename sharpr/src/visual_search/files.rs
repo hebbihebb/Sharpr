@@ -27,22 +27,38 @@ pub fn model_dir() -> PathBuf {
         .join("embeddinggemma-2")
 }
 
-/// Where `llama-server` may be, in order: an explicit override, the model
-/// folder's `runtime/` (native installs), and the Flatpak's own build.
+/// The Flatpak's own build of `llama-server`, with its libraries beside it.
+const FLATPAK_SERVER: &str = "/app/libexec/sharpr-llama/llama-server";
+
+/// Where `llama-server` may be, in order: an explicit override, the
+/// Flatpak's own build, and the model folder's `runtime/` (native installs).
 fn server_candidates(dir: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = std::env::var_os("SHARPR_LLAMA_SERVER") {
         candidates.push(PathBuf::from(path));
     }
+    candidates.push(PathBuf::from(FLATPAK_SERVER));
     candidates.push(dir.join("runtime").join("llama-server"));
-    candidates.push(PathBuf::from("/app/bin/llama-server"));
     candidates
 }
 
 /// Finds the installed files, or explains in plain words what is missing.
+/// Under Flatpak, a model installed for the native app in the home folder
+/// (readable through `--filesystem=home:ro`) is used when the sandbox's own
+/// folder has none, so one copy serves both.
 pub fn locate() -> Result<ModelFiles, String> {
     let dir = model_dir();
-    locate_in(&dir, &server_candidates(&dir))
+    let found = locate_in(&dir, &server_candidates(&dir));
+    if found.is_ok() || std::env::var_os("FLATPAK_ID").is_none() {
+        return found;
+    }
+    let host = dirs::home_dir()
+        .map(|home| home.join(".local/share/sharpr-models/embeddinggemma-2"))
+        .filter(|host| *host != dir);
+    match host {
+        Some(host) => locate_in(&host, &server_candidates(&host)).or(found),
+        None => found,
+    }
 }
 
 pub fn locate_in(dir: &Path, servers: &[PathBuf]) -> Result<ModelFiles, String> {

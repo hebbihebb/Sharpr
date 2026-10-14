@@ -103,6 +103,20 @@ ln -sfn ~/.local/opt/sharpr/<older-commit> ~/.local/opt/sharpr/current
 
 To see what is deployed, run `cat ~/.local/opt/sharpr/current/COMMIT`. Development builds in `sharpr/target/` never affect the launcher.
 
+## Visual Search Model
+
+Sharpr never downloads the model (D23). Install it once, with the user's approval when it goes into their real home folder:
+
+```bash
+python3 tools/install-visual-search-model.py --models DIR --runtime DIR
+```
+
+- `--models` holds `embeddinggemma-2-Q8_0.gguf` and `mmproj-embeddinggemma-2-Q8_0.gguf`. The Phase 3 copies are in `.tmp/native-benchmark/models/`.
+- `--runtime` holds a `llama-server` build with its `lib*.so*` files: `.tmp/native-benchmark/runtime/llama-b11457/` (the prebuilt Ubuntu x64 release).
+- Files go to `~/.local/share/sharpr-models/embeddinggemma-2/` (and `runtime/`). Each is verified against its source; identical files are skipped.
+- Preferences → Library → Visual Search shows what Sharpr found and the indexing progress. `~/.cache/sharpr/logs/llama-server-*.log` holds the server's own messages.
+- Deleting `~/.local/share/sharpr/visual-search.sqlite` only forces a reindex.
+
 ## Flatpak
 
 From `sharpr/packaging/`:
@@ -115,6 +129,7 @@ flatpak run io.github.hebbihebb.Sharpr
 ```
 
 - **Runtime:** GNOME 50 plus the rust-stable SDK extension.
+- **Visual search:** the `llama-cpp` module builds `llama-server` from the pinned source tarball into `/app/libexec/sharpr-llama/`, without network features. The model is not bundled: the Flatpak reads `~/.var/app/io.github.hebbihebb.Sharpr/data/sharpr-models/embeddinggemma-2/`, or else the native install's folder through `home:ro`.
 - **Memory:** the manifest caps cargo at `--jobs 4` to avoid running out of memory while libjxl compiles. Keep the cap.
 - **No version pinning:** the build uses whatever is in the working tree, uncommitted changes included, so record the commit you built.
 - **Stale target data:** `.flatpak-source` keeps an old `target/` from earlier syncs because the script does not delete excluded files (`ROADMAP.md` Phase 9).

@@ -12,6 +12,9 @@ use image::DynamicImage;
 /// The longest edge the model is given.
 pub const MAX_EDGE: u32 = 768;
 
+/// The most memory one decode may take.
+const MAX_DECODE_BYTES: u64 = 3 << 30;
+
 /// PNG bytes of `path` prepared for the model.
 pub fn prepare_png(path: &Path) -> Result<Vec<u8>, String> {
     let image = decode_upright(path)?;
@@ -63,10 +66,15 @@ fn decode_upright(path: &Path) -> Result<DynamicImage, String> {
     let image = decode_jpeg_reduced(path)
         .map(Ok)
         .unwrap_or_else(|| {
-            image::ImageReader::open(path)
+            let mut reader = image::ImageReader::open(path)
                 .and_then(|reader| reader.with_guessed_format())
-                .map_err(|e| e.to_string())
-                .and_then(|reader| reader.decode().map_err(|e| e.to_string()))
+                .map_err(|e| e.to_string())?;
+            // The library has images of 270 megapixels and more, past the
+            // decoder's default 512 MB limit. One image is decoded at a time.
+            let mut limits = image::Limits::default();
+            limits.max_alloc = Some(MAX_DECODE_BYTES);
+            reader.limits(limits);
+            reader.decode().map_err(|e| e.to_string())
         })
         .map_err(error)?;
     Ok(crate::metadata::orientation::apply_exif_orientation(

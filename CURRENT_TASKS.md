@@ -18,7 +18,7 @@ Plan, one commit per unit:
    - Name search stays as the fallback.
    - Check parity with the Phase 3 results inside the app.
 3. **Tag retirement.** Done (committed, verified, not deployed). The tag popover, Ctrl+T, on-image pills, tag search, and the extra-tags field are gone. Main menu → Library → "Turn Tags into Buckets…" offers each unused manual tag, none ticked; a one-time toast points to it. On the live data that is 11 tags (`nsfw` 88, `nude` 88, `mountain` 8, `nature` 8, and smaller ones). Tag rows stay.
-4. **Packaging.**
+4. **Packaging.** Implemented: `tools/install-visual-search-model.py` (tested in a scratch folder) and a `llama-cpp` Flatpak module; the Flatpak build is being checked.
    - The installer places the model and runtime.
    - A llama.cpp module goes in the Flatpak manifest, without network features.
    - Update the docs.
