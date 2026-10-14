@@ -282,10 +282,17 @@ impl SharprWindow {
     }
 
     /// Moves filter words the user has finished typing out of the search box
-    /// and into chips (decision D16).
-    pub(super) fn take_completed_search_chips(&self, entry: &gtk4::SearchEntry) {
-        let (chips, remaining) =
-            crate::model::search_query::take_completed_chips(entry.text().as_str());
+    /// and into chips (decision D16). Pressing Enter (`finished`) finishes
+    /// the last word too, so `tower -water` shows its "Not water" chip.
+    pub(super) fn take_completed_search_chips(&self, entry: &gtk4::SearchEntry, finished: bool) {
+        let text = entry.text();
+        let (chips, remaining) = if finished {
+            let (chips, remaining) =
+                crate::model::search_query::take_completed_chips(&format!("{text} "));
+            (chips, remaining.trim_end().to_string())
+        } else {
+            crate::model::search_query::take_completed_chips(text.as_str())
+        };
         if chips.is_empty() {
             return;
         }

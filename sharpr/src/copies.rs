@@ -4,13 +4,15 @@
 //!
 //! - **Exact copies** share a content fingerprint (Phase 4).
 //! - **Resized or converted copies** are found through the visual-search
-//!   vectors (Phase 5), which barely change with size or format. On the
-//!   judged sample, pairs at a cosine of 0.99 or more were all the same
-//!   picture, then came a clear gap. Every vector match also needs the same
-//!   aspect ratio, since a crop changes it and copies keep it; without
-//!   that, a crop could chain into a group through a close copy. Between
-//!   0.95 and 0.99, small versions of the two images must also look the
-//!   same pixel for pixel.
+//!   vectors (Phase 5), which barely change with size or format: a cosine
+//!   of 0.95 or more makes a candidate. A candidate also needs the same
+//!   aspect ratio, since a crop changes it and copies keep it (without
+//!   that, a crop could chain into a group through a close copy), and
+//!   32×32 grey versions that look the same. The pixel check applies to
+//!   every candidate: a real library had over a thousand pairs above 0.99,
+//!   too many to trust the score alone with files headed for the trash.
+//!   The small versions come from the thumbnail cache where possible, and
+//!   each image is shrunk once.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -18,9 +20,8 @@ use std::path::{Path, PathBuf};
 use crate::config::FolderMode;
 use crate::library_index::LibraryIndex;
 
-/// At or above this cosine, two images are the same picture.
-pub const SAME_PICTURE: f32 = 0.99;
-/// Between this and `SAME_PICTURE`, a pair needs the aspect and pixel checks.
+/// At or above this cosine, two images may be the same picture; the aspect
+/// and pixel checks decide.
 pub const MAYBE_SAME: f32 = 0.95;
 /// The largest mean difference, out of 255, between 32×32 grey versions of
 /// two images that still counts as the same picture.
@@ -91,10 +92,18 @@ fn same_aspect(a: (u32, u32), b: (u32, u32)) -> bool {
     (ratio(a) / ratio(b) - 1.0).abs() <= 0.02
 }
 
-/// A 32×32 grey version of `path`, upright, for the pixel check.
-fn tiny_grey(path: &Path) -> Option<Vec<u8>> {
-    let png = crate::visual_search::prepare::prepare_png(path).ok()?;
-    let image = image::load_from_memory(&png).ok()?;
+/// A 32×32 grey version of `path`, upright, for the pixel check: from a
+/// cached thumbnail when there is one, which is far cheaper than decoding.
+pub fn tiny_grey(path: &Path) -> Option<Vec<u8>> {
+    let image = match crate::thumbnails::worker::load_cached_rgba(path) {
+        Some((rgba, width, height)) => {
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(width, height, rgba)?)
+        }
+        None => {
+            let png = crate::visual_search::prepare::prepare_png(path).ok()?;
+            image::load_from_memory(&png).ok()?
+        }
+    };
     Some(
         image
             .resize_exact(32, 32, image::imageops::FilterType::Triangle)
@@ -103,67 +112,103 @@ fn tiny_grey(path: &Path) -> Option<Vec<u8>> {
     )
 }
 
-/// Whether two images look the same at 32×32.
-pub fn look_the_same(a: &Path, b: &Path) -> bool {
-    match (tiny_grey(a), tiny_grey(b)) {
-        (Some(a), Some(b)) => {
-            let diff: f64 = a
-                .iter()
-                .zip(&b)
-                .map(|(x, y)| f64::from(x.abs_diff(*y)))
-                .sum::<f64>()
-                / a.len() as f64;
-            diff <= PIXEL_TOLERANCE
-        }
-        _ => false,
-    }
+/// Whether two 32×32 grey versions show the same picture.
+fn look_the_same(a: &[u8], b: &[u8]) -> bool {
+    let diff: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| f64::from(x.abs_diff(*y)))
+        .sum::<f64>()
+        / a.len().max(1) as f64;
+    a.len() == b.len() && diff <= PIXEL_TOLERANCE
+}
+
+/// How to read the files `group` checks; tests substitute their own.
+pub struct Readers<'a> {
+    /// Displayed (oriented) size.
+    pub size_of: &'a (dyn Fn(&Path) -> Option<(u32, u32)> + Sync),
+    /// A 32×32 grey version, as from `tiny_grey`.
+    pub tiny: &'a (dyn Fn(&Path) -> Option<Vec<u8>> + Sync),
+    pub canceled: &'a (dyn Fn() -> bool + Sync),
+    /// (images checked, images to check) during the pixel checks.
+    pub progress: &'a (dyn Fn(usize, usize) + Sync),
 }
 
 /// Groups the images in `fingerprints` (path → fingerprint, current files
 /// only) into copies, using `vectors` (fingerprint → unit vector) for
-/// resized and converted copies. `size_of` and `same_pixels` read files
-/// for the borderline checks.
+/// resized and converted copies. `None` when canceled.
 pub fn group(
     fingerprints: &BTreeMap<PathBuf, String>,
     vectors: &HashMap<String, Vec<f32>>,
-    size_of: &dyn Fn(&Path) -> Option<(u32, u32)>,
-    same_pixels: &dyn Fn(&Path, &Path) -> bool,
-) -> Vec<Vec<PathBuf>> {
+    read: &Readers,
+) -> Option<Vec<Vec<PathBuf>>> {
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     // One node per distinct fingerprint, with every file that has it.
     let mut by_hash: BTreeMap<&str, Vec<&PathBuf>> = BTreeMap::new();
     for (path, hash) in fingerprints {
         by_hash.entry(hash).or_default().push(path);
     }
     let nodes: Vec<(&str, Vec<&PathBuf>)> = by_hash.into_iter().collect();
-    let mut sets = UnionFind::new(nodes.len());
+    let first = |i: usize| nodes[i].1[0].as_path();
     let indexed: Vec<(usize, &Vec<f32>)> = nodes
         .iter()
         .enumerate()
         .filter_map(|(i, (hash, _))| vectors.get(*hash).map(|v| (i, v)))
         .collect();
     // Every pair of distinct pictures, in parallel rows.
-    use rayon::prelude::*;
-    let pairs: Vec<(usize, usize, f32)> = (0..indexed.len())
+    let pairs: Vec<(usize, usize)> = (0..indexed.len())
         .into_par_iter()
         .flat_map_iter(|a| {
             let (i, va) = indexed[a];
             indexed[a + 1..].iter().filter_map(move |(j, vb)| {
-                let score = crate::visual_search::similarity(va, vb);
-                (score >= MAYBE_SAME).then_some((i, *j, score))
+                (crate::visual_search::similarity(va, vb) >= MAYBE_SAME).then_some((i, *j))
             })
         })
         .collect();
-    let mut sizes: HashMap<usize, Option<(u32, u32)>> = HashMap::new();
-    for (i, j, score) in pairs {
-        let (a, b) = (nodes[i].1[0], nodes[j].1[0]);
-        let size_a = *sizes.entry(i).or_insert_with(|| size_of(a));
-        let size_b = *sizes.entry(j).or_insert_with(|| size_of(b));
-        let aspect_matches = match (size_a, size_b) {
-            (Some(sa), Some(sb)) => same_aspect(sa, sb),
+    if (read.canceled)() {
+        return None;
+    }
+    // Each image's size and small version, read once and in parallel.
+    let mut involved: Vec<usize> = pairs.iter().flat_map(|&(i, j)| [i, j]).collect();
+    involved.sort_unstable();
+    involved.dedup();
+    let sizes: HashMap<usize, Option<(u32, u32)>> = involved
+        .par_iter()
+        .map(|&i| (i, (read.size_of)(first(i))))
+        .collect();
+    let candidates: Vec<(usize, usize)> = pairs
+        .into_iter()
+        .filter(|(i, j)| match (sizes[i], sizes[j]) {
+            (Some(a), Some(b)) => same_aspect(a, b),
             _ => false,
-        };
-        if aspect_matches && (score >= SAME_PICTURE || same_pixels(a, b)) {
-            sets.union(i, j);
+        })
+        .collect();
+    let mut to_shrink: Vec<usize> = candidates.iter().flat_map(|&(i, j)| [i, j]).collect();
+    to_shrink.sort_unstable();
+    to_shrink.dedup();
+    let done = AtomicUsize::new(0);
+    (read.progress)(0, to_shrink.len());
+    let tiny: HashMap<usize, Option<Vec<u8>>> = to_shrink
+        .par_iter()
+        .map(|&i| {
+            if (read.canceled)() {
+                return (i, None);
+            }
+            let small = (read.tiny)(first(i));
+            (read.progress)(done.fetch_add(1, Ordering::Relaxed) + 1, to_shrink.len());
+            (i, small)
+        })
+        .collect();
+    if (read.canceled)() {
+        return None;
+    }
+    let mut sets = UnionFind::new(nodes.len());
+    for (i, j) in candidates {
+        if let (Some(a), Some(b)) = (&tiny[&i], &tiny[&j]) {
+            if look_the_same(a, b) {
+                sets.union(i, j);
+            }
         }
     }
     let mut groups: BTreeMap<usize, Vec<PathBuf>> = BTreeMap::new();
@@ -173,10 +218,12 @@ pub fn group(
             .or_default()
             .extend(paths.iter().map(|p| (*p).clone()));
     }
-    groups
-        .into_values()
-        .filter(|paths| paths.len() > 1)
-        .collect()
+    Some(
+        groups
+            .into_values()
+            .filter(|paths| paths.len() > 1)
+            .collect(),
+    )
 }
 
 /// How many other existing files have exactly the bytes of `path`, from
@@ -211,7 +258,8 @@ pub fn find(
     root: &Path,
     disabled: &[PathBuf],
     vectors: &HashMap<String, Vec<f32>>,
-    canceled: &dyn Fn() -> bool,
+    canceled: &(dyn Fn() -> bool + Sync),
+    progress: &(dyn Fn(usize, usize) + Sync),
 ) -> Result<CopyReport, String> {
     let paths = crate::model::library::collect_library_image_paths_cancellable(
         Some(root.to_path_buf()),
@@ -243,7 +291,14 @@ pub fn find(
         .filter(|hash| !vectors.contains_key(*hash))
         .count();
     let size_of = |path: &Path| crate::export::oriented_source_dimensions(path).ok();
-    let mut groups: Vec<CopyGroup> = group(&fingerprints, vectors, &size_of, &look_the_same)
+    let read = Readers {
+        size_of: &size_of,
+        tiny: &tiny_grey,
+        canceled,
+        progress,
+    };
+    let mut groups: Vec<CopyGroup> = group(&fingerprints, vectors, &read)
+        .ok_or("Canceled")?
         .into_iter()
         .map(|paths| {
             let identical = paths
@@ -308,7 +363,7 @@ mod tests {
         .collect();
         let vectors: HashMap<String, Vec<f32>> = [
             ("A", unit(&[(0, 1.0)])),
-            ("A2", unit(&[(0, 1.0), (1, 0.05)])), // cosine ≈ 0.9988
+            ("A2", unit(&[(0, 1.0), (1, 0.05)])), // cosine ≈ 0.9988, still checked
             ("A3", unit(&[(0, 1.0), (1, 0.2)])),  // cosine ≈ 0.98
             ("A4", unit(&[(0, 1.0), (1, 0.25)])), // cosine ≈ 0.97
             ("B", unit(&[(2, 1.0)])),
@@ -323,8 +378,21 @@ mod tests {
                 (1920, 1080)
             })
         };
-        let same = |_: &Path, _: &Path| true;
-        let groups = group(&fingerprints, &vectors, &size_of, &same);
+        let read = |tiny: &(dyn Fn(&Path) -> Option<Vec<u8>> + Sync)| {
+            group(
+                &fingerprints,
+                &vectors,
+                &Readers {
+                    size_of: &size_of,
+                    tiny,
+                    canceled: &|| false,
+                    progress: &|_, _| {},
+                },
+            )
+            .unwrap()
+        };
+        let all_alike = |_: &Path| Some(vec![128u8; 1024]);
+        let groups = read(&all_alike);
         assert_eq!(groups.len(), 1, "{groups:?}");
         let mut members = groups[0].clone();
         members.sort();
@@ -334,12 +402,32 @@ mod tests {
             "the crop's aspect differs, so it stays out"
         );
 
-        // A borderline pair whose pixels differ stays apart too.
-        let different = |_: &Path, _: &Path| false;
-        let groups = group(&fingerprints, &vectors, &size_of, &different);
+        // Pixels that differ keep even a very close score apart; exact
+        // copies need no pixel check.
+        let webp_differs =
+            |path: &Path| Some(vec![if path.ends_with("a.webp") { 0u8 } else { 128 }; 1024]);
+        let groups = read(&webp_differs);
         let mut members = groups[0].clone();
         members.sort();
         assert_eq!(members, vec![p("a-1080p.jpg"), p("a-copy.png"), p("a.png")]);
+        let unreadable = |path: &Path| (!path.ends_with("a-1080p.jpg")).then(|| vec![128u8; 1024]);
+        let groups = read(&unreadable);
+        let mut members = groups[0].clone();
+        members.sort();
+        assert_eq!(members, vec![p("a-copy.png"), p("a.png"), p("a.webp")]);
+
+        // Canceling returns nothing.
+        let canceled = group(
+            &fingerprints,
+            &vectors,
+            &Readers {
+                size_of: &size_of,
+                tiny: &all_alike,
+                canceled: &|| true,
+                progress: &|_, _| {},
+            },
+        );
+        assert!(canceled.is_none());
     }
 
     #[test]
@@ -449,7 +537,7 @@ mod tests {
         drop(embedder);
         let vectors = store.vectors("m").unwrap();
 
-        let report = find(&index, &root, &[], &vectors, &|| false).unwrap();
+        let report = find(&index, &root, &[], &vectors, &|| false, &|_, _| {}).unwrap();
         for group in &report.groups {
             eprintln!(
                 "group: {:?}",

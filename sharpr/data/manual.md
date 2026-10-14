@@ -28,7 +28,7 @@ Choose a folder in the Library sidebar to load its images. Thumbnails decode in 
 
 Start typing anywhere, or press Ctrl+F, and describe what you are looking for: `mountains at dusk`, `woman on a sofa`, `watercolor`. Images whose file names contain the words come first, then the closest images by content, 200 at a time; **Show More** adds the next 200. Search covers the current folder or bucket unless **Whole library** is on. Filter words such as `4k`, `png` or `16:9` become chips and narrow the results first.
 
-Put `-` in front of a word to leave things out: `tower -water` finds towers without the images that look most like water (and files named after it), `-png` leaves out PNGs, and `-16:9` leaves out 16:9 images. Each becomes a "Not …" chip; click it to edit it as text again.
+Put `-` in front of a word to leave things out: `tower -water` finds towers without the images that look most like water (and files named after it), `-png` leaves out PNGs, and `-16:9` leaves out 16:9 images. Each becomes a "Not …" chip when you type a space after it or press Enter; click it to edit it as text again.
 
 The line under the search box says how well the results match and how much of the library is indexed. "Only weak matches" means the words may not fit anything there. While indexing runs, a small ring in the header shows its progress; Main Menu → Library → Library Overview… shows the details, and can rebuild the index from scratch.
 
@@ -44,7 +44,7 @@ Tags are retired. Main Menu → Library → Turn Tags into Buckets… offers eac
 
 ## Copies And Resolution
 
-Main Menu → Library → **Find Copies…** finds exact copies (the same file in several places) and resized or converted copies of the same picture, such as a 1080p JPEG of a 4K PNG, or a WebP conversion. Crops, mirrored versions, and merely similar pictures are not copies. Each group lists resolution, format, size, and folder with the highest resolution first, marked **Keep**; the others are ticked. **Move to Trash…** asks before anything moves, warns when a whole group is ticked, and reports files it couldn't move. Finding resized and converted copies needs the visual-search index; without it, only exact copies are found.
+Main Menu → Library → **Find Copies…** finds exact copies (the same file in several places) and resized or converted copies of the same picture, such as a 1080p JPEG of a 4K PNG, or a WebP conversion. Crops, mirrored versions, and merely similar pictures are not copies. Each group lists resolution, format, size, and folder with the highest resolution first, marked **Keep**; the others are ticked. **Move to Trash…** asks before anything moves, warns when a whole group is ticked, and reports files it couldn't move. Finding resized and converted copies needs the visual-search index; without it, only exact copies are found. On a large library, comparing similar pictures can take a little while; the window counts them as it goes, and closing it stops the search.
 
 To find low-resolution images, type `below 4k` (or `<1080p`) in search; `4k` finds images of at least 3840×2160 in either orientation.
 

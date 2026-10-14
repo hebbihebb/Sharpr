@@ -2569,6 +2569,43 @@ impl SharprWindow {
             });
         }
 
+        // Compare's keys work wherever the focus is, except in text fields.
+        {
+            let page = compare_page.clone();
+            let keys = gtk4::EventControllerKey::new();
+            keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
+            keys.connect_key_pressed(move |controller, key, _, modifiers| {
+                match controller.widget() {
+                    Some(window) if is_comparing(&window) && !text_input_has_focus(&window) => {
+                        page.handle_key(key, modifiers)
+                    }
+                    _ => glib::Propagation::Proceed,
+                }
+            });
+            self.add_controller(keys);
+        }
+        // Anything that switches the content away from Compare (opening a
+        // folder, searching) closes it properly, keeping the survivors.
+        {
+            let page = compare_page.clone();
+            let window_weak = self.downgrade();
+            content_stack.connect_visible_child_name_notify(move |stack| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                if stack.visible_child_name().as_deref() != Some("compare")
+                    && is_comparing(window.upcast_ref())
+                {
+                    let page = page.clone();
+                    glib::idle_add_local_once(move || {
+                        if !page.survivors().is_empty() {
+                            page.close();
+                        }
+                    });
+                }
+            });
+        }
+
         let compare_action = gio::SimpleAction::new("compare", None);
         compare_action.set_enabled(false);
         {
@@ -2749,8 +2786,14 @@ impl SharprWindow {
                 if win.imp().inline_search_suppressed.get() {
                     return;
                 }
-                win.take_completed_search_chips(entry);
+                win.take_completed_search_chips(entry, false);
                 win.run_scoped_search(entry.text().to_string());
+            });
+            let weak = self.downgrade();
+            preview_search_entry.connect_activate(move |entry| {
+                if let Some(win) = weak.upgrade() {
+                    win.take_completed_search_chips(entry, true);
+                }
             });
             let weak = self.downgrade();
             preview_search_entry.connect_changed(move |entry| {
@@ -2794,8 +2837,9 @@ impl SharprWindow {
                 let Some(ch) = key.to_unicode() else {
                     return glib::Propagation::Proceed;
                 };
-                // Space stays free for viewing and Compare (decision D7).
-                if ch.is_control() || ch.is_whitespace() {
+                // Space stays free for viewing and Compare (decision D7);
+                // Compare's own keys include printable ones.
+                if ch.is_control() || ch.is_whitespace() || is_comparing(window.upcast_ref()) {
                     return glib::Propagation::Proceed;
                 }
                 let Some(win) = window_weak.upgrade() else {

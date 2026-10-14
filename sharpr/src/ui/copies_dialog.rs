@@ -91,6 +91,34 @@ pub fn present(window: &SharprWindow) {
         spinner.stop();
         return;
     };
+    // Closing the window stops the search; the count shows it's moving.
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let canceled = Arc::new(AtomicBool::new(false));
+    {
+        let canceled = canceled.clone();
+        dialog.connect_closed(move |_| canceled.store(true, Ordering::Relaxed));
+    }
+    let progress = Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
+    {
+        let progress = progress.clone();
+        let searching = searching.downgrade();
+        glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+            let Some(searching) = searching.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let (done, total) = (
+                progress.0.load(Ordering::Relaxed),
+                progress.1.load(Ordering::Relaxed),
+            );
+            if total > 0 {
+                searching.set_description(Some(&format!(
+                    "Comparing similar pictures: {done} of {total}"
+                )));
+            }
+            glib::ControlFlow::Continue
+        });
+    }
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
         // Visual-search vectors find resized and converted copies; without
@@ -106,7 +134,17 @@ pub fn present(window: &SharprWindow) {
                 store.vectors(&key).ok()
             })
             .unwrap_or_default();
-        let result = crate::copies::find(&index, &root, &disabled, &vectors, &|| false);
+        let result = crate::copies::find(
+            &index,
+            &root,
+            &disabled,
+            &vectors,
+            &|| canceled.load(Ordering::Relaxed),
+            &|done, total| {
+                progress.0.store(done, Ordering::Relaxed);
+                progress.1.store(total, Ordering::Relaxed);
+            },
+        );
         let _ = tx.send_blocking(result);
     });
     let window = window.downgrade();

@@ -90,6 +90,29 @@ impl ComparePage {
         }
     }
 
+    /// Compare's keys, routed from the window so they work wherever the
+    /// focus is: Space flips, [ and ] dismiss, Ctrl+Z undoes, Escape closes.
+    pub fn handle_key(&self, key: gdk4::Key, modifiers: gdk4::ModifierType) -> glib::Propagation {
+        let view = &self.imp().view;
+        let control = modifiers.contains(gdk4::ModifierType::CONTROL_MASK);
+        match key {
+            gdk4::Key::space if !control => {
+                if view.mode() != Mode::Flip {
+                    self.imp().mode_buttons.borrow()[2].set_active(true);
+                } else {
+                    view.flip();
+                    self.update_badges();
+                }
+            }
+            gdk4::Key::bracketleft if !control => self.dismiss(Side::Left),
+            gdk4::Key::bracketright if !control => self.dismiss(Side::Right),
+            gdk4::Key::z | gdk4::Key::Z if control => self.undo(),
+            gdk4::Key::Escape => self.close(),
+            _ => return glib::Propagation::Proceed,
+        }
+        glib::Propagation::Stop
+    }
+
     pub fn close(&self) {
         let survivors = self.survivors();
         self.clear();
@@ -458,34 +481,6 @@ fn build(page: &ComparePage) {
         badge.append(dismiss);
         imp.root.add_overlay(badge);
     }
-
-    // Keys: Space flips, [ and ] dismiss, Ctrl+Z undoes, Escape closes.
-    let keys = gtk4::EventControllerKey::new();
-    keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
-    let weak = page.downgrade();
-    keys.connect_key_pressed(move |_, key, _, modifiers| {
-        let Some(page) = weak.upgrade() else {
-            return glib::Propagation::Proceed;
-        };
-        let view = &page.imp().view;
-        match key {
-            gdk4::Key::space => {
-                if view.mode() != Mode::Flip {
-                    page.imp().mode_buttons.borrow()[2].set_active(true);
-                } else {
-                    view.flip();
-                    page.update_badges();
-                }
-            }
-            gdk4::Key::bracketleft => page.dismiss(Side::Left),
-            gdk4::Key::bracketright => page.dismiss(Side::Right),
-            gdk4::Key::z if modifiers.contains(gdk4::ModifierType::CONTROL_MASK) => page.undo(),
-            gdk4::Key::Escape => page.close(),
-            _ => return glib::Propagation::Proceed,
-        }
-        glib::Propagation::Stop
-    });
-    page.add_controller(keys);
 }
 
 #[cfg(test)]

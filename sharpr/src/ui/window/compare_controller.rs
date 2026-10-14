@@ -21,6 +21,10 @@ impl SharprWindow {
             stack.set_transition_type(gtk4::StackTransitionType::SlideLeft);
             stack.set_visible_child_name("compare");
         }
+        // Only now visible, the page can take the focus from the filmstrip.
+        if let Some(page) = self.imp().compare_page.borrow().as_ref() {
+            page.view().grab_focus();
+        }
     }
 
     /// Back to browsing, with `survivors` selected and the first one shown.

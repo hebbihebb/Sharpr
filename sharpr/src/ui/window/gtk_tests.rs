@@ -1256,9 +1256,20 @@ fn compare_narrows_five_images_to_one() {
     });
     screenshot(&window, &root.parent().unwrap().join("compare-split.png"));
 
-    use crate::ui::compare_item::Side;
-    for side in [Side::Left, Side::Right, Side::Left, Side::Right] {
-        page.dismiss(side);
+    // The focus moved into Compare, off the filmstrip.
+    let focus = gtk4::prelude::GtkWindowExt::focus(&window).expect("something has focus");
+    assert!(
+        focus.is_ancestor(&page) || focus == *page.upcast_ref::<gtk4::Widget>(),
+        "focus is on {focus:?}"
+    );
+    let none = gdk4::ModifierType::empty();
+    for key in [
+        gdk4::Key::bracketleft,
+        gdk4::Key::bracketright,
+        gdk4::Key::bracketleft,
+        gdk4::Key::bracketright,
+    ] {
+        assert_eq!(page.handle_key(key, none), glib::Propagation::Stop);
     }
     assert_eq!(page.survivors().len(), 1, "five narrow down to one");
     assert_eq!(
@@ -1277,6 +1288,18 @@ fn compare_narrows_five_images_to_one() {
         "the survivor stays selected"
     );
     drop(st);
+
+    // Switching the content away (as searching or opening a folder does)
+    // closes Compare properly, keeping who was left.
+    filmstrip.select_all();
+    gio::prelude::ActionGroupExt::activate_action(&window, "compare", None);
+    pump_until(|| page.survivors().len() == 5);
+    page.handle_key(gdk4::Key::bracketright, none);
+    stack.set_visible_child_name("viewer");
+    pump_until(|| window.imp().state.borrow().scope != ViewScope::Compare);
+    assert_eq!(window.imp().state.borrow().selected_paths.len(), 4);
+    assert!(page.survivors().is_empty(), "Compare was closed");
+
     for (path, original) in paths.iter().zip(&originals) {
         assert_eq!(
             &std::fs::read(path).unwrap(),
@@ -1284,5 +1307,48 @@ fn compare_narrows_five_images_to_one() {
             "Compare changes no file"
         );
     }
+    window.close();
+}
+
+/// A minus word typed last becomes a chip when Enter is pressed, as it
+/// does after a space.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn enter_turns_a_final_minus_word_into_a_chip() {
+    let root = isolated_fixture("minus-chip");
+    std::fs::create_dir_all(&root).unwrap();
+    image::RgbImage::from_pixel(64, 36, image::Rgb([90, 90, 90]))
+        .save(root.join("tower.png"))
+        .unwrap();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 1 && window.is_mapped());
+
+    let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
+    entry.set_text("tower -water");
+    entry.emit_activate();
+    let chips = window.imp().browse_options.borrow().chips.chips.clone();
+    assert_eq!(
+        chips,
+        vec![crate::model::search_query::Chip::Without("water".into())]
+    );
+    assert_eq!(entry.text(), "tower");
+    // Plain words stay in the box.
+    entry.emit_activate();
+    assert_eq!(entry.text(), "tower");
     window.close();
 }
