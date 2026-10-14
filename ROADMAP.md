@@ -438,6 +438,18 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
     | robot −gun | 8 / 17 | 1 / 9 | not given |
     | blue sky −mountains | 5 / 18 | 1 / 15 | not given |
 
+    - **Tuning check (October 14, after the user found towers by water in `tower -water`).** Eight judged cases, totals of unwanted / relevant in the top 20:
+
+      | Rule | Unwanted | Relevant |
+      | --- | --- | --- |
+      | No minus word | 22 | 132 |
+      | Library's top 10% (current) | 4 | 111 |
+      | Library's top 20% | 2 | 87 |
+      | Library's top 30% | 2 | 69 |
+      | Top 30% of the word's own top 100 results | 4 | 107 |
+      | "pos neg" scores higher than "pos" (contrastive) | 16 | 129 |
+
+      Stronger cut-offs cost far more relevant images than they remove. The image vectors mostly describe the main subject, so water that is only part of a tower picture scores low. The 10% rule stays unless the user prefers a stronger, costlier option.
     - Sending "woman without beach" backfires: the model looks for beaches.
     - Subtracting the negative word's vector sat in between (woman −beach 0 / 14, robot −gun 5 / 13).
     - Both columns are lower bounds, because images outside the judged pool count as neither.
