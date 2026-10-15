@@ -1,60 +1,29 @@
 # Current Tasks
 
-## Awaiting acceptance: Phase 9 interface review (October 15, 2026)
+## Done: Phases 4–9 accepted and merged (October 15, 2026)
 
-**Deployed:** the desktop launcher runs `2b5f070`; `679bbe1` and `ef91d32` stay
-installed for rollback. The user's pass of `679bbe1` accepted Phases 4–7 and most
-of Phase 9 (`ROADMAP.md`). Since then: the Info readout tooltip is gone and the
-fast-scroll column shrank from 46 to 14 px. Open: Survey "does nothing" in the
-user's try (it needs two or more selected images and is silent otherwise; ask
-how it was tried). The user wants to merge into `main` once Phase 9 is accepted.
+The user accepted Phases 4, 5, 6, 7 and 9 in a manual pass of the installed
+builds (`679bbe1`, then `2b5f070`) and approved the merge. `main` was
+fast-forwarded to `viewer-reset` (`dd346e0` and this record); nothing is pushed.
+Their notes and follow-ups are in each phase's status in `ROADMAP.md` and in its
+Backlog; `docs/archive/history.md` has the summary.
 
-**Approved scope:** complete Phase 9, then install its test build, with off-screen
-screenshots preferred (D30). The user explicitly confirmed Survey as a way to
-narrow a selection. D26–D29 define the accepted hybrid look, monospace font,
-contextual Compare/crop controls and candidate thumbnails. Earlier accepted UI,
-export and filter/sort work is recorded in `ROADMAP.md`.
+**Deployed:** the desktop launcher runs `2b5f070` (later commits are notes only).
+`679bbe1` and `ef91d32` stay installed for rollback.
 
-**Completed checkpoints on `viewer-reset`:**
+**Next:** Phase 10, Release (`ROADMAP.md`), when the user starts it. Before that,
+the accepted phase sections in `ROADMAP.md` can be condensed into
+`docs/archive/history.md`, as Phase 8 was.
 
-1. `e91136b`: private off-screen Mutter runner; larger native fast-scroll handle;
-   strict `<16:9`/`>16:9` chips; bucket terminology.
-2. `27789cb`: persistent library-scoped last bucket (Ctrl+Shift+B); hover-expanded
-   Info in the same readout, pin/Escape, and live membership refresh.
-3. `88e5e41`: Survey grid (Ctrl+Shift+S), dismiss/Delete, Undo and Done/Escape;
-   original order, survivor selection, search/chips and image bytes preserved.
-4. `ffa075d`: one root chooser and recursive browsing; active identity, inactive
-   configurations, exclusions, bucket members, fingerprints and vectors survive
-   narrowing/widening. No library switcher/list/folder-mode or bucket transfer UI.
-5. `65bb267`: one stylesheet/provider and shared palette/drawing tokens; seven
-   original CC0 symbolic icons; CSS thumbnail feedback; compact Help; shared
-   viewer/filmstrip image actions; retired overlay, cache and index-ring
-   controls, preserving settings. The control dispositions
-   are in `docs/reference/interface-inventory.md`. The milestone self-review is
-   complete: fixed hidden-row keyboard-menu targeting and large Survey lookup cost.
+## Git, backup and guardrails
 
-**Verification:** `cargo build`, full `./check.sh` (217 tests), all 18 GTK workflows,
-6 focused high-contrast workflows and 2 final OSD/menu checks passed. Screenshots
-are off screen, in light/dark/high contrast at 1024×600 and 1600×900. Logs and
-captures: `.tmp/phase9/`. The same debug/Cairo 5,000-image scenario opened in
-345 ms before / 351 ms after; browsing's longest recorded stall was 87 / 85 ms.
-These are isolated debug measurements, not release performance claims.
-
-**Re-verified on committed code (October 15, Claude):** full `./check.sh`
-(217 tests) and all 18 GTK workflows off screen passed after the final commit.
-The documented GTK command now avoids `..` in paths (`679bbe1`); the one-root
-test rightly rejects such roots.
-
-**Next:** the user's manual pass. Phase 9 remains open until accepted; do not
-archive it or advance to Phase 10 yet. No further review loop is needed.
-
-## Git, backup and earlier acceptance
-
-- Development: `viewer-reset`; `main` stays at `1924346`. Merge only after Phase 9 acceptance; no push approval.
-  Keep all archive/prototype branches.
+- Development: `viewer-reset`; `main` holds accepted work. Pushing is the user's
+  decision. Keep all archive/prototype branches (`preserve/october-12-wip`,
+  `visual-search-trial-wip`, `look-prototype`).
 - Verified live backup: `~/.local/share/sharpr.backup-20261015-205204`, including
   settings. All database table counts match: 815 bucket members, 5,899 fingerprints,
-  5,184 vectors and 7,718 legacy tag rows. No live Sharpr process was running.
-- Phases 5–7 still have acceptance items in `ROADMAP.md`; Phase 8 is accepted and
-  archived. Automatic-tag cleanup is implemented but has never been run.
+  5,184 vectors and 7,718 legacy tag rows.
+- Automatic-tag cleanup is implemented but has never been run.
 - Tests use isolated temporary data/settings. Heavy jobs run one at a time.
+- Phase 9 evidence (logs, screenshots, before/after debug measurements) stays
+  local under `.tmp/phase9/`.
