@@ -1186,10 +1186,36 @@ fn webp_export_runs_in_the_background() {
     let settle = std::time::Instant::now();
     pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
     screenshot(&window, &root.parent().unwrap().join("export-dialog.png"));
-    // Cancel: an export from the dialog would go to the real Pictures folder,
-    // which an isolated test must never touch.
-    dialog.close();
+    // A click inside leaves it open; one outside closes it as Cancel (D25).
+    // Never Export: it would go to the real Pictures folder, which an
+    // isolated test must never touch.
+    let responses: Rc<RefCell<Vec<String>>> = Rc::default();
+    {
+        let responses = responses.clone();
+        dialog.connect_response(None, move |_, response| {
+            responses.borrow_mut().push(response.to_string());
+        });
+    }
+    let controllers = window.observe_controllers();
+    let click = (0..controllers.n_items())
+        .filter_map(|i| controllers.item(i).and_downcast::<gtk4::GestureClick>())
+        .find(|c| c.name().as_deref() == Some(super::CLICK_OUTSIDE_CLOSES))
+        .expect("the export closes on a click outside");
+    let bounds = dialog.child().unwrap().compute_bounds(&window).unwrap();
+    let (cx, cy) = (bounds.center().x() as f64, bounds.center().y() as f64);
+    click.emit_by_name::<()>("pressed", &[&1i32, &cx, &cy]);
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(600));
+    assert!(window.visible_dialog().is_some(), "a click inside keeps it");
+    click.emit_by_name::<()>("pressed", &[&1i32, &4.0f64, &4.0f64]);
     pump_until(|| window.visible_dialog().is_none());
+    assert_eq!(*responses.borrow(), ["cancel"]);
+    let controllers = window.observe_controllers();
+    assert!(
+        !(0..controllers.n_items())
+            .filter_map(|i| controllers.item(i).and_downcast::<gtk4::GestureClick>())
+            .any(|c| c.name().as_deref() == Some(super::CLICK_OUTSIDE_CLOSES)),
+        "the gesture goes when the dialog closes"
+    );
 
     let out = root.parent().unwrap().join("export-out");
     window.start_webp_export(

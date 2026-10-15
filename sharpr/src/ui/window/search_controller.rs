@@ -549,6 +549,7 @@ impl SharprWindow {
             };
             filmstrip.request_add_paths_to_bucket(paths);
         });
+        self.close_dialog_on_click_outside(&dialog);
         dialog.present(Some(self));
     }
 

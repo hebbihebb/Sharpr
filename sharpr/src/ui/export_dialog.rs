@@ -155,5 +155,6 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
             },
         );
     });
+    window.close_dialog_on_click_outside(&dialog);
     dialog.present(Some(window));
 }

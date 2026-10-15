@@ -98,6 +98,10 @@ fn spawn_phash_writer(index: Arc<LibraryIndex>) -> async_channel::Sender<(PathBu
     tx
 }
 
+/// The name of the click gesture that closes a quick picker on a click
+/// outside it (`close_dialog_on_click_outside`).
+const CLICK_OUTSIDE_CLOSES: &str = "click-outside-closes";
+
 /// True while a text field has keyboard focus. Single-key shortcuts then leave
 /// the key to the text field, so Delete never trashes images while editing text.
 fn text_input_has_focus(widget: &gtk4::Widget) -> bool {
@@ -677,6 +681,43 @@ impl SharprWindow {
     /// The crop in progress, if any.
     pub fn crop_session(&self) -> Option<crate::ui::crop_mode::CropSession> {
         self.imp().crop_session.borrow().clone()
+    }
+
+    /// Closes `dialog`, as its close response would, when a click lands
+    /// outside it while it is the top dialog (D25). Libadwaita dialogs
+    /// otherwise ignore such clicks. For quick pickers, not text entry.
+    pub(crate) fn close_dialog_on_click_outside(&self, dialog: &impl IsA<libadwaita::Dialog>) {
+        let click = gtk4::GestureClick::new();
+        click.set_name(Some(CLICK_OUTSIDE_CLOSES));
+        click.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let window = self.downgrade();
+        let weak = dialog.upcast_ref::<libadwaita::Dialog>().downgrade();
+        click.connect_pressed(move |gesture, _, x, y| {
+            let (Some(window), Some(dialog)) = (window.upgrade(), weak.upgrade()) else {
+                return;
+            };
+            if window.visible_dialog().as_ref() != Some(&dialog) {
+                return;
+            }
+            // The dialog widget spans the window, dimmed backdrop included;
+            // its child is the visible card.
+            let point = gtk4::graphene::Point::new(x as f32, y as f32);
+            let inside = dialog
+                .child()
+                .and_then(|card| card.compute_bounds(&window))
+                .is_some_and(|bounds| bounds.contains_point(&point));
+            if !inside {
+                gesture.set_state(gtk4::EventSequenceState::Claimed);
+                dialog.close();
+            }
+        });
+        self.add_controller(click.clone());
+        let window = self.downgrade();
+        dialog.connect_closed(move |_| {
+            if let Some(window) = window.upgrade() {
+                window.remove_controller(&click);
+            }
+        });
     }
 
     /// Moves copies chosen in "Find Copies…" to the trash on a worker, drops
@@ -3116,6 +3157,7 @@ impl SharprWindow {
                     }
                 });
 
+                win.close_dialog_on_click_outside(&dialog);
                 dialog.present(Some(&win));
             });
         }
