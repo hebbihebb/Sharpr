@@ -48,9 +48,14 @@ The user asked for Phases 6, 7, and 8 to be finished, then a proper install to t
 
 Approach agreed with the user (`ROADMAP.md` Phase 9, "The user's direction"): the map and the user's marks first, then research, then an early look decision (Libadwaita kept, hybrid, or plain GTK4), then proposals. No build work until proposals are approved.
 
-- **Step 0, the map: published October 15** at https://claude.ai/artifact/1uJDcNEQbrAcTRZ6GXp6jQ (private). It has 87 controls in 10 areas, 30 screenshots, two diagrams, 9 counted tasks, and 18 observations (N1–N18). The user's marks and notes save in the page's database (`marks/<control id>`, `notes/general`); read them back with ArtifactData before the review.
+- **Step 0, the map: published October 15** at https://claude.ai/artifact/1uJDcNEQbrAcTRZ6GXp6jQ (private). It has 83 controls in 10 areas, 30 screenshots, two diagrams, 9 counted tasks, and 18 observations (N1–N18). The user's marks and notes save in the page's database (`marks/<control id>`, `notes/general`); read them back with ArtifactData before the review.
 - **Screenshots** come from the `interface_tour_screenshots` GTK test (`8d6111b`), which writes `tour/` beside the fixtures. Rerun it after interface changes for before-and-after pictures.
-- **Waiting on the user:** marks, notes, and whether three icons (Open Folder, sidebar toggle, the Appearance tab) look broken in the real app as they do in the test window (N16).
+- **The user's marks (October 15), 82 of 83:**
+  - **Daily:** Filter, Sort, the folder tree, buckets, type to search, chips, minus words, right-click Add to Collection and Compare, scroll zoom and pan, the Compare split divider.
+  - **Never:** the Library and Photos titles, Open Folder, the library switcher, the indexing ring, every Show Overlay switch, Fit and 1:1 in ≡, Presentation (F11), right-click Info, Rename, Whole library, Show More, the Manual, Shortcuts, About, the two tag tools, and Preferences' libraries, collections, and cache.
+  - **Confusing:** Compare's `[` `]` dismiss keys ("bad shortcut key, not easy to find on keyboard") and its "4 of 4 left" with Undo.
+  - **Notes:** "dialogs and right click menus are chunky"; the overlay "would be better to be contextual or appear on hover"; zoom by scroll wheel alone "works well"; double-click for full screen; the window is usually maximized, and closing it quits.
+  - **Icons (N16):** the sidebar toggle, the menu button, and the Appearance tab render in the real app, so the broken icons are a test-window artifact. The real menu button shows "…", not ≡ (the test window uses a different icon theme).
 - **Next:** research, aimed at what the marks show.
 
 ## State (October 14, 2026)
