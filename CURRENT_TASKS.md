@@ -13,8 +13,8 @@ The user asked Codex to review Claude's UI work and continue. Started from a cle
 **Active goal:** complete Phase 9, then install the test version (user approval supersedes the earlier no-install instruction). Run screenshots/GTK checks on an off-screen display if available. Started clean at `c2839a5`; Compare candidates are implemented/verified, awaiting hands-on acceptance.
 
 **Execution checkpoints:**
-1. **Verified, ready to commit:** off-screen Mutter runner; larger always-visible native scroll handle; `<16:9`/`>16:9` chips (strict ranges); consistent bucket labels. Full checks: 213 tests; all 14 GTK tests off screen. Logs: `.tmp/phase9/{before,checkpoint1}.jsonl` and `checkpoint1-{check,gtk}.log`.
-2. Add-to-last-bucket action and hover-expanded Info, sharing existing actions/data paths.
+1. **Committed `e91136b`, verified:** off-screen Mutter runner; larger always-visible native scroll handle; `<16:9`/`>16:9` chips (strict ranges); consistent bucket labels. Full checks: 213 tests; all 14 GTK tests off screen. Logs: `.tmp/phase9/{before,checkpoint1}.jsonl` and `checkpoint1-{check,gtk}.log`.
+2. **Implemented/verified, ready to commit:** persistent library-scoped last bucket (Ctrl+Shift+B and a named context action); hover-expanded Info in the same card, with pin/Escape and retired-hover guards; live membership refresh. Full checks: 214 tests; off-screen write/byte-preservation, keyboard, layout, scoped-search and tour checks passed. Logs: `.tmp/phase9/checkpoint2-*`.
 3. Survey selected images with an adaptive grid, non-destructive selection decisions and keyboard access; clarify viewing versus culling while independent work continues.
 4. One library root: keep active library identity, preserve inactive settings, buckets, fingerprints/vectors and disabled folders; regression tests and migration backup/count checks.
 5. Finish Phase 9 polish: one stylesheet/tokens/palette, symbolic icons, skeleton/hover feedback, compact Help and viewer actions; record every control disposition against the inventory.

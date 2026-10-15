@@ -52,6 +52,12 @@
         </child>
         <child>
           <object class="AdwShortcutsItem">
+            <property name="title">Add to the last bucket</property>
+            <property name="accelerator">&lt;Control&gt;&lt;Shift&gt;b</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
             <property name="title">Select all images shown</property>
             <property name="accelerator">&lt;Control&gt;a</property>
           </object>

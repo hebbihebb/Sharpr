@@ -22,6 +22,7 @@ impl SharprWindow {
             return;
         };
         let count = paths.len();
+        let settings = self.imp().state.borrow().settings.clone();
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = (|| -> Result<_, String> {
@@ -55,6 +56,7 @@ impl SharprWindow {
             let Some(win) = weak.upgrade() else { return };
             match result {
                 Ok(collection) => {
+                    settings.remember_bucket(collection.id);
                     crate::bench_event!(
                         "collection.create",
                         serde_json::json!({"id":collection.id,"path_count":count})
@@ -150,9 +152,19 @@ impl SharprWindow {
             return;
         };
         let count = paths.len();
+        let settings = self.imp().state.borrow().settings.clone();
+        let library_id = settings.active_library_id.clone();
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = (|| -> Result<_, String> {
+                if !index
+                    .list_collections_for_library(library_id.as_deref())
+                    .map_err(|e| e.to_string())?
+                    .iter()
+                    .any(|bucket| bucket.id == id)
+                {
+                    return Err("Bucket is no longer in this library".into());
+                }
                 let paths = filter_paths_for_library(paths, root.as_deref(), &disabled);
                 if paths.len() != count {
                     return Err(
@@ -186,6 +198,9 @@ impl SharprWindow {
             let Some(win) = weak.upgrade() else { return };
             match result {
                 Ok((name, changed, remaining)) => {
+                    if !remove {
+                        settings.remember_bucket(id);
+                    }
                     crate::bench_event!(
                         "collection.tags.changed",
                         serde_json::json!({"id":id,"changed":changed,"remove":remove})

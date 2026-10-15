@@ -111,8 +111,8 @@ fn bubble_ctrl_a(focus: &gtk4::Widget) -> Option<gtk4::Widget> {
     None
 }
 
-fn compare_shortcut(window: &SharprWindow) -> bool {
-    let expected = gtk4::ShortcutTrigger::parse_string("<Control><Shift>c")
+fn window_shortcut(window: &SharprWindow, trigger: &str) -> bool {
+    let expected = gtk4::ShortcutTrigger::parse_string(trigger)
         .unwrap()
         .to_str();
     let controllers = window.observe_controllers();
@@ -334,7 +334,7 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     // Ctrl+I's Info panel opens once the image's details are loaded (D18).
     let viewer = window.imp().viewer.borrow().clone().unwrap();
     viewer.show_info();
-    let info = viewer.imp().metadata_chip.imp().popover.clone();
+    let info = viewer.imp().metadata_chip.imp().details.clone();
     pump_until(|| info.is_visible());
     let settled_at = std::time::Instant::now();
     pump_until(|| settled_at.elapsed() > std::time::Duration::from_millis(300));
@@ -343,7 +343,7 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
         info.upcast_ref(),
         &root.parent().unwrap().join("info-panel.png"),
     );
-    info.popdown();
+    viewer.imp().metadata_chip.hide_info();
     window
         .imp()
         .browse_options
@@ -1675,7 +1675,10 @@ fn compare_narrows_five_images_to_one() {
     // which selects every image (user test of `ef91d32`: the list's own
     // Ctrl+A swallowed it).
     filmstrip.imp().list_view.grab_focus();
-    assert!(!compare_shortcut(&window), "one image cannot open Compare");
+    assert!(
+        !window_shortcut(&window, "<Control><Shift>c"),
+        "one image cannot open Compare"
+    );
     let handled_by = bubble_ctrl_a(filmstrip.imp().list_view.upcast_ref());
     assert_eq!(
         handled_by.as_ref(),
@@ -1692,25 +1695,31 @@ fn compare_narrows_five_images_to_one() {
         .unwrap()
         .grab_focus();
     super::gtk_tests::settle(150);
-    assert!(!compare_shortcut(&window), "typing keeps its shortcut keys");
+    assert!(
+        !window_shortcut(&window, "<Control><Shift>c"),
+        "typing keeps its shortcut keys"
+    );
     filmstrip.imp().list_view.grab_focus();
     super::gtk_tests::settle(150);
     let dialog = libadwaita::Dialog::new();
     dialog.present(Some(&window));
     pump_until(|| window.visible_dialog().is_some());
-    assert!(!compare_shortcut(&window), "a modal sheet blocks Compare");
+    assert!(
+        !window_shortcut(&window, "<Control><Shift>c"),
+        "a modal sheet blocks Compare"
+    );
     dialog.close();
     pump_until(|| window.visible_dialog().is_none());
     filmstrip.imp().list_view.grab_focus();
     super::gtk_tests::settle(250);
     window.imp().crop_preparing.set(true);
     assert!(
-        !compare_shortcut(&window),
+        !window_shortcut(&window, "<Control><Shift>c"),
         "crop preparation blocks Compare"
     );
     window.imp().crop_preparing.set(false);
     assert!(
-        compare_shortcut(&window),
+        window_shortcut(&window, "<Control><Shift>c"),
         "two or more selected images open Compare"
     );
     let page = window.imp().compare_page.borrow().clone().unwrap();
@@ -2676,10 +2685,10 @@ fn interface_tour_screenshots() {
     shot_widget(context().unwrap().upcast_ref(), "02-right-click-one");
     context().unwrap().popdown();
     viewer.show_info();
-    let info = viewer.imp().metadata_chip.imp().popover.clone();
+    let info = viewer.imp().metadata_chip.imp().details.clone();
     pump_until(|| info.is_visible());
     shot_widget(info.upcast_ref(), "02-info-panel");
-    info.popdown();
+    viewer.imp().metadata_chip.hide_info();
 
     // 03: a selection of four, its right-click menu.
     for name in [
@@ -2843,5 +2852,130 @@ fn interface_tour_screenshots() {
     shot("09-presentation");
     window.exit_presentation_mode();
     settle(600);
+    window.close();
+}
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn repeat_bucket_and_expanding_info_preserve_originals() {
+    let root = isolated_fixture("repeat-info");
+    std::fs::create_dir_all(&root).unwrap();
+    let paths: Vec<_> = (0..2)
+        .map(|i| {
+            let path = root.join(format!("image-{i}.png"));
+            image::RgbImage::from_pixel(160, 90, image::Rgb([70, 100, 150]))
+                .save(&path)
+                .unwrap();
+            path
+        })
+        .collect();
+    let originals: Vec<_> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    let library = settings
+        .add_library("Test", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.app_state().borrow().library.image_count() == 2 && window.is_mapped());
+    let index = window.app_state().borrow().library_index.clone().unwrap();
+    let bucket = index
+        .create_collection(&library, None, "Wallpapers", &[], None, None)
+        .unwrap();
+    window
+        .app_state()
+        .borrow_mut()
+        .collections
+        .push(bucket.clone());
+    window.change_collection_tags(bucket.id, vec![paths[0].clone()], false);
+    pump_until(|| window.app_state().borrow().settings.last_bucket() == Some(bucket.id));
+    let strip = window.imp().filmstrip.borrow().clone().unwrap();
+    strip.set_action_selection_to_path(&paths[1]);
+    let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
+    window.show_inline_search();
+    entry.grab_focus();
+    settle(150);
+    assert!(
+        !window_shortcut(&window, "<Control><Shift>b"),
+        "typing blocks repeat-add"
+    );
+    strip.imp().list_view.grab_focus();
+    settle(150);
+    assert!(window_shortcut(&window, "<Control><Shift>b"));
+    pump_until(|| {
+        crate::buckets::view(&index, bucket.id, Some(&root), &[])
+            .unwrap()
+            .paths
+            .len()
+            == 2
+    });
+    window.app_state().borrow_mut().disabled_folders = vec![root.clone()];
+    window.add_to_last_bucket(vec![paths[0].clone()]);
+    settle(150);
+    assert_eq!(
+        crate::buckets::view(&index, bucket.id, Some(&root), &[])
+            .unwrap()
+            .paths
+            .len(),
+        2
+    );
+    window.app_state().borrow_mut().disabled_folders.clear();
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+    let chip = &viewer.imp().metadata_chip;
+    pump_until(|| chip.imp().has_metadata.get());
+    pump_until(|| chip.imp().buckets_label.text().contains("Wallpapers"));
+    chip.set_hovered(true);
+    pump_until(|| chip.is_info_open());
+    assert!(
+        find_widgets::<gtk4::Popover>(chip.upcast_ref()).is_empty(),
+        "details stay inside the chip"
+    );
+    chip.set_hovered(false);
+    pump_until(|| !chip.is_info_open());
+    assert!(chip.show_info());
+    chip.set_hovered(false);
+    settle(250);
+    assert!(chip.is_info_open(), "keyboard/click info stays pinned");
+    for (theme, scheme) in [
+        ("light", libadwaita::ColorScheme::ForceLight),
+        ("dark", libadwaita::ColorScheme::ForceDark),
+    ] {
+        libadwaita::StyleManager::default().set_color_scheme(scheme);
+        for (width, height) in [(1024, 600), (1600, 900)] {
+            window.set_default_size(width, height);
+            pump_until(|| window.width() == width && window.height() == height);
+            settle(100);
+            let bounds = chip.compute_bounds(&window).unwrap();
+            assert!(bounds.x() >= 0.0 && bounds.x() + bounds.width() <= width as f32);
+            screenshot(
+                &window,
+                &root
+                    .parent()
+                    .unwrap()
+                    .join(format!("expanded-info-{theme}-{width}.png")),
+            );
+        }
+    }
+    assert!(viewer.hide_info());
+    chip.set_hovered(true);
+    chip.clear();
+    settle(250);
+    assert!(
+        !chip.is_info_open(),
+        "a delayed hover cannot reopen a cleared image"
+    );
+    for (path, bytes) in paths.iter().zip(originals) {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
     window.close();
 }

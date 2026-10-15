@@ -128,6 +128,20 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    pub fn last_bucket(&self) -> Option<i64> {
+        let (library, bucket): (String, i64) =
+            serde_json::from_str(self.settings.string("last-bucket").as_str()).ok()?;
+        (self.active_library_id.as_deref() == Some(library.as_str())).then_some(bucket)
+    }
+
+    pub fn remember_bucket(&self, id: i64) {
+        if let Some(library) = self.active_library_id.as_ref() {
+            if let Ok(value) = serde_json::to_string(&(library, id)) {
+                let _ = self.settings.set_string("last-bucket", &value);
+            }
+        }
+    }
+
     pub fn load() -> Self {
         Self::load_from_settings(settings_for_app())
     }
@@ -596,6 +610,24 @@ mod tests {
             "/tmp/resized"
         );
         assert_eq!(settings.int("thumbnail-cache-max"), 100);
+    }
+
+    #[test]
+    fn last_bucket_survives_reload_and_is_scoped_to_its_library() {
+        let backend = test_settings();
+        let mut settings = AppSettings::load_from_settings(backend.clone());
+        assert_eq!(settings.last_bucket(), None);
+        settings.remember_bucket(42);
+        assert_eq!(settings.last_bucket(), Some(42));
+        let original = settings.active_library_id.clone();
+        settings.active_library_id = Some("another-library".into());
+        assert_eq!(settings.last_bucket(), None);
+        settings.active_library_id = original;
+        settings.save();
+        assert_eq!(
+            AppSettings::load_from_settings(backend).last_bucket(),
+            Some(42)
+        );
     }
 
     #[test]

@@ -23,6 +23,8 @@ This file covers how to build them in GTK.
 - Words in the search box go to visual search when its model is installed (Phase 5). File-name matches come first, then the closest images, 200 at a time. A status line under the header always says what happened: match strength and coverage ("4,210 of 5,812 images indexed"), or that only file names were matched and why. Never show weak matches as if they were good ones (principle 5).
 - Tags are retired (D1, Phase 5). Add no tag UI; buckets are how images are gathered.
 - Keep the interface quiet. Only resolution with format, and bucket membership, are always visible; everything else belongs in the Info panel (D18).
+- Phase 9 expands Info inside the same readout card after a short hover. Leaving collapses it; clicking or Ctrl+I pins it until Escape or another click. Clearing/changing the image retires delayed hovers. No second popover appears.
+- Ctrl+Shift+B repeats the last successful bucket destination, scoped to the library and persisted additively. The image menu names that destination. Picker, drag/drop and repeat use the same background membership writer; successful writes refresh the sidebar, badges and current image's membership summary.
 - Destructive or broad actions need confirmation that states their effect. These include deleting a tag, deleting a bucket, trashing files, and bulk tag removal. When an action affects buckets, name them.
 - Every background failure surfaces as a toast or dialog. Never let a failed read look like an empty result.
 - Copy dialogs keep the oriented source aspect ratio by default. Crop defaults to a movable 16:9 selection. PNG output disables the quality control.

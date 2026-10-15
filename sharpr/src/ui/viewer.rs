@@ -205,7 +205,7 @@ impl ViewerPane {
                 let Some(viewer) = w.upgrade() else { return };
                 let imp = viewer.imp();
                 imp.chip_idle_source.borrow_mut().take();
-                if imp.chip_hovered.get() || imp.metadata_chip.imp().popover.is_visible() {
+                if imp.chip_hovered.get() || imp.metadata_chip.is_info_open() {
                     return;
                 }
                 imp.metadata_chip.add_css_class("sharpr-idle");
@@ -389,8 +389,12 @@ impl ViewerPane {
         });
     }
 
-    /// Opens the image Info panel, now or as soon as the current image's
-    /// details have loaded (decision D18).
+    /// Collapse the pinned or hover-expanded Info card.
+    pub fn hide_info(&self) -> bool {
+        self.imp().metadata_chip.hide_info()
+    }
+
+    /// Pin Info now, or when the current image metadata arrives.
     pub fn show_info(&self) {
         let imp = self.imp();
         if !imp.metadata_chip.show_info() {
@@ -884,7 +888,7 @@ impl ViewerPane {
         self.set_metadata_visible(!self.metadata_visible());
     }
 
-    fn refresh_membership(&self) {
+    pub(crate) fn refresh_membership(&self) {
         let imp = self.imp();
         let path = match imp.current_path.borrow().clone() {
             Some(path) => path,

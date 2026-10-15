@@ -31,6 +31,11 @@
       <summary>Active library identifier</summary>
       <description>The id of the currently selected library.</description>
     </key>
+    <key name="last-bucket" type="s">
+      <default>""</default>
+      <summary>Most recent successful bucket destination</summary>
+      <description>JSON library identity and bucket id for the repeat-add action.</description>
+    </key>
     <key name="webp-export-dir" type="s">
       <default>""</default>
       <summary>Folder for WebP exports and crop copies</summary>

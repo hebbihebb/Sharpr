@@ -10,7 +10,7 @@ use crate::quality::QualityScore;
 // ---------------------------------------------------------------------------
 // MetadataChip — the quiet bottom-right OSD chip (decision D18): resolution,
 // format, a below-4K hint and the image's buckets. Everything else lives in
-// the Info popover, opened by clicking the chip, Ctrl+I or right-click → Info.
+// the expanded Info card, opened by clicking the chip, Ctrl+I or right-click → Info.
 // ---------------------------------------------------------------------------
 
 /// Long × short edge of 4K, the user's wallpaper target.
@@ -24,7 +24,9 @@ mod imp {
         pub metadata_label: gtk4::Label,
         pub below_4k_label: gtk4::Label,
         pub buckets_label: gtk4::Label,
-        pub popover: gtk4::Popover,
+        pub details: gtk4::Box,
+        pub pinned: std::cell::Cell<bool>,
+        pub hover_token: std::cell::Cell<u64>,
         pub info_title: gtk4::Label,
         pub info_location: gtk4::Label,
         pub info_file: gtk4::Label,
@@ -93,7 +95,7 @@ mod imp {
             card.append(&first_line);
             card.append(&buckets_label);
 
-            // Info popover.
+            // Details expand within this same card.
             let quality_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
             quality_row.set_halign(gtk4::Align::Start);
             let quality_score_label = gtk4::Label::new(Some("Res --"));
@@ -132,11 +134,11 @@ mod imp {
             let popover_duplicates_label = info_label(None);
             popover_duplicates_label.set_visible(false);
 
-            let popover_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-            popover_box.set_margin_top(12);
-            popover_box.set_margin_bottom(12);
-            popover_box.set_margin_start(12);
-            popover_box.set_margin_end(12);
+            let details = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+            details.set_margin_top(12);
+            details.set_margin_bottom(12);
+            details.set_margin_start(12);
+            details.set_margin_end(12);
             for widget in [
                 info_title.upcast_ref::<gtk4::Widget>(),
                 info_location.upcast_ref(),
@@ -146,27 +148,24 @@ mod imp {
                 popover_collections_label.upcast_ref(),
                 popover_duplicates_label.upcast_ref(),
             ] {
-                popover_box.append(widget);
+                details.append(widget);
             }
 
-            let popover = gtk4::Popover::new();
-            popover.set_autohide(true);
-            popover.set_child(Some(&popover_box));
-            popover.set_parent(&card);
-
-            let popover_clone = popover.clone();
-            let click = gtk4::GestureClick::new();
-            click.connect_pressed(move |_, _, _, _| {
-                popover_clone.popup();
-            });
-            card.add_controller(click);
+            details.set_margin_start(0);
+            details.set_margin_end(0);
+            details.set_margin_bottom(0);
+            details.set_visible(false);
+            details.add_css_class("metadata-details");
+            card.append(&details);
 
             Self {
                 card,
                 metadata_label,
                 below_4k_label,
                 buckets_label,
-                popover,
+                details,
+                pinned: std::cell::Cell::new(false),
+                hover_token: std::cell::Cell::new(0),
                 info_title,
                 info_location,
                 info_file,
@@ -198,7 +197,6 @@ mod imp {
 
     impl ObjectImpl for MetadataChip {
         fn dispose(&self) {
-            self.popover.unparent();
             self.card.unparent();
         }
     }
@@ -222,6 +220,32 @@ impl MetadataChip {
         install_css();
         let widget: Self = glib::Object::new();
         widget.imp().card.set_parent(&widget);
+        let weak = widget.downgrade();
+        let motion = gtk4::EventControllerMotion::new();
+        motion.connect_enter(move |_, _, _| {
+            if let Some(chip) = weak.upgrade() {
+                chip.set_hovered(true);
+            }
+        });
+        let weak = widget.downgrade();
+        motion.connect_leave(move |_| {
+            if let Some(chip) = weak.upgrade() {
+                chip.set_hovered(false);
+            }
+        });
+        widget.add_controller(motion);
+        let weak = widget.downgrade();
+        let click = gtk4::GestureClick::new();
+        click.connect_pressed(move |_, _, _, _| {
+            if let Some(chip) = weak.upgrade() {
+                if chip.imp().pinned.get() {
+                    chip.hide_info();
+                } else {
+                    chip.show_info();
+                }
+            }
+        });
+        widget.add_controller(click);
         widget
     }
 
@@ -274,7 +298,7 @@ impl MetadataChip {
         self.sync_visibility();
     }
 
-    /// The folder shown in the Info popover.
+    /// The folder shown in the expanded Info card.
     pub fn update_location(&self, path: &Path) {
         let folder = path
             .parent()
@@ -283,18 +307,49 @@ impl MetadataChip {
         self.imp().info_location.set_text(&folder);
     }
 
-    /// Opens the Info popover (Ctrl+I, right-click → Info, or a click).
+    /// Opens the expanded Info card (Ctrl+I, right-click → Info, or a click).
     /// Returns false while no image info is loaded yet.
     pub fn show_info(&self) -> bool {
         let imp = self.imp();
         if !imp.card.is_visible() {
             return false;
         }
-        imp.popover.popup();
+        imp.pinned.set(true);
+        imp.details.set_visible(true);
         true
     }
 
+    pub fn is_info_open(&self) -> bool {
+        self.imp().details.is_visible()
+    }
+
+    pub fn hide_info(&self) -> bool {
+        let imp = self.imp();
+        let was_open = self.is_info_open();
+        imp.pinned.set(false);
+        imp.hover_token.set(imp.hover_token.get().wrapping_add(1));
+        imp.details.set_visible(false);
+        was_open
+    }
+
+    pub fn set_hovered(&self, hovered: bool) {
+        let imp = self.imp();
+        let token = imp.hover_token.get().wrapping_add(1);
+        imp.hover_token.set(token);
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+            let Some(chip) = weak.upgrade() else { return };
+            let imp = chip.imp();
+            if imp.hover_token.get() == token && !imp.pinned.get() && imp.card.is_visible() {
+                imp.details.set_visible(hovered);
+            }
+        });
+    }
+
     pub fn set_enabled(&self, enabled: bool) {
+        if !enabled {
+            self.hide_info();
+        }
         self.imp().enabled.set(enabled);
         self.sync_visibility();
     }
@@ -379,6 +434,7 @@ impl MetadataChip {
 
     /// Hide and clear all labels (e.g. before a new image loads).
     pub fn clear(&self) {
+        self.hide_info();
         let imp = self.imp();
         imp.metadata_label.set_text("");
         imp.has_metadata.set(false);

@@ -56,7 +56,11 @@ fn menu_item(label: &str, action: &str, accel: Option<&str>) -> gio::MenuItem {
     item
 }
 
-fn build_context_menu_model(in_collection: bool, is_multi: bool) -> gio::Menu {
+fn build_context_menu_model(
+    in_collection: bool,
+    is_multi: bool,
+    last_bucket: Option<&str>,
+) -> gio::Menu {
     let menu = gio::Menu::new();
 
     let sec1 = gio::Menu::new();
@@ -98,6 +102,14 @@ fn build_context_menu_model(in_collection: bool, is_multi: bool) -> gio::Menu {
         "Add to Bucket\u{2026}",
         "filmstrip.add-to-collection",
         None,
+    ));
+    let repeat_label = last_bucket
+        .map(|name| format!("Add to {name}"))
+        .unwrap_or_else(|| "Add to Last Bucket".into());
+    sec2.append_item(&menu_item(
+        &repeat_label,
+        "filmstrip.add-last-bucket",
+        Some("<Control><Shift>b"),
     ));
     if in_collection {
         sec2.append_item(&menu_item(
@@ -1148,6 +1160,25 @@ impl FilmstripPane {
         }
         group.add_action(&duplicate);
 
+        let repeat = gio::SimpleAction::new("add-last-bucket", None);
+        let weak = self.downgrade();
+        repeat.connect_activate(move |_, _| {
+            let Some(strip) = weak.upgrade() else { return };
+            let paths = strip
+                .imp()
+                .menu_ctx
+                .borrow()
+                .as_ref()
+                .map(|c| c.action_paths.clone())
+                .unwrap_or_default();
+            if let Some(window) = strip
+                .root()
+                .and_downcast::<crate::ui::window::SharprWindow>()
+            {
+                window.add_to_last_bucket(paths);
+            }
+        });
+        group.add_action(&repeat);
         let trash = gio::SimpleAction::new("trash", None);
         {
             let w = self.downgrade();
@@ -1758,7 +1789,21 @@ impl FilmstripPane {
             action_paths,
         });
         self.action_set_enabled("filmstrip.add-to-collection", has_library_index);
-        popover.set_menu_model(Some(&build_context_menu_model(in_collection, is_multi)));
+        let last_name = self.imp().state.borrow().as_ref().and_then(|state| {
+            let state = state.borrow();
+            state.settings.last_bucket().and_then(|id| {
+                state
+                    .collections
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map(|c| c.name.clone())
+            })
+        });
+        popover.set_menu_model(Some(&build_context_menu_model(
+            in_collection,
+            is_multi,
+            last_name.as_deref(),
+        )));
         popover.popup();
     }
 

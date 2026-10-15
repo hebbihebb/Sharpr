@@ -29,6 +29,7 @@ use crate::ui::sidebar::SidebarPane;
 use crate::ui::state::{AppState, ViewScope};
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 
+mod bucket_repeat;
 mod compare_controller;
 pub(crate) mod mode_header;
 /// Gets Compare's survivors when someone else opened it (Find Copies).
@@ -2022,6 +2023,7 @@ impl SharprWindow {
         let refresh_sidebar_collections = {
             let sidebar_c = sidebar.clone();
             let filmstrip_c = filmstrip.clone();
+            let viewer_c = viewer.clone();
             let state_c = state.clone();
             let generation = Rc::new(Cell::new(0u64));
             move || {
@@ -2040,6 +2042,7 @@ impl SharprWindow {
                 let state = state_c.clone();
                 let sidebar = sidebar_c.clone();
                 let filmstrip = filmstrip_c.clone();
+                let viewer = viewer_c.clone();
                 let current_generation = generation.clone();
                 let expected_library = library.clone();
                 crate::ui::collection_dialogs::run_collection_write(
@@ -2070,6 +2073,7 @@ impl SharprWindow {
                                 state.borrow_mut().collections = collections.clone();
                                 filmstrip.refresh_collection_colors(&collections);
                                 sidebar.refresh_collections(&collections);
+                                viewer.refresh_membership();
                                 apply_scope_to_sidebar(&state.borrow().scope, &sidebar);
                             }
                             Err(error) => crate::bench_warn!(
@@ -2867,6 +2871,7 @@ impl SharprWindow {
         }
         self.add_action(&compare_action);
         self.install_compare_shortcut();
+        self.setup_bucket_repeat();
         {
             let compare_action = compare_action.clone();
             let weak = self.downgrade();
@@ -3551,6 +3556,15 @@ impl SharprWindow {
             Some(gtk4::ShortcutTrigger::parse_string("Escape").unwrap()),
             Some(gtk4::CallbackAction::new(move |widget, _| {
                 if let Some(win) = widget.downcast_ref::<SharprWindow>() {
+                    if win
+                        .imp()
+                        .viewer
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|viewer| viewer.hide_info())
+                    {
+                        return glib::Propagation::Stop;
+                    }
                     if win.imp().presentation_mode.get() {
                         win.exit_presentation_mode();
                         return glib::Propagation::Stop;
