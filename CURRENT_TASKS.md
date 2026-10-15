@@ -46,7 +46,12 @@ The user asked for Phases 6, 7, and 8 to be finished, then a proper install to t
 
 ## Next: Phase 9, Interface Review (October 15)
 
-Approach agreed with the user (`ROADMAP.md` Phase 9, "The user's direction"): the map and the user's marks first, then research, then an early look decision (Libadwaita kept, hybrid, or plain GTK4), then proposals. No build work until proposals are approved. First step: the map page.
+Approach agreed with the user (`ROADMAP.md` Phase 9, "The user's direction"): the map and the user's marks first, then research, then an early look decision (Libadwaita kept, hybrid, or plain GTK4), then proposals. No build work until proposals are approved.
+
+- **Step 0, the map: published October 15** at https://claude.ai/artifact/1uJDcNEQbrAcTRZ6GXp6jQ (private). It has 87 controls in 10 areas, 30 screenshots, two diagrams, 9 counted tasks, and 18 observations (N1–N18). The user's marks and notes save in the page's database (`marks/<control id>`, `notes/general`); read them back with ArtifactData before the review.
+- **Screenshots** come from the `interface_tour_screenshots` GTK test (`8d6111b`), which writes `tour/` beside the fixtures. Rerun it after interface changes for before-and-after pictures.
+- **Waiting on the user:** marks, notes, and whether three icons (Open Folder, sidebar toggle, the Appearance tab) look broken in the real app as they do in the test window (N16).
+- **Next:** research, aimed at what the marks show.
 
 ## State (October 14, 2026)
 
