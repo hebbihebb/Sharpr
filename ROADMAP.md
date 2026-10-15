@@ -580,8 +580,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - **Step 0, the map:** 83 controls marked by the user. **Step 2a, research:** 18 ideas, 15 wanted. **Step 2b, the look:** the hybrid (D26), then the Sharpr design language (D27), built in two prototype passes and tried hands-on by the user on a copy of the library ("all in all i like it").
 - **Built so far:** I6, I7, I12, I14, I15, I17 (in part: the library switcher and Open Folder are hidden), the combined Sort and Filter with chips (option A), the readout face, restyled chips and pill, and key hints.
 - **Finishing touches** (user's trial, October 15, plus code):
-  - Preferences, Keyboard Shortcuts, the Manual and About are still separate Libadwaita windows; they become sheets in Sharpr's style (I8).
-  - The user reported "the preferences menu does not" get the new font; to be pinned down.
+  - Preferences and Keyboard Shortcuts are separate windows on deprecated parts (`AdwPreferencesWindow`, `GtkShortcutsWindow`), so the look's stylesheet, scoped to the main window, never reaches them: the user saw Preferences keep the plain Libadwaita look and font while the in-window sheets (Find Copies, Library Overview, the Manual) changed. They become sheets in the main window (`AdwPreferencesDialog`, `AdwShortcutsDialog`), in Sharpr's style (I8). First in line.
   - Bundle JetBrains Mono (OFL) for other machines and the Flatpak; today it comes from the user's system.
   - In Compare and crop, the viewer's bar still shows search; the mode's own controls belong there.
   - Size filters from the old Filter popover (minimum width and height) are gone; size chips such as `4k` replace them.
