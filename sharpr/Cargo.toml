@@ -1,9 +1,9 @@
 [package]
 name = "sharpr"
-version = "0.1.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.94"
-description = "A modern GTK4 + Libadwaita image library and viewer"
+description = "Find, curate and prepare wallpaper-grade images"
 license = "GPL-3.0-or-later"
 
 [[bin]]
@@ -37,8 +37,6 @@ memmap2 = "0.9"
 # already in the tree through other crates
 libc = "0.2"
 
-# Metadata (EXIF / XMP / IPTC) via gexiv2 C library
-rexiv2 = "0.10"
 
 # Async communication between background threads and GTK main thread
 async-channel = "2"

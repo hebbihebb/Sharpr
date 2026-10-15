@@ -38,7 +38,7 @@ Sharpr is for people with thousands of downloaded images, generated artwork, and
 On Fedora, install the build dependencies, then build and run:
 
 ```bash
-sudo dnf install gtk4-devel libadwaita-devel gexiv2-devel pkg-config gcc
+sudo dnf install gtk4-devel libadwaita-devel pkg-config gcc
 cd sharpr
 glib-compile-schemas data/
 GSETTINGS_SCHEMA_DIR=data cargo run --release

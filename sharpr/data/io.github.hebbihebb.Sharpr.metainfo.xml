@@ -2,20 +2,21 @@
 <component type="desktop-application">
   <id>io.github.hebbihebb.Sharpr</id>
   <name>Sharpr</name>
-  <summary>Fast image quality review for Linux</summary>
+  <summary>Find, curate and prepare wallpaper-grade images</summary>
   <description>
     <p>
-      Sharpr is a fast, local-first image quality review tool for Linux.
-      Open a folder, move through the filmstrip, compare two selections, inspect
-      metadata, and tag or collect the keepers. Folders are the source of truth;
-      Sharpr never modifies your original files.
+      Sharpr is a fast, offline app for finding, curating and preparing
+      wallpaper-grade images from a large local collection. Folders are the
+      source of truth, and Sharpr never modifies your original files.
     </p>
-    <p>
-      Features include a GNOME-native three-pane layout, SQLite-backed library
-      index, collections with tag inheritance, duplicate detection, resolution-based
-      quality views, generic two-image Compare, and non-destructive Resize Copy
-      to JPEG, PNG, WebP, or JPEG XL. Sharpr has no runtime networking.
-    </p>
+    <ul>
+      <li>Browse real folders in a fast filmstrip and a large viewer.</li>
+      <li>Find images by describing them in words, with an optional local model, plus format, resolution and aspect filters.</li>
+      <li>Keep favourites in nested buckets that survive files being moved outside Sharpr.</li>
+      <li>Compare and survey selections, and find exact, resized and converted copies.</li>
+      <li>Crop a copy and batch-export lossless or lossy WebP.</li>
+    </ul>
+    <p>Sharpr makes no network connections.</p>
   </description>
   <url type="homepage">https://github.com/hebbihebb/Sharpr</url>
   <url type="bugtracker">https://github.com/hebbihebb/Sharpr/issues</url>
@@ -23,12 +24,20 @@
   <launchable type="desktop-id">io.github.hebbihebb.Sharpr.desktop</launchable>
   <screenshots>
     <screenshot type="default">
-      <caption>Three-pane image browser showing the folder sidebar, filmstrip, and viewer.</caption>
-      <!-- TODO: replace with a real screenshot of the current UI -->
-      <image>https://raw.githubusercontent.com/hebbihebb/Sharpr/main/DesignDocs/UI%20design%20draft_v2.png</image>
+      <caption>Folders, filmstrip and viewer.</caption>
+      <image>https://raw.githubusercontent.com/hebbihebb/Sharpr/main/screenshot.webp</image>
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.5.0" date="2026-10-15">
+      <description>
+        <p>
+          Visual search, buckets that follow moved files, Compare and Survey,
+          Find Copies, crop and batch WebP export, and a reviewed interface
+          with its own compact look.
+        </p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-05-09">
       <description>
         <p>
@@ -47,8 +56,7 @@
   <content_rating type="oars-1.1"/>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
-  <developer_name>Sharpr Contributors</developer_name>
-  <developer id="io.github.hebbihebb.Sharpr">
+  <developer id="io.github.hebbihebb">
     <name>Sharpr Contributors</name>
   </developer>
   <provides>

@@ -6,10 +6,16 @@ use gio::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::config::FolderMode;
-use crate::focused_image_set;
 use crate::library_index::{basic_info_from_path, BasicImageInfo, IndexedImage};
 use crate::model::image_entry::ImageEntry;
 use crate::quality::{QualityClass, QualityScore};
+
+/// Process-wide, so a stale virtual load never matches a newer one.
+fn next_virtual_generation() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SortField {
@@ -508,7 +514,7 @@ impl LibraryManager {
     /// the old ones in one `items-changed` signal, so the sorted model and the
     /// list view update once instead of once per row.
     pub fn load_virtual(&mut self, paths: &[PathBuf]) -> (u64, Vec<PathBuf>) {
-        let generation = focused_image_set::next_generation();
+        let generation = next_virtual_generation();
         self.virtual_generation = generation;
         self.path_to_index.clear();
         // A sort/filter rebuild must not lose textures evicted from the global
@@ -550,7 +556,7 @@ impl LibraryManager {
 
     /// Restore a captured view without rescanning or decoding on the GTK thread.
     pub fn restore_view(&mut self, entries: &[ImageEntry], folder: Option<PathBuf>) {
-        self.virtual_generation = focused_image_set::next_generation();
+        self.virtual_generation = next_virtual_generation();
         self.path_to_index.clear();
         self.active_thumbnail_cache.clear();
         self.current_folder = folder;

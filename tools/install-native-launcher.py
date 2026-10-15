@@ -72,14 +72,13 @@ applications.mkdir(parents=True, exist_ok=True)
 # Keep the existing filename so an upgrade does not leave a second launcher.
 (applications / 'sharpr-dev.desktop').write_text(
     '[Desktop Entry]\nName=Sharpr\nGenericName=Image Viewer\n'
-    'Comment=Review and curate images\n'
+    'Comment=Find, curate and prepare wallpaper-grade images\n'
     f'Exec=env {desktop_quote("GSETTINGS_SCHEMA_DIR=" + str(current / "schemas"))} '
-    f'{desktop_quote(current / "sharpr")} %F\n'
+    f'{desktop_quote(current / "sharpr")}\n'
     f'TryExec={current / "sharpr"}\n'
     'Icon=io.github.hebbihebb.Sharpr\nTerminal=false\nType=Application\n'
     'Categories=Graphics;Viewer;GNOME;GTK;\n'
-    'MimeType=image/jpeg;image/png;image/gif;image/webp;image/tiff;image/bmp;\n'
-    'StartupWMClass=sharpr\nKeywords=images;photos;viewer;wallpapers;\n'
+    'StartupWMClass=io.github.hebbihebb.Sharpr\nKeywords=images;photos;viewer;wallpapers;\n'
 )
 if shutil.which('update-desktop-database'):
     subprocess.run(['update-desktop-database', str(applications)], check=True)

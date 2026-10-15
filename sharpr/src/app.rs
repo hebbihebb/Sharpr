@@ -8,7 +8,8 @@ use libadwaita::subclass::prelude::*;
 
 use crate::ui::window::SharprWindow;
 
-const APP_DISPLAY_VERSION: &str = env!("SHARPR_DISPLAY_VERSION");
+/// `Cargo.toml` is the one version source; the metainfo test checks it.
+const APP_DISPLAY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ---------------------------------------------------------------------------
 // GObject subclass boilerplate
@@ -98,7 +99,6 @@ mod imp {
                         &[
                             "image-rs — Image decoding",
                             "SQLite + rusqlite — Tag storage",
-                            "rexiv2 / GExiv2 — EXIF metadata",
                         ],
                     );
                     if let Some(win) = app.active_window() {
@@ -130,5 +130,18 @@ impl SharprApplication {
             .property("application-id", "io.github.hebbihebb.Sharpr")
             .property("flags", gio::ApplicationFlags::FLAGS_NONE)
             .build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn metainfo_names_the_cargo_version_as_newest_release() {
+        let metainfo = include_str!("../data/io.github.hebbihebb.Sharpr.metainfo.xml");
+        let newest = metainfo
+            .split("<release version=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next());
+        assert_eq!(newest, Some(super::APP_DISPLAY_VERSION));
     }
 }

@@ -10,7 +10,6 @@ mod duplicates;
 mod export;
 mod file_ops;
 mod fingerprint;
-pub mod focused_image_set;
 mod image_pipeline;
 mod jxl;
 mod library_index;
@@ -28,21 +27,6 @@ mod visual_search;
 use app::SharprApplication;
 use gtk4::{gio, prelude::*};
 
-extern "C" {
-    fn g_object_unref(obj: *mut std::ffi::c_void);
-}
-
-#[no_mangle]
-/// # Safety
-///
-/// `metadata` must be a valid gexiv2 metadata pointer owned by the caller, or
-/// null. Non-null pointers are released exactly once through `g_object_unref`.
-pub unsafe extern "C" fn gexiv2_metadata_free(metadata: *mut std::ffi::c_void) {
-    if !metadata.is_null() {
-        g_object_unref(metadata);
-    }
-}
-
 // Embed the compiled GResource bundle into the binary at build time.
 fn register_resources() {
     gio::resources_register_include!("sharpr.gresource")
@@ -51,9 +35,6 @@ fn register_resources() {
 
 fn main() -> glib::ExitCode {
     bench::init();
-
-    // Initialise rexiv2 (gexiv2 C library) once at startup.
-    rexiv2::initialize().expect("Failed to initialise gexiv2");
     register_resources();
 
     let app = SharprApplication::new();

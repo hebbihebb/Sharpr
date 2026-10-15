@@ -1,12 +1,12 @@
 [Desktop Entry]
 Name=Sharpr
 GenericName=Image Viewer
-Comment=Browse and view your photo library
-Exec=sharpr %F
+Comment=Find, curate and prepare wallpaper-grade images
+Exec=sharpr
 Icon=io.github.hebbihebb.Sharpr
 Terminal=false
 Type=Application
 Categories=Graphics;Viewer;GNOME;GTK;
-MimeType=image/jpeg;image/png;image/gif;image/webp;image/tiff;image/bmp;
-StartupWMClass=Sharpr
+StartupWMClass=io.github.hebbihebb.Sharpr
+Keywords=images;photos;viewer;wallpapers;
 X-GNOME-UsesNotifications=false

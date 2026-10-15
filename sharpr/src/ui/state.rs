@@ -25,7 +25,6 @@ pub struct AppState {
     /// click, so a single chosen image counts as a selection.
     pub selection_explicit: bool,
     pub scope: ViewScope,
-    pub current_focused_set: Option<crate::focused_image_set::FocusedImageSet>,
     pub previous_scope: Option<ViewScope>,
     pub previous_content_page: Option<String>,
     pub disabled_folders: Vec<PathBuf>,
@@ -105,7 +104,6 @@ impl AppState {
             selected_paths: HashSet::new(),
             selection_explicit: false,
             scope: ViewScope::default(),
-            current_focused_set: None,
             previous_scope: None,
             previous_content_page: None,
             disabled_folders,

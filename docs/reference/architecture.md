@@ -8,7 +8,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 
 | Area | Responsibility |
 | --- | --- |
-| `app.rs`, `main.rs` | Application startup, resources, and the gexiv2 shim |
+| `app.rs`, `main.rs` | Application startup and resources |
 | `ui/window.rs` | Main shell and cross-pane wiring. `setup()` is one function of more than 2,000 lines. Do not add features to it. |
 | `ui/compare_item.rs`, `ui/compare_page.rs`, `ui/compare_page/candidates.rs`, `ui/compare_view.rs` | Compare: `Knockout` (shown, waiting, dismissed), the page (toolbar, badges, keys, decoding), the horizontal candidate row and explicit replacement target (D29), and the canvas (side by side, split, flip; zoom/pan in the left image's pixels) |
 | `ui/window/` | Controllers extracted from `window.rs`: `compare_controller`, `mode_header` (contextual controls and mode-key routing), `search_controller`, `tag_controller` (bucket writes, the automatic-tag cleanup, and turning tags into buckets), and `gtk_tests` |

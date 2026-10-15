@@ -3,8 +3,9 @@ targets = ["x86_64-unknown-linux-gnu"]
 
 [advisories]
 ignore = [
-    # paste is pulled in transitively by glycin + tract_onnx; no safe upgrade exists
-    { id = "RUSTSEC-2024-0436", reason = "transitive dep via glycin/tract_onnx; upstream has no fix" },
+    # paste (unmaintained) is a build-time proc-macro of glycin's common crates;
+    # upstream has no replacement yet.
+    { id = "RUSTSEC-2024-0436", reason = "proc-macro via glycin-common/gufo-common; upstream has no fix" },
 ]
 
 [licenses]

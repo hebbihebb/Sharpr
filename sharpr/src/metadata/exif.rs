@@ -42,9 +42,6 @@ impl ImageMetadata {
             ..Default::default()
         };
 
-        // rexiv2 0.10.0 is incompatible with the system gexiv2 0.16.0 — multiple
-        // gexiv2 functions (get_tag_string, get_exif_tag_long, etc.) segfault.
-        // Fall back to the image crate for dimensions until rexiv2 is updated.
         if let Some((w, h)) = display_dimensions(path) {
             meta.width = w;
             meta.height = h;
