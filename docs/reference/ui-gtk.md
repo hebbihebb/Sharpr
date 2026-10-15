@@ -49,7 +49,7 @@ See `architecture.md`. In UI code this means:
 - Preferences and Keyboard Shortcuts are `AdwPreferencesDialog` and `AdwShortcutsDialog` sheets presented in the main window. They inherit its font and use `.sharpr-sheet` for compact rows and headers. Keep the existing `win.show-preferences` and `win.show-help-overlay` actions.
 - Quick pickers use popovers and dismiss on click-away. Preferences and other editing sheets use their own close controls and Escape.
 - WebP export uses a compact `AdwDialog` with `.sharpr-sheet`, sharing the main window's native surface. Keep that same form mapped throughout Select/Cancel in the native folder chooser; never recreate a grabbing popup on return. D25's click-away cancellation uses the earlier window capture handler, scoped to export and removed when the sheet closes. Cancel, Escape and the close button also cancel; only Export starts work.
-- One Sort and Filter menu adds the same removable chips as typing filter words. The old independent Filter popover is hidden and scheduled for removal.
+- One Sort and Filter menu adds the same removable chips as typing filter words. The old independent Filter popover and its separate filtering state are removed; chip matching is the single filtering path. Displayed dimension caching and aspect sorting remain on the browse worker.
 
 ## Contextual Viewer Header (D28)
 

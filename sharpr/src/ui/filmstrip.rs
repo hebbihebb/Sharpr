@@ -11,7 +11,6 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
-use crate::model::browse::{AspectFilter, DimensionFilters};
 use crate::model::library::{SortField, SortOrder};
 use crate::model::ImageEntry;
 use crate::thumbnails::worker::WorkerRequest;
@@ -40,7 +39,6 @@ type CopyToFolderRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type MoveToFolderRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type RenameRequestedCallback = Box<dyn Fn(PathBuf) + 'static>;
 type DuplicateRequestedCallback = Box<dyn Fn(PathBuf) + 'static>;
-type DimensionFiltersChangedCallback = Box<dyn Fn(DimensionFilters) + 'static>;
 
 type SortOrderChangedCallback = Box<dyn Fn(SortOrder) + 'static>;
 type SaveSearchAsCollectionCallback = Box<dyn Fn(&str) + 'static>;
@@ -213,17 +211,9 @@ mod imp {
         #[allow(private_interfaces)]
         pub menu_ctx: RefCell<Option<MenuContext>>,
         pub sort_order_changed_cb: RefCell<Option<SortOrderChangedCallback>>,
-        pub dimension_filters_changed_cb: RefCell<Option<DimensionFiltersChangedCallback>>,
-        /// Radio buttons, not a drop-down: a drop-down's own popover inside the
-        /// Filter popover broke closing it with a click outside.
-        pub aspect_filter: Vec<(AspectFilter, gtk4::CheckButton)>,
-        pub minimum_width: gtk4::SpinButton,
-        pub minimum_height: gtk4::SpinButton,
-        pub suppress_dimension_signals: Cell<bool>,
         pub save_search_as_collection_cb: RefCell<Option<SaveSearchAsCollectionCallback>>,
         pub current_sort_order: Cell<SortOrder>,
         pub sort_btn: RefCell<Option<gtk4::MenuButton>>,
-        pub filter_btn: RefCell<Option<gtk4::MenuButton>>,
         pub header_bar: RefCell<Option<libadwaita::HeaderBar>>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub visible_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
@@ -301,15 +291,9 @@ mod imp {
                 duplicate_requested_cb: RefCell::new(None),
                 menu_ctx: RefCell::new(None),
                 sort_order_changed_cb: RefCell::new(None),
-                dimension_filters_changed_cb: RefCell::new(None),
-                aspect_filter: super::aspect_filter_choices(),
-                minimum_width: gtk4::SpinButton::with_range(0.0, 65535.0, 1.0),
-                minimum_height: gtk4::SpinButton::with_range(0.0, 65535.0, 1.0),
-                suppress_dimension_signals: Cell::new(false),
                 save_search_as_collection_cb: RefCell::new(None),
                 current_sort_order: Cell::new(SortOrder::default()),
                 sort_btn: RefCell::new(None),
-                filter_btn: RefCell::new(None),
                 header_bar: RefCell::new(None),
                 state: RefCell::new(None),
                 visible_thumbnail_tx: RefCell::new(None),
@@ -374,66 +358,7 @@ impl FilmstripPane {
         sort_btn.set_tooltip_text(Some("Sort and filter"));
         header.pack_end(&sort_btn);
         *imp.sort_btn.borrow_mut() = Some(sort_btn.clone());
-        let filter_btn = gtk4::MenuButton::new();
-        filter_btn.set_label("Filter");
-        filter_btn.set_tooltip_text(Some("Filter aspect and resolution"));
-        let popover = gtk4::Popover::new();
-        let grid = gtk4::Grid::new();
-        grid.set_row_spacing(8);
-        grid.set_column_spacing(8);
-        grid.set_margin_top(12);
-        grid.set_margin_bottom(12);
-        grid.set_margin_start(12);
-        grid.set_margin_end(12);
-        grid.attach(&gtk4::Label::new(Some("Aspect")), 0, 0, 1, 1);
-        let aspect_choices = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-        for (_, button) in &imp.aspect_filter {
-            aspect_choices.append(button);
-        }
-        grid.attach(&aspect_choices, 1, 0, 1, 1);
-        grid.attach(&gtk4::Label::new(Some("Minimum width")), 0, 1, 1, 1);
-        grid.attach(&imp.minimum_width, 1, 1, 1, 1);
-        grid.attach(&gtk4::Label::new(Some("Minimum height")), 0, 2, 1, 1);
-        grid.attach(&imp.minimum_height, 1, 2, 1, 1);
-        let note = gtk4::Label::new(Some("Pixels after display orientation. 0 means any size."));
-        note.set_wrap(true);
-        note.set_max_width_chars(32);
-        note.add_css_class("dim-label");
-        grid.attach(&note, 0, 3, 2, 1);
-        let reset = gtk4::Button::with_label("Reset aspect and resolution");
-        grid.attach(&reset, 0, 4, 2, 1);
-        popover.set_child(Some(&grid));
-        filter_btn.set_popover(Some(&popover));
-        header.pack_end(&filter_btn);
-        *imp.filter_btn.borrow_mut() = Some(filter_btn.clone());
         *imp.header_bar.borrow_mut() = Some(header.clone());
-        let weak = self.downgrade();
-        for (_, button) in &imp.aspect_filter {
-            let weak = weak.clone();
-            button.connect_toggled(move |button| {
-                if !button.is_active() {
-                    return;
-                }
-                if let Some(f) = weak.upgrade() {
-                    f.emit_dimension_filters();
-                }
-            });
-        }
-        for spin in [&imp.minimum_width, &imp.minimum_height] {
-            let weak = self.downgrade();
-            spin.connect_value_changed(move |_| {
-                if let Some(f) = weak.upgrade() {
-                    f.emit_dimension_filters();
-                }
-            });
-        }
-        let weak = self.downgrade();
-        reset.connect_clicked(move |_| {
-            if let Some(f) = weak.upgrade() {
-                f.reset_dimension_filters();
-                f.emit_dimension_filters();
-            }
-        });
         imp.toolbar_view.add_top_bar(&header);
 
         let group = gio::SimpleActionGroup::new();
@@ -532,14 +457,14 @@ impl FilmstripPane {
         menu.append_section(Some("Sort By"), &sort_section);
 
         let direction_section = gio::Menu::new();
-        direction_section.append_item(&gio::MenuItem::new(
-            Some("Ascending"),
-            Some("filmstrip-sort.sort-direction::false"),
-        ));
-        direction_section.append_item(&gio::MenuItem::new(
-            Some("Descending"),
-            Some("filmstrip-sort.sort-direction::true"),
-        ));
+        for (label, descending) in [("Ascending", false), ("Descending", true)] {
+            let item = gio::MenuItem::new(Some(label), None);
+            item.set_action_and_target_value(
+                Some("filmstrip-sort.sort-direction"),
+                Some(&descending.to_variant()),
+            );
+            direction_section.append_item(&item);
+        }
         menu.append_section(None, &direction_section);
 
         sort_btn.set_menu_model(Some(&menu));
@@ -1308,39 +1233,6 @@ impl FilmstripPane {
         );
     }
 
-    pub fn set_dimension_filters_changed_cb<F: Fn(DimensionFilters) + 'static>(&self, cb: F) {
-        *self.imp().dimension_filters_changed_cb.borrow_mut() = Some(Box::new(cb));
-    }
-    fn emit_dimension_filters(&self) {
-        let imp = self.imp();
-        if imp.suppress_dimension_signals.get() {
-            return;
-        }
-        let aspect = imp
-            .aspect_filter
-            .iter()
-            .find(|(_, button)| button.is_active())
-            .map(|(aspect, _)| *aspect)
-            .unwrap_or_default();
-        if let Some(cb) = imp.dimension_filters_changed_cb.borrow().as_ref() {
-            cb(DimensionFilters {
-                aspect,
-                min_width: imp.minimum_width.value_as_int() as u32,
-                min_height: imp.minimum_height.value_as_int() as u32,
-            });
-        }
-    }
-    pub fn reset_dimension_filters(&self) {
-        let imp = self.imp();
-        imp.suppress_dimension_signals.set(true);
-        if let Some((_, all)) = imp.aspect_filter.first() {
-            all.set_active(true);
-        }
-        imp.minimum_width.set_value(0.0);
-        imp.minimum_height.set_value(0.0);
-        imp.suppress_dimension_signals.set(false);
-    }
-
     pub fn scroll_position(&self) -> f64 {
         self.imp().scroll.vadjustment().value()
     }
@@ -1905,9 +1797,8 @@ impl FilmstripPane {
         *self.imp().copy_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
-    /// Look prototype (Phase 9): takes Filter and Sort out of this pane's
-    /// header so the window can put one combined control there. Returns the
-    /// header, the sort menu, and the sort actions.
+    /// Hands off the sort header/menu/actions so the window can install its
+    /// combined Sort and Filter control, whose filters add search chips.
     pub fn take_header_buttons(
         &self,
     ) -> Option<(
@@ -1917,11 +1808,9 @@ impl FilmstripPane {
     )> {
         let imp = self.imp();
         let header = imp.header_bar.borrow().clone()?;
-        let filter = imp.filter_btn.borrow().clone()?;
         let sort = imp.sort_btn.borrow().clone()?;
         let actions = imp.action_group.borrow().clone()?;
         let menu = sort.menu_model()?;
-        header.remove(&filter);
         header.remove(&sort);
         Some((header, menu, actions))
     }
@@ -2292,24 +2181,4 @@ fn reveal_in_file_manager(path: &Path) {
             }
         }
     });
-}
-
-/// The aspect choices in the Filter popover, as one radio group.
-fn aspect_filter_choices() -> Vec<(AspectFilter, gtk4::CheckButton)> {
-    let mut choices: Vec<(AspectFilter, gtk4::CheckButton)> = Vec::new();
-    for (aspect, label) in [
-        (AspectFilter::All, "All aspects"),
-        (AspectFilter::Landscape, "Landscape"),
-        (AspectFilter::Portrait, "Portrait"),
-        (AspectFilter::Square, "Square"),
-        (AspectFilter::WideScreen, "16:9 ±2%"),
-    ] {
-        let button = gtk4::CheckButton::with_label(label);
-        match choices.first() {
-            Some((_, first)) => button.set_group(Some(first)),
-            None => button.set_active(true),
-        }
-        choices.push((aspect, button));
-    }
-    choices
 }

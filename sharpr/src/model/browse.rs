@@ -32,48 +32,6 @@ impl DimensionCache {
         dimensions
     }
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AspectFilter {
-    #[default]
-    All,
-    Landscape,
-    Portrait,
-    Square,
-    WideScreen,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct DimensionFilters {
-    pub aspect: AspectFilter,
-    pub min_width: u32,
-    pub min_height: u32,
-}
-
-impl DimensionFilters {
-    pub fn is_empty(&self) -> bool {
-        self.aspect == AspectFilter::All && self.min_width == 0 && self.min_height == 0
-    }
-
-    pub fn matches(&self, dimensions: Option<(u32, u32)>) -> bool {
-        if self.is_empty() {
-            return true;
-        }
-        let Some((w, h)) = dimensions.filter(|(w, h)| *w > 0 && *h > 0) else {
-            return false;
-        };
-        if w < self.min_width || h < self.min_height {
-            return false;
-        }
-        match self.aspect {
-            AspectFilter::All => true,
-            AspectFilter::Landscape => w > h,
-            AspectFilter::Portrait => h > w,
-            AspectFilter::Square => w == h,
-            AspectFilter::WideScreen => widescreen_distance((w, h)) <= 0.0200000001,
-        }
-    }
-}
-
 pub fn widescreen_distance((w, h): (u32, u32)) -> f64 {
     ((w as f64 / h as f64) / (16.0 / 9.0) - 1.0).abs()
 }
@@ -110,30 +68,6 @@ pub fn compare_aspects(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn filters_require_both_dimensions_and_distinguish_portrait() {
-        let f = DimensionFilters {
-            aspect: AspectFilter::Landscape,
-            min_width: 1920,
-            min_height: 1080,
-        };
-        assert!(f.matches(Some((1920, 1080))));
-        assert!(!f.matches(Some((3840, 800))));
-        assert!(!f.matches(Some((1080, 1920))));
-        assert!(!f.matches(None));
-        assert!(DimensionFilters::default().matches(None));
-    }
-    #[test]
-    fn widescreen_tolerance_is_relative_and_includes_boundary() {
-        let f = DimensionFilters {
-            aspect: AspectFilter::WideScreen,
-            ..Default::default()
-        };
-        assert!(f.matches(Some((1920, 1080))));
-        assert!(f.matches(Some((1958, 1080))));
-        assert!(!f.matches(Some((1960, 1080))));
-        assert!(!f.matches(Some((1600, 1200))));
-    }
     #[test]
     fn unknown_aspects_sort_last_in_both_directions() {
         for desc in [false, true] {

@@ -2200,20 +2200,6 @@ impl SharprWindow {
                     win.run_browse_query(query, true);
                 }
             });
-            let weak = self.downgrade();
-            filmstrip.set_dimension_filters_changed_cb(move |filters| {
-                if let Some(win) = weak.upgrade() {
-                    win.imp().browse_options.borrow_mut().dimensions = filters;
-                    let query = win
-                        .imp()
-                        .inline_search_entry
-                        .borrow()
-                        .as_ref()
-                        .map(|e| e.text().to_string())
-                        .unwrap_or_default();
-                    win.run_scoped_search(query);
-                }
-            });
         }
 
         // Find Copies… (Phase 7): exact, resized, and converted copies.
@@ -4165,9 +4151,6 @@ impl SharprWindow {
         *self.imp().browse_options.borrow_mut() = Default::default();
         self.show_search_status(None);
         self.rebuild_search_chips();
-        if let Some(filmstrip) = self.imp().filmstrip.borrow().as_ref() {
-            filmstrip.reset_dimension_filters();
-        }
         let next_gen = self.imp().inline_search_generation.get().wrapping_add(1);
         self.imp().inline_search_generation.set(next_gen);
         self.imp()

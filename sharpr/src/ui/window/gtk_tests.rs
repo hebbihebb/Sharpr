@@ -281,8 +281,8 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
             .as_ref()
             .is_some_and(|s| s.is_visible() && s.first_child().is_some())
     });
-    let settle = std::time::Instant::now();
-    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
+    let settled_at = std::time::Instant::now();
+    pump_until(|| settled_at.elapsed() > std::time::Duration::from_millis(400));
     screenshot(
         &window,
         &root.parent().unwrap().join("search-suggestions.png"),
@@ -302,16 +302,16 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     });
     assert_eq!(entry.text().as_str(), "");
     assert_eq!(window.imp().browse_options.borrow().chips.chips.len(), 2);
-    let settle = std::time::Instant::now();
-    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
+    let settled_at = std::time::Instant::now();
+    pump_until(|| settled_at.elapsed() > std::time::Duration::from_millis(400));
     screenshot(&window, &root.parent().unwrap().join("search-chips.png"));
     // Ctrl+I's Info panel opens once the image's details are loaded (D18).
     let viewer = window.imp().viewer.borrow().clone().unwrap();
     viewer.show_info();
     let info = viewer.imp().metadata_chip.imp().popover.clone();
     pump_until(|| info.is_visible());
-    let settle = std::time::Instant::now();
-    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(300));
+    let settled_at = std::time::Instant::now();
+    pump_until(|| settled_at.elapsed() > std::time::Duration::from_millis(300));
     screenshot_widget(
         &window,
         info.upcast_ref(),
@@ -475,27 +475,171 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
             "filmstrip-pill-color-e01b24",
         )
     });
-    window.imp().state.borrow_mut().scope = ViewScope::Folder(root.clone());
-    window.imp().browse_options.borrow_mut().dimensions = crate::model::browse::DimensionFilters {
-        aspect: crate::model::browse::AspectFilter::WideScreen,
-        min_width: 160,
-        min_height: 90,
+    // Exercise the visible menu and chips, not the retired hidden controls.
+    let open = window.imp().open_folder_cb.borrow().clone().unwrap();
+    open(root.clone());
+    pump_until(|| {
+        let st = window.app_state();
+        let st = st.borrow();
+        st.scope == ViewScope::Folder(root.clone()) && st.library.image_count() == 2
+    });
+    let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
+    let sea_index = window
+        .app_state()
+        .borrow()
+        .library
+        .index_of_path(&sea)
+        .unwrap();
+    filmstrip.navigate_to(sea_index);
+    let controls: Vec<_> = find_widgets::<gtk4::MenuButton>(window.upcast_ref())
+        .into_iter()
+        .filter(|b| b.tooltip_text().as_deref() == Some("Sort and filter"))
+        .collect();
+    assert_eq!(
+        controls.len(),
+        1,
+        "one combined control survives header handoff"
+    );
+    let activate_sort_row = |text: &str| {
+        controls[0].popup();
+        let menu = controls[0].popover().unwrap();
+        pump_until(|| menu.is_mapped());
+        let label = find_widgets::<gtk4::Label>(menu.upcast_ref())
+            .into_iter()
+            .find(|label| label.label() == text)
+            .unwrap();
+        let mut row = label.parent().unwrap();
+        while row.type_().name() != "GtkModelButton" {
+            row = row.parent().expect("sort belongs to a native menu row");
+        }
+        assert!(row.is_sensitive(), "{text} must be enabled");
+        assert!(row.activate(), "activate {text}");
+        controls[0].popdown();
     };
-    window.run_scoped_search(String::new());
-    pump_until(|| window.imp().state.borrow().library.image_count() == 1);
-    assert!(window
-        .imp()
-        .state
+    activate_sort_row("Name");
+    for (label, order, first) in [
+        (
+            "Ascending",
+            crate::model::library::SortOrder::NameAsc,
+            root.join("mountain.png"),
+        ),
+        (
+            "Descending",
+            crate::model::library::SortOrder::NameDesc,
+            sea.clone(),
+        ),
+    ] {
+        activate_sort_row(label);
+        pump_until(|| {
+            let st = window.app_state();
+            let st = st.borrow();
+            st.sort_order == order && st.library.entry_at(0).is_some_and(|e| e.path() == first)
+        });
+        assert_eq!(
+            window
+                .app_state()
+                .borrow()
+                .library
+                .selected_index
+                .and_then(|i| window.app_state().borrow().library.entry_at(i))
+                .unwrap()
+                .path(),
+            sea,
+            "changing direction preserves the selected image"
+        );
+    }
+    for (theme, scheme) in [
+        ("light", libadwaita::ColorScheme::ForceLight),
+        ("dark", libadwaita::ColorScheme::ForceDark),
+    ] {
+        libadwaita::StyleManager::default().set_color_scheme(scheme);
+        for (width, height) in [(1600, 900), (1024, 600)] {
+            window.set_default_size(width, height);
+            pump_until(|| window.width() == width && window.height() == height);
+            controls[0].popup();
+            pump_until(|| controls[0].popover().is_some_and(|p| p.is_mapped()));
+            settle(200);
+            screenshot(
+                &window,
+                &root
+                    .parent()
+                    .unwrap()
+                    .join(format!("sort-filter-{theme}-{width}.png")),
+            );
+            screenshot_widget(
+                &window,
+                controls[0].popover().unwrap().upcast_ref(),
+                &root
+                    .parent()
+                    .unwrap()
+                    .join(format!("sort-filter-menu-{theme}-{width}.png")),
+            );
+            controls[0].popdown();
+            settle(50);
+        }
+    }
+    controls[0].popup();
+    let menu = controls[0].popover().unwrap();
+    pump_until(|| menu.is_mapped());
+    let ratio = find_widgets::<gtk4::Label>(menu.upcast_ref())
+        .into_iter()
+        .find(|l| l.label() == "16:9")
+        .unwrap();
+    let mut row = ratio.parent().unwrap();
+    while row.type_().name() != "GtkModelButton" {
+        row = row.parent().expect("filter belongs to a native menu row");
+    }
+    assert!(row.activate(), "activate the actual menu item");
+    controls[0].popdown();
+    pump_until(|| window.app_state().borrow().library.image_count() == 1);
+    let menu_result = window
+        .app_state()
         .borrow()
         .library
         .entry_at(0)
         .unwrap()
-        .path()
-        .ends_with("mountain.png"));
-    window.imp().browse_options.borrow_mut().dimensions = Default::default();
-    window.run_scoped_search(String::new());
-    assert_eq!(window.imp().state.borrow().library.image_count(), 2);
-    window.clear_inline_search(true);
+        .path();
+    assert_eq!(menu_result, root.join("mountain.png"));
+    assert_eq!(
+        window.imp().browse_options.borrow().chips.chips[0].label(),
+        "16:9"
+    );
+    find_widgets::<gtk4::Button>(window.upcast_ref())
+        .into_iter()
+        .find(|b| b.tooltip_text().as_deref() == Some("Remove filter"))
+        .unwrap()
+        .emit_clicked();
+    pump_until(|| window.app_state().borrow().library.image_count() == 2);
+    window.close_browse_search();
+    window.show_inline_search();
+    entry.set_text("16:9 ");
+    pump_until(|| window.app_state().borrow().library.image_count() == 1);
+    assert_eq!(
+        window
+            .app_state()
+            .borrow()
+            .library
+            .entry_at(0)
+            .unwrap()
+            .path(),
+        menu_result
+    );
+    window.close_browse_search();
+    pump_until(|| {
+        let st = window.app_state();
+        let st = st.borrow();
+        st.library.image_count() == 2
+            && st
+                .library
+                .selected_index
+                .and_then(|i| st.library.entry_at(i))
+                .is_some_and(|e| e.path() == sea)
+    });
+    assert_eq!(
+        window.app_state().borrow().scope,
+        ViewScope::Folder(root.clone())
+    );
+    assert!(window.imp().browse_options.borrow().chips.is_empty());
     let index = window
         .imp()
         .state
@@ -662,7 +806,7 @@ fn rapid_navigation_and_folder_switch_preserve_latest_view() {
     let root = fixtures.join("navigation");
     let first = root.join("first");
     let second = root.join("second");
-    for (folder, count) in [(&first, 400), (&second, 40)] {
+    for (folder, count) in [(&first, 5000), (&second, 40)] {
         std::fs::create_dir_all(folder).unwrap();
         for i in 0..count {
             image::RgbImage::from_pixel(32, 18, image::Rgb([i as u8, 100, 150]))
@@ -672,6 +816,8 @@ fn rapid_navigation_and_folder_switch_preserve_latest_view() {
     }
     gtk4::init().unwrap();
     libadwaita::init().unwrap();
+    crate::bench::init();
+    crate::bench::start_main_loop_probe();
     crate::register_resources();
     let mut settings = AppSettings::load();
     settings.libraries.clear();
@@ -686,9 +832,15 @@ fn rapid_navigation_and_folder_switch_preserve_latest_view() {
     app.register(None::<&gio::Cancellable>).unwrap();
     let window = SharprWindow::new(&app);
     window.present();
-    pump_until(|| window.imp().state.borrow().library.image_count() == 400 && window.is_mapped());
+    pump_until(|| window.imp().state.borrow().library.image_count() == 5000 && window.is_mapped());
     let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
-    for i in (0..400).step_by(17).rev() {
+    let scroll = filmstrip.imp().scroll.vadjustment();
+    pump_until(|| scroll.page_size() > 0.0 && scroll.upper() > scroll.page_size());
+    for fraction in [0.0, 0.8, 0.2, 1.0, 0.4, 0.0] {
+        scroll.set_value((scroll.upper() - scroll.page_size()) * fraction);
+        settle(50);
+    }
+    for i in (0..5000).step_by(97).rev() {
         filmstrip.navigate_to(i);
     }
     let open = window.imp().open_folder_cb.borrow().clone().unwrap();
@@ -2358,8 +2510,7 @@ fn interface_tour_screenshots() {
     // 02: menus and popovers.
     for (tooltip, name) in [
         ("Main Menu", "02-main-menu"),
-        ("Sort and filter", "02-sort-menu"),
-        ("Filter aspect and resolution", "02-filter-popover"),
+        ("Sort and filter", "02-sort-and-filter-menu"),
         ("Switch Library", "02-library-switcher"),
     ] {
         let Some(button) = menu_button(tooltip) else {

@@ -164,14 +164,13 @@ pub(crate) struct BrowseSnapshot {
 
 #[derive(Clone, Default)]
 pub(crate) struct BrowseOptions {
-    pub dimensions: crate::model::browse::DimensionFilters,
     pub whole_library: bool,
     /// Chips taken out of the search box (decision D16).
     pub chips: crate::model::search_query::ChipFilters,
 }
 impl BrowseOptions {
     pub(super) fn has_filters(&self) -> bool {
-        self.whole_library || !self.chips.is_empty() || !self.dimensions.is_empty()
+        self.whole_library || !self.chips.is_empty()
     }
 }
 
@@ -697,8 +696,7 @@ impl SharprWindow {
                     } else {
                         candidates
                     };
-                    let needs_dimensions = !options.dimensions.is_empty()
-                        || chips.needs_dimensions()
+                    let needs_dimensions = chips.needs_dimensions()
                         || matches!(
                             order.field(),
                             crate::model::library::SortField::Aspect
@@ -719,9 +717,7 @@ impl SharprWindow {
                         let dimensions = needs_dimensions
                             .then(|| cache.dimensions.get(&path, &metadata))
                             .flatten();
-                        if !options.dimensions.matches(dimensions)
-                            || !chips.matches(&path, dimensions)
-                        {
+                        if !chips.matches(&path, dimensions) {
                             continue;
                         }
                         let (width, height) = dimensions.unwrap_or((0, 0));

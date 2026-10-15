@@ -72,7 +72,7 @@ The filmstrip is Sharpr's most performance-sensitive surface. Keep these rules:
 6. A result is applied only after both its generation and its path lookup still match.
 7. Visible requests take priority over preload. Extend the scheduler; do not rewrite it.
 
-The thumbnail caches are an unbounded per-view memory cache, a global memory cache (500 entries by default), and a disk cache under `~/.cache/sharpr/` keyed by path hash, size, and mtime.
+The thumbnail caches are an unbounded per-view memory cache, a global memory cache (500 entries by default), and a disk cache under `~/.cache/sharpr/` keyed by path hash, size, and mtime. Virtual sort/filter reloads carry the active textures for retained paths into the new rows, even when they have left the global cache; excluded paths leave the active cache.
 
 ## Persistence
 

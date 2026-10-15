@@ -517,6 +517,31 @@ mod tests {
     }
 
     #[test]
+    fn resolution_and_orientation_require_both_displayed_dimensions() {
+        let filters = ChipFilters {
+            chips: parse("1080p landscape").chips,
+        };
+        let path = Path::new("/a/image.png");
+        assert!(filters.matches(path, Some((1920, 1080))));
+        assert!(!filters.matches(path, Some((3840, 800))));
+        assert!(!filters.matches(path, Some((1080, 1920))));
+        assert!(!filters.matches(path, None));
+        assert!(ChipFilters::default().matches(path, None));
+    }
+
+    #[test]
+    fn aspect_chip_tolerance_is_relative_and_includes_boundary() {
+        let filters = ChipFilters {
+            chips: parse("16:9").chips,
+        };
+        let path = Path::new("/a/image.png");
+        assert!(filters.matches(path, Some((1920, 1080))));
+        assert!(filters.matches(path, Some((1958, 1080))));
+        assert!(!filters.matches(path, Some((1960, 1080))));
+        assert!(!filters.matches(path, Some((1600, 1200))));
+    }
+
+    #[test]
     fn filter_words_become_chips_and_the_rest_stays_text() {
         let parsed = parse("Mountains 4K PNG 16:9 lake");
         assert_eq!(parsed.text, "Mountains lake");

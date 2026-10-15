@@ -511,7 +511,9 @@ impl LibraryManager {
         let generation = focused_image_set::next_generation();
         self.virtual_generation = generation;
         self.path_to_index.clear();
-        self.active_thumbnail_cache.clear();
+        // A sort/filter rebuild must not lose textures evicted from the global
+        // cache. Carry only thumbnails belonging to the new view forward.
+        let previous_thumbnails = std::mem::take(&mut self.active_thumbnail_cache);
         self.selected_index = None;
         self.current_folder = None;
         let mut metadata_pending = Vec::new();
@@ -527,8 +529,13 @@ impl LibraryManager {
             } else {
                 metadata_pending.push(path.clone());
             }
-            if let Some(texture) = self.thumbnail_cache.get(path) {
+            if let Some(texture) = previous_thumbnails
+                .get(path)
+                .or_else(|| self.thumbnail_cache.get(path))
+            {
                 entry.set_thumbnail(Some(texture.clone()));
+                self.active_thumbnail_cache
+                    .insert(path.clone(), texture.clone());
             }
             entries.push(entry);
             repeated |= self
@@ -1022,6 +1029,55 @@ mod tests {
 
         assert_eq!(library.virtual_generation, second);
         assert!(second > first);
+    }
+
+    #[test]
+    fn virtual_reload_keeps_active_thumbnails_after_global_cache_eviction() {
+        let mut library = LibraryManager::new();
+        library.set_thumbnail_cache_max(100);
+        let paths: Vec<_> = (0..103)
+            .map(|i| PathBuf::from(format!("/photos/{i}.png")))
+            .collect();
+        library.load_virtual(&paths);
+        let textures: Vec<Texture> = (0..paths.len())
+            .map(|i| {
+                gdk4::MemoryTexture::new(
+                    1,
+                    1,
+                    gdk4::MemoryFormat::R8g8b8a8,
+                    &glib::Bytes::from_owned(vec![i as u8, 0, 0, 255]),
+                    4,
+                )
+                .upcast()
+            })
+            .collect();
+        for (i, (path, texture)) in paths.iter().zip(&textures).enumerate() {
+            library
+                .entry_at(i as u32)
+                .unwrap()
+                .set_thumbnail(Some(texture.clone()));
+            library.insert_thumbnail(path.clone(), texture.clone(), true);
+        }
+        assert!(!library.thumbnail_cache.contains_key(&paths[0]));
+        let (before, _) =
+            library.load_virtual(&[paths[1].clone(), paths[0].clone(), paths[1].clone()]);
+        for (i, original) in [1, 0, 1].into_iter().enumerate() {
+            assert_eq!(
+                library.entry_at(i as u32).unwrap().thumbnail(),
+                Some(textures[original].clone()),
+                "reordered and repeated rows keep the correct cached texture"
+            );
+        }
+        assert_eq!(library.active_thumbnail_cache.len(), 2);
+        assert!(!library.active_thumbnail_cache.contains_key(&paths[102]));
+        let (after, _) = library.load_virtual(&[paths[0].clone(), paths[1].clone()]);
+        assert!(after > before);
+        assert_eq!(
+            library.entry_at(0).unwrap().thumbnail(),
+            Some(textures[0].clone())
+        );
+        library.load_virtual(&[]);
+        assert!(library.active_thumbnail_cache.is_empty());
     }
 
     #[test]
