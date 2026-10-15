@@ -133,6 +133,12 @@
         <property name="title">Compare</property>
         <child>
           <object class="AdwShortcutsItem">
+            <property name="title">Compare selected images</property>
+            <property name="accelerator">&lt;Control&gt;&lt;Shift&gt;c</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
             <property name="title">Keep the left image</property>
             <property name="accelerator">Left</property>
           </object>

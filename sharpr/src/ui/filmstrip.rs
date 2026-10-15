@@ -78,7 +78,11 @@ fn build_context_menu_model(in_collection: bool, is_multi: bool) -> gio::Menu {
 
     let image = gio::Menu::new();
     if is_multi {
-        image.append_item(&menu_item("Compare Selected Images", "win.compare", None));
+        image.append_item(&menu_item(
+            "Compare Selected Images",
+            "win.compare",
+            Some("<Control><Shift>c"),
+        ));
     } else {
         image.append_item(&menu_item("Crop Copy\u{2026}", "filmstrip.crop-copy", None));
     }

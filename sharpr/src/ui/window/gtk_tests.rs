@@ -111,6 +111,32 @@ fn bubble_ctrl_a(focus: &gtk4::Widget) -> Option<gtk4::Widget> {
     None
 }
 
+fn compare_shortcut(window: &SharprWindow) -> bool {
+    let expected = gtk4::ShortcutTrigger::parse_string("<Control><Shift>c")
+        .unwrap()
+        .to_str();
+    let controllers = window.observe_controllers();
+    for i in 0..controllers.n_items() {
+        let Some(controller) = controllers
+            .item(i)
+            .and_downcast::<gtk4::ShortcutController>()
+        else {
+            continue;
+        };
+        for j in 0..controller.n_items() {
+            let shortcut = controller.item(j).and_downcast::<gtk4::Shortcut>().unwrap();
+            if shortcut.trigger().is_some_and(|t| t.to_str() == expected) {
+                return shortcut.action().unwrap().activate(
+                    gtk4::ShortcutActionFlags::empty(),
+                    window,
+                    shortcut.arguments().as_ref(),
+                );
+            }
+        }
+    }
+    panic!("Compare shortcut is installed");
+}
+
 fn render_node(widget: &gtk4::Widget) -> Option<gtk4::gsk::RenderNode> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
@@ -1650,6 +1676,8 @@ fn compare_narrows_five_images_to_one() {
     // Ctrl+A from the focused filmstrip list reaches the window's shortcut,
     // which selects every image (user test of `ef91d32`: the list's own
     // Ctrl+A swallowed it).
+    filmstrip.imp().list_view.grab_focus();
+    assert!(!compare_shortcut(&window), "one image cannot open Compare");
     let handled_by = bubble_ctrl_a(filmstrip.imp().list_view.upcast_ref());
     assert_eq!(
         handled_by.as_ref(),
@@ -1657,7 +1685,36 @@ fn compare_narrows_five_images_to_one() {
         "Ctrl+A is handled by the window, not the list"
     );
     assert_eq!(window.imp().state.borrow().selected_paths.len(), 5);
-    gio::prelude::ActionGroupExt::activate_action(&window, "compare", None);
+    window.show_inline_search();
+    window
+        .imp()
+        .inline_search_entry
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .grab_focus();
+    super::gtk_tests::settle(150);
+    assert!(!compare_shortcut(&window), "typing keeps its shortcut keys");
+    filmstrip.imp().list_view.grab_focus();
+    super::gtk_tests::settle(150);
+    let dialog = libadwaita::Dialog::new();
+    dialog.present(Some(&window));
+    pump_until(|| window.visible_dialog().is_some());
+    assert!(!compare_shortcut(&window), "a modal sheet blocks Compare");
+    dialog.close();
+    pump_until(|| window.visible_dialog().is_none());
+    filmstrip.imp().list_view.grab_focus();
+    super::gtk_tests::settle(250);
+    window.imp().crop_preparing.set(true);
+    assert!(
+        !compare_shortcut(&window),
+        "crop preparation blocks Compare"
+    );
+    window.imp().crop_preparing.set(false);
+    assert!(
+        compare_shortcut(&window),
+        "two or more selected images open Compare"
+    );
     let page = window.imp().compare_page.borrow().clone().unwrap();
     pump_until(|| page.survivors().len() == 5);
     let view = page.view();
@@ -1696,18 +1753,63 @@ fn compare_narrows_five_images_to_one() {
         focus.is_ancestor(&page) || focus == *page.upcast_ref::<gtk4::Widget>(),
         "focus is on {focus:?}"
     );
-    // Each side's picker shows any image not dismissed; picking the other
-    // side's image swaps them.
-    let pickers = page.imp().pickers.clone();
-    assert_eq!(pickers[1].model().unwrap().n_items(), 5);
-    pickers[1].set_selected(3);
+    // Visible candidate activation changes only the explicit target side.
+    let candidates = &page.imp().candidates;
+    assert_eq!(
+        candidates.target.get(),
+        crate::ui::compare_item::Side::Right
+    );
+    assert_eq!(candidates.store.n_items(), 5);
+    candidates.list.emit_by_name::<()>("activate", &[&3u32]);
     pump_until(|| page.imp().shown.borrow()[1].as_ref() == Some(&paths[3]));
-    pickers[0].set_selected(3);
+    assert_eq!(page.survivors(), paths, "choosing dismisses nobody");
+    candidates.replace[0].set_active(true);
+    candidates.list.emit_by_name::<()>("activate", &[&3u32]);
     pump_until(|| page.imp().shown.borrow()[0].as_ref() == Some(&paths[3]));
     assert_eq!(page.imp().shown.borrow()[1].as_ref(), Some(&paths[0]));
-    let settle = std::time::Instant::now();
-    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
-    screenshot(&window, &root.parent().unwrap().join("compare-pickers.png"));
+    // Cold-cache rows acquire actual thumbnails off-thread.
+    pump_until(|| {
+        find_widgets::<gtk4::Picture>(&candidates.root.clone().upcast())
+            .iter()
+            .filter(|p| p.paintable().is_some())
+            .count()
+            == 5
+    });
+    for (theme, scheme) in [
+        ("light", libadwaita::ColorScheme::ForceLight),
+        ("dark", libadwaita::ColorScheme::ForceDark),
+    ] {
+        libadwaita::StyleManager::default().set_color_scheme(scheme);
+        for (width, height) in [(1024, 600), (1600, 900)] {
+            window.set_default_size(width, height);
+            pump_until(|| window.width() == width && window.height() == height);
+            super::gtk_tests::settle(200);
+            screenshot(
+                &window,
+                &root
+                    .parent()
+                    .unwrap()
+                    .join(format!("compare-candidates-{theme}-{width}.png")),
+            );
+        }
+    }
+    let all = page.survivors();
+    page.keep(crate::ui::compare_item::Side::Left);
+    assert_eq!(candidates.store.n_items(), 4);
+    page.undo();
+    assert_eq!(candidates.store.n_items(), 5);
+    assert_eq!(page.survivors(), all, "Undo restores original order");
+    candidates.list.grab_focus();
+    assert_eq!(
+        window.handle_mode_key(gdk4::Key::Right, gdk4::ModifierType::empty()),
+        glib::Propagation::Proceed
+    );
+    assert_eq!(
+        page.survivors(),
+        all,
+        "candidate navigation cannot pick a winner"
+    );
+    page.view().grab_focus();
     let none = gdk4::ModifierType::empty();
     for key in [
         gdk4::Key::bracketleft,
@@ -1747,6 +1849,51 @@ fn compare_narrows_five_images_to_one() {
     assert!(page.survivors().is_empty(), "Compare was closed");
     assert!(!super::file_actions_blocked(window.upcast_ref()));
     assert!(inner.shows_sidebar(), "the filmstrip is back");
+
+    // A large candidate set creates only visible row widgets. Scrolling and
+    // starting another session must not apply an earlier session's thumbnails.
+    let many: Vec<_> = (0..500)
+        .map(|i| {
+            let path = root.join(format!("candidate-{i:04}.png"));
+            std::fs::hard_link(&paths[i % paths.len()], &path).unwrap();
+            path
+        })
+        .collect();
+    window.enter_compare_mode(many);
+    pump_until(|| page.imp().candidates.store.n_items() == 500);
+    super::gtk_tests::settle(200);
+    let widgets = find_widgets::<gtk4::Picture>(&page.imp().candidates.root.clone().upcast());
+    assert!(
+        widgets.len() < 500,
+        "candidate rows are virtualized, got {}",
+        widgets.len()
+    );
+    assert!(
+        widgets.iter().filter(|p| p.paintable().is_some()).count() < 50,
+        "only visible candidates request thumbnail decodes"
+    );
+    page.imp()
+        .candidates
+        .list
+        .scroll_to(499, gtk4::ListScrollFlags::FOCUS, None);
+    super::gtk_tests::settle(200);
+    page.imp()
+        .candidates
+        .list
+        .emit_by_name::<()>("activate", &[&499u32]);
+    assert!(page.imp().shown.borrow()[1]
+        .as_ref()
+        .unwrap()
+        .ends_with("candidate-0499.png"));
+    page.close();
+    window.enter_compare_mode(paths.clone());
+    assert_eq!(
+        page.imp().candidates.target.get(),
+        crate::ui::compare_item::Side::Right
+    );
+    assert_eq!(page.imp().candidates.store.n_items(), 5);
+    super::gtk_tests::settle(200);
+    page.close();
 
     for (path, original) in paths.iter().zip(&originals) {
         assert_eq!(
@@ -2067,20 +2214,12 @@ fn mode_headers_keep_choices_and_restore_search() {
                 glib::Propagation::Proceed
             );
             assert_eq!(page.survivors(), paths);
-            page.imp().pickers[0].emit_by_name::<()>("activate", &[]);
-            pump_until(|| {
-                find_widgets::<gtk4::Popover>(page.upcast_ref())
-                    .iter()
-                    .any(|p| p.is_mapped())
-            });
+            page.imp().candidates.list.grab_focus();
             assert_eq!(
                 window.handle_mode_key(gdk4::Key::Right, none),
                 glib::Propagation::Proceed,
-                "picker arrows never choose a winner"
+                "candidate arrows never choose a winner"
             );
-            for popover in find_widgets::<gtk4::Popover>(page.upcast_ref()) {
-                popover.popdown();
-            }
             settle(200);
             page.view().grab_focus();
             screenshot(&window, &root.join(format!("{theme}-{width}-compare.png")));

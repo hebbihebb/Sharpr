@@ -2858,21 +2858,14 @@ impl SharprWindow {
         compare_action.set_enabled(false);
         {
             let window_weak = self.downgrade();
-            let state_c = state.clone();
             compare_action.connect_activate(move |_, _| {
-                let selection = {
-                    let state = state_c.borrow();
-                    let paths = (0..state.library.image_count())
-                        .filter_map(|index| state.library.entry_at(index))
-                        .map(|entry: ImageEntry| entry.path());
-                    ordered_selection(paths, &state.selected_paths)
-                };
-                if let (Some(window), Some(paths)) = (window_weak.upgrade(), selection) {
-                    window.enter_compare_mode(paths);
+                if let Some(window) = window_weak.upgrade() {
+                    window.compare_selected();
                 }
             });
         }
         self.add_action(&compare_action);
+        self.install_compare_shortcut();
         {
             let compare_action = compare_action.clone();
             let weak = self.downgrade();

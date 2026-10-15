@@ -211,6 +211,27 @@ window.sharpr .metadata-osd-buckets {
 }
 
 /* Key hints in Compare and crop. */
+window.sharpr .compare-candidates listview {
+  background: transparent;
+}
+window.sharpr .compare-candidates row {
+  padding: 2px;
+}
+window.sharpr .compare-candidate {
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+window.sharpr .compare-candidate.compare-current {
+  border-color: var(--accent-color);
+}
+window.sharpr .compare-side {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+  font-weight: bold;
+}
 window.sharpr .sharpr-keys {
   font-size: 11px;
   color: alpha(currentColor, 0.65);

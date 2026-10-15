@@ -3,6 +3,62 @@
 use super::*;
 
 impl SharprWindow {
+    fn compare_selection_allowed(&self) -> bool {
+        if self.visible_dialog().is_some()
+            || file_actions_blocked(self.upcast_ref())
+            || text_input_has_focus(self.upcast_ref())
+        {
+            return false;
+        }
+        let mut focus = gtk4::prelude::GtkWindowExt::focus(self);
+        while let Some(widget) = focus {
+            if widget.is::<gtk4::Popover>() {
+                return false;
+            }
+            focus = widget.parent();
+        }
+        true
+    }
+
+    pub(super) fn compare_selected(&self) {
+        if self.visible_dialog().is_some() || file_actions_blocked(self.upcast_ref()) {
+            return;
+        }
+        let selection = {
+            let state = self.imp().state.borrow();
+            let paths = (0..state.library.image_count())
+                .filter_map(|index| state.library.entry_at(index))
+                .map(|entry| entry.path());
+            ordered_selection(paths, &state.selected_paths)
+        };
+        if let Some(paths) = selection {
+            self.enter_compare_mode(paths);
+        }
+    }
+
+    pub(super) fn install_compare_shortcut(&self) {
+        let shortcuts = gtk4::ShortcutController::new();
+        shortcuts.set_scope(gtk4::ShortcutScope::Managed);
+        shortcuts.add_shortcut(gtk4::Shortcut::new(
+            Some(gtk4::ShortcutTrigger::parse_string("<Control><Shift>c").unwrap()),
+            Some(gtk4::CallbackAction::new(|widget, _| {
+                let Some(window) = widget.downcast_ref::<SharprWindow>() else {
+                    return glib::Propagation::Proceed;
+                };
+                if !window.compare_selection_allowed()
+                    || !window
+                        .lookup_action("compare")
+                        .is_some_and(|a| a.is_enabled())
+                {
+                    return glib::Propagation::Proceed;
+                }
+                gio::prelude::ActionGroupExt::activate_action(window, "compare", None);
+                glib::Propagation::Stop
+            })),
+        ));
+        self.add_controller(shortcuts);
+    }
+
     /// Compares `paths` (at least two) in this order.
     pub fn enter_compare_mode(&self, paths: Vec<PathBuf>) {
         if let Some(crop) = self.crop_session() {

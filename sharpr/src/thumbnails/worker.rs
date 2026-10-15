@@ -534,7 +534,7 @@ impl Drop for ThumbnailWorker {
 // Thumbnail generation (runs on worker threads)
 // ---------------------------------------------------------------------------
 
-fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
+pub(crate) fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
     let started = Instant::now();
     // Try system-wide thumbnails first (GNOME/Freedesktop standard) as they
     // are likely already generated and high quality.
