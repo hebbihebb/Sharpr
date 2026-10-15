@@ -285,14 +285,15 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 **Outcome:** Bucket membership survives moves and renames made outside Sharpr (D3), keeps inheritance (D4), and stops depending on tags. Every image gets a content fingerprint, which Phase 5 and Phase 7 reuse.
 
-**Status (October 14): deployed and in daily use since `bf12e07`; not yet formally accepted.** All acceptance criteria are met in tests. On the user's first launch, the migration ran on the live data: 151 members across the original 6 buckets, matching the copy test exactly. The user has since created 3 more buckets.
+**Status: accepted by the user on October 15, 2026** (build `679bbe1`; deployed and in daily use since `bf12e07`). The user's check: a bucket image moved outside Sharpr first gave an "image not found" notice; after opening the folder it was moved to, it reappeared in its bucket. "Could be improved but works" (Backlog).
+
+Earlier status (October 14): not yet formally accepted. All acceptance criteria are met in tests. On the user's first launch, the migration ran on the live data: 151 members across the original 6 buckets, matching the copy test exactly. The user has since created 3 more buckets.
 - **Unit 1, fingerprints:** a background pass at nice 19 and idle I/O; progress shows in Preferences.
 - **Unit 2, membership:** the `bucket_members` table and the migration. Every reader and editor has switched over.
 - **Unit 3, re-linking:** after each pass, members follow moved and edited files, and missing ones are counted.
 - **Acceptance on a copy of the live databases:** all 6 buckets were identical before and after, image for image, including Art › Diffusion. The counts: Model 95, CSR 44, upgrade? 4, Art 3, Trash? 3, Diffusion 2, none missing. All 7,718 tag rows were unchanged, the backup was written first, and the index was stamped version 2.
 - **Moved files:** a file moved and renamed outside Sharpr stays in its bucket after the next pass (unit and GTK tests). A deleted file counts as missing and is kept. Removing an image from Diffusion leaves it in Art when Art holds it directly.
 - **Rollback note:** older builds refuse the version-2 index. Going back means restoring the `before-bucket-membership-*` backup.
-- **Waiting on the user:** formal acceptance.
 
 **Scope:**
 
@@ -326,7 +327,9 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 ## Phase 5: Visual Search And Tag Retirement
 
-**Status (October 14): every scope item is built and committed; the core is deployed in `c176934`; not accepted.** Phase 3 said go (D22).
+**Status: accepted by the user on October 15, 2026** (build `679bbe1`). The user accepts the manual browsing-during-indexing checks in place of a measured comparison, and file-name matches stay first alongside visual results (may be revisited).
+
+Earlier status (October 14): every scope item built and committed; the core deployed in `c176934`. Phase 3 said go (D22).
 - **Deployed in `c176934`** with the model installed: visual search, GPU indexing, and tag retirement.
 - **Deployed in `baa007d`** (October 14): the audit fixes, the Library Overview, search into buckets, and negative search.
 - **User test of `ef91d32` (October 15):** `tower -water` and the strict `--water` work, and so does Add to Bucket from the search line. Two faults, fixed in the round in `CURRENT_TASKS.md` (D25):
@@ -476,7 +479,9 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 ## Phase 6: Wallpaper Output
 
-**Status (October 14): built, committed, and verified; not deployed or accepted.** Batch WebP export and the retirement of Resize Copy and the non-WebP outputs are in `5e2ad3d`; cropping in the viewer, the preview fallback, and the rotated-JPEG test follow in the next commit. Left for acceptance: the user makes a real wallpaper end to end.
+**Status: accepted by the user on October 15, 2026** (build `679bbe1`): "works so far", with more testing to come in normal use.
+
+Earlier status (October 14): built, committed, and verified. Batch WebP export and the retirement of Resize Copy and the non-WebP outputs are in `5e2ad3d`; cropping in the viewer, the preview fallback, and the rotated-JPEG test follow in the next commit. Left for acceptance: the user makes a real wallpaper end to end.
 - **User test of `ef91d32` (October 15):** batch WebP export (lossless, quality, fit within) and Crop Copy at full size work, and the copy lands in Wallpapers or the chosen folder. One fault: the export window doesn't close on a click outside it (D25).
 
 **Outcome:** The user crops in Sharpr and batch-exports WebP well enough to stop using XL Converter (D13).
@@ -511,7 +516,9 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 ## Phase 7: Cleanup
 
-**Status (October 14): built, committed, and verified; not deployed or accepted.**
+**Status: accepted by the user on October 15, 2026** (build `679bbe1`): "improved but not perfect"; on the real library it found three copies the user had not found before, and they were removed. Further tuning goes to the Backlog.
+
+Earlier status (October 14): built, committed, and verified.
 - **Item 1:** the old finder's inconsistency was incomplete coverage: it only knew the perceptual hashes of images whose thumbnails had loaded this session. "Find Copies…" replaces it.
 - **Fixture with the real model:** the 1080p JPEG (0.9959) and the WebP conversion (0.9970) of a 4K picture group with it and its exact copy. A same-shape 16:9 crop (0.9711) and a mirrored copy (0.9892) fail the pixel check and stay out.
 - **Every vector pair also needs the same aspect ratio,** because a test showed a crop could otherwise chain in through a close copy.
@@ -544,6 +551,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - Grouping runs off the GTK thread.
 
 ## Phase 9: Interface Review
+
+**User's manual pass of `679bbe1` (October 15):** Compare (including the candidate row), add to last bucket, the viewer right-click menu and hover-expanded Info work, and the rest is as expected. The readout's "Image info" tooltip covered the expanding card and was removed. Survey "does nothing" in the user's try: under investigation. Phase 9 stays open until that is settled.
 
 **Checkpoint (October 15): implementation and verification complete; paused at the user's request before installation.** Fast scrolling, aspect comparisons, last bucket, hover-expanded Info, Survey, one library root and the final style/icon/Help/shared-menu work are implemented. `CURRENT_TASKS.md` records commits, checks and the verified live-data backup; `docs/reference/interface-inventory.md` records control dispositions. Latest checks: 217 regular tests, 18 GTK workflows and focused high-contrast checks at minimum/wide sizes. The installed build is still `ef91d32`. Final installation and the user's manual acceptance remain pending, so this phase stays open.
 
@@ -712,6 +721,8 @@ Optional and unordered. Pick something up only when a phase touches that area, o
 - Support non-UTF-8 paths.
 - Make Flatpak `home` access writable for move and rename, if the user needs it.
 - Guard the startup legacy-bucket migration (`migrate_legacy_collections_to_tags`) with a backup and count check, or retire it, before old databases are treated as a supported upgrade (audit finding 12).
+- Re-link a bucket member moved outside Sharpr before the user opens its new folder. Today the bucket shows "image not found" until a pass reaches that folder (user, October 15).
+- Tune Find Copies on the real library: the user found it "improved but not perfect" (October 15).
 - Keep thumbnail generations through to completion: a failure or success from an old request must not mark a newer view's row (audit finding 7).
 - Stop computing perceptual hashes in the thumbnail workers, now that "Find Copies…" (Phase 7) uses fingerprints and vectors; remove `duplicates/phash.rs` and `LibraryIndex::duplicate_groups` with it. Wrap or extend the thumbnail scheduler; don't rewrite it.
 - Index AVIF and HEIC/HEIF for visual search, with a bounded decoder on the worker (Phase 5 audit, finding 13). The live library has none; weigh the Flatpak cost before adding decoders.

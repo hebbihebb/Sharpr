@@ -65,7 +65,8 @@ mod imp {
             card.set_margin_start(12);
             card.set_margin_end(12);
             card.set_visible(false);
-            card.set_tooltip_text(Some("Image info (Ctrl+I)"));
+            // Hover already expands Info; a tooltip would cover the card.
+            card.update_property(&[gtk4::accessible::Property::Label("Image info (Ctrl+I)")]);
 
             let metadata_label = gtk4::Label::new(None);
             metadata_label.set_halign(gtk4::Align::Start);
