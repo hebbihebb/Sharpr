@@ -36,8 +36,6 @@ pub fn build_preferences_dialog(
         "Browse this folder and all its subfolders. Disabled folders stay excluded.",
     ));
     library_page.add(&library_group);
-    let collections_group = libadwaita::PreferencesGroup::new();
-    collections_group.set_title("Buckets");
     let weak_row = root_row.downgrade();
     let weak_parent = parent.downgrade();
     gtk4::glib::timeout_add_seconds_local(1, move || {
@@ -55,76 +53,9 @@ pub fn build_preferences_dialog(
         gtk4::glib::ControlFlow::Continue
     });
 
-    // Fingerprints let buckets follow images moved or renamed outside Sharpr.
-    let fingerprint_row = libadwaita::ActionRow::new();
-    fingerprint_row.set_title("Image Fingerprints");
-    fingerprint_row.set_subtitle(&fingerprint_status(parent));
-    collections_group.add(&fingerprint_row);
-    {
-        let row = fingerprint_row.downgrade();
-        let parent = parent.downgrade();
-        gtk4::glib::timeout_add_seconds_local(1, move || {
-            let (Some(row), Some(parent)) = (row.upgrade(), parent.upgrade()) else {
-                return gtk4::glib::ControlFlow::Break;
-            };
-            row.set_subtitle(&fingerprint_status(&parent));
-            gtk4::glib::ControlFlow::Continue
-        });
-    }
-    library_page.add(&collections_group);
     library_page.add(&build_visual_search_group(parent));
 
     dialog.add(&library_page);
-
-    let appearance_page = libadwaita::PreferencesPage::new();
-    appearance_page.set_title("Appearance");
-    appearance_page.set_icon_name(Some("preferences-desktop-appearance-symbolic"));
-
-    let appearance_group = libadwaita::PreferencesGroup::new();
-    appearance_group.set_title("Viewer");
-
-    let metadata_row = libadwaita::SwitchRow::new();
-    metadata_row.set_title("Show metadata overlay");
-    metadata_row.set_subtitle("EXIF data shown in the bottom-right corner");
-    metadata_row.set_active(
-        action_state_bool(parent, "show-metadata").unwrap_or(settings.metadata_visible),
-    );
-
-    {
-        let parent_c = parent.clone();
-        metadata_row.connect_active_notify(move |row| {
-            let desired = row.is_active();
-            if action_state_bool(&parent_c, "show-metadata") != Some(desired) {
-                gtk4::prelude::ActionGroupExt::activate_action(&parent_c, "show-metadata", None);
-            }
-            parent_c
-                .app_state()
-                .borrow_mut()
-                .settings
-                .set_metadata_visible(desired);
-        });
-    }
-
-    let cache_row = libadwaita::SpinRow::with_range(100.0, 2000.0, 100.0);
-    cache_row.set_title("Thumbnail cache size");
-    cache_row.set_subtitle("Maximum images held in memory");
-    cache_row.set_value(settings.thumbnail_cache_max as f64);
-
-    {
-        let parent_c = parent.clone();
-        cache_row.connect_notify_local(Some("value"), move |row, _| {
-            parent_c
-                .app_state()
-                .borrow_mut()
-                .settings
-                .set_thumbnail_cache_max(row.value() as i32);
-        });
-    }
-
-    appearance_group.add(&metadata_row);
-    appearance_group.add(&cache_row);
-    appearance_page.add(&appearance_group);
-    dialog.add(&appearance_page);
 
     dialog
 }
@@ -168,19 +99,4 @@ fn gpu_subtitle() -> String {
         "No GPU build of llama-server in the model folder's runtime-gpu; indexing uses the processor"
             .into()
     }
-}
-
-fn fingerprint_status(window: &SharprWindow) -> String {
-    match window.fingerprint_progress() {
-        None => "Starts shortly after launch, in the background".into(),
-        Some(p) if p.done < p.total => format!("Fingerprinting {} of {} images…", p.done, p.total),
-        Some(p) => format!("All {} images have fingerprints", p.total),
-    }
-}
-
-fn action_state_bool(window: &SharprWindow, action_name: &str) -> Option<bool> {
-    window
-        .lookup_action(action_name)
-        .and_then(|action| action.state())
-        .and_then(|state| state.get::<bool>())
 }

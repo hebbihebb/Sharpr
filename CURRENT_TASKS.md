@@ -1,37 +1,54 @@
 # Current Tasks
 
-## Active: Phase 9 interface review (October 15, 2026)
+## Paused: Phase 9 interface review (October 15, 2026)
 
-The user asked Codex to review Claude's UI work and continue. Started from a clean `viewer-reset` at `b7241f7`.
+**User instruction:** stop here and commit the current work. The goal is paused.
+Installation and final manual acceptance remain pending; do not continue or install
+until the user resumes. The desktop launcher still runs `ef91d32`.
 
-**Approved direction:** hybrid GTK4/Libadwaita (D26), then Sharpr's design language (D27): monospace everywhere, aligned 42 px top bars, compact menus and popover pickers, narrow sidebar, neutral image canvas, hover/movement readout, filter chips and one Sort and Filter menu. Implemented in `cb57749`..`52595e5`; the user liked the isolated hands-on trial. Not deployed.
+**Approved scope:** complete Phase 9, then install its test build, with off-screen
+screenshots preferred (D30). The user explicitly confirmed Survey as a way to
+narrow a selection. D26–D29 define the accepted hybrid look, monospace font,
+contextual Compare/crop controls and candidate thumbnails. Earlier accepted UI,
+export and filter/sort work is recorded in `ROADMAP.md`.
 
-**Accepted UI units (October 15):** styled Preferences/Shortcuts (`8b6ac1d`), bundled JetBrains Mono (`0183d3f`), contextual Compare/crop controls (`c5699d7`), and the WebP export sheet (`fde5a52`). The user tested choices/Undo, viewing modes, linked zoom/pan, returning survivors/search/chips, output-folder selection and export, and light/dark/resized sheets: everything works. Phase 8 Compare is closed in `docs/archive/history.md`. All are committed and verified (latest full checks: 211 regular tests and 14 GTK tests); not deployed. Candidate thumbnails are the approved current unit (D29).
+**Completed checkpoints on `viewer-reset`:**
 
-**Filter/sort cleanup accepted (`7399cee`):** chips are the only filter path; Ascending/Descending work; retained cached thumbnails survive sort/filter reloads. Build/full checks (212 tests), 22 targeted tests, GTK checks and native large-folder checks passed; the user retested successfully. Debug logs remain under `.tmp/filter-cleanup*` and `.tmp/sort-direction*` without release performance claims. Not deployed.
+1. `e91136b`: private off-screen Mutter runner; larger native fast-scroll handle;
+   strict `<16:9`/`>16:9` chips; bucket terminology.
+2. `27789cb`: persistent library-scoped last bucket (Ctrl+Shift+B); hover-expanded
+   Info in the same readout, pin/Escape, and live membership refresh.
+3. `88e5e41`: Survey grid (Ctrl+Shift+S), dismiss/Delete, Undo and Done/Escape;
+   original order, survivor selection, search/chips and image bytes preserved.
+4. `ffa075d`: one root chooser and recursive browsing; active identity, inactive
+   configurations, exclusions, bucket members, fingerprints and vectors survive
+   narrowing/widening. No library switcher/list/folder-mode or bucket transfer UI.
+5. **Final checkpoint, implemented and verified:** one stylesheet/provider and
+   shared palette/drawing tokens; seven original CC0 symbolic icons; CSS thumbnail
+   feedback; compact Help; shared viewer/filmstrip image actions; retired overlay,
+   cache and index-ring controls, preserving settings. The control dispositions
+   are in `docs/reference/interface-inventory.md`. The milestone self-review is
+   complete: fixed hidden-row keyboard-menu targeting and large Survey lookup cost.
 
-**Active goal:** complete Phase 9, then install the test version (user approval supersedes the earlier no-install instruction). Run screenshots/GTK checks on an off-screen display if available. Started clean at `c2839a5`; Compare candidates are implemented/verified, awaiting hands-on acceptance.
+**Verification:** `cargo build`, full `./check.sh` (217 tests), all 18 GTK workflows,
+6 focused high-contrast workflows and 2 final OSD/menu checks passed. Screenshots
+are off screen, in light/dark/high contrast at 1024×600 and 1600×900. Logs and
+captures: `.tmp/phase9/`. The same debug/Cairo 5,000-image scenario opened in
+345 ms before / 351 ms after; browsing's longest recorded stall was 87 / 85 ms.
+These are isolated debug measurements, not release performance claims.
 
-**Execution checkpoints:**
-1. **Committed `e91136b`, verified:** off-screen Mutter runner; larger always-visible native scroll handle; `<16:9`/`>16:9` chips (strict ranges); consistent bucket labels. Full checks: 213 tests; all 14 GTK tests off screen. Logs: `.tmp/phase9/{before,checkpoint1}.jsonl` and `checkpoint1-{check,gtk}.log`.
-2. **Committed `27789cb`, verified:** persistent library-scoped last bucket (Ctrl+Shift+B and a named context action); hover-expanded Info in the same card, with pin/Escape and retired-hover guards; live membership refresh. Full checks: 214 tests; off-screen write/byte-preservation, keyboard, layout, scoped-search and tour checks passed. Logs: `.tmp/phase9/checkpoint2-*`.
-3. **Committed `88e5e41`, verified:** Survey culling grid, Ctrl+Shift+S, dismiss/Delete, Undo and Done/Escape with survivors selected. Original order, search/chips and files are preserved. Full checks: 215 tests; Survey and 14 existing off-screen GTK workflows/layouts passed (visual-model fallback is unchanged and remains in the final full run). The test waits for the asynchronous filter before selecting; the initial timing failure was in setup. A serial viewport-fed thumbnail lane is shared with Compare; filmstrip pools are unchanged.
-4. **Implemented/verified, ready to commit:** one root chooser; recursive browsing; no library list/switcher/folder-mode or bucket import/export UI. Settings retain inactive configurations, identity, legacy options and outside-root exclusions on reload. Narrowing hides members without marking them missing. Data-path/GTK checks passed for identity, bucket/legacy tag counts, cached fingerprints/vectors, rapid root changes and unchanged source bytes. Full checks passed (216 tests) and all 17 GTK workflows passed off screen, including rapid scrolling/folder switches (`root{,-final}-gtk.log`, `root.jsonl`). The old Create Library assertion was replaced by the shared root-action check. Live backup/count verification remains before installation.
-5. Finish Phase 9 polish: one stylesheet/tokens/palette, symbolic icons, skeleton/hover feedback, compact Help and viewer actions; record every control disposition against the inventory.
-6. One milestone self-review, full checks, off-screen light/dark/high-contrast screenshots at minimum/wide sizes, rapid-scroll/folder-switch before/after logs. Commit user-testable units. Close implemented scope, install the pinned test build with the authorized native launcher, and request the final manual acceptance pass. No push/main merge.
+**On resume:** finish recording this checkpoint's commit if needed, install the
+clean pinned test build using the previously authorized native launcher, and
+request the user's final manual pass. Phase 9 remains open until accepted; do not
+archive it or advance to Phase 10 yet. No further review loop is needed.
 
-**Next:** execute these checkpoints; acceptance must remain distinct from implementation and installation.
+## Git, backup and earlier acceptance
 
-## Earlier work and acceptance
-
-- Phases 5–7 are implemented on `viewer-reset`; Phase 8 Compare is accepted (summary in `docs/archive/history.md`); the user's `ef91d32` test passed 17/19 items. Details and outstanding acceptance checks are in `ROADMAP.md` Phases 5–7. A measured browsing check during indexing is still open; browsing felt smooth to the user.
-- Fixes after that test are committed and verified: Ctrl+A (`9c6eb14`), picker click-away (`15b5d7e`, subsequently replaced by popovers), trash Undo (`475249c`). Not deployed.
-- Open choices: file-name matches first in search (keep for now); whole-folder thumbnail preload versus a cap; automatic-tag cleanup (ready, never run).
-
-## Git, deployment, and guardrails
-
-- Development: `viewer-reset`. `main` remains at accepted Phases 1–2 (`1924346`). Archive branches `preserve/october-12-wip`, `visual-search-trial-wip`, and `look-prototype` stay.
-- Installed launcher: `ef91d32` under `~/.local/opt/sharpr/current`. The user now approves installing the test build after Phase 9 is implemented and verified. Merge and push still require approval.
-- Latest recorded verified backup: `~/.local/share/sharpr.backup-20261014-150245`, with settings. Earlier backups remain. Live buckets/tags/settings are irreplaceable; never use them in tests.
-- Isolated hands-on trial: `.tmp/look-trial/`, with copies of library/data/cache/settings. Pass the user's icon directory through in future trials so the icon theme remains available.
-- Run heavy jobs one at a time; past parallel jobs exhausted memory. GTK tests use isolated directories and memory GSettings (`docs/reference/development.md`).
+- Development: `viewer-reset`; `main` stays at `1924346`. No merge or push approval.
+  Keep all archive/prototype branches.
+- Verified live backup: `~/.local/share/sharpr.backup-20261015-205204`, including
+  settings. All database table counts match: 815 bucket members, 5,899 fingerprints,
+  5,184 vectors and 7,718 legacy tag rows. No live Sharpr process was running.
+- Phases 5–7 still have acceptance items in `ROADMAP.md`; Phase 8 is accepted and
+  archived. Automatic-tag cleanup is implemented but has never been run.
+- Tests use isolated temporary data/settings. Heavy jobs run one at a time.

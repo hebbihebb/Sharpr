@@ -19,9 +19,7 @@ use crate::library_index::{effective_tags_in, Collection, LibraryIndex, MemberRo
 use crate::tags::TagDatabase;
 
 /// Colours for buckets without one, chosen by their root bucket's id.
-const FALLBACK_COLORS: &[&str] = &[
-    "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
-];
+use crate::palette::BUCKETS as FALLBACK_COLORS;
 
 /// What opening a bucket shows: its visible members (own and sub-buckets'),
 /// and how many members exist nowhere.

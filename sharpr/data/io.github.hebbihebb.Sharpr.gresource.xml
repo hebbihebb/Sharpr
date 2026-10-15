@@ -4,8 +4,15 @@
     <file preprocess="xml-stripblanks">help-overlay.ui</file>
     <file alias="512x512/apps/io.github.hebbihebb.Sharpr.png">io.github.hebbihebb.Sharpr.png</file>
     <file>manual.md</file>
-    <file>collection.css</file>
-    <file>viewer-osd.css</file>
+    <file>style.css</file>
+    <file>icons/scalable/actions/sharpr-bucket-symbolic.svg</file>
+    <file>icons/scalable/actions/sharpr-add-bucket-symbolic.svg</file>
+    <file>icons/scalable/actions/sharpr-compare-symbolic.svg</file>
+    <file>icons/scalable/actions/sharpr-crop-symbolic.svg</file>
+    <file>icons/scalable/actions/sharpr-webp-symbolic.svg</file>
+    <file>icons/scalable/actions/sharpr-below-4k-symbolic.svg</file>
+    <file>icons/scalable/actions/sharpr-copies-symbolic.svg</file>
+    <file>icons/README.md</file>
     <file compressed="true">fonts/JetBrainsMono.ttf</file>
     <file compressed="true">fonts/JetBrainsMono-Italic.ttf</file>
     <file>fonts/OFL.txt</file>

@@ -4,7 +4,6 @@ use gtk4::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Once;
 
 use crate::quality::{scorer, QualityScore};
 use crate::ui::metadata_chip::MetadataChip;
@@ -28,6 +27,7 @@ mod imp {
         pub overlay: gtk4::Overlay,
         pub scrolled_window: gtk4::ScrolledWindow,
         pub picture: gtk4::Picture,
+        pub image_menu: gtk4::PopoverMenu,
         pub metadata_chip: MetadataChip,
         pub spinner: gtk4::Spinner,
         /// Shown briefly when a decode error prevents the image from loading.
@@ -41,7 +41,6 @@ mod imp {
         pub zoom_btn: std::cell::RefCell<Option<gtk4::Button>>,
         pub zoom: Cell<f64>,
         pub zoom_mode: Cell<super::ZoomMode>,
-        pub metadata_visible: Cell<bool>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub pointer_pos: Cell<(f64, f64)>,
         /// Look prototype: hides the corner chip after the pointer rests.
@@ -129,6 +128,7 @@ mod imp {
                 overlay,
                 scrolled_window,
                 picture,
+                image_menu: gtk4::PopoverMenu::from_model(None::<&gio::MenuModel>),
                 metadata_chip,
                 spinner,
                 error_label,
@@ -138,7 +138,6 @@ mod imp {
                 zoom_btn: std::cell::RefCell::new(None),
                 zoom: Cell::new(1.0),
                 zoom_mode: Cell::new(super::ZoomMode::Fit),
-                metadata_visible: Cell::new(true),
                 state: RefCell::new(None),
                 pointer_pos: Cell::new((0.0, 0.0)),
                 chip_idle_source: RefCell::new(None),
@@ -169,6 +168,9 @@ mod imp {
 
     impl ObjectImpl for ViewerPane {
         fn dispose(&self) {
+            if self.image_menu.parent().is_some() {
+                self.image_menu.unparent();
+            }
             self.content_box.unparent();
         }
     }
@@ -221,7 +223,6 @@ impl ViewerPane {
     fn build_ui(&self) {
         let imp = self.imp();
         imp.content_box.set_parent(self);
-        install_viewer_osd_css();
 
         let motion = gtk4::EventControllerMotion::new();
         let w = self.downgrade();
@@ -318,12 +319,6 @@ impl ViewerPane {
                 let _ = widget.activate_action("win.zoom-mode", Some(&"fit".to_variant()));
                 glib::Propagation::Stop
             })),
-        ));
-
-        // Alt+Return — toggle metadata overlay
-        shortcuts.add_shortcut(gtk4::Shortcut::new(
-            Some(gtk4::ShortcutTrigger::parse_string("<Alt>Return").unwrap()),
-            Some(gtk4::NamedAction::new("win.show-metadata")),
         ));
 
         self.add_controller(shortcuts);
@@ -837,19 +832,6 @@ impl ViewerPane {
         }
     }
 
-    pub fn metadata_visible(&self) -> bool {
-        self.imp().metadata_visible.get()
-    }
-
-    pub fn set_metadata_visible(&self, visible: bool) {
-        let imp = self.imp();
-        imp.metadata_visible.set(visible);
-        imp.metadata_chip.set_enabled(visible);
-        if visible {
-            self.refresh_membership();
-        }
-    }
-
     fn update_quality_indicator(&self, metadata: &crate::metadata::ImageMetadata) {
         self.set_quality_score(Some(&scorer::score_metadata(metadata)));
     }
@@ -878,14 +860,6 @@ impl ViewerPane {
 
     pub fn zoom_mode(&self) -> ZoomMode {
         self.imp().zoom_mode.get()
-    }
-
-    // -----------------------------------------------------------------------
-    // Metadata overlay
-    // -----------------------------------------------------------------------
-
-    pub fn toggle_metadata(&self) {
-        self.set_metadata_visible(!self.metadata_visible());
     }
 
     pub(crate) fn refresh_membership(&self) {
@@ -978,19 +952,4 @@ impl ViewerPane {
         let max_value = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
         adjustment.set_value(value.clamp(adjustment.lower(), max_value));
     }
-}
-
-fn install_viewer_osd_css() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let provider = gtk4::CssProvider::new();
-        provider.load_from_resource("/io/github/hebbihebb/Sharpr/viewer-osd.css");
-        if let Some(display) = gdk4::Display::default() {
-            gtk4::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
-    });
 }

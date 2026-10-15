@@ -125,17 +125,6 @@
     </child>
     <child>
       <object class="AdwShortcutsSection">
-        <property name="title">View</property>
-        <child>
-          <object class="AdwShortcutsItem">
-            <property name="title">Toggle metadata overlay</property>
-            <property name="accelerator">&lt;Alt&gt;Return</property>
-          </object>
-        </child>
-      </object>
-    </child>
-    <child>
-      <object class="AdwShortcutsSection">
         <property name="title">Survey</property>
         <child><object class="AdwShortcutsItem"><property name="title">Survey selected images</property><property name="accelerator">&lt;Control&gt;&lt;Shift&gt;s</property></object></child>
         <child><object class="AdwShortcutsItem"><property name="title">Dismiss the selected tile</property><property name="accelerator">Delete</property></object></child>

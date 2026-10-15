@@ -18,6 +18,7 @@ mod library_overview;
 mod metadata;
 mod model;
 mod ops;
+mod palette;
 mod quality;
 mod tags;
 mod thumbnails;

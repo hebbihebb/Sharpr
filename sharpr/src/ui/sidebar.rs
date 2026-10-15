@@ -2,7 +2,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Once;
 
 use gtk4::gio;
 use gtk4::prelude::*;
@@ -134,7 +133,6 @@ glib::wrapper! {
 
 impl SidebarPane {
     pub fn new(state: Rc<RefCell<AppState>>) -> Self {
-        install_collection_css();
         let widget: Self = glib::Object::new();
         widget.build_ui(state);
         widget
@@ -1080,52 +1078,12 @@ fn collection_root_colors(collections: &[Collection]) -> HashMap<i64, String> {
 }
 
 fn fallback_collection_color(collection_id: i64) -> &'static str {
-    const PALETTE: &[&str] = &[
-        "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
-    ];
+    use crate::palette::BUCKETS as PALETTE;
     PALETTE[(collection_id as usize) % PALETTE.len()]
 }
 
 fn apply_icon_color(image: &gtk4::Image, color: &str) {
-    use std::sync::{LazyLock, Mutex};
-
-    static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
-        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
-
-    let key = color
-        .replace([' ', '(', ')', ',', '#', '.'], "_")
-        .to_lowercase();
-    let class = format!("sharpr-icon-color-{key}");
-
-    if let Ok(mut seen) = REGISTERED.lock() {
-        if seen.insert(key) {
-            let provider = gtk4::CssProvider::new();
-            provider.load_from_string(&format!(".{class} {{ color: {color}; }}"));
-            if let Some(display) = gtk4::gdk::Display::default() {
-                gtk4::style_context_add_provider_for_display(
-                    &display,
-                    &provider,
-                    gtk4::STYLE_PROVIDER_PRIORITY_USER,
-                );
-            }
-        }
-    }
-    image.add_css_class(&class);
-}
-
-fn install_collection_css() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let provider = gtk4::CssProvider::new();
-        provider.load_from_resource("/io/github/hebbihebb/Sharpr/collection.css");
-        if let Some(display) = gtk4::gdk::Display::default() {
-            gtk4::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
-    });
+    image.add_css_class(&super::look::color_class(color, false));
 }
 
 fn build_folder_tree(library: &LibraryConfig) -> Vec<FolderNode> {
@@ -1393,11 +1351,11 @@ impl FolderRow {
 
 fn folder_icon_color(icon_name: &str) -> Option<&'static str> {
     match icon_name {
-        "folder-pictures-symbolic" => Some("#62a0ea"),
-        "folder-download-symbolic" => Some("#e66100"),
-        "folder-videos-symbolic" => Some("#9141ac"),
-        "folder-music-symbolic" => Some("#57e389"),
-        "folder-documents-symbolic" => Some("#e5a50a"),
+        "folder-pictures-symbolic" => Some(crate::palette::BUCKETS[1]),
+        "folder-download-symbolic" => Some(crate::palette::BUCKETS[2]),
+        "folder-videos-symbolic" => Some(crate::palette::BUCKETS[7]),
+        "folder-music-symbolic" => Some(crate::palette::BUCKETS[0]),
+        "folder-documents-symbolic" => Some(crate::palette::BUCKETS[3]),
         _ => None,
     }
 }
@@ -1484,7 +1442,7 @@ impl CollectionRow {
 
         // Keep collections on the same symbolic icon coloring path as folders.
         // The previous background-painted badge could regress into a broken icon.
-        let badge = gtk4::Image::from_icon_name("bookmark-new-symbolic");
+        let badge = gtk4::Image::from_icon_name("sharpr-bucket-symbolic");
         badge.set_pixel_size(15);
         badge.set_halign(gtk4::Align::Center);
         badge.set_valign(gtk4::Align::Center);

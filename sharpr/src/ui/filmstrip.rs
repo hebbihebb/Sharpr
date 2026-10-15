@@ -50,6 +50,20 @@ pub(crate) struct MenuContext {
 
 fn menu_item(label: &str, action: &str, accel: Option<&str>) -> gio::MenuItem {
     let item = gio::MenuItem::new(Some(label), Some(action));
+    let icon = match action {
+        "filmstrip.add-to-collection" | "filmstrip.add-last-bucket" => {
+            Some("sharpr-add-bucket-symbolic")
+        }
+        "filmstrip.remove-from-collection" => Some("sharpr-bucket-symbolic"),
+        "win.compare" => Some("sharpr-compare-symbolic"),
+        "filmstrip.crop-copy" => Some("sharpr-crop-symbolic"),
+        "filmstrip.export-webp" => Some("sharpr-webp-symbolic"),
+        _ => None,
+    };
+    if let Some(icon) = icon {
+        item.set_icon(&gio::ThemedIcon::new(icon));
+    }
+
     if let Some(accel) = accel {
         item.set_attribute_value("accel", Some(&accel.to_variant()));
     }
@@ -163,36 +177,7 @@ const MAX_PRELOAD_ENQUEUE_PER_PASS: usize = 1024;
 const THUMBNAIL_RESCHEDULE_DEBOUNCE_MS: u64 = 30;
 const PRELOAD_CHAIN_DELAY_MS: u64 = 10;
 fn register_pill_color(color: &str) -> String {
-    use std::sync::{LazyLock, Mutex};
-    static REGISTERED: LazyLock<Mutex<std::collections::HashSet<String>>> =
-        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
-
-    let hex = color.trim_start_matches('#');
-    let key = hex.to_lowercase();
-    let class_name = format!("filmstrip-pill-color-{key}");
-
-    if let Ok(mut seen) = REGISTERED.lock() {
-        if seen.insert(key) && hex.len() == 6 {
-            if let (Ok(r), Ok(g), Ok(b)) = (
-                u8::from_str_radix(&hex[0..2], 16),
-                u8::from_str_radix(&hex[2..4], 16),
-                u8::from_str_radix(&hex[4..6], 16),
-            ) {
-                let provider = gtk4::CssProvider::new();
-                provider.load_from_string(&format!(
-                    ".{class_name} {{ background-color: rgba({r},{g},{b},0.92); }}"
-                ));
-                if let Some(display) = gdk4::Display::default() {
-                    gtk4::style_context_add_provider_for_display(
-                        &display,
-                        &provider,
-                        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-                    );
-                }
-            }
-        }
-    }
-    class_name
+    super::look::color_class(color, true)
 }
 
 mod imp {
@@ -231,6 +216,7 @@ mod imp {
         pub duplicate_requested_cb: RefCell<Option<DuplicateRequestedCallback>>,
         #[allow(private_interfaces)]
         pub menu_ctx: RefCell<Option<MenuContext>>,
+        pub context_actions: gio::SimpleActionGroup,
         pub sort_order_changed_cb: RefCell<Option<SortOrderChangedCallback>>,
         pub save_search_as_collection_cb: RefCell<Option<SaveSearchAsCollectionCallback>>,
         pub current_sort_order: Cell<SortOrder>,
@@ -311,6 +297,7 @@ mod imp {
                 rename_requested_cb: RefCell::new(None),
                 duplicate_requested_cb: RefCell::new(None),
                 menu_ctx: RefCell::new(None),
+                context_actions: gio::SimpleActionGroup::new(),
                 sort_order_changed_cb: RefCell::new(None),
                 save_search_as_collection_cb: RefCell::new(None),
                 current_sort_order: Cell::new(SortOrder::default()),
@@ -489,8 +476,6 @@ impl FilmstripPane {
         menu.append_section(None, &direction_section);
 
         sort_btn.set_menu_model(Some(&menu));
-
-        self.install_css();
 
         imp.search_entry.set_placeholder_text(Some("Search tags…"));
         let search_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
@@ -960,7 +945,7 @@ impl FilmstripPane {
     }
 
     fn setup_context_menu_actions(&self) {
-        let group = gio::SimpleActionGroup::new();
+        let group = self.imp().context_actions.clone();
 
         let open = gio::SimpleAction::new("open", None);
         {
@@ -1203,34 +1188,6 @@ impl FilmstripPane {
         group.add_action(&trash);
 
         self.insert_action_group("filmstrip", Some(&group));
-    }
-
-    fn install_css(&self) {
-        let provider = gtk4::CssProvider::new();
-        provider.load_from_string(
-            "
-            .filmstrip-index-label {
-                font-size: 11px;
-                font-weight: 500;
-                padding: 2px 6px;
-                background-color: rgba(0, 0, 0, 0.55);
-                color: white;
-                border-radius: 10px;
-            }
-            .multi-selected {
-                outline: 2px solid @accent_color;
-                outline-offset: -2px;
-                border-radius: 4px;
-            }
-            ",
-        );
-        if let Some(display) = gdk4::Display::default() {
-            gtk4::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
     }
 
     /// Title of the empty state, so an empty search result does not read
@@ -1812,9 +1769,49 @@ impl FilmstripPane {
         popover.popup();
     }
 
+    /// Viewer and filmstrip share this menu model, context and action group.
+    pub(crate) fn attach_viewer_menu(&self, viewer: &super::viewer::ViewerPane) {
+        viewer.insert_action_group("filmstrip", Some(&self.imp().context_actions));
+        viewer.imp().image_menu.set_has_arrow(false);
+        viewer.imp().image_menu.set_parent(viewer);
+        let gesture = gtk4::GestureClick::new();
+        gesture.set_button(3);
+        let weak_strip = self.downgrade();
+        let weak_viewer = viewer.downgrade();
+        gesture.connect_pressed(move |_, _, x, y| {
+            if let (Some(strip), Some(viewer)) = (weak_strip.upgrade(), weak_viewer.upgrade()) {
+                strip.open_viewer_menu(&viewer, x, y);
+            }
+        });
+        viewer.add_controller(gesture);
+    }
+    pub(crate) fn open_viewer_menu(
+        &self,
+        viewer: &super::viewer::ViewerPane,
+        x: f64,
+        y: f64,
+    ) -> bool {
+        if viewer
+            .root()
+            .is_some_and(|root| super::window::file_actions_blocked(root.upcast_ref()))
+        {
+            return false;
+        }
+        let Some(path) = viewer.current_path() else {
+            return false;
+        };
+        let popover = &viewer.imp().image_menu;
+        popover.set_pointing_to(Some(&gdk4::Rectangle::new(x as i32, y as i32, 1, 1)));
+        self.open_context_menu(popover, path);
+        true
+    }
+
     /// Opens the image menu for the current image from the keyboard
     /// (Shift+F10 or the Menu key). Returns false when no row is on screen.
     pub fn open_context_menu_for_current(&self) -> bool {
+        if !self.is_mapped() {
+            return false;
+        }
         let Some(path) = self
             .imp()
             .state
@@ -1839,6 +1836,14 @@ impl FilmstripPane {
                         .map(|p| p.as_ref().clone())
                 };
                 if let (true, Some(popover)) = (matches, popover) {
+                    let Some(bounds) = item_box.compute_bounds(&self.imp().scroll) else {
+                        return false;
+                    };
+                    if bounds.y() + bounds.height() <= 0.0
+                        || bounds.y() >= self.imp().scroll.height() as f32
+                    {
+                        return false;
+                    }
                     self.open_context_menu(&popover, path);
                     return true;
                 }

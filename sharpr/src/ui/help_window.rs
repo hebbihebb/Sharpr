@@ -3,6 +3,72 @@ use gtk4::{gio, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 
+/// One compact home for help and infrequently used maintenance actions.
+pub fn show_help(parent: &crate::ui::window::SharprWindow) {
+    let dialog = adw::Dialog::new();
+    dialog.set_title("Help");
+    dialog.add_css_class("sharpr-sheet");
+    dialog.set_content_width(430);
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&adw::HeaderBar::new());
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+    content.set_margin_top(12);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+    for (title, items) in [
+        (
+            "Help",
+            vec![
+                ("Keyboard Shortcuts", "win.show-help-overlay"),
+                ("User Guide", "win.show-manual"),
+                ("About Sharpr", "app.about"),
+            ],
+        ),
+        (
+            "Library Maintenance",
+            vec![
+                ("Turn Tags into Buckets…", "win.tags-to-buckets"),
+                ("Remove Old Automatic Tags…", "win.remove-automatic-tags"),
+            ],
+        ),
+    ] {
+        let group = adw::PreferencesGroup::new();
+        if title != "Help" {
+            group.set_title(title);
+        }
+        for (label, action) in items {
+            let row = adw::ActionRow::new();
+            row.set_title(label);
+            row.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
+            row.set_activatable(true);
+            let weak_parent = parent.downgrade();
+            let weak_dialog = dialog.downgrade();
+            row.connect_activated(move |_| {
+                if let Some(dialog) = weak_dialog.upgrade() {
+                    dialog.close();
+                }
+                let weak = weak_parent.clone();
+                glib::idle_add_local_once(move || {
+                    if let Some(parent) = weak.upgrade() {
+                        let _ = gtk4::prelude::WidgetExt::activate_action(&parent, action, None);
+                    }
+                });
+            });
+            group.add(&row);
+        }
+        content.append(&group);
+    }
+    let scroll = gtk4::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .child(&content)
+        .propagate_natural_height(true)
+        .build();
+    toolbar.set_content(Some(&scroll));
+    dialog.set_child(Some(&toolbar));
+    dialog.present(Some(parent));
+}
+
 pub fn show_help_window(parent: &impl gtk4::prelude::IsA<gtk4::Widget>) {
     let bytes = gio::resources_lookup_data(
         "/io/github/hebbihebb/Sharpr/manual.md",
@@ -12,7 +78,8 @@ pub fn show_help_window(parent: &impl gtk4::prelude::IsA<gtk4::Widget>) {
     let text = std::str::from_utf8(bytes.as_ref()).unwrap_or("");
 
     let dialog = adw::Dialog::new();
-    dialog.set_title("Sharpr Manual");
+    dialog.set_title("Sharpr Guide");
+    dialog.add_css_class("sharpr-sheet");
     dialog.set_content_width(620);
     dialog.set_content_height(700);
 

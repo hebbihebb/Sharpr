@@ -2411,10 +2411,6 @@ fn preferences_and_shortcuts_share_the_main_window() {
             pump_until(|| prefs.is_mapped());
             assert_eq!(prefs.root(), Some(window.clone().upcast()));
             assert_eq!(app.windows().len(), 1, "no separate Preferences window");
-            let appearance = find_widgets::<libadwaita::PreferencesPage>(prefs.upcast_ref())
-                .into_iter()
-                .find(|p| p.title() == "Appearance")
-                .unwrap();
             let root_button = find_widgets::<gtk4::Button>(prefs.upcast_ref())
                 .into_iter()
                 .find(|button| button.action_name().as_deref() == Some("win.choose-library-root"))
@@ -2425,23 +2421,22 @@ fn preferences_and_shortcuts_share_the_main_window() {
                 &window,
                 &out.join(format!("{theme}-{width}-preferences-library.png")),
             );
-            prefs.set_visible_page(&appearance);
-            settle(250);
-            let cache = find_widgets::<libadwaita::SpinRow>(prefs.upcast_ref())
-                .pop()
+            let gpu = find_widgets::<libadwaita::SwitchRow>(prefs.upcast_ref())
+                .into_iter()
+                .find(|row| row.title() == "Use Graphics Card")
                 .unwrap();
-            let original = cache.value();
-            cache.set_value(original + 100.0);
+            let original = gpu.is_active();
+            gpu.set_active(!original);
             assert_eq!(
-                window.app_state().borrow().settings.thumbnail_cache_max,
-                (original + 100.0) as i32
+                window.app_state().borrow().settings.visual_search_gpu,
+                !original
             );
-            cache.set_value(original);
+            gpu.set_active(original);
             // Read the effective font from a rendered label, rather than just
             // checking a class that might not reach the dialog's contents.
             let label = find_widgets::<gtk4::Label>(prefs.upcast_ref())
                 .into_iter()
-                .find(|l| l.text() == "Thumbnail cache size")
+                .find(|l| l.text() == "Library Root")
                 .unwrap();
             assert!(label
                 .pango_context()
@@ -2452,7 +2447,7 @@ fn preferences_and_shortcuts_share_the_main_window() {
                 .contains("JetBrains"));
             screenshot(
                 &window,
-                &out.join(format!("{theme}-{width}-preferences-appearance.png")),
+                &out.join(format!("{theme}-{width}-preferences-settings.png")),
             );
             prefs.close();
             pump_until(|| window.visible_dialog().is_none());
@@ -3304,5 +3299,219 @@ fn one_root_preserves_library_identity_members_fingerprints_and_vectors() {
         &root.parent().unwrap().join("one-root-preferences.png"),
     );
     window.visible_dialog().unwrap().close();
+    window.close();
+}
+
+fn menu_rows(model: &gio::MenuModel) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    for i in 0..model.n_items() {
+        let label = model
+            .item_attribute_value(i, "label", None)
+            .and_then(|value| value.get::<String>());
+        let action = model
+            .item_attribute_value(i, "action", None)
+            .and_then(|value| value.get::<String>());
+        if let Some(label) = label {
+            rows.push((label, action.unwrap_or_default()));
+        }
+        for link in ["section", "submenu"] {
+            if let Some(child) = model.item_link(i, link) {
+                rows.extend(menu_rows(&child));
+            }
+        }
+    }
+    rows
+}
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn phase_nine_help_viewer_menu_and_theme_layouts() {
+    let root = isolated_fixture("phase-nine-polish");
+    std::fs::create_dir_all(&root).unwrap();
+    for i in 0..3 {
+        image::RgbImage::from_fn(640, 360, |x, y| {
+            image::Rgb([(x / 3) as u8, (y / 2) as u8, 70 + i * 50])
+        })
+        .save(root.join(format!("image-{i}.png")))
+        .unwrap();
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    let library = settings
+        .add_library("Polish", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    settings.set_metadata_visible(false); // Retired switch must not hide the contextual readout.
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.app_state().borrow().library.image_count() == 3 && window.is_mapped());
+    let strip = window.imp().filmstrip.borrow().clone().unwrap();
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+    pump_until(|| {
+        viewer.current_path().is_some()
+            && viewer.imp().picture.paintable().is_some()
+            && viewer.imp().metadata_chip.imp().has_metadata.get()
+    });
+    assert!(viewer.imp().metadata_chip.imp().enabled.get());
+    assert!(
+        !AppSettings::load().metadata_visible,
+        "legacy key stays stored"
+    );
+    let icons = gtk4::IconTheme::for_display(&gdk4::Display::default().unwrap());
+    for name in [
+        "bucket",
+        "add-bucket",
+        "compare",
+        "crop",
+        "webp",
+        "below-4k",
+        "copies",
+    ] {
+        assert!(
+            icons.has_icon(&format!("sharpr-{name}-symbolic")),
+            "bundled {name} icon"
+        );
+    }
+    let primary = menu_rows(SharprWindow::build_primary_menu().upcast_ref());
+    assert!(primary.iter().any(|(label, _)| label == "Help"));
+    assert!(!primary.iter().any(|(label, _)| matches!(
+        label.as_str(),
+        "Show Overlay" | "Fit to Window" | "Manual" | "Keyboard Shortcuts" | "About Sharpr"
+    )));
+    let path = viewer.current_path().unwrap();
+    strip.set_action_selection_to_path(&path);
+    assert!(strip.open_context_menu_for_current());
+    let row_menu = find_widgets::<gtk4::PopoverMenu>(strip.upcast_ref())
+        .into_iter()
+        .find(|menu| menu.is_visible())
+        .unwrap();
+    let expected = menu_rows(&row_menu.menu_model().unwrap());
+    row_menu.popdown();
+    assert!(strip.open_viewer_menu(&viewer, 100.0, 100.0));
+    let image_menu = &viewer.imp().image_menu;
+    pump_until(|| image_menu.is_mapped());
+    assert_eq!(menu_rows(&image_menu.menu_model().unwrap()), expected);
+    settle(250);
+    screenshot(
+        &window,
+        &root.parent().unwrap().join("viewer-image-menu.png"),
+    );
+    image_menu.popdown();
+    // Invoke the shared bucket writer from the large viewer's action group.
+    let index = window.app_state().borrow().library_index.clone().unwrap();
+    let bucket = index
+        .create_collection(&library, None, "Viewer choice", &[], None, None)
+        .unwrap();
+    window
+        .app_state()
+        .borrow_mut()
+        .collections
+        .push(bucket.clone());
+    window
+        .app_state()
+        .borrow()
+        .settings
+        .remember_bucket(bucket.id);
+    gtk4::prelude::WidgetExt::activate_action(&viewer, "filmstrip.add-last-bucket", None).unwrap();
+    pump_until(|| index.all_bucket_members().unwrap().len() == 1);
+    assert_eq!(index.all_bucket_members().unwrap()[0].last_path, path);
+    window.enter_presentation_mode();
+    pump_until(|| window.is_fullscreen());
+    settle(350);
+    viewer.grab_focus();
+    if !strip.is_mapped() {
+        assert!(!strip.open_context_menu_for_current());
+    }
+    assert!(window_shortcut(&window, "<Shift>F10|Menu"));
+    pump_until(|| {
+        find_widgets::<gtk4::PopoverMenu>(window.upcast_ref())
+            .iter()
+            .any(|popover| popover.is_mapped())
+    });
+    for popover in find_widgets::<gtk4::PopoverMenu>(window.upcast_ref()) {
+        popover.popdown();
+    }
+    window.exit_presentation_mode();
+    pump_until(|| !window.is_fullscreen());
+    settle(350);
+    let style = libadwaita::StyleManager::default();
+    if std::env::var("ADW_DEBUG_HIGH_CONTRAST").as_deref() == Ok("1") {
+        assert!(style.is_high_contrast());
+        assert!(window.has_css_class("sharpr-high-contrast"));
+    }
+    for (theme, scheme) in [
+        ("light", libadwaita::ColorScheme::ForceLight),
+        ("dark", libadwaita::ColorScheme::ForceDark),
+    ] {
+        style.set_color_scheme(scheme);
+        for (width, height) in [(1024, 600), (1600, 900)] {
+            window.set_default_size(width, height);
+            pump_until(|| window.width() == width && window.height() == height);
+            settle(150);
+            let menu = find_widgets::<gtk4::MenuButton>(window.upcast_ref())
+                .into_iter()
+                .find(|button| button.tooltip_text().as_deref() == Some("Main Menu"))
+                .unwrap();
+            let before = menu.compute_bounds(&window).unwrap();
+            window.show_inline_search();
+            let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
+            entry.set_text("png ");
+            pump_until(|| {
+                window.app_state().borrow().library.current_folder.is_none()
+                    && window.app_state().borrow().library.image_count() == 3
+            });
+            settle(150);
+            let after = menu.compute_bounds(&window).unwrap();
+            assert_eq!((before.x(), before.y()), (after.x(), after.y()));
+            assert!(after.x() + after.width() <= width as f32);
+            screenshot(
+                &window,
+                &root
+                    .parent()
+                    .unwrap()
+                    .join(format!("polish-{theme}-{width}.png")),
+            );
+            window.close_browse_search();
+            settle(350);
+            gtk4::prelude::WidgetExt::activate_action(&window, "win.show-help", None).unwrap();
+            pump_until(|| {
+                window
+                    .visible_dialog()
+                    .is_some_and(|dialog| dialog.is_mapped())
+            });
+            settle(150);
+            let help = window.visible_dialog().unwrap();
+            let rows = find_widgets::<libadwaita::ActionRow>(help.upcast_ref());
+            assert_eq!(rows.len(), 5);
+            screenshot(
+                &window,
+                &root
+                    .parent()
+                    .unwrap()
+                    .join(format!("help-{theme}-{width}.png")),
+            );
+            rows.into_iter()
+                .find(|row| row.title() == "Keyboard Shortcuts")
+                .unwrap()
+                .emit_by_name::<()>("activated", &[]);
+            pump_until(|| {
+                window
+                    .visible_dialog()
+                    .is_some_and(|dialog| dialog.is::<libadwaita::ShortcutsDialog>())
+            });
+            assert_eq!(app.windows().len(), 1);
+            window.visible_dialog().unwrap().close();
+            pump_until(|| window.visible_dialog().is_none());
+        }
+    }
     window.close();
 }

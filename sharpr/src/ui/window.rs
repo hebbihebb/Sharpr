@@ -35,7 +35,8 @@ pub(crate) mod mode_header;
 mod survey_controller;
 /// Gets Compare's survivors when someone else opened it (Find Copies).
 type CompareDone = Box<dyn FnOnce(Vec<PathBuf>)>;
-use compare_controller::{file_actions_blocked, is_comparing};
+pub(crate) use compare_controller::file_actions_blocked;
+use compare_controller::is_comparing;
 #[cfg(test)]
 mod gtk_tests;
 mod search_controller;
@@ -125,9 +126,13 @@ fn sort_and_filter_menu(sort: &gio::MenuModel) -> gio::Menu {
         ("Narrower than 16:9", "<16:9"),
         ("Wider than 16:9", ">16:9"),
         ("4K and Larger", "4k"),
+        ("Below 4K", "<4k"),
     ] {
         let item = gio::MenuItem::new(Some(label), None);
         item.set_action_and_target_value(Some("win.add-filter-chip"), Some(&word.to_variant()));
+        if word == "<4k" {
+            item.set_icon(&gio::ThemedIcon::new("sharpr-below-4k-symbolic"));
+        }
         filters.append_item(&item);
     }
     menu.append_section(Some("Filter"), &filters);
@@ -1520,7 +1525,6 @@ impl SharprWindow {
         *self.imp().sidebar.borrow_mut() = Some(sidebar.clone());
         *self.imp().filmstrip.borrow_mut() = Some(filmstrip.clone());
         *self.imp().viewer.borrow_mut() = Some(viewer.clone());
-        viewer.set_metadata_visible(state.borrow().settings.metadata_visible);
         if let Some(worker) = self.imp().thumbnail_worker.borrow().as_ref() {
             filmstrip.set_thumbnail_sender(
                 worker.visible_sender(),
@@ -2346,8 +2350,7 @@ impl SharprWindow {
                         filmstrip_c.navigate_to(0);
                     } else {
                         viewer_c.clear();
-                        toast_overlay_c
-                            .add_toast(libadwaita::Toast::new("No images in collection"));
+                        toast_overlay_c.add_toast(libadwaita::Toast::new("No images in bucket"));
                     }
                     // Run what was typed while the bucket was loading.
                     let query = win
@@ -2648,6 +2651,7 @@ impl SharprWindow {
         *self.imp().presentation_header.borrow_mut() = Some(viewer_header.clone());
 
         self.setup_actions(&viewer, state.clone());
+        filmstrip.attach_viewer_menu(&viewer);
 
         let viewer_toolbar = libadwaita::ToolbarView::new();
         viewer_toolbar.add_top_bar(&viewer_header);
@@ -2970,36 +2974,6 @@ impl SharprWindow {
         }
 
         self.set_content(Some(&toast_overlay));
-
-        // While visual search indexes, the indicator shows a progress ring.
-        {
-            let indicator = ops_indicator.downgrade();
-            let weak = self.downgrade();
-            glib::timeout_add_seconds_local(1, move || {
-                let (Some(win), Some(indicator)) = (weak.upgrade(), indicator.upgrade()) else {
-                    return glib::ControlFlow::Break;
-                };
-                use crate::ui::library_overview::{count, duration};
-                match win.visual_search_status() {
-                    Some(crate::visual_search::index::Status::Indexing(c)) if c.images > 0 => {
-                        let done = c.indexed + c.failed;
-                        let mut tooltip = format!(
-                            "Indexing for visual search on {}: {} of {} images",
-                            win.visual_search_device()
-                                .unwrap_or_else(|| "the processor".into()),
-                            count(c.indexed),
-                            count(c.images)
-                        );
-                        if let Some(left) = win.visual_search_pace().remaining {
-                            tooltip.push_str(&format!(" · {} left", duration(left)));
-                        }
-                        indicator.set_indexing(Some((done as f64 / c.images as f64, &tooltip)));
-                    }
-                    _ => indicator.set_indexing(None),
-                }
-                glib::ControlFlow::Continue
-            });
-        }
 
         // Drive the indicator from the ops event channel.
         {
@@ -3684,12 +3658,18 @@ impl SharprWindow {
         // Shift+F10 / Menu — the current image's right-click menu (decision D21).
         {
             let filmstrip_m = filmstrip.clone();
+            let viewer_m = viewer.clone();
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("<Shift>F10|Menu").unwrap()),
                 Some(gtk4::CallbackAction::new(move |widget, _| {
                     if !text_input_has_focus(widget)
                         && !file_actions_blocked(widget)
-                        && filmstrip_m.open_context_menu_for_current()
+                        && (filmstrip_m.open_context_menu_for_current()
+                            || filmstrip_m.open_viewer_menu(
+                                &viewer_m,
+                                f64::from(viewer_m.width()) / 2.0,
+                                f64::from(viewer_m.height()) / 2.0,
+                            ))
                     {
                         glib::Propagation::Stop
                     } else {
@@ -4348,32 +4328,17 @@ impl SharprWindow {
     fn build_primary_menu() -> gio::Menu {
         let menu = gio::Menu::new();
 
-        let view_section = gio::Menu::new();
-        let zoom_subsection = gio::Menu::new();
-        zoom_subsection.append(Some("Fit to Window"), Some("win.zoom-mode::fit"));
-        zoom_subsection.append(Some("1:1 Pixels"), Some("win.zoom-mode::1:1"));
-        view_section.append_section(None, &zoom_subsection);
-        view_section.append(Some("Show Overlay"), Some("win.show-metadata"));
-        menu.append_section(Some("View"), &view_section);
-
-        // Image actions live on the filmstrip's right-click menu (decision D21).
-
         let library_section = gio::Menu::new();
         library_section.append(Some("Open Library Root…"), Some("win.choose-library-root"));
-        library_section.append(Some("Find Copies…"), Some("win.find-duplicates"));
+        let copies = gio::MenuItem::new(Some("Find Copies…"), Some("win.find-duplicates"));
+        copies.set_icon(&gio::ThemedIcon::new("sharpr-copies-symbolic"));
+        library_section.append_item(&copies);
         library_section.append(Some("Library Overview…"), Some("win.library-overview"));
-        library_section.append(Some("Turn Tags into Buckets…"), Some("win.tags-to-buckets"));
-        library_section.append(
-            Some("Remove Old Automatic Tags…"),
-            Some("win.remove-automatic-tags"),
-        );
         menu.append_section(Some("Library"), &library_section);
 
         let app_section = gio::Menu::new();
-        app_section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));
-        app_section.append(Some("Manual"), Some("win.show-manual"));
         app_section.append(Some("Preferences"), Some("win.show-preferences"));
-        app_section.append(Some("About Sharpr"), Some("app.about"));
+        app_section.append(Some("Help"), Some("win.show-help"));
         menu.append_section(Some("App"), &app_section);
 
         menu
@@ -4390,19 +4355,6 @@ impl SharprWindow {
     }
 
     fn setup_actions(&self, viewer: &ViewerPane, state: Rc<RefCell<AppState>>) {
-        // Action map — win.* and app.* actions registered by this window
-        //
-        // Name                     Label                         Shortcut                         Sensitivity
-        // ───────────────────────────────────────────────────────────────────────────────────────────────────
-        // win.find-duplicates      Find Duplicates               —                                always
-        // win.show-tags            Browse Tags                   —                                always
-        // win.show-help-overlay    Keyboard Shortcuts            <Ctrl>question                   always
-        // win.toggle-presentation  Toggle Presentation Mode      F11 (ShortcutController)         always
-        // win.zoom-mode            Zoom Mode (stateful: fit/1:1) <Ctrl>0 fit (ShortcutController) always
-        // win.show-metadata        Show Metadata Overlay         <Alt>Return (ShortcutController) always
-        // win.show-manual          Open Manual                   —                                always
-        // win.show-preferences     Open Preferences              —                                always
-        // app.about                About                         —                                always
         let w = self.downgrade();
         let toggle_presentation_action = gio::SimpleAction::new("toggle-presentation", None);
         toggle_presentation_action.connect_activate(move |_, _| {
@@ -4438,23 +4390,14 @@ impl SharprWindow {
         }
         self.add_action(&zoom_action);
 
-        let meta_action = gio::SimpleAction::new_stateful(
-            "show-metadata",
-            None,
-            &viewer.metadata_visible().to_variant(),
-        );
-        {
-            let viewer_weak = viewer.downgrade();
-            meta_action.connect_activate(move |action, _| {
-                let Some(viewer) = viewer_weak.upgrade() else {
-                    return;
-                };
-                let new_val = !action.state().and_then(|s| s.get::<bool>()).unwrap_or(true);
-                viewer.set_metadata_visible(new_val);
-                action.set_state(&new_val.to_variant());
-            });
-        }
-        self.add_action(&meta_action);
+        let help_action = gio::SimpleAction::new("show-help", None);
+        let weak = self.downgrade();
+        help_action.connect_activate(move |_, _| {
+            if let Some(window) = weak.upgrade() {
+                crate::ui::help_window::show_help(&window);
+            }
+        });
+        self.add_action(&help_action);
 
         let manual_action = gio::SimpleAction::new("show-manual", None);
         {

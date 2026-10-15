@@ -1,10 +1,12 @@
 //! Survey changes only which members of a selected set survive the review.
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Default)]
 pub(crate) struct SurveySelection {
     paths: Vec<PathBuf>,
     dismissed: Vec<usize>,
+    retired: HashSet<usize>,
 }
 
 impl SurveySelection {
@@ -12,25 +14,28 @@ impl SurveySelection {
         Self {
             paths,
             dismissed: Vec::new(),
+            retired: HashSet::new(),
         }
     }
     pub fn candidates(&self) -> Vec<(usize, &Path)> {
         self.paths
             .iter()
             .enumerate()
-            .filter(|(i, _)| !self.dismissed.contains(i))
+            .filter(|(i, _)| !self.retired.contains(i))
             .map(|(i, path)| (i, path.as_path()))
             .collect()
     }
     pub fn dismiss(&mut self, number: usize) -> bool {
-        if number >= self.paths.len() || self.dismissed.contains(&number) {
+        if number >= self.paths.len() || !self.retired.insert(number) {
             return false;
         }
         self.dismissed.push(number);
         true
     }
     pub fn undo(&mut self) -> Option<usize> {
-        self.dismissed.pop()
+        let number = self.dismissed.pop()?;
+        self.retired.remove(&number);
+        Some(number)
     }
     pub fn can_undo(&self) -> bool {
         !self.dismissed.is_empty()
@@ -63,5 +68,23 @@ mod tests {
         assert_eq!(survey.survivors(), paths);
         assert!(!survey.can_undo());
         assert_eq!(survey.undo(), None);
+    }
+    #[test]
+    fn a_large_cull_keeps_survivors_ordered_and_restores_every_dismissal() {
+        let paths: Vec<_> = (0..5000)
+            .map(|i| PathBuf::from(format!("{i}.png")))
+            .collect();
+        let mut survey = SurveySelection::new(paths.clone());
+        for number in (0..5000).step_by(2) {
+            assert!(survey.dismiss(number));
+        }
+        assert_eq!(
+            survey.survivors(),
+            paths.iter().skip(1).step_by(2).cloned().collect::<Vec<_>>()
+        );
+        for _ in 0..2500 {
+            survey.undo().unwrap();
+        }
+        assert_eq!(survey.survivors(), paths);
     }
 }

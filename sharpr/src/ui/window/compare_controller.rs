@@ -165,7 +165,7 @@ pub(super) fn is_comparing(widget: &gtk4::Widget) -> bool {
 /// Compare never changes files, and a crop works on one chosen image, so
 /// the shortcuts and menus that change files are off during either (and
 /// while a crop is being prepared).
-pub(super) fn file_actions_blocked(widget: &gtk4::Widget) -> bool {
+pub(crate) fn file_actions_blocked(widget: &gtk4::Widget) -> bool {
     (is_comparing(widget) || super::survey_controller::is_surveying(widget))
         || widget.downcast_ref::<SharprWindow>().is_some_and(|win| {
             win.imp().crop_session.borrow().is_some() || win.imp().crop_preparing.get()

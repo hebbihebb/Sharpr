@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::Once;
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -217,7 +216,6 @@ fn reaches_4k((w, h): (u32, u32)) -> bool {
 
 impl MetadataChip {
     pub fn new() -> Self {
-        install_css();
         let widget: Self = glib::Object::new();
         widget.imp().card.set_parent(&widget);
         let weak = widget.downgrade();
@@ -461,56 +459,6 @@ impl Default for MetadataChip {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn install_css() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let provider = gtk4::CssProvider::new();
-        provider.load_from_string(
-            "
-            .metadata-osd {
-                padding: 8px 12px;
-                border-radius: 16px;
-                background-color: rgba(28, 28, 30, 0.72);
-                color: white;
-                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
-            }
-            .metadata-osd-meta {
-                color: rgba(255, 255, 255, 0.86);
-                font-size: 0.92em;
-            }
-            .metadata-osd-below {
-                color: #f8e45c;
-                font-size: 0.92em;
-                font-weight: 600;
-            }
-            .metadata-osd-buckets {
-                color: rgba(255, 255, 255, 0.70);
-            }
-            .metadata-osd-quality-score,
-            .metadata-osd-quality-class {
-                font-weight: 600;
-            }
-            .metadata-osd-segment {
-                min-width: 11px;
-                min-height: 6px;
-                border-radius: 999px;
-                background-color: alpha(currentColor, 0.20);
-            }
-            .metadata-osd-segment.active {
-                background-color: alpha(currentColor, 0.90);
-            }
-            ",
-        );
-        if let Some(display) = gdk4::Display::default() {
-            gtk4::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
-    });
 }
 
 #[cfg(test)]

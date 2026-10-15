@@ -346,7 +346,7 @@ fn draw(view: &CompareView, snapshot: &gtk4::Snapshot) {
             draw_side(0, panes[0]);
             draw_side(1, panes[1]);
             snapshot.append_color(
-                &gdk4::RGBA::new(0.0, 0.0, 0.0, 0.6),
+                &super::look::gdk_color(crate::palette::SCRIM),
                 &graphene::Rect::new((w / 2.0 - 1.0) as f32, 0.0, 2.0, h as f32),
             );
         }
@@ -354,7 +354,7 @@ fn draw(view: &CompareView, snapshot: &gtk4::Snapshot) {
             let at = view.split() * w;
             draw_side(0, (0.0, 0.0, at, h));
             draw_side(1, (at, 0.0, w - at, h));
-            let white = gdk4::RGBA::new(1.0, 1.0, 1.0, 0.9);
+            let white = super::look::gdk_color(crate::palette::DIVIDER);
             snapshot.append_color(
                 &white,
                 &graphene::Rect::new((at - 1.0) as f32, 0.0, 2.0, h as f32),

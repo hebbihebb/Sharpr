@@ -260,13 +260,13 @@ fn open(
             let (x, y) = (ox + f64::from(r.x) * scale, oy + f64::from(r.y) * scale);
             let (w, h) = (f64::from(r.width) * scale, f64::from(r.height) * scale);
             // Shade everything outside the selection.
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.6);
+            super::look::cairo_color(cr, crate::palette::SCRIM);
             cr.set_fill_rule(gtk4::cairo::FillRule::EvenOdd);
             cr.rectangle(ox, oy, iw, ih);
             cr.rectangle(x, y, w, h);
             let _ = cr.fill();
             // Thirds, then the border and corner handles.
-            cr.set_source_rgba(1.0, 1.0, 1.0, 0.35);
+            super::look::cairo_color(cr, crate::palette::CROP_GRID);
             cr.set_line_width(1.0);
             for i in 1..3 {
                 let f = f64::from(i) / 3.0;
@@ -276,7 +276,7 @@ fn open(
                 cr.line_to(x + w, y + h * f);
             }
             let _ = cr.stroke();
-            cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
+            super::look::cairo_color(cr, crate::palette::CROP_EDGE);
             cr.set_line_width(2.0);
             cr.rectangle(x, y, w, h);
             let _ = cr.stroke();

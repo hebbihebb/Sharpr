@@ -46,7 +46,7 @@ See `architecture.md`. In UI code this means:
 
 ## Approved Look (D26–D27)
 
-- Libadwaita supplies adaptive sheets, theme/accent handling, and toasts. Sharpr's shared look lives in `sharpr/src/ui/look.rs`; the main window has `.sharpr` and `.sharpr-mono-all`.
+- Libadwaita supplies adaptive sheets, theme/accent handling, and toasts. Sharpr's shared stylesheet is `sharpr/data/style.css`; `sharpr/src/ui/look.rs` owns its single provider and validated dynamic colour rules; the main window has `.sharpr` and `.sharpr-mono-all`.
 - `sharpr/data/fonts/` contains the official JetBrains Mono v2.304 variable fonts and OFL licence, embedded in GResource. `ui/fonts.rs` registers them once with Pango (≥ 1.56), using process-owned anonymous files held open for later font reads. No desktop font installation or user-cache extraction is needed. CSS prefers `JetBrains Mono`; the platform monospace face remains a fallback. About includes the font licence.
 - Preferences and Keyboard Shortcuts are `AdwPreferencesDialog` and `AdwShortcutsDialog` sheets presented in the main window. They inherit its font and use `.sharpr-sheet` for compact rows and headers. Keep the existing `win.show-preferences` and `win.show-help-overlay` actions.
 - Quick pickers use popovers and dismiss on click-away. Preferences and other editing sheets use their own close controls and Escape.
@@ -71,3 +71,11 @@ See `architecture.md`. In UI code this means:
 
 - Main menu → Library → Open Library Root and Preferences → Library Root activate the same window action. The native folder chooser checks directory availability on a worker. Applying the choice retains the active identity and saved disabled paths, retires browse/thumbnail generations, clears the old view, refreshes the sidebar, and restarts scoped indexing/fingerprints. The folder tree has its own generation so retired scans cannot reopen an old root.
 - Folder browsing is recursive regardless of the stored legacy folder mode. Disabled rows remain available for enabling, without scanning their children. Inactive library settings remain serialized, without switch/create controls. Buckets and fingerprint/vector rows are not migrated or deleted by changing the root.
+
+## Shared style, image actions and Help (D33)
+
+- `data/style.css` holds all static rules, with theme-derived surfaces and neutral image canvases. `palette.rs` is the single bucket palette and drawing-token source. `look.rs` appends only parsed/canonicalized user-colour rules to the same provider. No widget installs its own provider. High contrast adds a class from StyleManager, including explicit OSD edges and readable secondary text. GTK's [CSS variables](https://docs.gtk.org/gtk4/css-properties.html) and Libadwaita's [appearance support](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/1-latest/styles-and-appearance.html) supply the platform behavior.
+- Namespaced symbolic SVGs are embedded under the icon resource path; `data/icons/README.md` records original source and CC0 licence. Standard actions keep system icons. Thumbnail placeholders and hover/press feedback are static CSS, with no scheduler change or animation.
+- The viewer's right-click menu uses the filmstrip's exact menu builder, context and SimpleActionGroup. Its popover is explicitly unparented on viewer disposal. Shift+F10/Menu falls back to the viewer when the current filmstrip row is unavailable, including fullscreen. File actions remain guarded during review/crop.
+- Preferences keeps root/GPU settings. The retired overlay/cache controls leave their settings stored; the readout is contextual regardless of the legacy metadata-visible value. Index/fingerprint status lives in Library Overview. Main menu → Help offers Shortcuts, Guide, About and the two legacy tag maintenance actions, reusing existing actions and their confirmation/backup behavior.
+- `interface-inventory.md` records every active/retired control group and its governing decision. The source map supplements the private original map without inventing its control IDs.

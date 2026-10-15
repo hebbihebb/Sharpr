@@ -26,13 +26,11 @@ pub(super) fn run_collection_write<T: Send + 'static>(
     });
 }
 
-const SWATCH_PALETTE: &[&str] = &[
-    "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
-];
+use crate::palette::BUCKETS as SWATCH_PALETTE;
 
 fn parse_hex_color(color: &str) -> Option<(f64, f64, f64)> {
     let hex = color.strip_prefix('#')?;
-    if hex.len() != 6 {
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
@@ -112,13 +110,13 @@ pub(super) fn build_color_swatch_row(
         let selected_for_draw = selected_color.clone();
         swatch.set_draw_func(move |_, cr, _, _| {
             let (r, g, b) = parse_hex_color(&color_string)
-                .unwrap_or_else(|| parse_hex_color("#57e389").unwrap());
+                .unwrap_or_else(|| parse_hex_color(SWATCH_PALETTE[0]).unwrap());
             cr.set_source_rgb(r, g, b);
             append_rounded_rect(cr, 1.0, 1.0, 18.0, 18.0, 4.0);
             let _ = cr.fill();
 
             if selected_for_draw.borrow().as_deref() == Some(color_string.as_str()) {
-                cr.set_source_rgb(1.0, 1.0, 1.0);
+                super::look::cairo_color(cr, crate::palette::WHITE);
                 cr.set_line_width(2.0);
                 append_rounded_rect(cr, 3.0, 3.0, 14.0, 14.0, 3.0);
                 let _ = cr.stroke();
