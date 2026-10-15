@@ -329,6 +329,9 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 **Status (October 14): every scope item is built and committed; the core is deployed in `c176934`; not accepted.** Phase 3 said go (D22).
 - **Deployed in `c176934`** with the model installed: visual search, GPU indexing, and tag retirement.
 - **Deployed in `baa007d`** (October 14): the audit fixes, the Library Overview, search into buckets, and negative search.
+- **User test of `ef91d32` (October 15):** `tower -water` and the strict `--water` work, and so does Add to Bucket from the search line. Two faults, fixed in the round in `CURRENT_TASKS.md` (D25):
+  - The bucket picker doesn't close on a click outside it.
+  - Ctrl+A does nothing after clicking a thumbnail. Likely cause, still to confirm: the filmstrip list handles Ctrl+A itself before the window's shortcut. Its single-selection model can't select all, but the key is still used up.
 - **The user's hands-on verdict on `c176934`** (October 14): Sharpr "seems to run even better than it did before this recent work started, regardless of indexing work".
 - **Units:** indexing and search (`58ac0ef`), tag retirement (`78a0639`), packaging (`b07a226`), and GPU indexing (`c176934`).
 - **Verified in tests:**
@@ -474,6 +477,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 ## Phase 6: Wallpaper Output
 
 **Status (October 14): built, committed, and verified; not deployed or accepted.** Batch WebP export and the retirement of Resize Copy and the non-WebP outputs are in `5e2ad3d`; cropping in the viewer, the preview fallback, and the rotated-JPEG test follow in the next commit. Left for acceptance: the user makes a real wallpaper end to end.
+- **User test of `ef91d32` (October 15):** batch WebP export (lossless, quality, fit within) and Crop Copy at full size work, and the copy lands in Wallpapers or the chosen folder. One fault: the export window doesn't close on a click outside it (D25).
 
 **Outcome:** The user crops in Sharpr and batch-exports WebP well enough to stop using XL Converter (D13).
 
@@ -514,6 +518,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - **User test, October 14 (`baa007d`): the window never got past its spinner.** Cause: the real library has 5,383 pairs between 0.95 and 0.99 (involving 1,401 pictures), and each pixel check decoded both full-size files, one pair at a time, with no reuse and no way to cancel: up to about 10,000 full decodes. Fixed: each picture's 32×32 version is made once, in parallel, from the thumbnail cache where possible. Closing the window cancels, and the window counts progress.
 - **User test, October 14 (`5044c72`):** it scanned the whole library and ticked the extras. Now it looks among the images in view (the open folder, bucket, or search results), ticks nothing, and offers Select All Extras and Select None.
 - **Every vector match now gets the pixel check,** not only those below 0.99: the library has 1,031 pairs above 0.99, too many to trust the score alone with files headed for the trash. The real-model fixture still groups the 1080p and WebP copies and leaves out the crop and the mirrored copy.
+- **User test of `ef91d32` (October 15):** it checks only the open folder, shows progress, stops when closed, ticks nothing, and Select All Extras and Select None work. The groups the user saw were real copies, and Compare from a group returns with the dismissed file ticked. The "no dialog" report was the filmstrip's Delete and right-click trash, which have never asked; Find Copies still confirms. D25 gives the filmstrip an Undo instead.
 - **Left for acceptance:** the user reviews groups on the real library, and the thresholds are tuned on those real examples.
 
 **Outcome:** The user reliably finds exact copies and resized or converted copies, then trashes the extras safely (D14). Images below 4K are found with the Phase 2 filter.
@@ -547,6 +552,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - **From Find Copies (user's suggestion, October 14):** each group's Compare button opens it in Compare, keeper on the left; Done returns to the copies window with the dismissed files ticked and the survivors not. The browsing selection is untouched, and nothing moves until Move to Trash is confirmed.
 - **User test, October 14 (`5044c72`):** the keys for moving through several images were "convoluted". Each side now has a picker of the images not yet dismissed, numbered, with thumbnails; picking the other side's image swaps them.
 - **User test, October 14 (`baa007d`): "works for two images only".** Cause: Compare tried to take the focus before its page was visible, so the filmstrip kept it; `[` and `]` then went to type-to-search, which opened a search and left Compare without closing it. Fixed: Compare's keys are handled at the window and type-to-search is off while Compare is open. Compare takes the focus once visible, and anything that switches the content away closes Compare properly, keeping the survivors.
+- **User test of `ef91d32` (October 15):** every item passed: the pickers, `[` `]`, Ctrl+Z, Space, the × buttons, all three modes, zoom lock across a 4K original and its 1080p copy, returning with the survivors selected, and Delete, F2, Ctrl+D, and Shift+F10 doing nothing while comparing or cropping.
 - **Left for acceptance:** the user's judgement of the feel of zooming, panning, and the split on real images.
 
 **Outcome:** One on-demand Compare tool serves both version inspection and choosing the best of several (D8).
@@ -605,7 +611,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
   D21 put them in the filmstrip's right-click menu with keyboard access. This extends the question to the viewer and keeps one action model, so menus can't drift apart.
 - **More notes from the user (October 14):**
-  - **"Add to Collection…" doesn't close on click-away.** It is an `AdwAlertDialog`, and Libadwaita dialogs ignore clicks outside them by design (only Escape or Done close them). A quick pick fits better as a popover anchored to the clicked image, or the drop target, which closes on click-away. Ctrl+B uses the same picker. *A candidate to fix early, with the post-audit fixes.*
+  - **"Add to Collection…" doesn't close on click-away.** It is an `AdwAlertDialog`, and Libadwaita dialogs ignore clicks outside them by design (only Escape or Done close them). A quick pick fits better as a popover anchored to the clicked image, or the drop target, which closes on click-away. Ctrl+B uses the same picker. **Decided October 15 (D25):** it stays a centred window and closes on a click outside, like Cancel; the WebP export gets the same. Fixed in the round after `ef91d32`, ahead of this phase.
   - **"Collection" or "bucket".** The interface still says "Collection" (menus, dialogs, tooltips) where the product, the docs, and the user say "bucket". Pick one word everywhere.
   - **The Info panel** opens as a second, bigger pill above the small corner chip. A better design is for the chip itself to expand on hover (the context idea above). This revisits D18, which put details in an Info panel opened by a key or the context menu, so it needs a decision.
   - **Fullscreen:** the corner chip should hide, and reappear on mouse movement, like a video player's controls.

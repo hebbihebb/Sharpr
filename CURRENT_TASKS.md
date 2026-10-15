@@ -32,7 +32,17 @@ The user asked for Phases 6, 7, and 8 to be finished, then a proper install to t
 - **User test of `baa007d` (October 14):** export and crop work; search into buckets works. Find Copies never got past its spinner, Compare "works for two images only", and `tower -water` looked ignored. All three are diagnosed and fixed in `934b49b` (`ROADMAP.md` Phases 5, 7, 8).
 - **Adversarial audit** (`gpt-6.1-sol`, October 14): `docs/archive/audit-2026-10-14-phases6-8.md`, 12 findings. Ten are fixed in the commits after `e9d3c8f`; finding 12's Library Overview parts and finding 6's Compare decode concurrency are in the Backlog.
 - **User test of `5044c72` (October 14):** Compare and the selection fixes worked. Asked for: Find Copies limited to the folder with nothing pre-ticked, a per-side image picker in Compare, a bucket picker that adds only on Add, and a stronger minus word. All four are in `8501517`.
-- **Next:** the user tests `ef91d32` (adds Compare from Find Copies).
+- **User test of `ef91d32` (October 15):** 17 of 19 items passed; the results are in `ROADMAP.md` Phases 5–8. The faults and the user's choices (D25) set the fix round below. The library switcher (item 19) is expected until Phase 9's "One library root".
+
+## Next: Fix Round After `ef91d32` (October 15)
+
+One step at a time, one commit each, with a GTK test where the behaviour is testable. Then one install, with the user's approval and a backup first.
+
+1. **Ctrl+A after clicking a thumbnail** selects every image shown. First confirm the cause: the filmstrip `ListView`'s built-in Ctrl+A takes the key before the window shortcut. In the search box, Ctrl+A keeps selecting the text.
+2. **Click outside closes** the bucket picker (Ctrl+B, Add to Bucket…) and the WebP export (Ctrl+E), like Cancel. Nothing is added or exported.
+3. **Undo for filmstrip trash** (Delete, right-click → Move to Trash): a toast "Moved N images to the trash · Undo". Undo finds each file in the trash by its original path and moves it back, never over an existing file; a file that can't return stays in the trash and is reported. This is a file operation: a regression test of the data path, then `./check.sh`. Find Copies keeps its confirmation.
+
+After the round: Phase 9 (interface review) starts with its inventory once the user confirms.
 
 ## State (October 14, 2026)
 
