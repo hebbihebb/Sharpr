@@ -53,6 +53,17 @@ modules:
   # for a card with room and falls back to the processor build otherwise.
   - name: llama-cpp-vulkan
     buildsystem: simple
+    modules:
+      # Build-time only: ggml's Vulkan backend needs these headers, which the
+      # GNOME SDK lacks. Version matches the SDK's Vulkan loader.
+      - name: spirv-headers
+        buildsystem: cmake-ninja
+        cleanup:
+          - '*'
+        sources:
+          - type: archive
+            url: https://github.com/KhronosGroup/SPIRV-Headers/archive/refs/tags/vulkan-sdk-1.4.321.0.tar.gz
+            sha256: 5bbea925663d4cd2bab23efad53874f2718248a73dcaf9dd21dff8cb48e602fc
     sources:
       - type: archive
         url: https://github.com/ggml-org/llama.cpp/archive/refs/tags/b11457.tar.gz
