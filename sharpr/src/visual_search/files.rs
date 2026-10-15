@@ -30,8 +30,10 @@ pub fn model_dir() -> PathBuf {
         .join("embeddinggemma-2")
 }
 
-/// The Flatpak's own build of `llama-server`, with its libraries beside it.
+/// The Flatpak's own builds of `llama-server`, with their libraries beside
+/// them: the processor build and the Vulkan build (D34).
 const FLATPAK_SERVER: &str = "/app/libexec/sharpr-llama/llama-server";
+const FLATPAK_GPU_SERVER: &str = "/app/libexec/sharpr-llama-gpu/llama-server";
 
 /// Where `llama-server` may be, in order: an explicit override, the
 /// Flatpak's own build, and the model folder's `runtime/` (native installs).
@@ -47,7 +49,7 @@ fn server_candidates(dir: &Path) -> Vec<PathBuf> {
 
 /// Finds the installed files, or explains in plain words what is missing.
 /// Under Flatpak, a model installed for the native app in the home folder
-/// (readable through `--filesystem=home:ro`) is used when the sandbox's own
+/// (reachable through `--filesystem=home`) is used when the sandbox's own
 /// folder has none, so one copy serves both.
 pub fn locate() -> Result<ModelFiles, String> {
     let dir = model_dir();
@@ -100,7 +102,10 @@ pub fn locate_in(dir: &Path, servers: &[PathBuf]) -> Result<ModelFiles, String> 
     let gpu_server = std::env::var_os("SHARPR_LLAMA_SERVER_GPU")
         .map(PathBuf::from)
         .into_iter()
-        .chain([dir.join("runtime-gpu").join("llama-server")])
+        .chain([
+            PathBuf::from(FLATPAK_GPU_SERVER),
+            dir.join("runtime-gpu").join("llama-server"),
+        ])
         .find(|path| is_executable(path));
     Ok(ModelFiles {
         model,

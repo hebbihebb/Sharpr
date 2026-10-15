@@ -131,17 +131,25 @@ python3 tools/install-visual-search-model.py --models DIR --runtime DIR [--gpu-r
 From `sharpr/packaging/`:
 
 ```bash
-bash sync-flatpak-source.sh                                   # rsync the working tree into .flatpak-source
+bash sync-flatpak-source.sh                                   # export the committed sharpr/ tree at HEAD
 flatpak-cargo-generator ../Cargo.lock -o cargo-sources.json   # whenever Cargo.lock changes
 flatpak-builder --force-clean --user --install build-dir io.github.hebbihebb.Sharpr.yml
 flatpak run io.github.hebbihebb.Sharpr
 ```
 
+A shareable bundle is named from `Cargo.toml`, the one version source:
+
+```bash
+flatpak-builder --force-clean --repo=repo build-dir io.github.hebbihebb.Sharpr.yml
+version="$(sed -n 's/^version = "\(.*\)"/\1/p' ../Cargo.toml | head -1)"
+flatpak build-bundle repo "Sharpr-${version}.flatpak" io.github.hebbihebb.Sharpr
+```
+
 - **Runtime:** GNOME 50 plus the rust-stable SDK extension.
-- **Visual search:** the `llama-cpp` module builds `llama-server` from the pinned source tarball into `/app/libexec/sharpr-llama/`. The build fetches nothing and has no HTTPS. llama.cpp's plain HTTP downloader remains, so Sharpr starts every server with `--offline` and strips inherited `LLAMA_*`, `HF_*`, and `MTMD_*` settings. The model is not bundled: the Flatpak reads `~/.var/app/io.github.hebbihebb.Sharpr/data/sharpr-models/embeddinggemma-2/`, or else the native install's folder through `home:ro`.
-- **Memory:** the manifest caps cargo at `--jobs 4` to avoid running out of memory while libjxl compiles. Keep the cap.
-- **No version pinning:** the build uses whatever is in the working tree, uncommitted changes included, so record the commit you built.
-- **Stale target data:** `.flatpak-source` keeps an old `target/` from earlier syncs because the script does not delete excluded files (`ROADMAP.md` Phase 10).
+- **Pinned source:** the sync script refuses a dirty tree and replaces `.flatpak-source` with `git archive` of HEAD, recording the commit in `.flatpak-source/COMMIT`. Commit first, then sync and build.
+- **Visual search:** two modules build `llama-server` from the same pinned source tarball: the processor build in `/app/libexec/sharpr-llama/` and a Vulkan build in `/app/libexec/sharpr-llama-gpu/` (D34). Indexing uses the Vulkan build on a card with at least 2 GB free, otherwise the processor build, as natively. NVIDIA cards need Flathub's `org.freedesktop.Platform.GL.nvidia-*` extension matching the host driver; Flatpak normally installs it. The builds fetch nothing and have no HTTPS. llama.cpp's plain HTTP downloader remains, so Sharpr starts every server with `--offline` and strips inherited `LLAMA_*`, `HF_*`, and `MTMD_*` settings. The model is not bundled: the Flatpak reads `~/.var/app/io.github.hebbihebb.Sharpr/data/sharpr-models/embeddinggemma-2/`, or else the native install's folder in the home folder.
+- **Home access:** the Flatpak may write the home folder (D34), so Rename, Move, Trash and exports behave as in the native build.
+- **Memory:** the manifest caps cargo at `--jobs 4` to avoid running out of memory while libjxl compiles. Keep the cap. Run the build in a memory-capped scope, one heavy job at a time.
 
 ## Structured Logging
 

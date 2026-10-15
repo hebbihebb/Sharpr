@@ -10,8 +10,8 @@ finish-args:
   - --socket=fallback-x11
   - --socket=wayland
   - --device=dri
-  - --filesystem=xdg-pictures
-  - --filesystem=home:ro
+  # Rename, Move, Trash and exports work anywhere in home, as natively (D34).
+  - --filesystem=home
   # File chooser portal
   - --talk-name=org.freedesktop.portal.FileChooser
   # Show in file manager (Nautilus, Thunar, Dolphin, etc.)
@@ -22,8 +22,8 @@ build-options:
   env:
     CARGO_HOME: /run/build/sharpr/cargo
 modules:
-  # Visual search runtime (decision D24): only llama-server, CPU only, with
-  # every CPU variant picked at run time. The build fetches nothing (no web
+  # Visual search runtime (decision D24): only llama-server, on the processor,
+  # with every CPU variant picked at run time. The build fetches nothing (no web
   # UI download, no OpenMP fetch) and has no HTTPS (no OpenSSL). Its plain
   # HTTP downloader remains, so Sharpr always starts it with --offline and
   # without inherited LLAMA_*/HF_* settings. The model itself is installed
@@ -47,6 +47,29 @@ modules:
       - install -Dm755 build/bin/llama-server /app/libexec/sharpr-llama/llama-server
       - cp -a build/bin/lib*.so* /app/libexec/sharpr-llama/
       - install -Dm644 LICENSE /app/share/licenses/sharpr-llama/LICENSE
+
+  # The same llama-server built with Vulkan for GPU indexing (D34), beside
+  # the processor build as in native installs (`runtime-gpu/`). Sharpr asks it
+  # for a card with room and falls back to the processor build otherwise.
+  - name: llama-cpp-vulkan
+    buildsystem: simple
+    sources:
+      - type: archive
+        url: https://github.com/ggml-org/llama.cpp/archive/refs/tags/b11457.tar.gz
+        sha256: 5c054b32f75fd774370329bab3cecd68f7dcc0a462eeb82b79aded501d47479e
+    build-commands:
+      - >-
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_RPATH='$ORIGIN'
+        -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON
+        -DGGML_VULKAN=ON
+        -DGGML_OPENMP=OFF -DLLAMA_OPENSSL=OFF
+        -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
+        -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_APP=OFF
+        -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TOOLS=ON
+      - cmake --build build --target llama-server ggml-vulkan
+      - install -Dm755 build/bin/llama-server /app/libexec/sharpr-llama-gpu/llama-server
+      - cp -a build/bin/lib*.so* /app/libexec/sharpr-llama-gpu/
 
   - name: sharpr
     buildsystem: simple
