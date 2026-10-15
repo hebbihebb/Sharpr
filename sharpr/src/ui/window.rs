@@ -30,6 +30,7 @@ use crate::ui::state::{AppState, ViewScope};
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 
 mod compare_controller;
+pub(crate) mod mode_header;
 /// Gets Compare's survivors when someone else opened it (Find Copies).
 type CompareDone = Box<dyn FnOnce(Vec<PathBuf>)>;
 use compare_controller::{file_actions_blocked, is_comparing};
@@ -41,6 +42,15 @@ mod tag_controller;
 // ---------------------------------------------------------------------------
 // Shared application state (main thread only, Rc<RefCell<>>)
 // ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+pub(crate) struct SidePanels {
+    outer_shown: bool,
+    inner_shown: bool,
+    outer_collapsed: bool,
+    inner_collapsed: bool,
+    width: i32,
+}
 
 pub type OpenFolderCallback = Rc<dyn Fn(PathBuf)>;
 pub type RefreshCollectionsCallback = Rc<dyn Fn()>;
@@ -541,6 +551,7 @@ mod imp {
         pub presentation_sidebar_was_visible: Cell<bool>,
         pub presentation_filmstrip_was_visible: Cell<bool>,
         pub presentation_header: RefCell<Option<libadwaita::HeaderBar>>,
+        pub(super) mode_header: RefCell<Option<mode_header::ModeHeader>>,
         /// Look prototype: the last pointer position, where pickers open.
         pub last_pointer: Cell<Option<(f64, f64)>>,
         pub presentation_outer_split: RefCell<Option<libadwaita::OverlaySplitView>>,
@@ -569,7 +580,7 @@ mod imp {
         /// A crop's preview is being prepared.
         pub crop_preparing: Cell<bool>,
         /// Which side panels Compare hid, to show them again.
-        pub compare_panels: Cell<Option<(bool, bool)>>,
+        pub(super) compare_panels: Cell<Option<SidePanels>>,
         /// Who opened Compare and gets the survivors back instead of the
         /// browsing selection (Find Copies).
         pub compare_done: RefCell<Option<CompareDone>>,
@@ -612,6 +623,7 @@ mod imp {
                 presentation_sidebar_was_visible: Cell::new(false),
                 presentation_filmstrip_was_visible: Cell::new(false),
                 presentation_header: RefCell::new(None),
+                mode_header: RefCell::new(None),
                 last_pointer: Cell::new(None),
                 presentation_outer_split: RefCell::new(None),
                 presentation_inner_split: RefCell::new(None),
@@ -688,29 +700,53 @@ impl SharprWindow {
         self.imp().viewer.borrow().clone()
     }
 
-    /// Hides the library and filmstrip panels, returning whether each was
-    /// shown, for `restore_side_panels`.
-    pub(crate) fn hide_side_panels(&self) -> (bool, bool) {
-        let imp = self.imp();
-        let mut shown = (false, false);
-        if let Some(outer) = imp.presentation_outer_split.borrow().as_ref() {
-            shown.0 = outer.shows_sidebar();
-            outer.set_show_sidebar(false);
-        }
-        if let Some(inner) = imp.presentation_inner_split.borrow().as_ref() {
-            shown.1 = inner.shows_sidebar();
-            inner.set_show_sidebar(false);
-        }
-        shown
+    /// Modes need an empty canvas even when the wide layout normally keeps
+    /// its sidebars visible. Preserve their state for returning to browsing.
+    pub(crate) fn hide_side_panels(&self) -> SidePanels {
+        let outer = self
+            .imp()
+            .presentation_outer_split
+            .borrow()
+            .clone()
+            .unwrap();
+        let inner = self
+            .imp()
+            .presentation_inner_split
+            .borrow()
+            .clone()
+            .unwrap();
+        let saved = SidePanels {
+            outer_shown: outer.shows_sidebar(),
+            inner_shown: inner.shows_sidebar(),
+            outer_collapsed: outer.is_collapsed(),
+            inner_collapsed: inner.is_collapsed(),
+            width: self.width(),
+        };
+        inner.set_collapsed(true);
+        inner.set_show_sidebar(false);
+        outer.set_collapsed(true);
+        outer.set_show_sidebar(false);
+        saved
     }
 
-    pub(crate) fn restore_side_panels(&self, (outer_shown, inner_shown): (bool, bool)) {
-        let imp = self.imp();
-        if let Some(outer) = imp.presentation_outer_split.borrow().as_ref() {
-            outer.set_show_sidebar(outer_shown);
+    pub(crate) fn restore_side_panels(&self, saved: SidePanels) {
+        // A resize during the mode must restore the current adaptive layout.
+        let resized = saved.width != self.width();
+        if let Some(inner) = self.imp().presentation_inner_split.borrow().as_ref() {
+            inner.set_collapsed(if resized {
+                self.width() < 800
+            } else {
+                saved.inner_collapsed
+            });
+            inner.set_show_sidebar(saved.inner_shown);
         }
-        if let Some(inner) = imp.presentation_inner_split.borrow().as_ref() {
-            inner.set_show_sidebar(inner_shown);
+        if let Some(outer) = self.imp().presentation_outer_split.borrow().as_ref() {
+            outer.set_collapsed(if resized {
+                self.width() <= 1500
+            } else {
+                saved.outer_collapsed
+            });
+            outer.set_show_sidebar(saved.outer_shown);
         }
     }
 
@@ -2050,7 +2086,14 @@ impl SharprWindow {
         // Sidebar folder selection → scan library → refresh filmstrip.
         {
             let open_folder_c = open_folder.clone();
+            let window = self.downgrade();
             sidebar.connect_folder_selected(move |path| {
+                if window
+                    .upgrade()
+                    .is_some_and(|w| file_actions_blocked(w.upcast_ref()))
+                {
+                    return;
+                }
                 open_folder_c(path);
             });
         }
@@ -2768,6 +2811,10 @@ impl SharprWindow {
         viewer_toolbar.add_top_bar(&search_chips_revealer);
         *self.imp().search_chips.borrow_mut() = Some(search_chips);
         *self.imp().search_suggestions.borrow_mut() = Some(search_suggestions);
+        *self.imp().mode_header.borrow_mut() = Some(mode_header::ModeHeader::new(
+            &viewer_header,
+            &search_chips_revealer,
+        ));
         *self.imp().search_chip_bar.borrow_mut() = Some(search_chips_revealer);
 
         use crate::ui::compare_page::ComparePage;
@@ -2785,18 +2832,17 @@ impl SharprWindow {
             });
         }
 
-        // Compare's keys work wherever the focus is, except in text fields.
+        // Mode keys also work while a header control has focus.
         {
-            let page = compare_page.clone();
             let keys = gtk4::EventControllerKey::new();
             keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
             keys.connect_key_pressed(move |controller, key, _, modifiers| {
-                match controller.widget() {
-                    Some(window) if is_comparing(&window) && !text_input_has_focus(&window) => {
-                        page.handle_key(key, modifiers)
-                    }
-                    _ => glib::Propagation::Proceed,
-                }
+                controller
+                    .widget()
+                    .and_downcast::<SharprWindow>()
+                    .map_or(glib::Propagation::Proceed, |window| {
+                        window.handle_mode_key(key, modifiers)
+                    })
             });
             self.add_controller(keys);
         }
@@ -2864,17 +2910,6 @@ impl SharprWindow {
             .build();
         inner_split.set_content(Some(&viewer_page));
 
-        // Update the NavigationPage title to reflect which panel is active.
-        {
-            let preview_search_revealer_c = preview_search_revealer.clone();
-            content_stack.connect_visible_child_notify(move |stack| {
-                let name = stack.visible_child_name().unwrap_or_default();
-                if name != "viewer" {
-                    preview_search_revealer_c.set_reveal_child(false);
-                }
-            });
-        }
-
         // Outer split: explorer sidebar | inner_split.
         let sidebar_overlay = gtk4::Overlay::new();
         sidebar_overlay.set_child(Some(&sidebar));
@@ -2902,6 +2937,7 @@ impl SharprWindow {
             .flags(glib::BindingFlags::SYNC_CREATE | glib::BindingFlags::BIDIRECTIONAL)
             .build();
 
+        self.setup_mode_panel_guards(&outer_split, &inner_split);
         let outer_split_c = outer_split.clone();
         inner_split.connect_collapsed_notify(move |inner| {
             if inner.is_collapsed() {
@@ -3082,7 +3118,10 @@ impl SharprWindow {
                 };
                 // Space stays free for viewing and Compare (decision D7);
                 // Compare's own keys include printable ones.
-                if ch.is_control() || ch.is_whitespace() || is_comparing(window.upcast_ref()) {
+                if ch.is_control()
+                    || ch.is_whitespace()
+                    || file_actions_blocked(window.upcast_ref())
+                {
                     return glib::Propagation::Proceed;
                 }
                 let Some(win) = window_weak.upgrade() else {
@@ -3416,7 +3455,12 @@ impl SharprWindow {
                 .set(i.shows_sidebar());
             o.set_show_sidebar(false);
             i.set_show_sidebar(false);
-            h.set_visible(false);
+            h.set_visible(
+                imp.mode_header
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(mode_header::ModeHeader::active),
+            );
         }
         imp.presentation_mode.set(true);
         self.fullscreen();
@@ -3545,7 +3589,7 @@ impl SharprWindow {
             |state: Rc<RefCell<AppState>>, filmstrip: FilmstripPane, delta: i32| {
                 gtk4::CallbackAction::new(move |widget, _| {
                     if let Some(win) = widget.downcast_ref::<SharprWindow>() {
-                        if !win.imp().presentation_mode.get() {
+                        if !win.imp().presentation_mode.get() || file_actions_blocked(widget) {
                             return glib::Propagation::Proceed;
                         }
                         // Avoid triggering if we are in a text entry (e.g. search)
@@ -3604,7 +3648,10 @@ impl SharprWindow {
         // F9 — Toggle Library sidebar.
         shortcuts.add_shortcut(gtk4::Shortcut::new(
             Some(gtk4::ShortcutTrigger::parse_string("F9").unwrap()),
-            Some(gtk4::CallbackAction::new(move |_, _| {
+            Some(gtk4::CallbackAction::new(move |widget, _| {
+                if file_actions_blocked(widget) {
+                    return glib::Propagation::Stop;
+                }
                 outer_split.set_show_sidebar(!outer_split.shows_sidebar());
                 glib::Propagation::Stop
             })),
@@ -3615,6 +3662,9 @@ impl SharprWindow {
             Some(gtk4::ShortcutTrigger::parse_string("<Control>F").unwrap()),
             Some(gtk4::CallbackAction::new(move |widget, _| {
                 if let Some(window) = widget.downcast_ref::<SharprWindow>() {
+                    if file_actions_blocked(window.upcast_ref()) {
+                        return glib::Propagation::Stop;
+                    }
                     content_stack.set_visible_child_name("viewer");
                     window.show_inline_search();
                     return glib::Propagation::Stop;
@@ -4082,6 +4132,9 @@ impl SharprWindow {
     }
 
     fn show_inline_search(&self) {
+        if file_actions_blocked(self.upcast_ref()) {
+            return;
+        }
         if let Some(revealer) = self.imp().inline_search_revealer.borrow().as_ref() {
             revealer.set_reveal_child(true);
         }

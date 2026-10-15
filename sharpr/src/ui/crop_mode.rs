@@ -174,11 +174,8 @@ fn open(
     stage.add_overlay(&canvas);
     root.append(&stage);
 
-    let bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    bar.set_margin_top(6);
-    bar.set_margin_bottom(12);
-    bar.set_margin_start(12);
-    bar.set_margin_end(12);
+    let controls = crate::ui::window::mode_header::ModeControls::new();
+    let bar = &controls.start;
     let aspects = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     aspects.add_css_class("linked");
     let wide = gtk4::ToggleButton::with_label("16:9");
@@ -193,15 +190,17 @@ fn open(
     let size = gtk4::Label::new(None);
     size.add_css_class("dim-label");
     size.add_css_class("numeric");
-    bar.append(&size);
+    controls.center.append(&size);
     // Look prototype: the keys that work here, in one quiet line (D26).
     let spacer = gtk4::Label::new(None);
     spacer.set_markup(
         "drag to move · drag a corner to resize   <b>Enter</b> save   <b>Esc</b> cancel",
     );
     spacer.add_css_class("sharpr-keys");
-    spacer.set_hexpand(true);
-    bar.append(&spacer);
+    spacer.set_wrap(true);
+    spacer.set_margin_bottom(6);
+    root.append(&spacer);
+    let bar = &controls.end;
     let destination = Rc::new(RefCell::new(
         window
             .app_state()
@@ -217,13 +216,20 @@ fn open(
     folder.set_tooltip_text(Some("Folder for the cropped copy"));
     let folder_label = |path: &std::path::Path| {
         format!(
-            "To {}",
+            "To {}…",
             path.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string())
         )
     };
-    folder.set_label(&folder_label(&destination.borrow()));
+    let folder_text = gtk4::Label::new(Some(&folder_label(&destination.borrow())));
+    folder_text.set_ellipsize(pango::EllipsizeMode::Middle);
+    folder_text.set_max_width_chars(18);
+    folder.set_child(Some(&folder_text));
+    folder.set_tooltip_text(Some(&format!(
+        "Destination: {}",
+        destination.borrow().display()
+    )));
     bar.append(&folder);
     let cancel = gtk4::Button::with_label("Cancel");
     let save = gtk4::Button::with_label("Save Copy");
@@ -231,7 +237,6 @@ fn open(
     save.set_tooltip_text(Some("Save the selection as a new lossless WebP (Enter)"));
     bar.append(&cancel);
     bar.append(&save);
-    root.append(&bar);
 
     let update_size: Rc<dyn Fn()> = {
         let crop = crop.clone();
@@ -367,12 +372,14 @@ fn open(
         let root = root.clone();
         let viewer = viewer.clone();
         Rc::new(move || {
-            if root.parent().is_some() {
-                viewer.imp().overlay.remove_overlay(&root);
+            if root.parent().is_none() {
+                return;
             }
+            viewer.imp().overlay.remove_overlay(&root);
             if let Some(window) = window.upgrade() {
-                window.restore_side_panels(panels);
                 window.set_crop_session(None);
+                window.set_mode_header(None);
+                window.restore_side_panels(panels);
             }
         })
     };
@@ -469,34 +476,18 @@ fn open(
             chooser.set_initial_folder(Some(&gio::File::for_path(&*destination.borrow())));
             let destination = destination.clone();
             let button = button.clone();
+            let folder_text = folder_text.clone();
             chooser.select_folder(Some(&window), None::<&gio::Cancellable>, move |result| {
                 if let Some(path) = result.ok().and_then(|file| file.path()) {
-                    button.set_label(&folder_label(&path));
+                    folder_text.set_text(&folder_label(&path));
+                    button.set_tooltip_text(Some(&format!("Destination: {}", path.display())));
                     *destination.borrow_mut() = path;
                 }
             });
         });
     }
-    let keys = gtk4::EventControllerKey::new();
-    keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
-    {
-        let close = close.clone();
-        let save_crop = save_crop.clone();
-        keys.connect_key_pressed(move |_, key, _, _| match key {
-            gdk4::Key::Escape => {
-                close();
-                glib::Propagation::Stop
-            }
-            gdk4::Key::Return | gdk4::Key::KP_Enter => {
-                save_crop();
-                glib::Propagation::Stop
-            }
-            _ => glib::Propagation::Proceed,
-        });
-    }
-    root.add_controller(keys);
-
     viewer.imp().overlay.add_overlay(&root);
+    window.set_mode_header(Some(&controls));
     root.grab_focus();
     window.set_crop_session(Some(CropSession {
         crop,

@@ -16,7 +16,7 @@ This file covers how to build them in GTK.
 
 - Prefer standard GTK and Libadwaita widgets, actions, dialogs, popovers, overlays, and accessibility behavior over custom UI.
 - Use `GAction`s for menu commands and their sensitivity.
-- Compare currently needs exactly two selected images. Phase 8 extends it to N images in pairwise knockout (D8).
+- Compare accepts N ≥ 2 selected images and shows two at a time (D8). Left/Right arrows and Keep Left/Keep Right retain that side and dismiss the other; Undo restores the last choice. Compare never changes files (D28).
 - Search, filters, and sort apply to the current folder or bucket unless the user explicitly picks the whole library. Clearing a search restores the scope, selection, scroll position, and current sort.
 - Open search by typing anywhere or pressing Ctrl+F (D7). Keep Space free for viewing and Compare.
 - Recognized filter words in the search box become removable chips in a wrapping bar under the header (D16). The bar wraps so it never widens the window. The combined Sort and Filter menu adds these same chips (D27). Clicking a chip's label turns it back into a quoted search word. Filter words that complete the word being typed are offered as flat buttons in the same bar, rather than in a popover, which would take focus from the entry.
@@ -49,3 +49,10 @@ See `architecture.md`. In UI code this means:
 - Preferences and Keyboard Shortcuts are `AdwPreferencesDialog` and `AdwShortcutsDialog` sheets presented in the main window. They inherit its font and use `.sharpr-sheet` for compact rows and headers. Keep the existing `win.show-preferences` and `win.show-help-overlay` actions.
 - Quick pickers use popovers and dismiss on click-away. Preferences and other editing sheets use their own close controls and Escape.
 - One Sort and Filter menu adds the same removable chips as typing filter words. The old independent Filter popover is hidden and scheduled for removal.
+
+## Contextual Viewer Header (D28)
+
+- `ui/window/mode_header.rs` swaps the existing header's search content for Compare/crop controls. The app menu and window buttons stay in place. Search text, chips, scope and status widgets stay alive; pending browse results are retired when entering a mode.
+- Compare's header contains the viewing modes, Linked zoom, Fit/100%, Undo and Done. Each image's picker, details and Keep button sit below the canvas; the count and key hints share a quiet footer. Candidate thumbnail navigation is still a separate proposal.
+- Crop's header contains aspect, live output dimensions, destination, Cancel and Save Copy; drag/Enter/Escape hints sit below the canvas. The destination label ellipsizes and its tooltip names the full path.
+- Mode keys are routed from the window so header focus works. Text fields, picker popups and modal sheets keep their own keys. Ctrl+F and type-to-search leave an active mode alone. Fullscreen retains the active mode controls.

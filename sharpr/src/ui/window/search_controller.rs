@@ -584,6 +584,11 @@ impl SharprWindow {
     /// `extend` shows the next page of the current visual ranking instead of
     /// ranking again.
     fn run_browse_query_with_limit(&self, query: String, sort_only: bool, extend: bool) {
+        // A delayed search-entry signal must not replace a Compare/crop
+        // canvas after the user has entered that mode.
+        if super::file_actions_blocked(self.upcast_ref()) {
+            return;
+        }
         // Until a bucket's members arrive, the filmstrip still holds the previous
         // view; searching it would label those images as the bucket. The bucket
         // open runs the current query when it completes.

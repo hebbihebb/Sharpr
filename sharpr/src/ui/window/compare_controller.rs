@@ -5,6 +5,9 @@ use super::*;
 impl SharprWindow {
     /// Compares `paths` (at least two) in this order.
     pub fn enter_compare_mode(&self, paths: Vec<PathBuf>) {
+        if let Some(crop) = self.crop_session() {
+            crop.close();
+        }
         {
             let state_rc = self.app_state();
             let mut state = state_rc.borrow_mut();
@@ -16,6 +19,7 @@ impl SharprWindow {
         }
         if let Some(page) = self.imp().compare_page.borrow().as_ref() {
             page.start(paths);
+            self.set_mode_header(Some(&page.header()));
         }
         // The side panels make way, which also keeps the filmstrip's file
         // actions out of reach.
@@ -42,6 +46,7 @@ impl SharprWindow {
     /// Back to browsing, with `survivors` selected and the first one shown,
     /// or handed to whoever opened Compare (`compare_then`).
     pub fn exit_compare_mode(&self, survivors: Vec<PathBuf>) {
+        self.set_mode_header(None);
         if let Some(done) = self.imp().compare_done.take() {
             {
                 let state_rc = self.app_state();

@@ -54,18 +54,18 @@ Select two or more images (Ctrl-click, Shift-click, or Ctrl+A), then right-click
 
 - **Side by Side**, **Split**, and **Flip** change how the pair is shown. In Split, drag the divider. In Flip, **Space** switches between the two; the badge of the hidden image is dimmed. Space also switches to Flip from the other modes.
 - **Zoom:** scroll to zoom at the pointer, drag to pan, double-click for 100% or back to fit. **Fit** and **100%** do the same from the toolbar.
-- **Zoom lock** (the padlock, on by default) keeps both images on the same region, even when they have different resolutions, as for a 4K original and its 1080p copy. Turn it off to zoom and pan each side separately in Side by Side.
-- **Choose** the image for either side from the picker on its badge: it lists every image not yet dismissed, numbered in filmstrip order, with thumbnails; type to filter. Picking the image on the other side swaps them.
-- **Dismiss** an image with the × on its badge, or **[** for the left and **]** for the right; the next image takes its place. **Ctrl+Z** brings back the last one dismissed.
+- **Linked zoom** (on by default) keeps both images on the same region, even when they have different resolutions, as for a 4K original and its 1080p copy. Turn it off to zoom and pan each side separately in Side by Side.
+- **Choose** the image for either side from the picker below that side: it lists every image not yet dismissed, numbered in filmstrip order, with thumbnails; type to filter. Picking the image on the other side swaps them.
+- **Keep Left** (**←**) or **Keep Right** (**→**) keeps that side and dismisses the other image; the next candidate takes the other's place. These choices never trash files. **Undo** or **Ctrl+Z** brings back the last image dismissed. The footer shows how many images remain.
 - **Done** (or **Escape**) returns to browsing with the images you didn't dismiss selected.
 
-The side panels make way while Compare is open. Delete, Rename (F2), Duplicate (Ctrl+D), and the image menu (Shift+F10) are off, as they are while cropping. An image that can't be read shows the error in its badge.
+The side panels make way while Compare is open. Delete, Rename (F2), Duplicate (Ctrl+D), and the image menu (Shift+F10) are off, as they are while cropping. An image that can't be read shows the error below its picker. Search and filter chips make way for the mode controls in the top bar; returning restores them.
 
 ## Export As WebP
 
 Select images and press Ctrl+E, or right-click → **Export as WebP…**. Choose the folder (**Wallpapers** is one click), lossless or a lossy quality, and optionally **Fit Within** a size such as 3840×2160, which shrinks larger images and never enlarges smaller ones. The export runs in the background: a notification counts progress and can cancel it, keeping the images already finished and leaving no partial file. Each copy is a new file (`name.webp`, `name-1.webp`, …); originals are never changed.
 
-**Crop Copy…** on the right-click menu crops in the viewer at full size: the side panels make way (press F11 for fullscreen), and you drag the selection to move it or its corners to resize it, in 16:9 or freely. **Save Copy** (or Enter) saves the selection as a new lossless WebP in the export folder, Wallpapers unless you chose another; Escape cancels. If the image changes on disk while you crop, Save Copy refuses rather than crop the new file.
+**Crop Copy…** on the right-click menu crops in the viewer at full size: the side panels make way (press F11 for fullscreen), and you drag the selection to move it or its corners to resize it, in 16:9 or freely. The top bar shows 16:9/Free, the crop's live pixel dimensions, the destination, **Cancel**, and **Save Copy**. **Save Copy** (or Enter) saves the selection as a new lossless WebP in the export folder, Wallpapers unless you chose another; Escape cancels. If the image changes on disk while you crop, Save Copy refuses rather than crop the new file.
 
 ## Preferences
 

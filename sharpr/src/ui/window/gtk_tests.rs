@@ -1674,6 +1674,213 @@ fn settle(ms: u64) {
     pump_until(|| std::time::Instant::now() > until);
 }
 
+/// Contextual controls preserve browsing state and reach the same actions
+/// from the keyboard, including when a header button has focus.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn mode_headers_keep_choices_and_restore_search() {
+    let root = isolated_fixture("mode-headers");
+    let output = root.join("a deliberately long crop destination folder name");
+    std::fs::create_dir_all(&output).unwrap();
+    let paths: Vec<_> = (0..5)
+        .map(|i| root.join(format!("image-{i}-a-long-name-for-the-image-picker.png")))
+        .collect();
+    for (i, path) in paths.iter().enumerate() {
+        image::RgbImage::from_pixel(160, 90, image::Rgb([40 + i as u8 * 30, 90, 130]))
+            .save(path)
+            .unwrap();
+    }
+    let originals: Vec<_> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let mut export = settings.webp_export.clone();
+    export.dir = Some(output.clone());
+    settings.set_webp_export(export);
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.is_mapped() && window.app_state().borrow().library.image_count() == 5);
+    window.show_inline_search();
+    let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
+    entry.set_text("image png ");
+    pump_until(|| {
+        !window.imp().browse_options.borrow().chips.is_empty()
+            && window.app_state().borrow().library.image_count() == 5
+    });
+    let query = entry.text();
+    let chips = window.imp().browse_options.borrow().chips.clone();
+    let header = window.imp().presentation_header.borrow().clone().unwrap();
+    let page = window.imp().compare_page.borrow().clone().unwrap();
+    let none = gdk4::ModifierType::empty();
+    for (scheme, theme) in [
+        (libadwaita::ColorScheme::ForceLight, "light"),
+        (libadwaita::ColorScheme::ForceDark, "dark"),
+    ] {
+        libadwaita::StyleManager::default().set_color_scheme(scheme);
+        for (width, height) in [(1024, 600), (1600, 900)] {
+            window.set_default_size(width, height);
+            window.enter_compare_mode(paths.clone());
+            settle(500);
+            assert_eq!(
+                window.width(),
+                width,
+                "controls fit without enlarging the window"
+            );
+            assert!(window
+                .imp()
+                .presentation_outer_split
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .is_collapsed());
+            assert!(!window
+                .imp()
+                .presentation_outer_split
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .shows_sidebar());
+            assert!(window
+                .imp()
+                .presentation_inner_split
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .is_collapsed());
+            assert!(!window
+                .imp()
+                .presentation_inner_split
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .shows_sidebar());
+            assert!(!entry.is_mapped(), "search makes way at {theme} {width}: scope={:?}, page={:?}, header active={}, survivors={}", window.app_state().borrow().scope, window.imp().content_stack.borrow().as_ref().unwrap().visible_child_name(), window.imp().mode_header.borrow().as_ref().unwrap().active(), page.survivors().len());
+            assert!(!window
+                .imp()
+                .search_chip_bar
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .is_mapped());
+            assert!(
+                page.header().start.is_ancestor(&header),
+                "controls belong to the top bar"
+            );
+            let controls = page.header().start.compute_bounds(&window).unwrap();
+            assert!(
+                controls.x() >= 0.0 && controls.x() + controls.width() <= window.width() as f32
+            );
+            assert_eq!(
+                window.handle_mode_key(gdk4::Key::Left, none),
+                glib::Propagation::Stop
+            );
+            assert_eq!(page.imp().shown.borrow()[0].as_ref(), Some(&paths[0]));
+            assert!(!page.survivors().contains(&paths[1]), "left keeps left");
+            window.handle_mode_key(gdk4::Key::z, gdk4::ModifierType::CONTROL_MASK);
+            assert_eq!(page.survivors(), paths);
+            window.handle_mode_key(gdk4::Key::Right, none);
+            assert_eq!(page.imp().shown.borrow()[1].as_ref(), Some(&paths[1]));
+            assert!(!page.survivors().contains(&paths[0]), "right keeps right");
+            page.undo();
+            page.imp().keep[0].emit_clicked();
+            assert!(
+                !page.survivors().contains(&paths[1]),
+                "the matching button does the same"
+            );
+            page.undo();
+            assert_eq!(
+                window.handle_mode_key(gdk4::Key::Left, gdk4::ModifierType::ALT_MASK),
+                glib::Propagation::Proceed
+            );
+            assert_eq!(page.survivors(), paths);
+            page.imp().pickers[0].emit_by_name::<()>("activate", &[]);
+            pump_until(|| {
+                find_widgets::<gtk4::Popover>(page.upcast_ref())
+                    .iter()
+                    .any(|p| p.is_mapped())
+            });
+            assert_eq!(
+                window.handle_mode_key(gdk4::Key::Right, none),
+                glib::Propagation::Proceed,
+                "picker arrows never choose a winner"
+            );
+            for popover in find_widgets::<gtk4::Popover>(page.upcast_ref()) {
+                popover.popdown();
+            }
+            settle(200);
+            page.view().grab_focus();
+            screenshot(&window, &root.join(format!("{theme}-{width}-compare.png")));
+            page.close();
+            pump_until(|| entry.is_mapped());
+            assert_eq!(entry.text(), query);
+            assert_eq!(window.imp().browse_options.borrow().chips, chips);
+            crate::ui::crop_mode::start(&window, paths[0].clone());
+            pump_until(|| window.crop_session().is_some());
+            settle(500);
+            assert!(!entry.is_mapped());
+            let save = find_widgets::<gtk4::Button>(header.upcast_ref())
+                .into_iter()
+                .find(|b| b.label().as_deref() == Some("Save Copy"))
+                .unwrap();
+            let bounds = save.compute_bounds(&window).unwrap();
+            assert!(bounds.y() < 42.0 && bounds.x() + bounds.width() <= window.width() as f32);
+            screenshot(&window, &root.join(format!("{theme}-{width}-crop.png")));
+            save.grab_focus();
+            assert_eq!(
+                window.handle_mode_key(gdk4::Key::Escape, none),
+                glib::Propagation::Stop
+            );
+            pump_until(|| entry.is_mapped());
+            assert_eq!(entry.text(), query);
+            assert_eq!(window.imp().browse_options.borrow().chips, chips);
+        }
+    }
+    crate::ui::crop_mode::start(&window, paths[0].clone());
+    pump_until(|| window.crop_session().is_some());
+    let save = find_widgets::<gtk4::Button>(header.upcast_ref())
+        .into_iter()
+        .find(|b| b.label().as_deref() == Some("Save Copy"))
+        .unwrap();
+    save.grab_focus();
+    assert_eq!(
+        window.handle_mode_key(gdk4::Key::Return, none),
+        glib::Propagation::Stop
+    );
+    pump_until(|| {
+        std::fs::read_dir(&output)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.path().extension().is_some_and(|e| e == "webp"))
+    });
+    let copy = std::fs::read_dir(&output)
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|e| e.path().extension().is_some_and(|e| e == "webp"))
+        .unwrap()
+        .path();
+    assert_eq!(
+        image::open(&copy).unwrap().to_rgb8(),
+        image::open(&paths[0]).unwrap().to_rgb8()
+    );
+    assert!(window.crop_session().is_none());
+    for (path, bytes) in paths.iter().zip(originals) {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    window.close();
+}
+
 /// A real Fontconfig configuration with no font directories proves that
 /// Pango loads the embedded files, rather than a matching desktop font.
 #[test]

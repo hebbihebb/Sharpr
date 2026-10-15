@@ -582,11 +582,11 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - **Finishing touches** (user's trial, October 15, plus code):
   - **Implemented: Preferences and Keyboard Shortcuts as styled sheets (I8).** They now use `AdwPreferencesDialog` and `AdwShortcutsDialog` in the main window, inheriting the approved monospace face and compact styling. The old separate windows missed this styling. Nested library editors return to Preferences; the settings controls and existing menu actions are retained, with Ctrl+? for shortcuts. The unused click-outside helper is removed. Verified by `cargo build`, `./check.sh` (211 regular tests), all 12 GTK tests, and light/dark screenshots at 1024×600 and 1600×900; not deployed or accepted.
   - **Implemented: bundled JetBrains Mono (D27).** Official v2.304 upright and italic variable fonts (weights 100–800), with OFL licence and source checksums, are embedded in GResource. Pango loads them for this process only through anonymous files; native and Flatpak binaries carry the same assets, with no font installation or downloads. CSS prefers the bundled family, and About includes its licence. Verified by build, `./check.sh`, and all 13 GTK tests, including actual font loading with system fonts excluded; screenshot layouts reviewed. Not deployed or accepted.
-  - In Compare and crop, the viewer's bar still shows search; the mode's own controls belong there.
+  - **Implemented (D28): contextual Compare/crop controls.** Compare's viewing modes, Linked zoom, Fit/100%, Undo and Done use the existing top bar; per-side pickers and Keep Left/Keep Right buttons sit below the canvas. Arrows keep that side and dismiss the other, with Undo and no file changes. A simple remaining count replaces “N of N left”. Crop's top bar holds aspect, live dimensions, destination, Cancel and Save Copy. Browsing search/chips return intact; late search/sidebar events cannot replace an active mode. Side panels stay hidden at wide sizes and restore with the current adaptive layout. Candidate thumbnails are a separate proposal. Verified by build, `./check.sh` (211 tests), all 14 GTK tests, original-byte/cropped-copy checks, and light/dark screenshots at 1024×600 and 1600×900. Not deployed or accepted.
   - Size filters from the old Filter popover (minimum width and height) are gone; size chips such as `4k` replace them.
   - Remove the hidden old Filter popover; the unused click-outside helper is already removed.
   - Hands-on trials pass `~/.local/share/icons` through: isolating the data folder hid the user's "dreams" icon theme, which is why icons drew broken and the menu showed ≡ instead of "…".
-- **Next:** the finishing touches, then proposals for the behaviour ideas (I1–I5, I10, I13).
+- **Next:** the finishing touches, then proposals for the behaviour ideas (I1, I3–I5, I10, I13).
 
 **Evidence and user choices, retained from the handoff:**
 
@@ -605,7 +605,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
   - **Maybe:** I9 a type-to-filter bucket picker; I16 a sort button that names its sort.
   - **No:** I11 number keys for buckets.
 - **Look comparisons:** https://claude.ai/artifact/NKxHfeUMzB6YCrVo2EZvWs (private). D26–D27 record the chosen hybrid, monospace everywhere, aligned columns, and filter chips. The trial data lives in `.tmp/look-trial/`.
-- **Behavior ideas still needing proposals:** I1 fast-scroll handle; I2 arrows pick the Compare winner; I3 candidate thumbnails replace “4 of 4 left”; I4 a Compare shortcut; I5 Survey view; I10 add to the last bucket; I13 expand the readout into Info on hover.
+- **Behavior ideas still needing proposals:** I1 fast-scroll handle; I3 candidate thumbnails replace “4 of 4 left”; I4 a Compare shortcut; I5 Survey view; I10 add to the last bucket; I13 expand the readout into Info on hover.
 
 **Added October 14 at the user's request.** Placed near the end, "but no less important".
 
@@ -743,7 +743,7 @@ Optional and unordered. Pick something up only when a phase touches that area, o
 - Library Overview: refresh the fingerprint, copy, bucket, and index-file figures while it is open, or label them as a snapshot; show gathering errors instead of "…"; count unsupported formats apart from unreadable files (Phases 6–8 audit, finding 12).
 - Compare: decode at most one image per side at a time, dropping superseded decodes, and give the canvas a screen-sized preview at Fit with full pixels only when zoomed in (Phases 6–8 audit, finding 6). Each decode is already within the 3 GB limit.
 - Trash Undo in the Flatpak (D25): the sandbox trashes through the portal into the host's trash, which Undo, reading `$XDG_DATA_HOME/Trash`, may not find. It then reports the file as not restorable, and it stays in the trash. Check this in the Phase 10 Flatpak build.
-- GTK test harness: `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs); make it deterministic. The screenshot timeout is solved (October 14): a window the compositor isn't drawing (covered, for example by a fullscreen video while the user works) gives no frame, so screenshots are now best-effort and never fail a test.
+- GTK test harness: `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs); make it deterministic. The Compare picker test also intermittently timed out waiting for a right-side choice during the D28 work; later reruns passed without a timing change. Investigate the deferred selection/startup timing. The screenshot timeout is solved (October 14): a window the compositor isn't drawing (covered, for example by a fullscreen video while the user works) gives no frame, so screenshots are now best-effort and never fail a test.
 
 ### Considered, Not Planned
 

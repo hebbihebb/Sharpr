@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='UTF-8'?>
+<?xml version="1.0" encoding="UTF-8"?>
 <interface>
   <object class="AdwShortcutsDialog" id="help_overlay">
     <property name="title">Keyboard Shortcuts</property>
@@ -124,6 +124,58 @@
           <object class="AdwShortcutsItem">
             <property name="title">Toggle metadata overlay</property>
             <property name="accelerator">&lt;Alt&gt;Return</property>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="AdwShortcutsSection">
+        <property name="title">Compare</property>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Keep the left image</property>
+            <property name="accelerator">Left</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Keep the right image</property>
+            <property name="accelerator">Right</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Flip between the images</property>
+            <property name="accelerator">space</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Undo the last choice</property>
+            <property name="accelerator">&lt;Control&gt;z</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Finish comparing</property>
+            <property name="accelerator">Escape</property>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="AdwShortcutsSection">
+        <property name="title">Crop</property>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Save a cropped copy</property>
+            <property name="accelerator">Return</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Cancel cropping</property>
+            <property name="accelerator">Escape</property>
           </object>
         </child>
       </object>

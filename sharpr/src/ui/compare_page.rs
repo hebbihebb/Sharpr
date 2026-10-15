@@ -12,6 +12,7 @@ use gtk4::subclass::prelude::*;
 
 use crate::ui::compare_item::{compare_asset_format, Knockout, Side};
 use crate::ui::compare_view::{CompareView, Mode};
+use crate::ui::window::mode_header::ModeControls;
 
 type CloseCallback = Box<dyn Fn(Vec<PathBuf>)>;
 
@@ -55,6 +56,18 @@ impl ComparePage {
         self.imp().mode_buttons.borrow()[0].set_active(true);
         self.refresh();
         view.grab_focus();
+    }
+
+    pub(crate) fn header(&self) -> ModeControls {
+        self.imp().header.clone()
+    }
+
+    /// Keep one side by dismissing its opponent; the next candidate arrives there.
+    pub fn keep(&self, side: Side) {
+        self.dismiss(match side {
+            Side::Left => Side::Right,
+            Side::Right => Side::Left,
+        });
     }
 
     /// Images not dismissed yet.
@@ -110,12 +123,22 @@ impl ComparePage {
     }
 
     /// Compare's keys, routed from the window so they work wherever the
-    /// focus is: Space flips, [ and ] dismiss, Ctrl+Z undoes, Escape closes.
+    /// focus is: arrows keep a side, Space flips, Ctrl+Z undoes, Escape closes.
+    /// Brackets remain as unadvertised aliases for the old dismiss controls.
     pub fn handle_key(&self, key: gdk4::Key, modifiers: gdk4::ModifierType) -> glib::Propagation {
         let view = &self.imp().view;
         let control = modifiers.contains(gdk4::ModifierType::CONTROL_MASK);
+        let plain = !modifiers.intersects(
+            gdk4::ModifierType::CONTROL_MASK
+                | gdk4::ModifierType::ALT_MASK
+                | gdk4::ModifierType::SUPER_MASK
+                | gdk4::ModifierType::META_MASK
+                | gdk4::ModifierType::SHIFT_MASK,
+        );
         match key {
-            gdk4::Key::space if !control => {
+            gdk4::Key::Left if plain => self.keep(Side::Left),
+            gdk4::Key::Right if plain => self.keep(Side::Right),
+            gdk4::Key::space if plain => {
                 if view.mode() != Mode::Flip {
                     self.imp().mode_buttons.borrow()[2].set_active(true);
                 } else {
@@ -123,8 +146,8 @@ impl ComparePage {
                     self.update_badges();
                 }
             }
-            gdk4::Key::bracketleft if !control => self.dismiss(Side::Left),
-            gdk4::Key::bracketright if !control => self.dismiss(Side::Right),
+            gdk4::Key::bracketleft if plain => self.dismiss(Side::Left),
+            gdk4::Key::bracketright if plain => self.dismiss(Side::Right),
             gdk4::Key::z | gdk4::Key::Z if control => self.undo(),
             gdk4::Key::Escape => self.close(),
             _ => return glib::Propagation::Proceed,
@@ -166,15 +189,14 @@ impl ComparePage {
                 k.remaining() < k.total(),
             )
         };
-        imp.counter.set_text(&if remaining == 1 {
-            format!("The best of {total}")
-        } else {
-            format!("{remaining} of {total} left")
-        });
+        imp.counter.set_text(&format!("{remaining} remaining"));
+        imp.counter.set_tooltip_text(Some(&format!(
+            "Started with {total} images; choosing a side never changes files"
+        )));
         imp.undo.set_sensitive(can_undo);
         for side in 0..2 {
             let label = &imp.labels[side];
-            let dismiss = &imp.dismiss[side];
+            let dismiss = &imp.keep[side];
             match &pair[side] {
                 Some(path) => {
                     if imp.shown.borrow()[side].as_ref() != Some(path) {
@@ -386,13 +408,14 @@ mod imp {
     use super::*;
 
     pub struct ComparePage {
-        pub root: gtk4::Overlay,
+        pub root: gtk4::Box,
+        pub(super) header: ModeControls,
         pub view: CompareView,
         pub knockout: RefCell<Option<Knockout>>,
         /// The image each side shows or is loading.
         pub shown: RefCell<[Option<PathBuf>; 2]>,
         pub labels: [gtk4::Label; 2],
-        pub dismiss: [gtk4::Button; 2],
+        pub keep: [gtk4::Button; 2],
         pub badges: [gtk4::Box; 2],
         pub counter: gtk4::Label,
         pub undo: gtk4::Button,
@@ -413,18 +436,19 @@ mod imp {
     impl Default for ComparePage {
         fn default() -> Self {
             Self {
-                root: gtk4::Overlay::new(),
+                root: gtk4::Box::new(gtk4::Orientation::Vertical, 0),
+                header: ModeControls::new(),
                 view: CompareView::default(),
                 knockout: RefCell::new(None),
                 shown: RefCell::new([None, None]),
                 labels: [gtk4::Label::new(None), gtk4::Label::new(None)],
-                dismiss: [
-                    gtk4::Button::from_icon_name("window-close-symbolic"),
-                    gtk4::Button::from_icon_name("window-close-symbolic"),
+                keep: [
+                    gtk4::Button::with_label("Keep Left"),
+                    gtk4::Button::with_label("Keep Right"),
                 ],
                 badges: [
-                    gtk4::Box::new(gtk4::Orientation::Horizontal, 6),
-                    gtk4::Box::new(gtk4::Orientation::Horizontal, 6),
+                    gtk4::Box::new(gtk4::Orientation::Vertical, 3),
+                    gtk4::Box::new(gtk4::Orientation::Vertical, 3),
                 ],
                 counter: gtk4::Label::new(None),
                 undo: gtk4::Button::from_icon_name("edit-undo-symbolic"),
@@ -471,17 +495,14 @@ mod imp {
 fn build(page: &ComparePage) {
     let imp = page.imp();
     imp.root.set_parent(page);
-    imp.root.set_child(Some(&imp.view));
+    imp.view.set_vexpand(true);
+    imp.root.append(&imp.view);
     // Look prototype: a neutral canvas in both themes (I14).
-    imp.root.add_css_class("sharpr-canvas");
+    imp.view.add_css_class("sharpr-canvas");
+    imp.root.add_css_class("background");
 
-    // Top: modes, zoom lock, zoom, progress, undo, close.
-    let toolbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    toolbar.add_css_class("osd");
-    toolbar.add_css_class("toolbar");
-    toolbar.set_halign(gtk4::Align::Center);
-    toolbar.set_valign(gtk4::Align::Start);
-    toolbar.set_margin_top(12);
+    // These controls live in the window's existing top bar (D28).
+    let toolbar = &imp.header.start;
     let modes = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     modes.add_css_class("linked");
     let mut buttons = Vec::new();
@@ -515,8 +536,8 @@ fn build(page: &ComparePage) {
     }
     *imp.mode_buttons.borrow_mut() = buttons;
     toolbar.append(&modes);
-    let lock = gtk4::ToggleButton::new();
-    lock.set_icon_name("changes-prevent-symbolic");
+    let toolbar = &imp.header.center;
+    let lock = gtk4::ToggleButton::with_label("Linked zoom");
     lock.set_active(true);
     lock.set_tooltip_text(Some(
         "Zoom lock: both images zoom and pan together, showing the same region",
@@ -526,11 +547,6 @@ fn build(page: &ComparePage) {
         lock.connect_toggled(move |button| {
             if let Some(page) = weak.upgrade() {
                 page.imp().view.set_locked(button.is_active());
-                button.set_icon_name(if button.is_active() {
-                    "changes-prevent-symbolic"
-                } else {
-                    "changes-allow-symbolic"
-                });
             }
         });
     }
@@ -556,8 +572,8 @@ fn build(page: &ComparePage) {
     toolbar.append(&fit);
     toolbar.append(&actual);
     imp.counter.add_css_class("numeric");
-    imp.counter.set_margin_start(6);
-    toolbar.append(&imp.counter);
+    let toolbar = &imp.header.end;
+    imp.undo.set_label("Undo");
     imp.undo
         .set_tooltip_text(Some("Bring back the last dismissed image (Ctrl+Z)"));
     {
@@ -583,53 +599,61 @@ fn build(page: &ComparePage) {
         });
     }
     toolbar.append(&close);
-    imp.root.add_overlay(&toolbar);
+
     // Look prototype: the keys that work here, in one quiet line (D26).
     let keys = gtk4::Label::new(None);
     keys.set_markup(
-        "<b>[</b> drop left   <b>]</b> drop right   <b>Space</b> flip   \
+        "<b>←</b> keep left   <b>→</b> keep right   <b>Space</b> flip   \
          <b>Ctrl+Z</b> undo   <b>Esc</b> done",
     );
     keys.add_css_class("sharpr-keys");
-    keys.add_css_class("sharpr-keys-osd");
-    keys.set_halign(gtk4::Align::Center);
-    keys.set_valign(gtk4::Align::End);
-    keys.set_margin_bottom(16);
+    keys.set_hexpand(true);
+    keys.set_wrap(true);
     keys.set_can_target(false);
-    imp.root.add_overlay(&keys);
+    let footer = gtk4::Box::new(gtk4::Orientation::Horizontal, 16);
+    footer.set_homogeneous(true);
+    footer.set_margin_start(12);
+    footer.set_margin_end(12);
+    footer.set_margin_top(6);
+    footer.set_margin_bottom(6);
+    imp.root.append(&footer);
+    let hints = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+    hints.set_margin_start(12);
+    hints.set_margin_end(12);
+    hints.set_margin_bottom(6);
+    hints.append(&imp.counter);
+    hints.append(&keys);
+    imp.root.append(&hints);
 
-    // Bottom corners: each image's name and its dismiss button.
-    for (side, (align, key)) in [(gtk4::Align::Start, "["), (gtk4::Align::End, "]")]
-        .into_iter()
-        .enumerate()
-    {
+    // Each image's picker and keep action stay with that side, below the canvas.
+    for (side, key) in ["←", "→"].into_iter().enumerate() {
         let badge = &imp.badges[side];
-        badge.add_css_class("osd");
-        badge.add_css_class("toolbar");
-        badge.set_halign(align);
-        badge.set_valign(gtk4::Align::End);
-        badge.set_margin_start(12);
-        badge.set_margin_end(12);
-        badge.set_margin_bottom(12);
         let label = &imp.labels[side];
         label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
         label.set_max_width_chars(48);
-        let dismiss = &imp.dismiss[side];
-        dismiss.add_css_class("flat");
-        dismiss.set_tooltip_text(Some(&format!("Dismiss this image ({key})")));
+        let keep = &imp.keep[side];
+        keep.set_tooltip_text(Some(&format!(
+            "Keep this image and dismiss the other ({key}); no files change"
+        )));
         let weak = page.downgrade();
         let which = if side == 0 { Side::Left } else { Side::Right };
-        dismiss.connect_clicked(move |_| {
+        keep.connect_clicked(move |_| {
             if let Some(page) = weak.upgrade() {
-                page.dismiss(which);
+                page.keep(which);
             }
         });
         let picker = &imp.pickers[side];
         build_picker(page, picker, side, which);
-        badge.append(picker);
+        picker.set_hexpand(true);
+        let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        row.append(picker);
+        row.append(keep);
+        badge.append(&row);
+        label.set_xalign(0.0);
+        label.add_css_class("caption");
+        label.add_css_class("dim-label");
         badge.append(label);
-        badge.append(dismiss);
-        imp.root.add_overlay(badge);
+        footer.append(badge);
     }
 }
 
