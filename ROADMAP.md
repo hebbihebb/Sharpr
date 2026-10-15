@@ -682,6 +682,8 @@ If the result reaches the look the user wants, Libadwaita stays and the question
 
 ## Phase 10: Release
 
+**Status: released as 0.5.0 on October 15, 2026** (tag `v0.5.0`, installed natively). The user's choices are D34. Checks: `./check.sh` (218 tests), 19 GTK workflows, the full Flatpak build (from `38a0758`) with GPU indexing verified in the sandbox, and the user's manual pass on the real library, which found one viewer bug (fullscreen fit, fixed in `d25bf91`). Performance against Phase 0: startup 470 ms (498), the 2,213-image folder 139–231 ms, median 155 (116–162), RSS peak 1,522 MB (2,345). The Flatpak bundle is rebuilt from the tag on request.
+
 **Outcome:** A versioned build the user can install and rely on.
 
 **Scope:**
@@ -708,6 +710,14 @@ If the result reaches the look the user wants, Libadwaita stays and the question
 **Acceptance:** Every item on the checklist passes, and the installed build is the tagged commit.
 
 ---
+
+## Next: Edit Buckets (D35)
+
+**Added October 15 at the user's request,** after 0.5.0. Editing and Compare work together: when Crop Copy, WebP export or Duplicate creates a copy, the original and the copy both join a bucket for that action ("Cropped", "Exported", "Duplicated", under one "Edits" parent), created when first needed. Comparing a copy with its original is then: open the bucket, select the pair, Compare, wherever the copy was saved.
+- On by default; a Preferences switch turns it off.
+- Uses the existing bucket writer off the GTK thread; files are never moved or changed. A copy saved outside the library root is hidden like any outside member, so say so when that happens.
+- A batch export adds every original and copy; the user removes entries or the bucket when done.
+- **Acceptance:** each action puts both images in the right bucket, once, with no duplicate entries; turning the switch off stops it; originals stay byte-identical; Compare from the bucket shows the pair; tests cover crop, batch export and Duplicate.
 
 ## Backlog
 

@@ -107,3 +107,14 @@ After testing the installed builds `679bbe1` and `2b5f070`, the user accepted:
 - **Phase 9:** the interface review, D26–D33.
 
 Follow-ups went to the Backlog in `ROADMAP.md`: re-linking a moved bucket member before its new folder is opened, Find Copies tuning, and the Ctrl+Shift+S clash. Final checks: `./check.sh` (217 tests) and all 18 GTK workflows, run off screen. `main` was fast-forwarded to `viewer-reset` with the user's approval; nothing was pushed.
+
+## October 15: 0.5.0 released
+
+Phase 10 shipped Sharpr 0.5.0 (tag `v0.5.0`).
+- **Choices (D34):** `Cargo.toml` is the one version source. "Open with Sharpr" was removed. The Flatpak bundles a Vulkan `llama-server` beside the processor build and may write the home folder.
+- **Cleanup:** dead code (`FocusedImageSet`) and the unused rexiv2/gexiv2 dependency were removed.
+- **Flatpak:** builds from `git archive` of HEAD. `build-flatpak.sh` bounds its memory, after an uncapped build crashed the computer: Flatpak escapes systemd memory caps.
+- **Manual pass:** the user's pass found one viewer bug (fullscreen fit for images smaller than the screen), fixed with a GTK regression test.
+- **Performance:** startup and memory improved on the Phase 0 baseline; big-folder opens stayed in about the same range.
+
+Next: edit buckets (D35).
