@@ -9,13 +9,25 @@ Sharpr"; Vulkan `llama-server` in the Flatpak now; Flatpak may write home.
    `%F`/`MimeType` and with `StartupWMClass` = app ID, `FocusedImageSet` and the
    unused rexiv2/gexiv2 dependency and Flatpak modules removed, deny reason
    corrected, yanked `chacha20` updated, `cargo-sources.json` regenerated.
-2. Flatpak: clean source pinned to a commit, writable home, Vulkan
-   `llama-server` with CPU fallback; full build and a GPU-indexing check.
-3. README feature list from `product.md`.
-4. Release checklist: `./check.sh`, GTK tests, full Flatpak build, release-build
-   performance against the Phase 0 baseline, the user's manual workflow pass on
-   the real library; then tag `v0.5.0` and fast-forward `main` (push is the
-   user's call).
+2. **Committed and verified:** Flatpak from `git archive` of HEAD, writable
+   home, Vulkan `llama-server` (with build-only SPIRV-Headers) beside the CPU
+   build, 512 px icon, memory-bounded `build-flatpak.sh` (Flatpak escapes
+   systemd memory caps; an uncapped build crashed the computer). Built and
+   installed from `38a0758` as 0.5.0. In the sandbox the GPU build lists the
+   RTX 4060 and embeds an image in 0.05 s warm (first 12.7 s, shader warm-up)
+   against 0.38 s for the CPU build.
+3. **Committed:** README feature list.
+4. Release checklist: **passed** `./check.sh` (218 tests), all 18 GTK workflows
+   and the full Flatpak build on `38a0758`. Native launcher runs `38a0758`.
+   **Open:** the user's manual workflow pass on the real library (find, curate,
+   prepare a wallpaper, clean up, compare, view), whose log gives the
+   performance comparison with the Phase 0 baseline (498 ms startup, 116–162 ms
+   for the 2,216-image folder, 2.3 GB peak) with no heavy job running; earlier
+   October 15 logs overlapped builds and do not count. Then tag `v0.5.0` and
+   fast-forward `main` (push is the user's call).
+
+Possible follow-up (user, October 15): build the Flatpak on the `gigabyte`
+server over SSH, on its local disk, and fetch the bundle.
 
 ## Done: Phases 4–9 accepted and merged (October 15, 2026)
 
@@ -25,8 +37,7 @@ fast-forwarded to `viewer-reset` (`dd346e0` and this record); nothing is pushed.
 Their notes and follow-ups are in each phase's status in `ROADMAP.md` and in its
 Backlog; `docs/archive/history.md` has the summary.
 
-**Deployed:** the desktop launcher runs `2b5f070` (later commits are notes only).
-`679bbe1` and `ef91d32` stay installed for rollback.
+Earlier installs (`2b5f070`, `679bbe1`, `ef91d32`) stay for rollback.
 
 The accepted phase sections in `ROADMAP.md` can later be condensed into
 `docs/archive/history.md`, as Phase 8 was.
