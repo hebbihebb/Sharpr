@@ -1800,7 +1800,6 @@ fn interface_tour_screenshots() {
         find_widgets::<gtk4::MenuButton>(window.upcast_ref())
             .into_iter()
             .find(|b| b.tooltip_text().as_deref() == Some(tooltip))
-            .unwrap_or_else(|| panic!("menu button {tooltip}"))
     };
 
     // Buckets, so the sidebar and chips show them.
@@ -1865,7 +1864,10 @@ fn interface_tour_screenshots() {
         ("Filter aspect and resolution", "02-filter-popover"),
         ("Switch Library", "02-library-switcher"),
     ] {
-        let button = menu_button(tooltip);
+        let Some(button) = menu_button(tooltip) else {
+            // The look prototype merges Filter into Sort.
+            continue;
+        };
         let mapped = std::time::Instant::now() + std::time::Duration::from_secs(2);
         pump_until(|| button.is_mapped() || std::time::Instant::now() > mapped);
         if !button.is_mapped() {
@@ -1949,7 +1951,7 @@ fn interface_tour_screenshots() {
     // 06: search, with chips and the results line.
     let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
     window.show_inline_search();
-    entry.set_text("dawn 16:9 ");
+    entry.set_text("dawn 16:9 -water ");
     settle(800);
     shot("06-search-chips");
     window.add_search_results_to_bucket();
@@ -2031,6 +2033,24 @@ fn interface_tour_screenshots() {
         );
     }
     prefs.close();
+
+    // 10: the readout face everywhere (the look prototype's variant).
+    go_to("alpine-dawn.png");
+    window.set_mono_everywhere(true);
+    viewer.reveal_chip();
+    shot("10-mono-all-main");
+    if let Some(button) = menu_button("Sort and filter") {
+        button.popup();
+        let popover = button.popover().unwrap();
+        pump_until(|| popover.is_visible());
+        shot_widget(popover.upcast_ref(), "10-mono-all-sort-menu");
+        button.popdown();
+    }
+    assert!(filmstrip.open_context_menu_for_current());
+    pump_until(|| context().is_some());
+    shot_widget(context().unwrap().upcast_ref(), "10-mono-all-right-click");
+    context().unwrap().popdown();
+    window.set_mono_everywhere(false);
 
     // 09: presentation (fullscreen).
     go_to("aurora-ultrawide.png");

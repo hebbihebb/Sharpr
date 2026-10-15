@@ -50,6 +50,8 @@ mod imp {
 
     pub struct SidebarPane {
         pub toolbar_view: libadwaita::ToolbarView,
+        /// Look prototype: the header and its Open Folder button.
+        pub header_bar: RefCell<Option<(libadwaita::HeaderBar, gtk4::Button)>>,
         pub list_box: gtk4::ListBox,
         pub collection_list: gtk4::ListBox,
         pub library_menu_btn: gtk4::MenuButton,
@@ -84,6 +86,7 @@ mod imp {
         fn default() -> Self {
             Self {
                 toolbar_view: libadwaita::ToolbarView::new(),
+                header_bar: RefCell::new(None),
                 list_box: gtk4::ListBox::new(),
                 collection_list: gtk4::ListBox::new(),
                 library_menu_btn: gtk4::MenuButton::new(),
@@ -198,6 +201,7 @@ impl SidebarPane {
         });
 
         imp.toolbar_view.add_top_bar(&header);
+        *imp.header_bar.borrow_mut() = Some((header.clone(), open_btn.clone()));
 
         imp.list_box.add_css_class("navigation-sidebar");
         imp.list_box.set_activate_on_single_click(true);
@@ -515,6 +519,20 @@ impl SidebarPane {
     }
 
     /// Returns the path of the first folder row in the sidebar list, if any.
+    /// Look prototype (Phase 9): an empty, flat header over the sidebar, so
+    /// the top row lines up with the columns below. Open Folder, the library
+    /// switcher and the "Library" title go (one library root replaces them).
+    pub fn quiet_header(&self) {
+        let imp = self.imp();
+        if let Some((header, open)) = imp.header_bar.borrow().as_ref() {
+            header.set_title_widget(Some(&gtk4::Box::new(gtk4::Orientation::Horizontal, 0)));
+            header.add_css_class("sharpr-top");
+            open.set_visible(false);
+        }
+        imp.library_menu_btn.set_visible(false);
+        self.add_css_class("sharpr-sidebar");
+    }
+
     pub fn first_folder_path(&self) -> Option<PathBuf> {
         self.preferred_initial_folder_path()
     }
@@ -1514,8 +1532,8 @@ impl FolderRow {
         let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
         hbox.set_margin_start(8 + (depth as i32 * 18));
         hbox.set_margin_end(8);
-        hbox.set_margin_top(6);
-        hbox.set_margin_bottom(6);
+        hbox.set_margin_top(3);
+        hbox.set_margin_bottom(3);
         hbox.append(&disclosure);
         hbox.append(&icon);
         hbox.append(&name_label);
@@ -1669,8 +1687,8 @@ impl CollectionRow {
         let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
         hbox.set_margin_start(8 + (depth as i32 * 18));
         hbox.set_margin_end(8);
-        hbox.set_margin_top(6);
-        hbox.set_margin_bottom(6);
+        hbox.set_margin_top(3);
+        hbox.set_margin_bottom(3);
         hbox.append(&disclosure);
         hbox.append(&badge);
         hbox.append(&name_label);

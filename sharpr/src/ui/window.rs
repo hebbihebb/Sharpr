@@ -102,50 +102,49 @@ fn spawn_phash_writer(index: Arc<LibraryIndex>) -> async_channel::Sender<(PathBu
 /// to the library root, or the bucket, then the number of images shown.
 fn location_markup(state: &AppState) -> String {
     let esc = |t: &str| glib::markup_escape_text(t).to_string();
-    let root = state.settings.active_library().map(|l| l.root.clone());
     let place = match &state.scope {
-        ViewScope::Folder(path) => {
-            let mut parts: Vec<String> = Vec::new();
-            if let Some(root) = root.as_ref() {
-                let root_name = root
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                parts.push(root_name);
-                if let Ok(rel) = path.strip_prefix(root) {
-                    parts.extend(rel.iter().map(|c| c.to_string_lossy().to_string()));
-                }
-            } else {
-                parts.push(
-                    path.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string(),
-                );
-            }
-            let last = parts.pop().unwrap_or_default();
-            let mut text: String = parts.iter().map(|p| format!("{} › ", esc(p))).collect();
-            text.push_str(&format!("<b>{}</b>", esc(&last)));
-            text
-        }
-        ViewScope::Collection(id) => {
-            let name = state
-                .collections
-                .iter()
-                .find(|c| c.id == *id)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| "Bucket".into());
-            format!("Buckets › <b>{}</b>", esc(&name))
-        }
-        ViewScope::Search => "<b>Search</b>".into(),
-        ViewScope::Duplicates => "<b>Copies</b>".into(),
-        ViewScope::Compare => "<b>Compare</b>".into(),
+        ViewScope::Folder(path) => path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        ViewScope::Collection(id) => state
+            .collections
+            .iter()
+            .find(|c| c.id == *id)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "Bucket".into()),
+        ViewScope::Search => "Search".into(),
+        ViewScope::Duplicates => "Copies".into(),
+        ViewScope::Compare => "Compare".into(),
     };
     format!(
-        "{place}  <span alpha=\"55%\">{}</span>",
-        crate::ui::library_overview::count(state.library.image_count() as usize)
+        "<b>{}</b>  <span alpha=\"55%\" font_family=\"monospace\">{}</span>",
+        esc(&place),
+        state.library.image_count()
     )
+}
+
+/// Look prototype: Sort, then the filters, in one menu. A filter here adds
+/// the same chip as typing it (option A), so what is active always shows.
+fn sort_and_filter_menu(sort: &gio::MenuModel) -> gio::Menu {
+    let menu = gio::Menu::new();
+    menu.append_section(None, sort);
+    let filters = gio::Menu::new();
+    for (label, word) in [
+        ("Landscape", "landscape"),
+        ("Portrait", "portrait"),
+        ("Square", "square"),
+        ("16:9", "16:9"),
+        ("Not 16:9", "-16:9"),
+        ("4K and Larger", "4k"),
+    ] {
+        let item = gio::MenuItem::new(Some(label), None);
+        item.set_action_and_target_value(Some("win.add-filter-chip"), Some(&word.to_variant()));
+        filters.append_item(&item);
+    }
+    menu.append_section(Some("Filter"), &filters);
+    menu
 }
 
 /// The name of the click gesture that closes a quick picker on a click
@@ -787,6 +786,16 @@ impl SharprWindow {
         });
         popover.popup();
         popover
+    }
+
+    /// Look prototype: the monospace face for the whole interface, not only
+    /// numbers (the "everywhere" variant). `SHARPR_LOOK_MONO=all` turns it on.
+    pub fn set_mono_everywhere(&self, on: bool) {
+        if on {
+            self.add_css_class("sharpr-mono-all");
+        } else {
+            self.remove_css_class("sharpr-mono-all");
+        }
     }
 
     /// Look prototype: keeps the top row's location ("Pictures › Wallpapers
@@ -2719,14 +2728,60 @@ impl SharprWindow {
         self.setup_actions(&viewer, state.clone());
 
         let viewer_toolbar = libadwaita::ToolbarView::new();
-        // Look prototype: Filter and Sort join the single top row.
-        if let Some((filter, sort, actions)) = filmstrip.take_header_buttons() {
+        viewer_toolbar.add_top_bar(&viewer_header);
+        // Look prototype, pass 2: the top row follows the columns below it.
+        // The filmstrip's header says what it shows and holds one Sort and
+        // Filter control; search sits centred over the viewer (D26 notes).
+        viewer_header.remove(&sidebar_toggle);
+        let location = self.imp().location_label.borrow().clone();
+        if let Some(location) = location.as_ref() {
+            viewer_header.remove(location);
+        }
+        viewer_header.set_show_start_title_buttons(false);
+        if let Some((strip_header, sort_menu, actions)) = filmstrip.take_header_buttons() {
             self.insert_action_group("filmstrip-sort", Some(&actions));
-            viewer_header.pack_end(&sort);
-            viewer_header.pack_end(&filter);
-            for button in [&filter, &sort] {
-                button.add_css_class("flat");
+            strip_header.add_css_class("sharpr-top");
+            strip_header.set_show_start_title_buttons(false);
+            strip_header.set_title_widget(Some(&gtk4::Box::new(gtk4::Orientation::Horizontal, 0)));
+            strip_header.pack_start(&sidebar_toggle);
+            if let Some(location) = location {
+                location.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                location.set_max_width_chars(24);
+                location.set_xalign(0.0);
+                strip_header.pack_start(&location);
             }
+            let combined = gtk4::MenuButton::new();
+            combined.set_icon_name("view-sort-descending-symbolic");
+            combined.set_tooltip_text(Some("Sort and filter"));
+            combined.add_css_class("flat");
+            combined.set_menu_model(Some(&sort_and_filter_menu(&sort_menu)));
+            strip_header.pack_end(&combined);
+        }
+        sidebar.quiet_header();
+        filmstrip.add_css_class("sharpr-filmstrip");
+        {
+            // Option A: a filter from the menu adds the same chip as typing it.
+            let add_chip = gio::SimpleAction::new("add-filter-chip", Some(glib::VariantTy::STRING));
+            let weak = self.downgrade();
+            add_chip.connect_activate(move |_, arg| {
+                let (Some(win), Some(word)) = (weak.upgrade(), arg.and_then(|a| a.get::<String>()))
+                else {
+                    return;
+                };
+                win.show_inline_search();
+                let entry = win.imp().inline_search_entry.borrow().clone();
+                if let Some(entry) = entry {
+                    let text = entry.text().to_string();
+                    let joined = if text.trim().is_empty() {
+                        format!("{word} ")
+                    } else {
+                        format!("{} {word} ", text.trim_end())
+                    };
+                    entry.set_text(&joined);
+                    entry.set_position(-1);
+                }
+            });
+            self.add_action(&add_chip);
         }
         // Typed filter chips sit in their own bar under the header and wrap,
         // so they never widen the window past its minimum size.
@@ -2972,14 +3027,16 @@ impl SharprWindow {
         bp_filmstrip.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
         self.add_breakpoint(bp_filmstrip);
 
-        // Look prototype: the sidebar loses its own header; the one top row
-        // spans the window.
-        sidebar.imp().toolbar_view.set_reveal_top_bars(false);
-        let window_toolbar = libadwaita::ToolbarView::new();
-        window_toolbar.add_top_bar(&viewer_header);
-        window_toolbar.set_content(Some(&outer_split));
-        toast_overlay.set_child(Some(&window_toolbar));
+        // Look prototype: a narrower sidebar leaves more room for the
+        // filmstrip and the viewer.
+        outer_split.set_min_sidebar_width(170.0);
+        outer_split.set_max_sidebar_width(210.0);
+        toast_overlay.set_child(Some(&outer_split));
         crate::ui::look::install();
+        self.add_css_class("sharpr");
+        if std::env::var("SHARPR_LOOK_MONO").as_deref() == Ok("all") {
+            self.set_mono_everywhere(true);
+        }
         self.start_location_updates();
         {
             let motion = gtk4::EventControllerMotion::new();

@@ -1905,21 +1905,25 @@ impl FilmstripPane {
         *self.imp().copy_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
-    /// Hands Filter and Sort to the window's single top row and hides this
-    /// pane's own header (look prototype, Phase 9). Returns Filter, Sort, and
-    /// the sort menu's actions, which the window must also carry.
+    /// Look prototype (Phase 9): takes Filter and Sort out of this pane's
+    /// header so the window can put one combined control there. Returns the
+    /// header, the sort menu, and the sort actions.
     pub fn take_header_buttons(
         &self,
-    ) -> Option<(gtk4::MenuButton, gtk4::MenuButton, gio::SimpleActionGroup)> {
+    ) -> Option<(
+        libadwaita::HeaderBar,
+        gio::MenuModel,
+        gio::SimpleActionGroup,
+    )> {
         let imp = self.imp();
         let header = imp.header_bar.borrow().clone()?;
         let filter = imp.filter_btn.borrow().clone()?;
         let sort = imp.sort_btn.borrow().clone()?;
         let actions = imp.action_group.borrow().clone()?;
+        let menu = sort.menu_model()?;
         header.remove(&filter);
         header.remove(&sort);
-        imp.toolbar_view.set_reveal_top_bars(false);
-        Some((filter, sort, actions))
+        Some((header, menu, actions))
     }
 
     pub fn connect_add_to_collection_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {

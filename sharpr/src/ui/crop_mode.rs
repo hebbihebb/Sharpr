@@ -194,7 +194,12 @@ fn open(
     size.add_css_class("dim-label");
     size.add_css_class("numeric");
     bar.append(&size);
-    let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    // Look prototype: the keys that work here, in one quiet line (D26).
+    let spacer = gtk4::Label::new(None);
+    spacer.set_markup(
+        "drag to move · drag a corner to resize   <b>Enter</b> save   <b>Esc</b> cancel",
+    );
+    spacer.add_css_class("sharpr-keys");
     spacer.set_hexpand(true);
     bar.append(&spacer);
     let destination = Rc::new(RefCell::new(

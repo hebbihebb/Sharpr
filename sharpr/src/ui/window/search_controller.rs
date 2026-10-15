@@ -387,8 +387,19 @@ impl SharprWindow {
         for chip in chips {
             let pill = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             pill.add_css_class("linked");
+            // Look prototype: a lowercase monospace tag; minus words get
+            // their own tone.
+            pill.add_css_class("sharpr-filter-chip");
+            if matches!(
+                chip,
+                crate::model::search_query::Chip::Not(_)
+                    | crate::model::search_query::Chip::Without(_)
+                    | crate::model::search_query::Chip::WithoutStrictly(_)
+            ) {
+                pill.add_css_class("negative");
+            }
             pill.set_halign(gtk4::Align::Start);
-            let label = gtk4::Button::with_label(&chip.label());
+            let label = gtk4::Button::with_label(&chip.label().to_lowercase());
             label.set_tooltip_text(Some("Search for this as a word instead"));
             let remove = gtk4::Button::from_icon_name("window-close-symbolic");
             remove.set_tooltip_text(Some("Remove filter"));

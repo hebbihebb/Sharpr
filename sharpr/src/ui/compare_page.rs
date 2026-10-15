@@ -584,6 +584,19 @@ fn build(page: &ComparePage) {
     }
     toolbar.append(&close);
     imp.root.add_overlay(&toolbar);
+    // Look prototype: the keys that work here, in one quiet line (D26).
+    let keys = gtk4::Label::new(None);
+    keys.set_markup(
+        "<b>[</b> drop left   <b>]</b> drop right   <b>Space</b> flip   \
+         <b>Ctrl+Z</b> undo   <b>Esc</b> done",
+    );
+    keys.add_css_class("sharpr-keys");
+    keys.add_css_class("sharpr-keys-osd");
+    keys.set_halign(gtk4::Align::Center);
+    keys.set_valign(gtk4::Align::End);
+    keys.set_margin_bottom(16);
+    keys.set_can_target(false);
+    imp.root.add_overlay(&keys);
 
     // Bottom corners: each image's name and its dismiss button.
     for (side, (align, key)) in [(gtk4::Align::Start, "["), (gtk4::Align::End, "]")]
