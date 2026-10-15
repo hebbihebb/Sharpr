@@ -38,9 +38,6 @@ headerbar.sharpr-top menubutton > button {
 headerbar.sharpr-top entry {
   min-height: 28px;
 }
-.sharpr-location {
-  margin: 0 4px;
-}
 
 /* Sharp corners: the name, taken literally. */
 window.sharpr button:not(.circular),

@@ -98,33 +98,6 @@ fn spawn_phash_writer(index: Arc<LibraryIndex>) -> async_channel::Sender<(PathBu
     tx
 }
 
-/// Look prototype: where you are, for the top row. The open folder relative
-/// to the library root, or the bucket, then the number of images shown.
-fn location_markup(state: &AppState) -> String {
-    let esc = |t: &str| glib::markup_escape_text(t).to_string();
-    let place = match &state.scope {
-        ViewScope::Folder(path) => path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string(),
-        ViewScope::Collection(id) => state
-            .collections
-            .iter()
-            .find(|c| c.id == *id)
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "Bucket".into()),
-        ViewScope::Search => "Search".into(),
-        ViewScope::Duplicates => "Copies".into(),
-        ViewScope::Compare => "Compare".into(),
-    };
-    format!(
-        "<b>{}</b>  <span alpha=\"55%\" font_family=\"monospace\">{}</span>",
-        esc(&place),
-        state.library.image_count()
-    )
-}
-
 /// Look prototype: Sort, then the filters, in one menu. A filter here adds
 /// the same chip as typing it (option A), so what is active always shows.
 fn sort_and_filter_menu(sort: &gio::MenuModel) -> gio::Menu {
@@ -573,8 +546,6 @@ mod imp {
         pub presentation_sidebar_was_visible: Cell<bool>,
         pub presentation_filmstrip_was_visible: Cell<bool>,
         pub presentation_header: RefCell<Option<libadwaita::HeaderBar>>,
-        /// Look prototype: where you are, in the top row.
-        pub location_label: RefCell<Option<gtk4::Label>>,
         /// Look prototype: the last pointer position, where pickers open.
         pub last_pointer: Cell<Option<(f64, f64)>>,
         pub presentation_outer_split: RefCell<Option<libadwaita::OverlaySplitView>>,
@@ -646,7 +617,6 @@ mod imp {
                 presentation_sidebar_was_visible: Cell::new(false),
                 presentation_filmstrip_was_visible: Cell::new(false),
                 presentation_header: RefCell::new(None),
-                location_label: RefCell::new(None),
                 last_pointer: Cell::new(None),
                 presentation_outer_split: RefCell::new(None),
                 presentation_inner_split: RefCell::new(None),
@@ -789,32 +759,13 @@ impl SharprWindow {
     }
 
     /// Look prototype: the monospace face for the whole interface, not only
-    /// numbers (the "everywhere" variant). `SHARPR_LOOK_MONO=all` turns it on.
+    /// numbers. On by default; `SHARPR_LOOK_MONO=numbers` turns it off.
     pub fn set_mono_everywhere(&self, on: bool) {
         if on {
             self.add_css_class("sharpr-mono-all");
         } else {
             self.remove_css_class("sharpr-mono-all");
         }
-    }
-
-    /// Look prototype: keeps the top row's location ("Pictures › Wallpapers
-    /// · 9") in step with what is shown. A cheap poll, for the prototype only.
-    fn start_location_updates(&self) {
-        let weak = self.downgrade();
-        glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
-            let Some(win) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            let Some(label) = win.imp().location_label.borrow().clone() else {
-                return glib::ControlFlow::Break;
-            };
-            let markup = location_markup(&win.imp().state.borrow());
-            if label.label().as_str() != markup {
-                label.set_markup(&markup);
-            }
-            glib::ControlFlow::Continue
-        });
     }
 
     /// Closes `dialog`, as its close response would, when a click lands
@@ -2730,13 +2681,9 @@ impl SharprWindow {
         let viewer_toolbar = libadwaita::ToolbarView::new();
         viewer_toolbar.add_top_bar(&viewer_header);
         // Look prototype, pass 2: the top row follows the columns below it.
-        // The filmstrip's header says what it shows and holds one Sort and
+        // The filmstrip's header holds the sidebar toggle and one Sort and
         // Filter control; search sits centred over the viewer (D26 notes).
         viewer_header.remove(&sidebar_toggle);
-        let location = self.imp().location_label.borrow().clone();
-        if let Some(location) = location.as_ref() {
-            viewer_header.remove(location);
-        }
         viewer_header.set_show_start_title_buttons(false);
         if let Some((strip_header, sort_menu, actions)) = filmstrip.take_header_buttons() {
             self.insert_action_group("filmstrip-sort", Some(&actions));
@@ -2744,12 +2691,8 @@ impl SharprWindow {
             strip_header.set_show_start_title_buttons(false);
             strip_header.set_title_widget(Some(&gtk4::Box::new(gtk4::Orientation::Horizontal, 0)));
             strip_header.pack_start(&sidebar_toggle);
-            if let Some(location) = location {
-                location.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-                location.set_max_width_chars(24);
-                location.set_xalign(0.0);
-                strip_header.pack_start(&location);
-            }
+            // No name here: the sidebar already shows what is open (user,
+            // October 15).
             let combined = gtk4::MenuButton::new();
             combined.set_icon_name("view-sort-descending-symbolic");
             combined.set_tooltip_text(Some("Sort and filter"));
@@ -3034,10 +2977,9 @@ impl SharprWindow {
         toast_overlay.set_child(Some(&outer_split));
         crate::ui::look::install();
         self.add_css_class("sharpr");
-        if std::env::var("SHARPR_LOOK_MONO").as_deref() == Ok("all") {
-            self.set_mono_everywhere(true);
-        }
-        self.start_location_updates();
+        // The user chose the readout face everywhere (pass 2);
+        // SHARPR_LOOK_MONO=numbers shows the numbers-only version.
+        self.set_mono_everywhere(std::env::var("SHARPR_LOOK_MONO").as_deref() != Ok("numbers"));
         {
             let motion = gtk4::EventControllerMotion::new();
             motion.set_propagation_phase(gtk4::PropagationPhase::Capture);
@@ -4575,15 +4517,8 @@ impl SharprWindow {
         sidebar_toggle.set_tooltip_text(Some("Toggle Library"));
         sidebar_toggle.add_css_class("flat");
         header.pack_start(&sidebar_toggle);
-        // Look prototype: one top row for the whole window, saying where you
-        // are, with search always in the middle.
+        // Look prototype: search always in the middle of the viewer's bar.
         header.add_css_class("sharpr-top");
-        let location = gtk4::Label::new(None);
-        location.add_css_class("sharpr-location");
-        location.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
-        location.set_max_width_chars(40);
-        header.pack_start(&location);
-        *self.imp().location_label.borrow_mut() = Some(location);
 
         let preview_search_entry = gtk4::SearchEntry::new();
         preview_search_entry.set_placeholder_text(Some("Describe images, or 4k png 16:9…"));
