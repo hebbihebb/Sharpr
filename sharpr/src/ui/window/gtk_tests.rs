@@ -1633,3 +1633,416 @@ fn filmstrip_trash_can_be_undone() {
     assert_eq!(std::fs::read(&b).unwrap(), b_bytes, "still restorable");
     window.close();
 }
+
+/// Sky top, sky horizon, sun, near ridge.
+type Palette = [[u8; 3]; 4];
+
+/// A generated landscape for screenshots: a sky gradient, a sun, and two
+/// ridges of hills.
+fn scene(width: u32, height: u32, palette: Palette, phase: f32) -> image::RgbImage {
+    let mix = |a: [u8; 3], b: [u8; 3], t: f32| {
+        image::Rgb([0, 1, 2].map(|i| (a[i] as f32 + (b[i] as f32 - a[i] as f32) * t) as u8))
+    };
+    let (w, h) = (width as f32, height as f32);
+    let (sun_x, sun_y, sun_r) = (w * (0.3 + 0.4 * phase), h * 0.42, h.min(w) * 0.09);
+    image::RgbImage::from_fn(width, height, |x, y| {
+        let (fx, fy) = (x as f32, y as f32);
+        let ridge = |base: f32, amp: f32, freq: f32| {
+            h * base
+                + amp
+                    * h
+                    * ((fx / w * freq + phase * 6.0).sin() * 0.6
+                        + (fx / w * freq * 2.3).cos() * 0.4)
+        };
+        if fy > ridge(0.78, 0.05, 9.0) {
+            return mix(palette[3], [8, 8, 12], (fy / h - 0.75) * 2.0);
+        }
+        if fy > ridge(0.62, 0.07, 5.0) {
+            return mix(palette[3], palette[1], 0.45);
+        }
+        let d = ((fx - sun_x).powi(2) + (fy - sun_y).powi(2)).sqrt();
+        if d < sun_r {
+            return image::Rgb(palette[2]);
+        }
+        let sky = mix(palette[0], palette[1], (fy / (h * 0.7)).min(1.0));
+        let glow = (1.0 - (d / (sun_r * 5.0))).max(0.0) * 0.5;
+        mix([sky.0[0], sky.0[1], sky.0[2]], palette[2], glow)
+    })
+}
+
+/// Every widget of type `T` under `root`, popovers included.
+fn find_widgets<T: IsA<gtk4::Widget>>(root: &gtk4::Widget) -> Vec<T> {
+    let mut found = Vec::new();
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        if let Ok(t) = c.clone().downcast::<T>() {
+            found.push(t);
+        }
+        found.extend(find_widgets::<T>(&c));
+        child = c.next_sibling();
+    }
+    found
+}
+
+fn settle(ms: u64) {
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    pump_until(|| std::time::Instant::now() > until);
+}
+
+/// Renders another top-level window, such as Preferences, with its own renderer.
+fn screenshot_window(window: &gtk4::Window, path: &Path) {
+    let Some(node) = render_node(window.upcast_ref()) else {
+        eprintln!("screenshot skipped, no frame drawn: {}", path.display());
+        return;
+    };
+    window
+        .renderer()
+        .expect("realized window has a renderer")
+        .render_texture(&node, None)
+        .save_to_png(path)
+        .unwrap();
+}
+
+/// Phase 9 inventory: screenshots of every surface and state, at 1024×600
+/// and 1600×900, light and dark, into `tour/` beside the fixtures. Generated
+/// pictures only; nothing is asserted beyond reaching each state.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn interface_tour_screenshots() {
+    let root = isolated_fixture("Wallpapers");
+    let phone = root.join("Phone");
+    std::fs::create_dir_all(&phone).unwrap();
+    let out = root.parent().unwrap().join("tour");
+    std::fs::create_dir_all(&out).unwrap();
+    let dawn = [
+        [40, 60, 120],
+        [240, 150, 110],
+        [255, 230, 170],
+        [50, 45, 70],
+    ];
+    let night = [[8, 12, 35], [40, 50, 110], [235, 235, 210], [15, 20, 40]];
+    let desert = [
+        [70, 140, 210],
+        [230, 200, 150],
+        [255, 245, 215],
+        [170, 100, 60],
+    ];
+    let forest = [
+        [150, 175, 170],
+        [205, 215, 200],
+        [245, 245, 230],
+        [40, 75, 55],
+    ];
+    let aurora = [[10, 30, 40], [40, 160, 130], [190, 255, 220], [20, 30, 45]];
+    let coast = [[90, 60, 120], [250, 120, 80], [255, 210, 120], [35, 40, 75]];
+    let files: [(&Path, &str, u32, u32, Palette, f32); 10] = [
+        (&root, "alpine-dawn.png", 1920, 1080, dawn, 0.2),
+        (&root, "harbour-night.jpg", 1920, 1080, night, 0.7),
+        (&root, "desert-noon.jpg", 3840, 2160, desert, 0.5),
+        (&root, "forest-mist.png", 1080, 1350, forest, 0.4),
+        (&root, "aurora-ultrawide.png", 2560, 1080, aurora, 0.9),
+        (&root, "coast-sunset.png", 1920, 1080, coast, 0.1),
+        (&root, "city-dusk.jpg", 1600, 900, night, 0.3),
+        (&root, "square-tile.png", 1200, 1200, desert, 0.8),
+        (&phone, "dawn-portrait.png", 1080, 1920, dawn, 0.6),
+        (&phone, "aurora-portrait.png", 1080, 1920, aurora, 0.2),
+    ];
+    for (dir, name, w, h, palette, phase) in files {
+        scene(w, h, palette, phase).save(dir.join(name)).unwrap();
+    }
+    // An exact copy for Find Copies.
+    std::fs::copy(
+        root.join("alpine-dawn.png"),
+        root.join("alpine-dawn (1).png"),
+    )
+    .unwrap();
+
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let style = libadwaita::StyleManager::default();
+    style.set_color_scheme(libadwaita::ColorScheme::ForceLight);
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Pictures", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    let count = || window.imp().state.borrow().library.image_count();
+    pump_until(|| count() >= 1 && window.is_mapped());
+    // Full screen, so the sidebar shows (user, October 15).
+    window.maximize();
+    pump_until(|| window.is_maximized());
+    let state = window.app_state();
+    let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+    let sidebar = window.imp().sidebar.borrow().clone().unwrap();
+    let path_at = |name: &str| root.join(name);
+    let go_to = |name: &str| {
+        let index = state
+            .borrow()
+            .library
+            .index_of_path(&path_at(name))
+            .unwrap();
+        filmstrip.navigate_to(index);
+    };
+    let shot = |name: &str| {
+        settle(500);
+        screenshot(&window, &out.join(format!("{name}.png")));
+    };
+    let shot_widget = |widget: &gtk4::Widget, name: &str| {
+        settle(400);
+        screenshot_widget(&window, widget, &out.join(format!("{name}.png")));
+    };
+    let close_dialog = || {
+        if let Some(dialog) = window.visible_dialog() {
+            dialog.force_close();
+        }
+        pump_until(|| window.visible_dialog().is_none());
+    };
+    let menu_button = |tooltip: &str| {
+        find_widgets::<gtk4::MenuButton>(window.upcast_ref())
+            .into_iter()
+            .find(|b| b.tooltip_text().as_deref() == Some(tooltip))
+            .unwrap_or_else(|| panic!("menu button {tooltip}"))
+    };
+
+    // Buckets, so the sidebar and chips show them.
+    for (name, members) in [
+        (
+            "Favourites",
+            vec![
+                "alpine-dawn.png",
+                "aurora-ultrawide.png",
+                "coast-sunset.png",
+            ],
+        ),
+        (
+            "Desktop 16:9",
+            vec![
+                "alpine-dawn.png",
+                "harbour-night.jpg",
+                "desert-noon.jpg",
+                "coast-sunset.png",
+            ],
+        ),
+    ] {
+        let paths = members.iter().map(|m| path_at(m)).collect();
+        window.create_collection_with_paths(name.into(), Vec::new(), paths);
+        pump_until(|| state.borrow().collections.iter().any(|c| c.name == name));
+    }
+    let open_root = || {
+        window.imp().state.borrow_mut().library.current_folder = None;
+        if let Some(open) = window.imp().open_folder_cb.borrow().as_ref() {
+            open(root.clone());
+        }
+        pump_until(|| count() == 9);
+    };
+    open_root();
+    // Buckets and Find Copies work from fingerprints.
+    let index = state.borrow().library_index.clone().unwrap();
+    crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
+    go_to("alpine-dawn.png");
+    pump_until(|| viewer.imp().metadata_chip.is_visible());
+    // Let the "Added to bucket" toasts pass, and every thumbnail load.
+    settle(11_000);
+
+    // 01: the main window, full screen and small, both themes.
+    shot("01-main-full-light");
+    style.set_color_scheme(libadwaita::ColorScheme::ForceDark);
+    shot("01-main-full-dark");
+    window.unmaximize();
+    window.set_default_size(1024, 600);
+    let small = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    pump_until(|| window.width() == 1024 || std::time::Instant::now() > small);
+    shot("01-main-1024-dark");
+    style.set_color_scheme(libadwaita::ColorScheme::ForceLight);
+    shot("01-main-1024-light");
+    window.maximize();
+    pump_until(|| window.is_maximized());
+
+    // 02: menus and popovers.
+    for (tooltip, name) in [
+        ("Main Menu", "02-main-menu"),
+        ("Sort and filter", "02-sort-menu"),
+        ("Filter aspect and resolution", "02-filter-popover"),
+        ("Switch Library", "02-library-switcher"),
+    ] {
+        let button = menu_button(tooltip);
+        button.popup();
+        let popover = button.popover().unwrap();
+        pump_until(|| popover.is_visible());
+        shot_widget(popover.upcast_ref(), name);
+        button.popdown();
+    }
+    assert!(filmstrip.open_context_menu_for_current());
+    let context = || {
+        find_widgets::<gtk4::PopoverMenu>(filmstrip.upcast_ref())
+            .into_iter()
+            .find(|p| p.is_visible())
+    };
+    pump_until(|| context().is_some());
+    shot_widget(context().unwrap().upcast_ref(), "02-right-click-one");
+    context().unwrap().popdown();
+    viewer.show_info();
+    let info = viewer.imp().metadata_chip.imp().popover.clone();
+    pump_until(|| info.is_visible());
+    shot_widget(info.upcast_ref(), "02-info-panel");
+    info.popdown();
+
+    // 03: a selection of four, its right-click menu.
+    for name in [
+        "alpine-dawn.png",
+        "harbour-night.jpg",
+        "desert-noon.jpg",
+        "coast-sunset.png",
+    ] {
+        filmstrip.toggle_action_selection_path(&path_at(name));
+    }
+    shot("03-selection");
+    assert!(filmstrip.open_context_menu_for_current());
+    pump_until(|| context().is_some());
+    shot_widget(context().unwrap().upcast_ref(), "03-right-click-several");
+    context().unwrap().popdown();
+
+    // 04: Compare in its three modes.
+    let selected: Vec<PathBuf> = filmstrip.selected_paths_for_action();
+    gio::prelude::ActionGroupExt::activate_action(&window, "compare", None);
+    let page = window.imp().compare_page.borrow().clone().unwrap();
+    pump_until(|| page.survivors().len() == selected.len());
+    // The 4K JPEG decodes slowly in a debug build.
+    settle(3000);
+    shot("04-compare-side-by-side");
+    page.imp().mode_buttons.borrow()[1].set_active(true);
+    shot("04-compare-split");
+    page.imp().mode_buttons.borrow()[2].set_active(true);
+    shot("04-compare-flip");
+    style.set_color_scheme(libadwaita::ColorScheme::ForceDark);
+    page.imp().mode_buttons.borrow()[0].set_active(true);
+    shot("04-compare-side-by-side-dark");
+    style.set_color_scheme(libadwaita::ColorScheme::ForceLight);
+    page.close();
+    pump_until(|| {
+        window
+            .imp()
+            .compare_page
+            .borrow()
+            .as_ref()
+            .is_none_or(|p| !p.is_mapped())
+    });
+    filmstrip.clear_multi_selection();
+
+    // 05: crop at full size.
+    go_to("coast-sunset.png");
+    window.present_copy_dialog(
+        crate::ui::filmstrip::CopyKind::Crop,
+        vec![path_at("coast-sunset.png")],
+    );
+    pump_until(|| window.crop_session().is_some());
+    shot("05-crop");
+    window.crop_session().unwrap().close();
+    pump_until(|| window.crop_session().is_none());
+
+    // 06: search, with chips and the results line.
+    let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
+    window.show_inline_search();
+    entry.set_text("dawn 16:9 ");
+    settle(800);
+    shot("06-search-chips");
+    window.add_search_results_to_bucket();
+    pump_until(|| window.visible_dialog().is_some());
+    shot("06-add-results-choice");
+    close_dialog();
+    window.close_browse_search();
+    settle(400);
+
+    // 07: a bucket, and the dialogs that act on images.
+    let favourites = state
+        .borrow()
+        .collections
+        .iter()
+        .find(|c| c.name == "Favourites")
+        .map(|c| c.id)
+        .unwrap();
+    sidebar.emit_collection_selected(favourites);
+    // Four: the exact copy shares its fingerprint, so it belongs too.
+    pump_until(|| window.imp().bucket_open_pending.get().is_none() && count() == 4);
+    shot("07-bucket-view");
+    filmstrip.request_add_paths_to_bucket(vec![path_at("city-dusk.jpg")]);
+    pump_until(|| window.visible_dialog().is_some());
+    shot("07-bucket-picker");
+    close_dialog();
+    crate::ui::export_dialog::present(
+        &window,
+        vec![path_at("alpine-dawn.png"), path_at("city-dusk.jpg")],
+    );
+    pump_until(|| window.visible_dialog().is_some());
+    shot("07-export");
+    close_dialog();
+    let new_bucket = find_widgets::<gtk4::Button>(sidebar.upcast_ref())
+        .into_iter()
+        .find(|b| b.tooltip_text().as_deref() == Some("New Collection"))
+        .unwrap();
+    new_bucket.emit_clicked();
+    pump_until(|| window.visible_dialog().is_some());
+    shot("07-new-bucket");
+    close_dialog();
+    sidebar.select_folder(&root);
+    open_root();
+
+    // 08: library tools.
+    crate::ui::copies_dialog::present(&window);
+    pump_until(|| window.visible_dialog().is_some());
+    let copies: gtk4::Widget = window.visible_dialog().unwrap().upcast();
+    pump_until(|| row_subtitle(&copies, "alpine-dawn (1).png").is_some());
+    shot("08-find-copies");
+    close_dialog();
+    crate::ui::library_overview::present(&window);
+    pump_until(|| window.visible_dialog().is_some());
+    settle(800);
+    shot("08-library-overview");
+    close_dialog();
+    crate::ui::help_window::show_help_window(&window);
+    pump_until(|| window.visible_dialog().is_some());
+    shot("08-manual");
+    close_dialog();
+    if let Some(shortcuts) = window.help_overlay() {
+        shortcuts.present();
+        pump_until(|| shortcuts.is_mapped());
+        settle(500);
+        screenshot_window(shortcuts.upcast_ref(), &out.join("08-shortcuts.png"));
+        shortcuts.close();
+    }
+    let settings = state.borrow().settings.clone();
+    let prefs = crate::ui::preferences::build_preferences_window(&settings, &window);
+    prefs.present();
+    pump_until(|| prefs.is_mapped());
+    settle(500);
+    screenshot_window(prefs.upcast_ref(), &out.join("08-preferences-library.png"));
+    if let Some(page) = find_widgets::<libadwaita::PreferencesPage>(prefs.upcast_ref()).get(1) {
+        prefs.set_visible_page(page);
+        settle(400);
+        screenshot_window(
+            prefs.upcast_ref(),
+            &out.join("08-preferences-appearance.png"),
+        );
+    }
+    prefs.close();
+
+    // 09: presentation (fullscreen).
+    go_to("aurora-ultrawide.png");
+    window.enter_presentation_mode();
+    settle(1000);
+    shot("09-presentation");
+    window.exit_presentation_mode();
+    settle(600);
+    window.close();
+}
