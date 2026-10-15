@@ -57,7 +57,8 @@ Approach agreed with the user (`ROADMAP.md` Phase 9, "The user's direction"): th
   - **Notes:** "dialogs and right click menus are chunky"; the overlay "would be better to be contextual or appear on hover"; zoom by scroll wheel alone "works well"; double-click for full screen; the window is usually maximized, and closing it quits.
   - **How the filmstrip is used:** to scroll fast through many images with the scroll wheel or by dragging the small scrollbar handle, finding and reviewing by eye. Arrow keys would be far too slow; they suit left-and-right stepping where that applies.
   - **Icons (N16):** the sidebar toggle, the menu button, and the Appearance tab render in the real app, so the broken icons are a test-window artifact. The real menu button shows "…", not ≡ (the test window uses a different icon theme).
-- **Next:** research, aimed at what the marks show.
+- **Step 2a, research: published October 15** at https://claude.ai/artifact/1eX3MVj6LwfafrLeTYyaKd (private). It covers Lightroom, darktable, FastRawViewer, Eagle, Photo Mechanic, Google Photos and Immich, Loupe, Strata and Zed, with sources. It has 18 ideas (I1–I18), with Want / Maybe / No reactions saved in `reactions/<idea id>`. Its reading of the evidence: the hybrid look.
+- **Next:** the user's reactions, then the look prototype (step 2b) on a separate branch.
 
 ## State (October 14, 2026)
 
