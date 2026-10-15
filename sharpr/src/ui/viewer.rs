@@ -349,6 +349,20 @@ impl ViewerPane {
                 viewer.ensure_fit_on_layout();
             }
         });
+        // The view also grows without a remap (fullscreen hides the side
+        // panels); an image smaller than the screen must still fill it.
+        let imp = self.imp();
+        for adjustment in [
+            imp.scrolled_window.hadjustment(),
+            imp.scrolled_window.vadjustment(),
+        ] {
+            let w = self.downgrade();
+            adjustment.connect_page_size_notify(move |_| {
+                if let Some(viewer) = w.upgrade() {
+                    viewer.ensure_fit_on_layout();
+                }
+            });
+        }
     }
 
     // -----------------------------------------------------------------------

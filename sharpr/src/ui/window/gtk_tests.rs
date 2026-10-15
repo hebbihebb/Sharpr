@@ -3527,3 +3527,53 @@ fn phase_nine_help_viewer_menu_and_theme_layouts() {
     }
     window.close();
 }
+
+/// An image smaller than the screen keeps filling the viewer when the view
+/// grows (fullscreen, sidebar, resize), not only after a zoom (user, October
+/// 15: a 2,048 px crop copy stayed small in fullscreen).
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn small_image_keeps_fitting_when_the_viewer_grows() {
+    let root = isolated_fixture("fit-on-resize");
+    std::fs::create_dir_all(&root).unwrap();
+    image::RgbImage::from_pixel(320, 180, image::Rgb([40, 120, 200]))
+        .save(root.join("small.png"))
+        .unwrap();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Fit", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1600, 900);
+    window.present();
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+    pump_until(|| window.is_mapped() && viewer.imp().picture.paintable().is_some());
+    let fitted = |viewer: &crate::ui::viewer::ViewerPane| {
+        let imp = viewer.imp();
+        let (view_w, view_h) = (
+            imp.scrolled_window.width() as f64,
+            imp.scrolled_window.height() as f64,
+        );
+        let expected = (view_w / 320.0).min(view_h / 180.0) * 320.0;
+        (imp.picture.width() as f64 - expected).abs() <= 2.0
+    };
+    pump_until(|| fitted(&viewer));
+    // Presentation hides both side panels, so the view grows without the
+    // viewer being remapped.
+    let before = viewer.imp().scrolled_window.width();
+    window.enter_presentation_mode();
+    pump_until(|| viewer.imp().scrolled_window.width() > before);
+    // The side panels animate away; the picture must end up filling the view.
+    pump_until(|| fitted(&viewer));
+    window.close();
+}
