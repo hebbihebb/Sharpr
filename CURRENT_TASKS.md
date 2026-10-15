@@ -55,6 +55,7 @@ Approach agreed with the user (`ROADMAP.md` Phase 9, "The user's direction"): th
   - **Never:** the Library and Photos titles, Open Folder, the library switcher, the indexing ring, every Show Overlay switch, Fit and 1:1 in ≡, Presentation (F11), right-click Info, Rename, Whole library, Show More, the Manual, Shortcuts, About, the two tag tools, and Preferences' libraries, collections, and cache.
   - **Confusing:** Compare's `[` `]` dismiss keys ("bad shortcut key, not easy to find on keyboard") and its "4 of 4 left" with Undo.
   - **Notes:** "dialogs and right click menus are chunky"; the overlay "would be better to be contextual or appear on hover"; zoom by scroll wheel alone "works well"; double-click for full screen; the window is usually maximized, and closing it quits.
+  - **How the filmstrip is used:** to scroll fast through many images with the scroll wheel or by dragging the small scrollbar handle, finding and reviewing by eye. Arrow keys would be far too slow; they suit left-and-right stepping where that applies.
   - **Icons (N16):** the sidebar toggle, the menu button, and the Appearance tab render in the real app, so the broken icons are a test-window artifact. The real menu button shows "…", not ≡ (the test window uses a different icon theme).
 - **Next:** research, aimed at what the marks show.
 
