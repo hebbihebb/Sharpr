@@ -32,6 +32,7 @@ use crate::ui::viewer::{ViewerPane, ZoomMode};
 mod bucket_repeat;
 mod compare_controller;
 pub(crate) mod mode_header;
+mod survey_controller;
 /// Gets Compare's survivors when someone else opened it (Find Copies).
 type CompareDone = Box<dyn FnOnce(Vec<PathBuf>)>;
 use compare_controller::{file_actions_blocked, is_comparing};
@@ -64,7 +65,7 @@ pub(super) fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
         ViewScope::Collection(id) => {
             sidebar.set_collection_selected(*id);
         }
-        ViewScope::Duplicates | ViewScope::Search | ViewScope::Compare => {
+        ViewScope::Duplicates | ViewScope::Search | ViewScope::Compare | ViewScope::Survey => {
             sidebar.clear_collection_selection();
         }
     }
@@ -560,6 +561,7 @@ mod imp {
         pub presentation_outer_split: RefCell<Option<libadwaita::OverlaySplitView>>,
         pub presentation_inner_split: RefCell<Option<libadwaita::OverlaySplitView>>,
         pub compare_page: RefCell<Option<crate::ui::compare_page::ComparePage>>,
+        pub(crate) survey_page: RefCell<Option<Rc<crate::ui::survey::SurveyPage>>>,
         pub content_stack: RefCell<Option<gtk4::Stack>>,
         pub open_folder_cb: RefCell<Option<OpenFolderCallback>>,
         pub refresh_sidebar_collections_cb: RefCell<Option<RefreshCollectionsCallback>>,
@@ -583,7 +585,7 @@ mod imp {
         /// A crop's preview is being prepared.
         pub crop_preparing: Cell<bool>,
         /// Which side panels Compare hid, to show them again.
-        pub(super) compare_panels: Cell<Option<SidePanels>>,
+        pub(super) review_panels: Cell<Option<SidePanels>>,
         /// Who opened Compare and gets the survivors back instead of the
         /// browsing selection (Find Copies).
         pub compare_done: RefCell<Option<CompareDone>>,
@@ -631,6 +633,7 @@ mod imp {
                 presentation_outer_split: RefCell::new(None),
                 presentation_inner_split: RefCell::new(None),
                 compare_page: RefCell::new(None),
+                survey_page: RefCell::new(None),
                 content_stack: RefCell::new(None),
                 open_folder_cb: RefCell::new(None),
                 refresh_sidebar_collections_cb: RefCell::new(None),
@@ -643,7 +646,7 @@ mod imp {
                 crop_session: RefCell::new(None),
                 crop_request: Cell::new(0),
                 crop_preparing: Cell::new(false),
-                compare_panels: Cell::new(None),
+                review_panels: Cell::new(None),
                 compare_done: RefCell::new(None),
             }
         }
@@ -1612,6 +1615,7 @@ impl SharprWindow {
                 let current_page = content_stack.visible_child_name().unwrap_or_default();
                 if current_page == "viewer"
                     || current_page == "compare"
+                    || current_page == "survey"
                     || current_page == "welcome"
                 {
                     content_stack.set_visible_child_name("viewer");
@@ -2813,6 +2817,7 @@ impl SharprWindow {
         *self.imp().compare_page.borrow_mut() = Some(compare_page.clone());
         content_stack.add_named(&viewer, Some("viewer"));
         content_stack.add_named(&compare_page, Some("compare"));
+        self.setup_survey(&content_stack);
 
         {
             let window_weak = self.downgrade();
@@ -2879,6 +2884,12 @@ impl SharprWindow {
                 compare_action.set_enabled(count >= 2);
                 if let Some(win) = weak.upgrade() {
                     win.show_search_selection(count);
+                    if let Some(action) = win
+                        .lookup_action("survey")
+                        .and_downcast::<gio::SimpleAction>()
+                    {
+                        action.set_enabled(count >= 2);
+                    }
                 }
             });
         }

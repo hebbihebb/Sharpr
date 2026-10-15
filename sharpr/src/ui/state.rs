@@ -40,6 +40,7 @@ pub enum ViewScope {
     #[default]
     Search,
     Compare,
+    Survey,
 }
 
 impl AppState {

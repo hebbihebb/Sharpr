@@ -136,6 +136,15 @@
     </child>
     <child>
       <object class="AdwShortcutsSection">
+        <property name="title">Survey</property>
+        <child><object class="AdwShortcutsItem"><property name="title">Survey selected images</property><property name="accelerator">&lt;Control&gt;&lt;Shift&gt;s</property></object></child>
+        <child><object class="AdwShortcutsItem"><property name="title">Dismiss the selected tile</property><property name="accelerator">Delete</property></object></child>
+        <child><object class="AdwShortcutsItem"><property name="title">Undo the last dismissal</property><property name="accelerator">&lt;Control&gt;z</property></object></child>
+        <child><object class="AdwShortcutsItem"><property name="title">Finish Survey</property><property name="accelerator">Escape</property></object></child>
+      </object>
+    </child>
+    <child>
+      <object class="AdwShortcutsSection">
         <property name="title">Compare</property>
         <child>
           <object class="AdwShortcutsItem">

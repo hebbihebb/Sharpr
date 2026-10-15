@@ -25,6 +25,7 @@ fn isolated_fixture(case: &str) -> PathBuf {
     fixtures.join(unique)
 }
 
+#[track_caller]
 fn pump_until(mut condition: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while !condition() {
@@ -2974,6 +2975,143 @@ fn repeat_bucket_and_expanding_info_preserve_originals() {
         !chip.is_info_open(),
         "a delayed hover cannot reopen a cleared image"
     );
+    for (path, bytes) in paths.iter().zip(originals) {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    window.close();
+}
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn survey_narrows_selection_and_restores_browsing_without_file_changes() {
+    let root = isolated_fixture("survey");
+    std::fs::create_dir_all(&root).unwrap();
+    let paths: Vec<_> = (0..8)
+        .map(|i| {
+            let path = root.join(format!("scene-{i}.png"));
+            let (width, height) = if i % 3 == 0 { (180, 280) } else { (320, 180) };
+            image::RgbImage::from_fn(width, height, |x, y| {
+                image::Rgb([x as u8, (i * 25) as u8, y as u8])
+            })
+            .save(&path)
+            .unwrap();
+            path
+        })
+        .collect();
+    let originals: Vec<_> = paths
+        .iter()
+        .map(|path| std::fs::read(path).unwrap())
+        .collect();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Survey", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.app_state().borrow().library.image_count() == 8 && window.is_mapped());
+    let strip = window.imp().filmstrip.borrow().clone().unwrap();
+    strip.imp().list_view.grab_focus();
+    assert!(!window_shortcut(&window, "<Control><Shift>s"));
+    window.show_inline_search();
+    let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
+    entry.set_text("png ");
+    pump_until(|| {
+        !window.imp().browse_options.borrow().chips.is_empty()
+            && window.app_state().borrow().library.image_count() == 8
+            && window.app_state().borrow().library.current_folder.is_none()
+    });
+    let chips = window.imp().browse_options.borrow().chips.clone();
+    strip.select_all();
+    strip.imp().list_view.grab_focus();
+    settle(150);
+    let ordered: Vec<_> = (0..8)
+        .map(|i| {
+            window
+                .app_state()
+                .borrow()
+                .library
+                .entry_at(i)
+                .unwrap()
+                .path()
+        })
+        .collect();
+    assert_eq!(window.app_state().borrow().selected_paths.len(), 8);
+    assert!(window_shortcut(&window, "<Control><Shift>s"));
+    assert_eq!(window.app_state().borrow().scope, ViewScope::Survey);
+    let page = window.imp().survey_page.borrow().clone().unwrap();
+    assert_eq!(page.survivors(), ordered);
+    assert!(super::file_actions_blocked(window.upcast_ref()));
+    assert!(!entry.is_mapped());
+    pump_until(|| {
+        find_widgets::<gtk4::Picture>(page.root.upcast_ref())
+            .iter()
+            .filter(|p| p.paintable().is_some())
+            .count()
+            == 8
+    });
+    page.dismiss(3);
+    assert_eq!(page.store.n_items(), 7);
+    assert!(!page.survivors().contains(&ordered[3]));
+    page.undo();
+    assert_eq!(page.survivors(), ordered);
+    page.grid
+        .model()
+        .and_downcast::<gtk4::SingleSelection>()
+        .unwrap()
+        .set_selected(2);
+    assert_eq!(
+        window.handle_mode_key(gdk4::Key::Delete, gdk4::ModifierType::empty()),
+        glib::Propagation::Stop
+    );
+    assert!(!page.survivors().contains(&ordered[2]));
+    window.handle_mode_key(gdk4::Key::z, gdk4::ModifierType::CONTROL_MASK);
+    assert_eq!(page.survivors(), ordered);
+    for (theme, scheme) in [
+        ("light", libadwaita::ColorScheme::ForceLight),
+        ("dark", libadwaita::ColorScheme::ForceDark),
+    ] {
+        libadwaita::StyleManager::default().set_color_scheme(scheme);
+        for (width, height) in [(1024, 600), (1600, 900)] {
+            window.set_default_size(width, height);
+            pump_until(|| window.width() == width && window.height() == height);
+            settle(200);
+            screenshot(
+                &window,
+                &root
+                    .parent()
+                    .unwrap()
+                    .join(format!("survey-{theme}-{width}.png")),
+            );
+            let bounds = page.header.end.compute_bounds(&window).unwrap();
+            assert!(bounds.x() >= 0.0 && bounds.x() + bounds.width() <= width as f32);
+        }
+    }
+    for number in 0..8 {
+        page.dismiss(number);
+    }
+    assert!(page.survivors().is_empty());
+    page.undo();
+    page.undo();
+    assert_eq!(page.survivors(), ordered[6..8]);
+    window.handle_mode_key(gdk4::Key::Escape, gdk4::ModifierType::empty());
+    pump_until(|| window.app_state().borrow().scope == ViewScope::Folder(root.clone()));
+    assert_eq!(
+        window.app_state().borrow().selected_paths,
+        ordered[6..8].iter().cloned().collect()
+    );
+    assert_eq!(window.imp().browse_options.borrow().chips, chips);
+    assert!(entry.is_mapped());
     for (path, bytes) in paths.iter().zip(originals) {
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }

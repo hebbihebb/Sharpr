@@ -61,3 +61,8 @@ See `architecture.md`. In UI code this means:
 - Ctrl+Shift+C opens the existing Compare action for at least two selected images; text fields, popovers, modal sheets, crop preparation, active crops and an active Compare retain their keys. The context menu and Shortcuts sheet show the binding. Ctrl+C remains Copy.
 - Crop's header contains aspect, live output dimensions, destination, Cancel and Save Copy; drag/Enter/Escape hints sit below the canvas. The destination label ellipsizes and its tooltip names the full path.
 - Mode keys are routed from the window so header focus works. Text fields, picker popups and modal sheets keep their own keys. Ctrl+F and type-to-search leave an active mode alone. Fullscreen retains the active mode controls.
+
+## Survey (D30)
+
+- Select two or more images, then Ctrl+Shift+S or image menu → Survey Selected Images. A virtualized adaptive GtkGridView replaces browsing, with a contextual remaining count, Undo and Done. Delete dismisses the selected tile; Ctrl+Z restores the last dismissal in original order; Escape finishes with survivors selected. Dismissal changes no files or bucket memberships. Search and chips return unchanged.
+- Survey and Compare share a serial viewport-fed thumbnail lane through the existing cache/decoder, with session generations and recycled-row checks. Filmstrip pools and visible-thumbnail priority stay unchanged. File actions and search are guarded during review.

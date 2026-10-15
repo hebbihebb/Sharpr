@@ -3,7 +3,7 @@
 use super::*;
 
 impl SharprWindow {
-    fn compare_selection_allowed(&self) -> bool {
+    pub(super) fn compare_selection_allowed(&self) -> bool {
         if self.visible_dialog().is_some()
             || file_actions_blocked(self.upcast_ref())
             || text_input_has_focus(self.upcast_ref())
@@ -79,8 +79,8 @@ impl SharprWindow {
         }
         // The side panels make way, which also keeps the filmstrip's file
         // actions out of reach.
-        if self.imp().compare_panels.get().is_none() {
-            self.imp().compare_panels.set(Some(self.hide_side_panels()));
+        if self.imp().review_panels.get().is_none() {
+            self.imp().review_panels.set(Some(self.hide_side_panels()));
         }
         if let Some(stack) = self.imp().content_stack.borrow().as_ref() {
             stack.set_transition_type(gtk4::StackTransitionType::SlideLeft);
@@ -116,7 +116,7 @@ impl SharprWindow {
                 stack.set_transition_type(gtk4::StackTransitionType::SlideRight);
                 stack.set_visible_child_name("viewer");
             }
-            if let Some(panels) = self.imp().compare_panels.take() {
+            if let Some(panels) = self.imp().review_panels.take() {
                 self.restore_side_panels(panels);
             }
             done(survivors);
@@ -140,7 +140,7 @@ impl SharprWindow {
             stack.set_transition_type(gtk4::StackTransitionType::SlideRight);
             stack.set_visible_child_name("viewer");
         }
-        if let Some(panels) = self.imp().compare_panels.take() {
+        if let Some(panels) = self.imp().review_panels.take() {
             self.restore_side_panels(panels);
         }
         let first = survivors
@@ -166,7 +166,7 @@ pub(super) fn is_comparing(widget: &gtk4::Widget) -> bool {
 /// the shortcuts and menus that change files are off during either (and
 /// while a crop is being prepared).
 pub(super) fn file_actions_blocked(widget: &gtk4::Widget) -> bool {
-    is_comparing(widget)
+    (is_comparing(widget) || super::survey_controller::is_surveying(widget))
         || widget.downcast_ref::<SharprWindow>().is_some_and(|win| {
             win.imp().crop_session.borrow().is_some() || win.imp().crop_preparing.get()
         })

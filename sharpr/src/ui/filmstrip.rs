@@ -87,6 +87,11 @@ fn build_context_menu_model(
             "win.compare",
             Some("<Control><Shift>c"),
         ));
+        image.append_item(&menu_item(
+            "Survey Selected Images",
+            "win.survey",
+            Some("<Control><Shift>s"),
+        ));
     } else {
         image.append_item(&menu_item("Crop Copy\u{2026}", "filmstrip.crop-copy", None));
     }

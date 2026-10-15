@@ -46,6 +46,33 @@ pub struct ThumbnailResult {
     pub worker_ms: u128,
 }
 
+/// A viewport-fed, serial thumbnail lane for transient review views. Its
+/// generation cancels retired sessions; the existing filmstrip pools stay intact.
+pub(crate) fn visible_requests(
+    current: Arc<AtomicU64>,
+    generation: u64,
+) -> (
+    Sender<PathBuf>,
+    Receiver<(PathBuf, Option<ThumbnailResult>)>,
+) {
+    let (requests, incoming) = async_channel::unbounded::<PathBuf>();
+    let (results, outgoing) = async_channel::bounded(8);
+    std::thread::spawn(move || {
+        while let Ok(path) = incoming.recv_blocking() {
+            if current.load(Ordering::Relaxed) != generation {
+                return;
+            }
+            let image = generate_thumbnail(&path);
+            if current.load(Ordering::Relaxed) != generation
+                || results.send_blocking((path, image)).is_err()
+            {
+                return;
+            }
+        }
+    });
+    (requests, outgoing)
+}
+
 /// Message sent back from a worker thread after computing a perceptual hash.
 pub struct HashResult {
     pub path: PathBuf,

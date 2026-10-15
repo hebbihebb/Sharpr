@@ -159,23 +159,9 @@ impl CandidateStrip {
         self.replace[1].set_active(true);
         self.target.set(Side::Right);
         let generation = self.generation.load(Ordering::Relaxed);
-        let current = self.generation.clone();
-        let (request_tx, request_rx) = async_channel::unbounded::<PathBuf>();
-        let (tx, rx) = async_channel::bounded(8);
+        let (request_tx, rx) =
+            crate::thumbnails::worker::visible_requests(self.generation.clone(), generation);
         *self.requests.borrow_mut() = Some(request_tx);
-        std::thread::spawn(move || {
-            while let Ok(path) = request_rx.recv_blocking() {
-                if current.load(Ordering::Relaxed) != generation {
-                    return;
-                }
-                let result = crate::thumbnails::worker::generate_thumbnail(&path);
-                if current.load(Ordering::Relaxed) != generation
-                    || tx.send_blocking((path, result)).is_err()
-                {
-                    return;
-                }
-            }
-        });
         let weak = page.downgrade();
         glib::timeout_add_local(std::time::Duration::from_millis(40), move || {
             let Some(page) = weak.upgrade() else {

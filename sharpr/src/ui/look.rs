@@ -210,6 +210,13 @@ window.sharpr .metadata-osd-buckets {
   color: rgba(255, 255, 255, 0.6);
 }
 
+window.sharpr .survey-tile {
+  padding: 8px;
+  border-radius: 4px;
+  color: white;
+}
+window.sharpr gridview.sharpr-survey { background: #1c1c1e; }
+
 /* Key hints in Compare and crop. */
 window.sharpr scrollbar.sharpr-fast-scroll.vertical {
   min-width: 14px;
