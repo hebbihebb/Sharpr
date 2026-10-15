@@ -51,7 +51,7 @@ GSETTINGS_SCHEMA_DIR=data cargo run --release
 cd sharpr/packaging
 bash sync-flatpak-source.sh          # exports the committed tree at HEAD
 flatpak-cargo-generator ../Cargo.lock -o cargo-sources.json
-flatpak-builder --force-clean --user --install build-dir io.github.hebbihebb.Sharpr.yml
+bash build-flatpak.sh                # builds with bounded memory, then installs
 flatpak run io.github.hebbihebb.Sharpr
 ```
 

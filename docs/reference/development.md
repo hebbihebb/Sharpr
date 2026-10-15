@@ -133,14 +133,14 @@ From `sharpr/packaging/`:
 ```bash
 bash sync-flatpak-source.sh                                   # export the committed sharpr/ tree at HEAD
 flatpak-cargo-generator ../Cargo.lock -o cargo-sources.json   # whenever Cargo.lock changes
-flatpak-builder --force-clean --user --install build-dir io.github.hebbihebb.Sharpr.yml
+bash build-flatpak.sh                                         # build and install, with bounded memory
 flatpak run io.github.hebbihebb.Sharpr
 ```
 
 A shareable bundle is named from `Cargo.toml`, the one version source:
 
 ```bash
-flatpak-builder --force-clean --repo=repo build-dir io.github.hebbihebb.Sharpr.yml
+bash build-flatpak.sh                  # also exports to repo/
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' ../Cargo.toml | head -1)"
 flatpak build-bundle repo "Sharpr-${version}.flatpak" io.github.hebbihebb.Sharpr
 ```
@@ -149,7 +149,7 @@ flatpak build-bundle repo "Sharpr-${version}.flatpak" io.github.hebbihebb.Sharpr
 - **Pinned source:** the sync script refuses a dirty tree and replaces `.flatpak-source` with `git archive` of HEAD, recording the commit in `.flatpak-source/COMMIT`. Commit first, then sync and build.
 - **Visual search:** two modules build `llama-server` from the same pinned source tarball: the processor build in `/app/libexec/sharpr-llama/` and a Vulkan build in `/app/libexec/sharpr-llama-gpu/` (D34). Indexing uses the Vulkan build on a card with at least 2 GB free, otherwise the processor build, as natively. NVIDIA cards need Flathub's `org.freedesktop.Platform.GL.nvidia-*` extension matching the host driver; Flatpak normally installs it. The builds fetch nothing and have no HTTPS. llama.cpp's plain HTTP downloader remains, so Sharpr starts every server with `--offline` and strips inherited `LLAMA_*`, `HF_*`, and `MTMD_*` settings. The model is not bundled: the Flatpak reads `~/.var/app/io.github.hebbihebb.Sharpr/data/sharpr-models/embeddinggemma-2/`, or else the native install's folder in the home folder.
 - **Home access:** the Flatpak may write the home folder (D34), so Rename, Move, Trash and exports behave as in the native build.
-- **Memory:** the manifest caps cargo at `--jobs 4` to avoid running out of memory while libjxl compiles. Keep the cap. Run the build in a memory-capped scope, one heavy job at a time.
+- **Memory:** never call `flatpak-builder` directly. Flatpak moves its build sandbox into its own `app-flatpak-*.scope`, so a `systemd-run -p MemoryMax` cap does not apply; an uncapped build crashed the computer on October 15. `build-flatpak.sh` limits jobs (`SHARPR_FLATPAK_JOBS`, default 4), refuses to start with under three times its floor available, and kills the build scope when available memory falls below the floor (`SHARPR_FLATPAK_FLOOR_MB`, default 2048). Custom cmake/ninja commands in the manifest use `-j "$FLATPAK_BUILDER_N_JOBS"`; cargo keeps `--jobs 4`. Never build alongside another heavy job.
 
 ## Structured Logging
 

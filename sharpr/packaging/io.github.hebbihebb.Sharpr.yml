@@ -43,7 +43,7 @@ modules:
         -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
         -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_APP=OFF
         -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TOOLS=ON
-      - cmake --build build --target llama-server
+      - cmake --build build -j "$FLATPAK_BUILDER_N_JOBS" --target llama-server
       - install -Dm755 build/bin/llama-server /app/libexec/sharpr-llama/llama-server
       - cp -a build/bin/lib*.so* /app/libexec/sharpr-llama/
       - install -Dm644 LICENSE /app/share/licenses/sharpr-llama/LICENSE
@@ -78,7 +78,7 @@ modules:
         -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
         -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_APP=OFF
         -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TOOLS=ON
-      - cmake --build build --target llama-server ggml-vulkan
+      - cmake --build build -j "$FLATPAK_BUILDER_N_JOBS" --target llama-server ggml-vulkan
       - install -Dm755 build/bin/llama-server /app/libexec/sharpr-llama-gpu/llama-server
       - cp -a build/bin/lib*.so* /app/libexec/sharpr-llama-gpu/
 
