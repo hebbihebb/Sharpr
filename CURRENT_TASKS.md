@@ -1,10 +1,10 @@
 # Current Tasks
 
-## Paused: Phase 9 interface review (October 15, 2026)
+## Awaiting acceptance: Phase 9 interface review (October 15, 2026)
 
-**User instruction:** stop here and commit the current work. The goal is paused.
-Installation and final manual acceptance remain pending; do not continue or install
-until the user resumes. The desktop launcher still runs `ef91d32`.
+**Deployed:** the desktop launcher runs `679bbe1` (installed October 15, 21:03);
+`ef91d32` stays installed for rollback. The user's final manual pass is pending.
+The user wants to merge into `main` after it; merge only once they accept.
 
 **Approved scope:** complete Phase 9, then install its test build, with off-screen
 screenshots preferred (D30). The user explicitly confirmed Survey as a way to
@@ -37,13 +37,17 @@ captures: `.tmp/phase9/`. The same debug/Cairo 5,000-image scenario opened in
 345 ms before / 351 ms after; browsing's longest recorded stall was 87 / 85 ms.
 These are isolated debug measurements, not release performance claims.
 
-**On resume:** install the clean pinned test build using the previously
-authorized native launcher, and request the user's final manual pass. Phase 9
-remains open until accepted; do not archive it or advance to Phase 10 yet. No further review loop is needed.
+**Re-verified on committed code (October 15, Claude):** full `./check.sh`
+(217 tests) and all 18 GTK workflows off screen passed after the final commit.
+The documented GTK command now avoids `..` in paths (`679bbe1`); the one-root
+test rightly rejects such roots.
+
+**Next:** the user's manual pass. Phase 9 remains open until accepted; do not
+archive it or advance to Phase 10 yet. No further review loop is needed.
 
 ## Git, backup and earlier acceptance
 
-- Development: `viewer-reset`; `main` stays at `1924346`. No merge or push approval.
+- Development: `viewer-reset`; `main` stays at `1924346`. Merge only after Phase 9 acceptance; no push approval.
   Keep all archive/prototype branches.
 - Verified live backup: `~/.local/share/sharpr.backup-20261015-205204`, including
   settings. All database table counts match: 815 bucket members, 5,899 fingerprints,
