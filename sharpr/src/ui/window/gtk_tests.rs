@@ -76,6 +76,41 @@ fn pill_has_class(widget: &gtk4::Widget, path: &Path, class: &str) -> bool {
 /// The widget's render node, once it has drawn. Right after mapping, or
 /// while the desktop is busy, a frame can take a moment; a window the
 /// compositor isn't drawing (covered, on another workspace) may give none.
+/// Delivers Ctrl+A as GTK's bubble phase does: from `focus` up to the window,
+/// the first shortcut that handles it wins. Returns the widget that did.
+fn bubble_ctrl_a(focus: &gtk4::Widget) -> Option<gtk4::Widget> {
+    let mut widget = Some(focus.clone());
+    while let Some(current) = widget {
+        let controllers = current.observe_controllers();
+        for i in 0..controllers.n_items() {
+            let Some(controller) = controllers
+                .item(i)
+                .and_downcast::<gtk4::ShortcutController>()
+            else {
+                continue;
+            };
+            for j in 0..controller.n_items() {
+                let shortcut = controller.item(j).and_downcast::<gtk4::Shortcut>().unwrap();
+                let trigger = shortcut.trigger().map(|t| t.to_str());
+                let Some(action) = shortcut.action() else {
+                    continue;
+                };
+                if trigger.as_deref() == Some("<Control>a")
+                    && action.activate(
+                        gtk4::ShortcutActionFlags::empty(),
+                        &current,
+                        shortcut.arguments().as_ref(),
+                    )
+                {
+                    return Some(current);
+                }
+            }
+        }
+        widget = current.parent();
+    }
+    None
+}
+
 fn render_node(widget: &gtk4::Widget) -> Option<gtk4::gsk::RenderNode> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
@@ -1339,7 +1374,16 @@ fn compare_narrows_five_images_to_one() {
     pump_until(|| window.imp().state.borrow().library.image_count() == 5 && window.is_mapped());
 
     let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
-    filmstrip.select_all();
+    // Ctrl+A from the focused filmstrip list reaches the window's shortcut,
+    // which selects every image (user test of `ef91d32`: the list's own
+    // Ctrl+A swallowed it).
+    let handled_by = bubble_ctrl_a(filmstrip.imp().list_view.upcast_ref());
+    assert_eq!(
+        handled_by.as_ref(),
+        Some(window.upcast_ref::<gtk4::Widget>()),
+        "Ctrl+A is handled by the window, not the list"
+    );
+    assert_eq!(window.imp().state.borrow().selected_paths.len(), 5);
     gio::prelude::ActionGroupExt::activate_action(&window, "compare", None);
     let page = window.imp().compare_page.borrow().clone().unwrap();
     pump_until(|| page.survivors().len() == 5);

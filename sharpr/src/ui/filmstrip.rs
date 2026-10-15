@@ -251,6 +251,10 @@ mod imp {
                 gtk4::ListView::new(Some(selection_model.clone()), None::<gtk4::ListItemFactory>);
             list_view.set_orientation(gtk4::Orientation::Vertical);
             list_view.add_css_class("navigation-sidebar");
+            // Ctrl+A belongs to the window, which selects every image shown.
+            // The list's own select-all can't work on a single selection and
+            // would swallow the key.
+            list_view.action_set_enabled("list.select-all", false);
 
             let search_bar = gtk4::SearchBar::new();
             let search_entry = gtk4::SearchEntry::new();
