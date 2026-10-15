@@ -64,7 +64,8 @@ Approach agreed with the user (`ROADMAP.md` Phase 9, "The user's direction"): th
   - **No:** I11 number keys for buckets.
 - **Step 2b, the look prototype: built October 15** on branch `look-prototype` (`2bcca72`, not merged, not deployed). The hybrid style: one top row (I15), compact menus (I6), pickers as popovers at the pointer (I7), a neutral dark canvas (I14), and the chip shown on pointer movement (I12), from one stylesheet in `sharpr/src/ui/look.rs`. All 11 GTK tests and `check.sh` pass on the branch.
   - Comparison page: https://claude.ai/artifact/NKxHfeUMzB6YCrVo2EZvWs (today beside the prototype, plus Strata). The user's answer saves to `decision/look`: `hybrid`, `plain`, or `adwaita`, with optional extras (`mono`, `dense`, `footer`, `sortname`) and a note.
-  - **Next:** the user's answer becomes a decision-log entry; then proposals in the chosen style.
+  - **The user chose the hybrid (D26),** with three extras to try (monospace, tighter lists, a shortcut footer) and three layout notes (search over the viewer, a narrower sidebar, one Filter and Sort control above the filmstrip).
+  - **Next:** a second prototype pass on the same branch: the top row split along the columns below it (toggle | name, count, and one Filter and Sort button | search centred over the viewer, menu); a narrower, tighter sidebar; monospace for numbers and, as a variant, everywhere; a key-hint footer in Compare and crop.
 
 ## State (October 14, 2026)
 
