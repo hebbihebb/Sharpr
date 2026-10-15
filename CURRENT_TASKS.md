@@ -62,7 +62,9 @@ Approach agreed with the user (`ROADMAP.md` Phase 9, "The user's direction"): th
   - **Want:** I1 fast-scroll handle; I2 arrow keys pick the Compare winner; I3 a thumbnail row instead of "4 of 4 left"; I4 a key for Compare; I5 Survey view; I6 compact menus; I7 pickers as popups; I8 one dialog style; I10 add to the last bucket; I12 the chip on pointer movement; I13 hover grows the chip into Info; I14 a neutral dark canvas; I15 one top row; I17 remove unused controls; I18 one Help item and a slimmer main menu.
   - **Maybe:** I9 a type-to-filter bucket picker; I16 a sort button that names its sort.
   - **No:** I11 number keys for buckets.
-- **Next:** the look prototype (step 2b) on a separate branch: the visual ideas (I6, I7, I14, I15, and I12 if cheap) built in the hybrid style, screenshotted beside today's Sharpr and Strata for the Libadwaita decision. Behaviour ideas (Compare keys, I1, I10) wait for proposals.
+- **Step 2b, the look prototype: built October 15** on branch `look-prototype` (`2bcca72`, not merged, not deployed). The hybrid style: one top row (I15), compact menus (I6), pickers as popovers at the pointer (I7), a neutral dark canvas (I14), and the chip shown on pointer movement (I12), from one stylesheet in `sharpr/src/ui/look.rs`. All 11 GTK tests and `check.sh` pass on the branch.
+  - Comparison page: https://claude.ai/artifact/NKxHfeUMzB6YCrVo2EZvWs (today beside the prototype, plus Strata). The user's answer saves to `decision/look`: `hybrid`, `plain`, or `adwaita`, with optional extras (`mono`, `dense`, `footer`, `sortname`) and a note.
+  - **Next:** the user's answer becomes a decision-log entry; then proposals in the chosen style.
 
 ## State (October 14, 2026)
 
