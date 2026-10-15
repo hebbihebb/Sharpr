@@ -44,6 +44,9 @@ mod imp {
         pub metadata_visible: Cell<bool>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub pointer_pos: Cell<(f64, f64)>,
+        /// Look prototype: hides the corner chip after the pointer rests.
+        pub chip_idle_source: RefCell<Option<glib::SourceId>>,
+        pub chip_hovered: Cell<bool>,
         pub drag_origin: Cell<Option<(f64, f64)>>,
         pub drag_adjustments: Cell<(f64, f64)>,
         /// Monotonically increasing counter; each `load_image` call increments it.
@@ -138,6 +141,8 @@ mod imp {
                 metadata_visible: Cell::new(true),
                 state: RefCell::new(None),
                 pointer_pos: Cell::new((0.0, 0.0)),
+                chip_idle_source: RefCell::new(None),
+                chip_hovered: Cell::new(false),
                 drag_origin: Cell::new(None),
                 drag_adjustments: Cell::new((0.0, 0.0)),
                 load_gen: Cell::new(0),
@@ -185,6 +190,30 @@ impl ViewerPane {
         widget
     }
 
+    /// Look prototype: shows the corner chip, then fades it after 1.5 s
+    /// without pointer movement, unless the pointer is on it or Info is open.
+    pub fn reveal_chip(&self) {
+        let imp = self.imp();
+        imp.metadata_chip.remove_css_class("sharpr-idle");
+        imp.metadata_chip.set_can_target(true);
+        if let Some(source) = imp.chip_idle_source.borrow_mut().take() {
+            source.remove();
+        }
+        let w = self.downgrade();
+        let source =
+            glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
+                let Some(viewer) = w.upgrade() else { return };
+                let imp = viewer.imp();
+                imp.chip_idle_source.borrow_mut().take();
+                if imp.chip_hovered.get() || imp.metadata_chip.imp().popover.is_visible() {
+                    return;
+                }
+                imp.metadata_chip.add_css_class("sharpr-idle");
+                imp.metadata_chip.set_can_target(false);
+            });
+        *imp.chip_idle_source.borrow_mut() = Some(source);
+    }
+
     pub fn current_path(&self) -> Option<PathBuf> {
         self.imp().current_path.borrow().clone()
     }
@@ -202,6 +231,35 @@ impl ViewerPane {
             }
         });
         imp.scrolled_window.add_controller(motion);
+
+        // Look prototype: images sit on a neutral canvas, and the corner chip
+        // shows while the pointer moves and fades when it rests (I12, I14).
+        imp.overlay.add_css_class("sharpr-canvas");
+        imp.metadata_chip.add_css_class("sharpr-chip");
+        let hover = gtk4::EventControllerMotion::new();
+        let w = self.downgrade();
+        hover.connect_enter(move |_, _, _| {
+            if let Some(viewer) = w.upgrade() {
+                viewer.imp().chip_hovered.set(true);
+            }
+        });
+        let w = self.downgrade();
+        hover.connect_leave(move |_| {
+            if let Some(viewer) = w.upgrade() {
+                viewer.imp().chip_hovered.set(false);
+                viewer.reveal_chip();
+            }
+        });
+        imp.metadata_chip.add_controller(hover);
+        let wake = gtk4::EventControllerMotion::new();
+        let w = self.downgrade();
+        wake.connect_motion(move |_, _, _| {
+            if let Some(viewer) = w.upgrade() {
+                viewer.reveal_chip();
+            }
+        });
+        imp.overlay.add_controller(wake);
+        self.reveal_chip();
 
         let drag = gtk4::GestureDrag::new();
         drag.set_button(0);

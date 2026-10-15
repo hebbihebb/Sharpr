@@ -1173,49 +1173,31 @@ fn webp_export_runs_in_the_background() {
     pump_until(|| window.imp().state.borrow().library.image_count() == 2 && window.is_mapped());
 
     crate::ui::export_dialog::present(&window, sources.clone());
-    pump_until(|| window.visible_dialog().is_some());
-    let dialog = window
-        .visible_dialog()
-        .unwrap()
-        .downcast::<libadwaita::AlertDialog>()
+    // Look prototype: the export is a popover, which closes on a click away
+    // by itself (I7). Never Export: it would go to the real Pictures folder,
+    // which an isolated test must never touch.
+    let picker = || {
+        find_widgets::<gtk4::Popover>(window.upcast_ref())
+            .into_iter()
+            .find(|p| p.is_visible() && p.has_css_class("sharpr-picker"))
+    };
+    pump_until(|| picker().is_some());
+    let popover = picker().unwrap();
+    assert!(popover.is_autohide(), "a click away closes it");
+    let heading = find_widgets::<gtk4::Label>(popover.upcast_ref())
+        .into_iter()
+        .find(|l| l.has_css_class("heading"))
         .unwrap();
-    assert_eq!(
-        dialog.heading().unwrap().as_str(),
-        "Export 2 Images as WebP"
-    );
+    assert_eq!(heading.label().as_str(), "Export 2 Images as WebP");
     let settle = std::time::Instant::now();
     pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
-    screenshot(&window, &root.parent().unwrap().join("export-dialog.png"));
-    // A click inside leaves it open; one outside closes it as Cancel (D25).
-    // Never Export: it would go to the real Pictures folder, which an
-    // isolated test must never touch.
-    let responses: Rc<RefCell<Vec<String>>> = Rc::default();
-    {
-        let responses = responses.clone();
-        dialog.connect_response(None, move |_, response| {
-            responses.borrow_mut().push(response.to_string());
-        });
-    }
-    let controllers = window.observe_controllers();
-    let click = (0..controllers.n_items())
-        .filter_map(|i| controllers.item(i).and_downcast::<gtk4::GestureClick>())
-        .find(|c| c.name().as_deref() == Some(super::CLICK_OUTSIDE_CLOSES))
-        .expect("the export closes on a click outside");
-    let bounds = dialog.child().unwrap().compute_bounds(&window).unwrap();
-    let (cx, cy) = (bounds.center().x() as f64, bounds.center().y() as f64);
-    click.emit_by_name::<()>("pressed", &[&1i32, &cx, &cy]);
-    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(600));
-    assert!(window.visible_dialog().is_some(), "a click inside keeps it");
-    click.emit_by_name::<()>("pressed", &[&1i32, &4.0f64, &4.0f64]);
-    pump_until(|| window.visible_dialog().is_none());
-    assert_eq!(*responses.borrow(), ["cancel"]);
-    let controllers = window.observe_controllers();
-    assert!(
-        !(0..controllers.n_items())
-            .filter_map(|i| controllers.item(i).and_downcast::<gtk4::GestureClick>())
-            .any(|c| c.name().as_deref() == Some(super::CLICK_OUTSIDE_CLOSES)),
-        "the gesture goes when the dialog closes"
+    screenshot_widget(
+        &window,
+        popover.upcast_ref(),
+        &root.parent().unwrap().join("export-dialog.png"),
     );
+    popover.popdown();
+    pump_until(|| picker().is_none());
 
     let out = root.parent().unwrap().join("export-out");
     window.start_webp_export(
@@ -1808,6 +1790,12 @@ fn interface_tour_screenshots() {
         }
         pump_until(|| window.visible_dialog().is_none());
     };
+    // Look prototype: quick pickers are popovers.
+    let picker = || {
+        find_widgets::<gtk4::Popover>(window.upcast_ref())
+            .into_iter()
+            .find(|p| p.is_visible() && p.has_css_class("sharpr-picker"))
+    };
     let menu_button = |tooltip: &str| {
         find_widgets::<gtk4::MenuButton>(window.upcast_ref())
             .into_iter()
@@ -1856,6 +1844,7 @@ fn interface_tour_screenshots() {
     settle(11_000);
 
     // 01: the main window, full screen and small, both themes.
+    viewer.reveal_chip();
     shot("01-main-full-light");
     style.set_color_scheme(libadwaita::ColorScheme::ForceDark);
     shot("01-main-full-dark");
@@ -1877,6 +1866,12 @@ fn interface_tour_screenshots() {
         ("Switch Library", "02-library-switcher"),
     ] {
         let button = menu_button(tooltip);
+        let mapped = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        pump_until(|| button.is_mapped() || std::time::Instant::now() > mapped);
+        if !button.is_mapped() {
+            // The look prototype hides the library switcher.
+            continue;
+        }
         button.popup();
         let popover = button.popover().unwrap();
         pump_until(|| popover.is_visible());
@@ -1958,9 +1953,9 @@ fn interface_tour_screenshots() {
     settle(800);
     shot("06-search-chips");
     window.add_search_results_to_bucket();
-    pump_until(|| window.visible_dialog().is_some());
-    shot("06-add-results-choice");
-    close_dialog();
+    pump_until(|| picker().is_some());
+    shot_widget(picker().unwrap().upcast_ref(), "06-add-results-choice");
+    picker().unwrap().popdown();
     window.close_browse_search();
     settle(400);
 
@@ -1977,16 +1972,16 @@ fn interface_tour_screenshots() {
     pump_until(|| window.imp().bucket_open_pending.get().is_none() && count() == 4);
     shot("07-bucket-view");
     filmstrip.request_add_paths_to_bucket(vec![path_at("city-dusk.jpg")]);
-    pump_until(|| window.visible_dialog().is_some());
-    shot("07-bucket-picker");
-    close_dialog();
+    pump_until(|| picker().is_some());
+    shot_widget(picker().unwrap().upcast_ref(), "07-bucket-picker");
+    picker().unwrap().popdown();
     crate::ui::export_dialog::present(
         &window,
         vec![path_at("alpine-dawn.png"), path_at("city-dusk.jpg")],
     );
-    pump_until(|| window.visible_dialog().is_some());
-    shot("07-export");
-    close_dialog();
+    pump_until(|| picker().is_some());
+    shot_widget(picker().unwrap().upcast_ref(), "07-export");
+    picker().unwrap().popdown();
     let new_bucket = find_widgets::<gtk4::Button>(sidebar.upcast_ref())
         .into_iter()
         .find(|b| b.tooltip_text().as_deref() == Some("New Collection"))

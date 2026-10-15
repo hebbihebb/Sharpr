@@ -8,6 +8,7 @@ pub mod export_dialog;
 pub mod filmstrip;
 pub mod help_window;
 pub mod library_overview;
+pub mod look;
 pub mod metadata_chip;
 pub mod ops_indicator;
 pub mod preferences;

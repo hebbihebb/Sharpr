@@ -359,6 +359,7 @@ impl SharprWindow {
                     );
                     entry.set_text(&completed);
                     // Focusing selects all text; move the cursor afterwards.
+                    entry.set_can_focus(true);
                     entry.grab_focus();
                     entry.set_position(-1);
                 }
@@ -527,30 +528,39 @@ impl SharprWindow {
                 .collect()
         };
         let strong = self.imp().search_strong.borrow().clone();
-        let dialog = libadwaita::AlertDialog::new(
-            Some("Add Search Results to a Bucket"),
-            Some(
-                "Choose which results to add; the bucket comes next. Strong matches are the \
-                 file-name matches and the images that match these words well on their own.",
-            ),
-        );
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("all", &format!("All Shown ({})", shown.len()));
-        dialog.add_response("strong", &format!("Strong Matches ({})", strong.len()));
-        dialog.set_response_enabled("strong", !strong.is_empty());
-        dialog.set_response_appearance("strong", libadwaita::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some(if strong.is_empty() { "all" } else { "strong" }));
-        dialog.set_close_response("cancel");
-        dialog.connect_response(None, move |_, response| {
-            let paths = match response {
-                "strong" => strong.clone(),
-                "all" => shown.clone(),
-                _ => return,
-            };
-            filmstrip.request_add_paths_to_bucket(paths);
-        });
-        self.close_dialog_on_click_outside(&dialog);
-        dialog.present(Some(self));
+        // Look prototype: a small popup at the pointer (I7). The bucket
+        // picker comes next.
+        let heading = gtk4::Label::new(Some("Add which results?"));
+        heading.add_css_class("heading");
+        heading.set_xalign(0.0);
+        let strong_btn = gtk4::Button::with_label(&format!("Strong Matches ({})", strong.len()));
+        strong_btn.set_sensitive(!strong.is_empty());
+        strong_btn.set_tooltip_text(Some(
+            "File-name matches and images that match these words well on their own",
+        ));
+        let all_btn = gtk4::Button::with_label(&format!("All Shown ({})", shown.len()));
+        let default = if strong.is_empty() {
+            &all_btn
+        } else {
+            &strong_btn
+        };
+        default.add_css_class("suggested-action");
+        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        content.append(&heading);
+        content.append(&strong_btn);
+        content.append(&all_btn);
+        let popover = self.popover_at_pointer(&content);
+        popover.set_default_widget(Some(default));
+        for (button, paths) in [(strong_btn, strong), (all_btn, shown)] {
+            let filmstrip = filmstrip.clone();
+            let popover = popover.downgrade();
+            button.connect_clicked(move |_| {
+                if let Some(popover) = popover.upgrade() {
+                    popover.popdown();
+                }
+                filmstrip.request_add_paths_to_bucket(paths.clone());
+            });
+        }
     }
 
     pub(super) fn run_browse_query(&self, query: String, sort_only: bool) {

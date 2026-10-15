@@ -156,6 +156,8 @@ fn open(
     root.set_focusable(true);
     let stage = gtk4::Overlay::new();
     stage.set_vexpand(true);
+    // Look prototype: a neutral canvas in both themes (I14).
+    stage.add_css_class("sharpr-canvas");
     let picture = gtk4::Picture::for_paintable(paintable);
     picture.set_can_shrink(true);
     picture.set_content_fit(gtk4::ContentFit::Contain);

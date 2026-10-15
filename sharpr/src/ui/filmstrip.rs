@@ -223,6 +223,8 @@ mod imp {
         pub save_search_as_collection_cb: RefCell<Option<SaveSearchAsCollectionCallback>>,
         pub current_sort_order: Cell<SortOrder>,
         pub sort_btn: RefCell<Option<gtk4::MenuButton>>,
+        pub filter_btn: RefCell<Option<gtk4::MenuButton>>,
+        pub header_bar: RefCell<Option<libadwaita::HeaderBar>>,
         pub state: RefCell<Option<Rc<RefCell<AppState>>>>,
         pub visible_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
         pub preload_thumbnail_tx: RefCell<Option<Sender<WorkerRequest>>>,
@@ -307,6 +309,8 @@ mod imp {
                 save_search_as_collection_cb: RefCell::new(None),
                 current_sort_order: Cell::new(SortOrder::default()),
                 sort_btn: RefCell::new(None),
+                filter_btn: RefCell::new(None),
+                header_bar: RefCell::new(None),
                 state: RefCell::new(None),
                 visible_thumbnail_tx: RefCell::new(None),
                 preload_thumbnail_tx: RefCell::new(None),
@@ -401,6 +405,8 @@ impl FilmstripPane {
         popover.set_child(Some(&grid));
         filter_btn.set_popover(Some(&popover));
         header.pack_end(&filter_btn);
+        *imp.filter_btn.borrow_mut() = Some(filter_btn.clone());
+        *imp.header_bar.borrow_mut() = Some(header.clone());
         let weak = self.downgrade();
         for (_, button) in &imp.aspect_filter {
             let weak = weak.clone();
@@ -1897,6 +1903,23 @@ impl FilmstripPane {
 
     pub fn connect_copy_requested<F: Fn(CopyKind, Vec<PathBuf>) + 'static>(&self, f: F) {
         *self.imp().copy_requested_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Hands Filter and Sort to the window's single top row and hides this
+    /// pane's own header (look prototype, Phase 9). Returns Filter, Sort, and
+    /// the sort menu's actions, which the window must also carry.
+    pub fn take_header_buttons(
+        &self,
+    ) -> Option<(gtk4::MenuButton, gtk4::MenuButton, gio::SimpleActionGroup)> {
+        let imp = self.imp();
+        let header = imp.header_bar.borrow().clone()?;
+        let filter = imp.filter_btn.borrow().clone()?;
+        let sort = imp.sort_btn.borrow().clone()?;
+        let actions = imp.action_group.borrow().clone()?;
+        header.remove(&filter);
+        header.remove(&sort);
+        imp.toolbar_view.set_reveal_top_bars(false);
+        Some((filter, sort, actions))
     }
 
     pub fn connect_add_to_collection_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {

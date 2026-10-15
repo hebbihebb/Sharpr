@@ -98,8 +98,59 @@ fn spawn_phash_writer(index: Arc<LibraryIndex>) -> async_channel::Sender<(PathBu
     tx
 }
 
+/// Look prototype: where you are, for the top row. The open folder relative
+/// to the library root, or the bucket, then the number of images shown.
+fn location_markup(state: &AppState) -> String {
+    let esc = |t: &str| glib::markup_escape_text(t).to_string();
+    let root = state.settings.active_library().map(|l| l.root.clone());
+    let place = match &state.scope {
+        ViewScope::Folder(path) => {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(root) = root.as_ref() {
+                let root_name = root
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                parts.push(root_name);
+                if let Ok(rel) = path.strip_prefix(root) {
+                    parts.extend(rel.iter().map(|c| c.to_string_lossy().to_string()));
+                }
+            } else {
+                parts.push(
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+            let last = parts.pop().unwrap_or_default();
+            let mut text: String = parts.iter().map(|p| format!("{} › ", esc(p))).collect();
+            text.push_str(&format!("<b>{}</b>", esc(&last)));
+            text
+        }
+        ViewScope::Collection(id) => {
+            let name = state
+                .collections
+                .iter()
+                .find(|c| c.id == *id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "Bucket".into());
+            format!("Buckets › <b>{}</b>", esc(&name))
+        }
+        ViewScope::Search => "<b>Search</b>".into(),
+        ViewScope::Duplicates => "<b>Copies</b>".into(),
+        ViewScope::Compare => "<b>Compare</b>".into(),
+    };
+    format!(
+        "{place}  <span alpha=\"55%\">{}</span>",
+        crate::ui::library_overview::count(state.library.image_count() as usize)
+    )
+}
+
 /// The name of the click gesture that closes a quick picker on a click
 /// outside it (`close_dialog_on_click_outside`).
+#[allow(dead_code)] // Unused while the look prototype uses popovers.
 const CLICK_OUTSIDE_CLOSES: &str = "click-outside-closes";
 
 /// True while a text field has keyboard focus. Single-key shortcuts then leave
@@ -523,6 +574,10 @@ mod imp {
         pub presentation_sidebar_was_visible: Cell<bool>,
         pub presentation_filmstrip_was_visible: Cell<bool>,
         pub presentation_header: RefCell<Option<libadwaita::HeaderBar>>,
+        /// Look prototype: where you are, in the top row.
+        pub location_label: RefCell<Option<gtk4::Label>>,
+        /// Look prototype: the last pointer position, where pickers open.
+        pub last_pointer: Cell<Option<(f64, f64)>>,
         pub presentation_outer_split: RefCell<Option<libadwaita::OverlaySplitView>>,
         pub presentation_inner_split: RefCell<Option<libadwaita::OverlaySplitView>>,
         pub compare_page: RefCell<Option<crate::ui::compare_page::ComparePage>>,
@@ -592,6 +647,8 @@ mod imp {
                 presentation_sidebar_was_visible: Cell::new(false),
                 presentation_filmstrip_was_visible: Cell::new(false),
                 presentation_header: RefCell::new(None),
+                location_label: RefCell::new(None),
+                last_pointer: Cell::new(None),
                 presentation_outer_split: RefCell::new(None),
                 presentation_inner_split: RefCell::new(None),
                 compare_page: RefCell::new(None),
@@ -701,9 +758,60 @@ impl SharprWindow {
         self.imp().crop_session.borrow().clone()
     }
 
+    /// Look prototype: a compact picker beside the pointer, Eagle-style (I7),
+    /// or in the middle of the window when the pointer hasn't moved. It
+    /// closes on a click away and is discarded when closed.
+    pub(crate) fn popover_at_pointer(&self, child: &impl IsA<gtk4::Widget>) -> gtk4::Popover {
+        let host = self.content().expect("window content");
+        let (x, y) = self
+            .imp()
+            .last_pointer
+            .get()
+            .unwrap_or((self.width() as f64 / 2.0, self.height() as f64 / 2.0));
+        let at = self
+            .compute_point(&host, &gtk4::graphene::Point::new(x as f32, y as f32))
+            .unwrap_or_else(|| gtk4::graphene::Point::new(x as f32, y as f32));
+        let popover = gtk4::Popover::new();
+        popover.add_css_class("sharpr-picker");
+        popover.set_child(Some(child));
+        popover.set_parent(&host);
+        popover.set_pointing_to(Some(&gdk4::Rectangle::new(
+            at.x() as i32,
+            at.y() as i32,
+            1,
+            1,
+        )));
+        popover.connect_closed(|popover| {
+            let popover = popover.clone();
+            glib::idle_add_local_once(move || popover.unparent());
+        });
+        popover.popup();
+        popover
+    }
+
+    /// Look prototype: keeps the top row's location ("Pictures › Wallpapers
+    /// · 9") in step with what is shown. A cheap poll, for the prototype only.
+    fn start_location_updates(&self) {
+        let weak = self.downgrade();
+        glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+            let Some(win) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let Some(label) = win.imp().location_label.borrow().clone() else {
+                return glib::ControlFlow::Break;
+            };
+            let markup = location_markup(&win.imp().state.borrow());
+            if label.label().as_str() != markup {
+                label.set_markup(&markup);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
     /// Closes `dialog`, as its close response would, when a click lands
     /// outside it while it is the top dialog (D25). Libadwaita dialogs
     /// otherwise ignore such clicks. For quick pickers, not text entry.
+    #[allow(dead_code)] // Unused while the look prototype uses popovers.
     pub(crate) fn close_dialog_on_click_outside(&self, dialog: &impl IsA<libadwaita::Dialog>) {
         let click = gtk4::GestureClick::new();
         click.set_name(Some(CLICK_OUTSIDE_CLOSES));
@@ -2611,7 +2719,15 @@ impl SharprWindow {
         self.setup_actions(&viewer, state.clone());
 
         let viewer_toolbar = libadwaita::ToolbarView::new();
-        viewer_toolbar.add_top_bar(&viewer_header);
+        // Look prototype: Filter and Sort join the single top row.
+        if let Some((filter, sort, actions)) = filmstrip.take_header_buttons() {
+            self.insert_action_group("filmstrip-sort", Some(&actions));
+            viewer_header.pack_end(&sort);
+            viewer_header.pack_end(&filter);
+            for button in [&filter, &sort] {
+                button.add_css_class("flat");
+            }
+        }
         // Typed filter chips sit in their own bar under the header and wrap,
         // so they never widen the window past its minimum size.
         let search_chips = gtk4::FlowBox::new();
@@ -2783,7 +2899,7 @@ impl SharprWindow {
         content_stack.set_visible_child_name("welcome");
 
         viewer_toolbar.set_content(Some(&content_stack));
-        viewer_toolbar.set_top_bar_style(libadwaita::ToolbarStyle::Raised);
+        viewer_toolbar.set_top_bar_style(libadwaita::ToolbarStyle::Flat);
 
         let viewer_page = libadwaita::NavigationPage::builder()
             .title("View")
@@ -2856,7 +2972,37 @@ impl SharprWindow {
         bp_filmstrip.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
         self.add_breakpoint(bp_filmstrip);
 
-        toast_overlay.set_child(Some(&outer_split));
+        // Look prototype: the sidebar loses its own header; the one top row
+        // spans the window.
+        sidebar.imp().toolbar_view.set_reveal_top_bars(false);
+        let window_toolbar = libadwaita::ToolbarView::new();
+        window_toolbar.add_top_bar(&viewer_header);
+        window_toolbar.set_content(Some(&outer_split));
+        toast_overlay.set_child(Some(&window_toolbar));
+        crate::ui::look::install();
+        self.start_location_updates();
+        {
+            let motion = gtk4::EventControllerMotion::new();
+            motion.set_propagation_phase(gtk4::PropagationPhase::Capture);
+            let weak = self.downgrade();
+            motion.connect_motion(move |_, x, y| {
+                if let Some(win) = weak.upgrade() {
+                    win.imp().last_pointer.set(Some((x, y)));
+                }
+            });
+            self.add_controller(motion);
+        }
+        // The always-visible search box would otherwise take the first focus,
+        // sending Delete and the arrow keys to it instead of the filmstrip.
+        {
+            let list = filmstrip.imp().list_view.clone();
+            self.connect_map(move |_| {
+                let list = list.clone();
+                glib::idle_add_local_once(move || {
+                    list.grab_focus();
+                });
+            });
+        }
 
         self.set_content(Some(&toast_overlay));
 
@@ -3005,6 +3151,7 @@ impl SharprWindow {
                 let mut text = entry.text().to_string();
                 text.push(ch);
                 entry.set_text(&text);
+                entry.set_can_focus(true);
                 entry.grab_focus();
                 entry.set_position(-1);
                 glib::Propagation::Stop
@@ -3083,20 +3230,18 @@ impl SharprWindow {
 
                 // Clicking a bucket only ticks it; nothing is added until
                 // "Add", so a stray click can't add to the wrong one.
-                let dialog = libadwaita::AlertDialog::new(
-                    Some("Add to Collection"),
-                    Some(&format!(
-                        "Tick the buckets for {} {}, then choose Add.",
-                        paths.len(),
-                        if paths.len() == 1 { "image" } else { "images" }
-                    )),
-                );
-                dialog.add_response("cancel", "Cancel");
-                dialog.add_response("add", "Add");
-                dialog.set_response_enabled("add", false);
-                dialog.set_default_response(Some("add"));
-                dialog.set_close_response("cancel");
-                dialog.set_response_appearance("add", libadwaita::ResponseAppearance::Suggested);
+                // Look prototype: a compact picker at the pointer (I7).
+                let heading = gtk4::Label::new(Some(&format!(
+                    "Add {} {} to",
+                    paths.len(),
+                    if paths.len() == 1 { "image" } else { "images" }
+                )));
+                heading.add_css_class("heading");
+                heading.set_xalign(0.0);
+                let add_btn = gtk4::Button::with_label("Add");
+                add_btn.add_css_class("suggested-action");
+                add_btn.set_sensitive(false);
+                let cancel_btn = gtk4::Button::with_label("Cancel");
                 let ticks: Rc<RefCell<Vec<(i64, gtk4::CheckButton)>>> = Rc::default();
 
                 let list_box = gtk4::ListBox::new();
@@ -3125,12 +3270,12 @@ impl SharprWindow {
                     line.set_margin_end(12);
                     let check = gtk4::CheckButton::new();
                     {
-                        let dialog = dialog.downgrade();
+                        let add_btn = add_btn.downgrade();
                         let ticks = ticks.clone();
                         check.connect_toggled(move |_| {
-                            if let Some(dialog) = dialog.upgrade() {
+                            if let Some(add_btn) = add_btn.upgrade() {
                                 let any = ticks.borrow().iter().any(|(_, c)| c.is_active());
-                                dialog.set_response_enabled("add", any);
+                                add_btn.set_sensitive(any);
                             }
                         });
                     }
@@ -3149,31 +3294,48 @@ impl SharprWindow {
                 scroll.set_propagate_natural_height(true);
                 scroll.set_child(Some(&list_box));
 
-                let extra = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-                extra.set_margin_top(6);
-                extra.append(&scroll);
-                dialog.set_extra_child(Some(&extra));
+                scroll.set_min_content_width(220);
+                let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+                buttons.set_homogeneous(true);
+                buttons.append(&cancel_btn);
+                buttons.append(&add_btn);
+                let content = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+                content.append(&heading);
+                content.append(&scroll);
+                content.append(&buttons);
+                let popover = win.popover_at_pointer(&content);
+                popover.set_default_widget(Some(&add_btn));
+                {
+                    let popover = popover.downgrade();
+                    cancel_btn.connect_clicked(move |_| {
+                        if let Some(popover) = popover.upgrade() {
+                            popover.popdown();
+                        }
+                    });
+                }
                 {
                     let ticks = ticks.clone();
                     let paths = paths.clone();
                     let win_weak = win.downgrade();
-                    dialog.connect_response(None, move |_, response| {
+                    let popover = popover.downgrade();
+                    add_btn.connect_clicked(move |_| {
                         let Some(win) = win_weak.upgrade() else {
                             return;
                         };
-                        if response != "add" {
-                            return;
-                        }
                         for (id, check) in ticks.borrow().iter() {
                             if check.is_active() {
                                 win.change_collection_tags(*id, paths.clone(), false);
                             }
+                        }
+                        if let Some(popover) = popover.upgrade() {
+                            popover.popdown();
                         }
                     });
                 }
 
                 let paths_c = paths.clone();
                 let win_weak2 = win.downgrade();
+                let popover_weak = popover.downgrade();
                 list_box.connect_row_activated(move |_, row| {
                     let coll_id: Option<i64> =
                         unsafe { row.data("collection-id").map(|p| *p.as_ref()) };
@@ -3182,6 +3344,9 @@ impl SharprWindow {
                         let Some(win2) = win_weak2.upgrade() else {
                             return;
                         };
+                        if let Some(popover) = popover_weak.upgrade() {
+                            popover.popdown();
+                        }
                         let new_dialog = libadwaita::AlertDialog::new(Some("New Collection"), None);
                         new_dialog.add_response("cancel", "Cancel");
                         new_dialog.add_response("create", "Create");
@@ -3233,9 +3398,6 @@ impl SharprWindow {
                         }
                     }
                 });
-
-                win.close_dialog_on_click_outside(&dialog);
-                dialog.present(Some(&win));
             });
         }
 
@@ -3971,6 +4133,7 @@ impl SharprWindow {
             revealer.set_reveal_child(true);
         }
         if let Some(entry) = self.imp().inline_search_entry.borrow().as_ref() {
+            entry.set_can_focus(true);
             entry.grab_focus();
             entry.set_position(-1);
         }
@@ -4013,6 +4176,13 @@ impl SharprWindow {
         if hide {
             if let Some(revealer) = self.imp().inline_search_revealer.borrow().as_ref() {
                 revealer.set_reveal_child(false);
+            }
+            // The box stays on screen but gives the keys back to the filmstrip.
+            if let Some(entry) = self.imp().inline_search_entry.borrow().as_ref() {
+                entry.set_can_focus(false);
+            }
+            if let Some(filmstrip) = self.imp().filmstrip.borrow().as_ref() {
+                filmstrip.imp().list_view.grab_focus();
             }
         }
     }
@@ -4348,19 +4518,42 @@ impl SharprWindow {
         sidebar_toggle.set_tooltip_text(Some("Toggle Library"));
         sidebar_toggle.add_css_class("flat");
         header.pack_start(&sidebar_toggle);
-
-        // No page title: the viewer is the only page, and the header stays quiet.
-        header.set_title_widget(Some(&gtk4::Box::new(gtk4::Orientation::Horizontal, 0)));
+        // Look prototype: one top row for the whole window, saying where you
+        // are, with search always in the middle.
+        header.add_css_class("sharpr-top");
+        let location = gtk4::Label::new(None);
+        location.add_css_class("sharpr-location");
+        location.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+        location.set_max_width_chars(40);
+        header.pack_start(&location);
+        *self.imp().location_label.borrow_mut() = Some(location);
 
         let preview_search_entry = gtk4::SearchEntry::new();
         preview_search_entry.set_placeholder_text(Some("Describe images, or 4k png 16:9…"));
-        preview_search_entry.set_hexpand(true);
-        preview_search_entry.set_width_request(300);
+        preview_search_entry.set_width_request(360);
+        // Always visible, so it must not take the window's first focus:
+        // focusable only once search is wanted (a click, Ctrl+F, typing).
+        preview_search_entry.set_can_focus(false);
+        {
+            let click = gtk4::GestureClick::new();
+            click.set_propagation_phase(gtk4::PropagationPhase::Capture);
+            let entry = preview_search_entry.downgrade();
+            click.connect_pressed(move |_, _, _, _| {
+                if let Some(entry) = entry.upgrade() {
+                    entry.set_can_focus(true);
+                    entry.grab_focus();
+                }
+            });
+            preview_search_entry.add_controller(click);
+        }
 
         let preview_search_revealer = gtk4::Revealer::new();
         preview_search_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideRight);
         let search_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-        search_row.append(&preview_search_entry);
+        let title_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        title_row.append(&preview_search_entry);
+        title_row.append(&preview_search_revealer);
+        header.set_title_widget(Some(&title_row));
         let all_library = gtk4::CheckButton::with_label("Whole library");
         *self.imp().search_whole_library.borrow_mut() = Some(all_library.clone());
         let weak = self.downgrade();
@@ -4384,7 +4577,6 @@ impl SharprWindow {
         preview_search_revealer.set_child(Some(&search_row));
         preview_search_revealer.set_reveal_child(false);
 
-        header.pack_end(&preview_search_revealer);
         header.pack_end(menu_btn);
 
         let ops_indicator = OpsIndicator::new();

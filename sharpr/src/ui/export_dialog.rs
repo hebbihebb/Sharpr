@@ -31,20 +31,20 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
     ));
 
     let count = sources.len();
-    let dialog = libadwaita::AlertDialog::new(
-        Some(&if count == 1 {
-            "Export Image as WebP".to_string()
-        } else {
-            format!("Export {count} Images as WebP")
-        }),
-        Some("Copies are new files with unique names; the originals are never changed."),
-    );
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("export", "Export");
-    dialog.set_response_appearance("export", libadwaita::ResponseAppearance::Suggested);
-    dialog.set_default_response(Some("export"));
-    dialog.set_close_response("cancel");
-    dialog.set_content_width(560);
+    // Look prototype: a compact popup at the pointer instead of a centred
+    // card (I7).
+    let heading = gtk4::Label::new(Some(&if count == 1 {
+        "Export Image as WebP".to_string()
+    } else {
+        format!("Export {count} Images as WebP")
+    }));
+    heading.add_css_class("heading");
+    heading.set_xalign(0.0);
+    let note = gtk4::Label::new(Some("New files with unique names; originals never change."));
+    note.add_css_class("dim-label");
+    note.add_css_class("caption");
+    note.set_xalign(0.0);
+    let popover_cell: Rc<glib::WeakRef<gtk4::Popover>> = Rc::new(glib::WeakRef::new());
 
     let group = libadwaita::PreferencesGroup::new();
     let folder_row = libadwaita::ActionRow::new();
@@ -68,10 +68,16 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
         let folder = folder.clone();
         let row = folder_row.clone();
         let window = window.downgrade();
+        let popover_cell = popover_cell.clone();
         choose.connect_clicked(move |_| {
             let Some(window) = window.upgrade() else {
                 return;
             };
+            // The folder chooser is another window; the popup stays open.
+            let popover = popover_cell.upgrade();
+            if let Some(popover) = popover.as_ref() {
+                popover.set_autohide(false);
+            }
             let chooser = gtk4::FileDialog::new();
             chooser.set_initial_folder(Some(&gio::File::for_path(&*folder.borrow())));
             let folder = folder.clone();
@@ -80,6 +86,9 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
                 if let Some(path) = result.ok().and_then(|file| file.path()) {
                     row.set_subtitle(&folder_label(&path));
                     *folder.borrow_mut() = path;
+                }
+                if let Some(popover) = popover.as_ref() {
+                    popover.set_autohide(true);
                 }
             });
         });
@@ -119,12 +128,36 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
         fit.bind_property("active", row, "sensitive").build();
         group.add(row);
     }
-    dialog.set_extra_child(Some(&group));
+    let cancel = gtk4::Button::with_label("Cancel");
+    let export = gtk4::Button::with_label("Export");
+    export.add_css_class("suggested-action");
+    let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    buttons.set_homogeneous(true);
+    buttons.append(&cancel);
+    buttons.append(&export);
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    content.set_width_request(380);
+    content.append(&heading);
+    content.append(&note);
+    content.append(&group);
+    content.append(&buttons);
+    let popover = window.popover_at_pointer(&content);
+    popover.set_default_widget(Some(&export));
+    popover_cell.set(Some(&popover));
+    {
+        let popover = popover.downgrade();
+        cancel.connect_clicked(move |_| {
+            if let Some(popover) = popover.upgrade() {
+                popover.popdown();
+            }
+        });
+    }
 
     let window_weak = window.downgrade();
-    dialog.connect_response(None, move |_, response| {
-        if response != "export" {
-            return;
+    let popover_weak = popover.downgrade();
+    export.connect_clicked(move |_| {
+        if let Some(popover) = popover_weak.upgrade() {
+            popover.popdown();
         }
         let Some(window) = window_weak.upgrade() else {
             return;
@@ -155,6 +188,4 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
             },
         );
     });
-    window.close_dialog_on_click_outside(&dialog);
-    dialog.present(Some(window));
 }

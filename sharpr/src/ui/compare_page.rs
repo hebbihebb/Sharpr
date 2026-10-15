@@ -472,6 +472,8 @@ fn build(page: &ComparePage) {
     let imp = page.imp();
     imp.root.set_parent(page);
     imp.root.set_child(Some(&imp.view));
+    // Look prototype: a neutral canvas in both themes (I14).
+    imp.root.add_css_class("sharpr-canvas");
 
     // Top: modes, zoom lock, zoom, progress, undo, close.
     let toolbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
