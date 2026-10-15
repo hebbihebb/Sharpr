@@ -891,6 +891,18 @@ fn rapid_navigation_and_folder_switch_preserve_latest_view() {
     }
     assert!(st.library.selected_index.is_some());
     drop(st);
+    // The handle stays wide to grab, without padding its column (user, October 15).
+    let fast_scroll = filmstrip.imp().scroll.vscrollbar();
+    assert!(
+        fast_scroll.is_mapped() && fast_scroll.width() <= 16,
+        "{}",
+        fast_scroll.width()
+    );
+    screenshot_widget(
+        &window,
+        filmstrip.upcast_ref(),
+        &fixtures.join("filmstrip-scroll.png"),
+    );
     window.close();
 }
 

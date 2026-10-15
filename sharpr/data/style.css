@@ -325,13 +325,19 @@ window.sharpr .survey-tile {
 window.sharpr gridview.sharpr-survey { background: var(--sharpr-canvas-bg); }
 
 /* Key hints in Compare and crop. */
+/* A wide handle in a tight column: Libadwaita's trough margin and transparent
+   slider border would otherwise pad it to about 46 px. */
 window.sharpr scrollbar.sharpr-fast-scroll.vertical {
-  min-width: 14px;
+  padding: 0;
+}
+window.sharpr scrollbar.sharpr-fast-scroll.vertical trough {
+  margin: 2px;
 }
 window.sharpr scrollbar.sharpr-fast-scroll.vertical slider {
   min-width: 10px;
   min-height: 44px;
-  margin: 2px;
+  margin: 0;
+  border: none;
   border-radius: 4px;
 }
 window.sharpr .compare-candidates listview {
