@@ -23,10 +23,10 @@ export and filter/sort work is recorded in `ROADMAP.md`.
 4. `ffa075d`: one root chooser and recursive browsing; active identity, inactive
    configurations, exclusions, bucket members, fingerprints and vectors survive
    narrowing/widening. No library switcher/list/folder-mode or bucket transfer UI.
-5. **Final checkpoint, implemented and verified:** one stylesheet/provider and
-   shared palette/drawing tokens; seven original CC0 symbolic icons; CSS thumbnail
-   feedback; compact Help; shared viewer/filmstrip image actions; retired overlay,
-   cache and index-ring controls, preserving settings. The control dispositions
+5. `65bb267`: one stylesheet/provider and shared palette/drawing tokens; seven
+   original CC0 symbolic icons; CSS thumbnail feedback; compact Help; shared
+   viewer/filmstrip image actions; retired overlay, cache and index-ring
+   controls, preserving settings. The control dispositions
    are in `docs/reference/interface-inventory.md`. The milestone self-review is
    complete: fixed hidden-row keyboard-menu targeting and large Survey lookup cost.
 
@@ -37,10 +37,9 @@ captures: `.tmp/phase9/`. The same debug/Cairo 5,000-image scenario opened in
 345 ms before / 351 ms after; browsing's longest recorded stall was 87 / 85 ms.
 These are isolated debug measurements, not release performance claims.
 
-**On resume:** finish recording this checkpoint's commit if needed, install the
-clean pinned test build using the previously authorized native launcher, and
-request the user's final manual pass. Phase 9 remains open until accepted; do not
-archive it or advance to Phase 10 yet. No further review loop is needed.
+**On resume:** install the clean pinned test build using the previously
+authorized native launcher, and request the user's final manual pass. Phase 9
+remains open until accepted; do not archive it or advance to Phase 10 yet. No further review loop is needed.
 
 ## Git, backup and earlier acceptance
 
