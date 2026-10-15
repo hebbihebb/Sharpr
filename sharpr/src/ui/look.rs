@@ -118,6 +118,23 @@ popover.sharpr-picker row button {
   padding: 2px 8px;
 }
 
+/* Preferences and shortcuts share the main window's face and geometry.
+   The content scrolls within the sheet at the minimum window size. */
+window.sharpr .sharpr-sheet headerbar {
+  min-height: 42px;
+  box-shadow: inset 0 -1px alpha(currentColor, 0.10);
+}
+window.sharpr .sharpr-sheet row > box.header {
+  min-height: 40px;
+}
+window.sharpr .sharpr-sheet button:not(.circular) {
+  min-height: 26px;
+  padding: 2px 10px;
+}
+window.sharpr .sharpr-sheet list.boxed-list {
+  border-radius: var(--sharpr-radius);
+}
+
 /* A tighter sidebar: it is for jumping, not reading. */
 window.sharpr .sharpr-sidebar .navigation-sidebar > row {
   min-height: 24px;

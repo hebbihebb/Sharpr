@@ -4,7 +4,7 @@ Commands for building, running, testing, and packaging Sharpr. Run them from `sh
 
 ## Setup
 
-- **Fedora packages:** `gtk4-devel`, `libadwaita-devel`, `gexiv2-devel`, `pkg-config`, `gcc`.
+- **Fedora packages:** `gtk4-devel`, `libadwaita-devel` (Libadwaita ≥ 1.8 for the shortcuts sheet), `gexiv2-devel`, `pkg-config`, `gcc`.
 - **Rust:** stable, minimum version 1.94 (pinned in `rust-toolchain.toml`).
 - **Cargo tools:** `cargo-nextest`, `cargo-deny`, `cargo-machete`.
 - **Flatpak builds:** `flatpak-builder` and `flatpak-cargo-generator` (in `~/.local/bin`).

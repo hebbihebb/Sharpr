@@ -14,7 +14,9 @@ path = "src/main.rs"
 # GTK4 + Libadwaita UI stack
 glycin = { version = "3", features = ["gdk4"] }
 gtk4 = { version = "0.11", features = ["v4_12"] }
-libadwaita = { version = "0.9", features = ["v1_5"] }
+# ShortcutsDialog replaces the deprecated GTK window (available since 1.8).
+# Fedora and the GNOME 50 Flatpak runtime both provide it.
+libadwaita = { version = "0.9", features = ["v1_8"] }
 glib = "0.22"
 gio = "0.22"
 gdk4 = { version = "0.11", features = ["v4_16"] }

@@ -1,138 +1,129 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <interface>
-  <object class="GtkShortcutsWindow" id="help_overlay">
-    <property name="modal">1</property>
+  <object class="AdwShortcutsDialog" id="help_overlay">
+    <property name="title">Keyboard Shortcuts</property>
+    <style>
+      <class name="sharpr-sheet" />
+    </style>
     <child>
-      <object class="GtkShortcutsSection">
-        <property name="title">Navigation</property>
-        <property name="section-name">navigation</property>
+      <object class="AdwShortcutsSection">
+        <property name="title">Browse</property>
         <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Browse</property>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Next image</property>
-                <property name="accelerator">&lt;Alt&gt;Right</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Previous image</property>
-                <property name="accelerator">&lt;Alt&gt;Left</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Move selection to trash</property>
-                <property name="accelerator">Delete</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Rename image</property>
-                <property name="accelerator">F2</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Image info</property>
-                <property name="accelerator">&lt;Control&gt;i</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Image menu (copies, compare, file actions)</property>
-                <property name="accelerator">&lt;Shift&gt;F10 Menu</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Add selection to a bucket</property>
-                <property name="accelerator">&lt;Control&gt;b</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Select all images shown</property>
-                <property name="accelerator">&lt;Control&gt;a</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Export the selection as WebP</property>
-                <property name="accelerator">&lt;Control&gt;e</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Duplicate image</property>
-                <property name="accelerator">&lt;Control&gt;d</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Open in default viewer</property>
-                <property name="accelerator">Return</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Search: describe images, or type filters such as 4k png 16:9</property>
-                <property name="accelerator">&lt;Control&gt;f</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Toggle sidebar</property>
-                <property name="accelerator">F9</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Toggle fullscreen / Exit presentation</property>
-                <property name="accelerator">F11</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Exit presentation mode</property>
-                <property name="accelerator">Escape</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Navigate in presentation mode</property>
-                <property name="accelerator">Up Down Left Right Page_Up Page_Down Home End</property>
-              </object>
-            </child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Next image</property>
+            <property name="accelerator">&lt;Alt&gt;Right</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Previous image</property>
+            <property name="accelerator">&lt;Alt&gt;Left</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Move selection to trash</property>
+            <property name="accelerator">Delete</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Rename image</property>
+            <property name="accelerator">F2</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Image info</property>
+            <property name="accelerator">&lt;Control&gt;i</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Image menu (copies, compare, file actions)</property>
+            <property name="accelerator">&lt;Shift&gt;F10 Menu</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Add selection to a bucket</property>
+            <property name="accelerator">&lt;Control&gt;b</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Select all images shown</property>
+            <property name="accelerator">&lt;Control&gt;a</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Export the selection as WebP</property>
+            <property name="accelerator">&lt;Control&gt;e</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Duplicate image</property>
+            <property name="accelerator">&lt;Control&gt;d</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Open in default viewer</property>
+            <property name="accelerator">Return</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Search: describe images, or type filters such as 4k png 16:9</property>
+            <property name="accelerator">&lt;Control&gt;f</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Toggle sidebar</property>
+            <property name="accelerator">F9</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Toggle fullscreen / Exit presentation</property>
+            <property name="accelerator">F11</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Exit presentation mode</property>
+            <property name="accelerator">Escape</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Navigate in presentation mode</property>
+            <property name="accelerator">Up Down Left Right Page_Up Page_Down Home End</property>
           </object>
         </child>
       </object>
     </child>
     <child>
-      <object class="GtkShortcutsSection">
-        <property name="title">Viewer</property>
-        <property name="section-name">viewer</property>
+      <object class="AdwShortcutsSection">
+        <property name="title">Zoom</property>
         <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Zoom</property>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Fit image to window</property>
-                <property name="accelerator">&lt;Control&gt;0</property>
-              </object>
-            </child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Fit image to window</property>
+            <property name="accelerator">&lt;Control&gt;0</property>
           </object>
         </child>
+      </object>
+    </child>
+    <child>
+      <object class="AdwShortcutsSection">
+        <property name="title">View</property>
         <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">View</property>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Toggle metadata overlay</property>
-                <property name="accelerator">&lt;Alt&gt;Return</property>
-              </object>
-            </child>
+          <object class="AdwShortcutsItem">
+            <property name="title">Toggle metadata overlay</property>
+            <property name="accelerator">&lt;Alt&gt;Return</property>
           </object>
         </child>
       </object>

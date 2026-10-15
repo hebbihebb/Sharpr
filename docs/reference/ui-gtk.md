@@ -19,7 +19,7 @@ This file covers how to build them in GTK.
 - Compare currently needs exactly two selected images. Phase 8 extends it to N images in pairwise knockout (D8).
 - Search, filters, and sort apply to the current folder or bucket unless the user explicitly picks the whole library. Clearing a search restores the scope, selection, scroll position, and current sort.
 - Open search by typing anywhere or pressing Ctrl+F (D7). Keep Space free for viewing and Compare.
-- Recognized filter words in the search box become removable chips in a wrapping bar under the header (D16). The bar wraps so it never widens the window. Chips combine with the filmstrip filter popover (both must match). Clicking a chip's label turns it back into a quoted search word. Filter words that complete the word being typed are offered as flat buttons in the same bar, rather than in a popover, which would take focus from the entry.
+- Recognized filter words in the search box become removable chips in a wrapping bar under the header (D16). The bar wraps so it never widens the window. The combined Sort and Filter menu adds these same chips (D27). Clicking a chip's label turns it back into a quoted search word. Filter words that complete the word being typed are offered as flat buttons in the same bar, rather than in a popover, which would take focus from the entry.
 - Words in the search box go to visual search when its model is installed (Phase 5). File-name matches come first, then the closest images, 200 at a time. A status line under the header always says what happened: match strength and coverage ("4,210 of 5,812 images indexed"), or that only file names were matched and why. Never show weak matches as if they were good ones (principle 5).
 - Tags are retired (D1, Phase 5). Add no tag UI; buckets are how images are gathered.
 - Keep the interface quiet. Only resolution with format, and bucket membership, are always visible; everything else belongs in the Info panel (D18).
@@ -41,3 +41,10 @@ See `architecture.md`. In UI code this means:
 
 - Prefer Adwaita style classes and theme variables. Overlays must stay readable in light, dark, and high-contrast themes.
 - Support the 1024 × 600 logical-pixel minimum window size.
+
+## Approved Look (D26–D27)
+
+- Libadwaita supplies adaptive sheets, theme/accent handling, and toasts. Sharpr's shared look lives in `sharpr/src/ui/look.rs`; the main window has `.sharpr` and `.sharpr-mono-all`.
+- Preferences and Keyboard Shortcuts are `AdwPreferencesDialog` and `AdwShortcutsDialog` sheets presented in the main window. They inherit its font and use `.sharpr-sheet` for compact rows and headers. Keep the existing `win.show-preferences` and `win.show-help-overlay` actions.
+- Quick pickers use popovers and dismiss on click-away. Preferences and other editing sheets use their own close controls and Escape.
+- One Sort and Filter menu adds the same removable chips as typing filter words. The old independent Filter popover is hidden and scheduled for removal.

@@ -1671,18 +1671,128 @@ fn settle(ms: u64) {
     pump_until(|| std::time::Instant::now() > until);
 }
 
-/// Renders another top-level window, such as Preferences, with its own renderer.
-fn screenshot_window(window: &gtk4::Window, path: &Path) {
-    let Some(node) = render_node(window.upcast_ref()) else {
-        eprintln!("screenshot skipped, no frame drawn: {}", path.display());
-        return;
-    };
-    window
-        .renderer()
-        .expect("realized window has a renderer")
-        .render_texture(&node, None)
-        .save_to_png(path)
+/// The sheets must belong to the styled window, preserve settings wiring,
+/// and allow a nested editor to close back to Preferences.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn preferences_and_shortcuts_share_the_main_window() {
+    let root = isolated_fixture("styled-sheets");
+    std::fs::create_dir_all(&root).unwrap();
+    image::RgbImage::from_pixel(96, 54, image::Rgb([40, 90, 130]))
+        .save(root.join("sample.png"))
         .unwrap();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.is_mapped() && window.app_state().borrow().library.image_count() == 1);
+    assert_eq!(
+        app.accels_for_action("win.show-help-overlay"),
+        ["<Control>question"]
+    );
+    let out = root.join("screenshots");
+    std::fs::create_dir_all(&out).unwrap();
+    for (scheme, theme) in [
+        (libadwaita::ColorScheme::ForceLight, "light"),
+        (libadwaita::ColorScheme::ForceDark, "dark"),
+    ] {
+        libadwaita::StyleManager::default().set_color_scheme(scheme);
+        for (width, height) in [(1024, 600), (1600, 900)] {
+            window.set_default_size(width, height);
+            settle(300);
+            gtk4::prelude::WidgetExt::activate_action(&window, "win.show-preferences", None)
+                .unwrap();
+            pump_until(|| window.visible_dialog().is_some());
+            let prefs = window
+                .visible_dialog()
+                .unwrap()
+                .downcast::<libadwaita::PreferencesDialog>()
+                .unwrap();
+            pump_until(|| prefs.is_mapped());
+            assert_eq!(prefs.root(), Some(window.clone().upcast()));
+            assert_eq!(app.windows().len(), 1, "no separate Preferences window");
+            let appearance = find_widgets::<libadwaita::PreferencesPage>(prefs.upcast_ref())
+                .into_iter()
+                .find(|p| p.title() == "Appearance")
+                .unwrap();
+            // A nested library editor is another sheet above Preferences.
+            let create = find_widgets::<gtk4::Button>(prefs.upcast_ref())
+                .into_iter()
+                .find(|b| b.label().as_deref() == Some("Create…"))
+                .unwrap();
+            create.emit_clicked();
+            pump_until(|| {
+                window
+                    .visible_dialog()
+                    .is_some_and(|d| d.is::<libadwaita::AlertDialog>())
+            });
+            window.visible_dialog().unwrap().close();
+            pump_until(|| window.visible_dialog() == Some(prefs.clone().upcast()));
+            // Wait for the nested sheet's closing animation before capturing.
+            settle(600);
+            screenshot(
+                &window,
+                &out.join(format!("{theme}-{width}-preferences-library.png")),
+            );
+            prefs.set_visible_page(&appearance);
+            settle(250);
+            let cache = find_widgets::<libadwaita::SpinRow>(prefs.upcast_ref())
+                .pop()
+                .unwrap();
+            let original = cache.value();
+            cache.set_value(original + 100.0);
+            assert_eq!(
+                window.app_state().borrow().settings.thumbnail_cache_max,
+                (original + 100.0) as i32
+            );
+            cache.set_value(original);
+            // Read the effective font from a rendered label, rather than just
+            // checking a class that might not reach the dialog's contents.
+            let label = find_widgets::<gtk4::Label>(prefs.upcast_ref())
+                .into_iter()
+                .find(|l| l.text() == "Thumbnail cache size")
+                .unwrap();
+            assert!(label
+                .pango_context()
+                .font_description()
+                .unwrap()
+                .family()
+                .unwrap()
+                .contains("JetBrains"));
+            screenshot(
+                &window,
+                &out.join(format!("{theme}-{width}-preferences-appearance.png")),
+            );
+            prefs.close();
+            pump_until(|| window.visible_dialog().is_none());
+            gtk4::prelude::WidgetExt::activate_action(&window, "win.show-help-overlay", None)
+                .unwrap();
+            pump_until(|| window.visible_dialog().is_some());
+            let shortcuts = window.visible_dialog().unwrap();
+            assert!(shortcuts.is::<libadwaita::ShortcutsDialog>());
+            assert_eq!(shortcuts.root(), Some(window.clone().upcast()));
+            assert_eq!(app.windows().len(), 1, "no separate Shortcuts window");
+            pump_until(|| shortcuts.is_mapped());
+            settle(250);
+            screenshot(&window, &out.join(format!("{theme}-{width}-shortcuts.png")));
+            shortcuts.close();
+            pump_until(|| window.visible_dialog().is_none());
+        }
+    }
+    window.close();
 }
 
 /// Phase 9 inventory: screenshots of every surface and state, at 1024×600
@@ -2011,28 +2121,26 @@ fn interface_tour_screenshots() {
     pump_until(|| window.visible_dialog().is_some());
     shot("08-manual");
     close_dialog();
-    if let Some(shortcuts) = window.help_overlay() {
-        shortcuts.present();
-        pump_until(|| shortcuts.is_mapped());
-        settle(500);
-        screenshot_window(shortcuts.upcast_ref(), &out.join("08-shortcuts.png"));
-        shortcuts.close();
+    gtk4::prelude::WidgetExt::activate_action(&window, "win.show-help-overlay", None).unwrap();
+    pump_until(|| window.visible_dialog().is_some());
+    shot("08-shortcuts");
+    close_dialog();
+    gtk4::prelude::WidgetExt::activate_action(&window, "win.show-preferences", None).unwrap();
+    pump_until(|| window.visible_dialog().is_some());
+    let prefs = window
+        .visible_dialog()
+        .unwrap()
+        .downcast::<libadwaita::PreferencesDialog>()
+        .unwrap();
+    shot("08-preferences-library");
+    if let Some(page) = find_widgets::<libadwaita::PreferencesPage>(prefs.upcast_ref())
+        .into_iter()
+        .find(|p| p.title() == "Appearance")
+    {
+        prefs.set_visible_page(&page);
+        shot("08-preferences-appearance");
     }
-    let settings = state.borrow().settings.clone();
-    let prefs = crate::ui::preferences::build_preferences_window(&settings, &window);
-    prefs.present();
-    pump_until(|| prefs.is_mapped());
-    settle(500);
-    screenshot_window(prefs.upcast_ref(), &out.join("08-preferences-library.png"));
-    if let Some(page) = find_widgets::<libadwaita::PreferencesPage>(prefs.upcast_ref()).get(1) {
-        prefs.set_visible_page(page);
-        settle(400);
-        screenshot_window(
-            prefs.upcast_ref(),
-            &out.join("08-preferences-appearance.png"),
-        );
-    }
-    prefs.close();
+    close_dialog();
 
     // 10: the readout face everywhere (the look prototype's variant).
     go_to("alpine-dawn.png");

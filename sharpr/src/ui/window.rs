@@ -24,7 +24,7 @@ use crate::ui::collection_dialogs::{
 use crate::ui::compare_item::ordered_selection;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::ops_indicator::OpsIndicator;
-use crate::ui::preferences::build_preferences_window;
+use crate::ui::preferences::build_preferences_dialog;
 use crate::ui::sidebar::SidebarPane;
 use crate::ui::state::{AppState, ViewScope};
 use crate::ui::viewer::{ViewerPane, ZoomMode};
@@ -119,11 +119,6 @@ fn sort_and_filter_menu(sort: &gio::MenuModel) -> gio::Menu {
     menu.append_section(Some("Filter"), &filters);
     menu
 }
-
-/// The name of the click gesture that closes a quick picker on a click
-/// outside it (`close_dialog_on_click_outside`).
-#[allow(dead_code)] // Unused while the look prototype uses popovers.
-const CLICK_OUTSIDE_CLOSES: &str = "click-outside-closes";
 
 /// True while a text field has keyboard focus. Single-key shortcuts then leave
 /// the key to the text field, so Delete never trashes images while editing text.
@@ -670,6 +665,7 @@ glib::wrapper! {
 
 impl SharprWindow {
     pub fn new(app: &libadwaita::Application) -> Self {
+        app.set_accels_for_action("win.show-help-overlay", &["<Control>question"]);
         glib::Object::builder().property("application", app).build()
     }
 
@@ -766,44 +762,6 @@ impl SharprWindow {
         } else {
             self.remove_css_class("sharpr-mono-all");
         }
-    }
-
-    /// Closes `dialog`, as its close response would, when a click lands
-    /// outside it while it is the top dialog (D25). Libadwaita dialogs
-    /// otherwise ignore such clicks. For quick pickers, not text entry.
-    #[allow(dead_code)] // Unused while the look prototype uses popovers.
-    pub(crate) fn close_dialog_on_click_outside(&self, dialog: &impl IsA<libadwaita::Dialog>) {
-        let click = gtk4::GestureClick::new();
-        click.set_name(Some(CLICK_OUTSIDE_CLOSES));
-        click.set_propagation_phase(gtk4::PropagationPhase::Capture);
-        let window = self.downgrade();
-        let weak = dialog.upcast_ref::<libadwaita::Dialog>().downgrade();
-        click.connect_pressed(move |gesture, _, x, y| {
-            let (Some(window), Some(dialog)) = (window.upgrade(), weak.upgrade()) else {
-                return;
-            };
-            if window.visible_dialog().as_ref() != Some(&dialog) {
-                return;
-            }
-            // The dialog widget spans the window, dimmed backdrop included;
-            // its child is the visible card.
-            let point = gtk4::graphene::Point::new(x as f32, y as f32);
-            let inside = dialog
-                .child()
-                .and_then(|card| card.compute_bounds(&window))
-                .is_some_and(|bounds| bounds.contains_point(&point));
-            if !inside {
-                gesture.set_state(gtk4::EventSequenceState::Claimed);
-                dialog.close();
-            }
-        });
-        self.add_controller(click.clone());
-        let window = self.downgrade();
-        dialog.connect_closed(move |_| {
-            if let Some(window) = window.upgrade() {
-                window.remove_controller(&click);
-            }
-        });
     }
 
     /// Undo for the filmstrip's trash (D25): puts `paths` back on a worker,
@@ -3062,10 +3020,6 @@ impl SharprWindow {
             });
         }
 
-        let builder = gtk4::Builder::from_resource("/io/github/hebbihebb/Sharpr/help-overlay.ui");
-        let help_overlay: gtk4::ShortcutsWindow = builder.object("help_overlay").unwrap();
-        self.set_help_overlay(Some(&help_overlay));
-
         {
             let weak = self.downgrade();
             preview_search_entry.set_placeholder_text(Some("Describe images, or 4k png 16:9…"));
@@ -4410,7 +4364,7 @@ impl SharprWindow {
         // ───────────────────────────────────────────────────────────────────────────────────────────────────
         // win.find-duplicates      Find Duplicates               —                                always
         // win.show-tags            Browse Tags                   —                                always
-        // win.show-help-overlay    Keyboard Shortcuts            —                                always (built-in)
+        // win.show-help-overlay    Keyboard Shortcuts            <Ctrl>question                   always
         // win.toggle-presentation  Toggle Presentation Mode      F11 (ShortcutController)         always
         // win.zoom-mode            Zoom Mode (stateful: fit/1:1) <Ctrl>0 fit (ShortcutController) always
         // win.show-metadata        Show Metadata Overlay         <Alt>Return (ShortcutController) always
@@ -4482,6 +4436,21 @@ impl SharprWindow {
         }
         self.add_action(&manual_action);
 
+        // Keep the existing menu action and GTK's help key binding, but
+        // present a sheet in this window so it inherits Sharpr's look.
+        let shortcuts_action = gio::SimpleAction::new("show-help-overlay", None);
+        let window_weak = self.downgrade();
+        shortcuts_action.connect_activate(move |_, _| {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            let builder =
+                gtk4::Builder::from_resource("/io/github/hebbihebb/Sharpr/help-overlay.ui");
+            let dialog: libadwaita::ShortcutsDialog = builder.object("help_overlay").unwrap();
+            dialog.present(Some(&window));
+        });
+        self.add_action(&shortcuts_action);
+
         let pref_action = gio::SimpleAction::new("show-preferences", None);
         {
             let window_weak = self.downgrade();
@@ -4491,8 +4460,8 @@ impl SharprWindow {
                     return;
                 };
                 let settings = state_c.borrow().settings.clone();
-                let prefs = build_preferences_window(&settings, &window);
-                prefs.present();
+                let prefs = build_preferences_dialog(&settings, &window);
+                prefs.present(Some(&window));
             });
         }
         self.add_action(&pref_action);

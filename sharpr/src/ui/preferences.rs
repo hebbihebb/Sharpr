@@ -8,14 +8,13 @@ use libadwaita::prelude::*;
 use crate::config::{AppSettings, FolderMode, LibraryConfig};
 use crate::ui::window::SharprWindow;
 
-pub fn build_preferences_window(
+pub fn build_preferences_dialog(
     settings: &AppSettings,
     parent: &SharprWindow,
-) -> libadwaita::PreferencesWindow {
-    let window = libadwaita::PreferencesWindow::new();
-    window.set_title(Some("Preferences"));
-    window.set_transient_for(Some(parent.upcast_ref::<gtk4::Window>()));
-    window.set_modal(true);
+) -> libadwaita::PreferencesDialog {
+    let dialog = libadwaita::PreferencesDialog::new();
+    dialog.set_title("Preferences");
+    dialog.add_css_class("sharpr-sheet");
 
     let library_page = libadwaita::PreferencesPage::new();
     library_page.set_title("Library");
@@ -34,6 +33,7 @@ pub fn build_preferences_window(
     add_library_row.set_title("Add Library");
     add_library_row.set_subtitle("Create another library root and folder mode");
     let add_button = gtk4::Button::with_label("Create…");
+    add_button.set_valign(gtk4::Align::Center);
     add_library_row.add_suffix(&add_button);
     add_library_row.set_activatable_widget(Some(&add_button));
     {
@@ -53,6 +53,7 @@ pub fn build_preferences_window(
     coll_export_row.set_title("Export Collections");
     coll_export_row.set_subtitle("Save collection hierarchy and image assignments to a JSON file");
     let coll_export_button = gtk4::Button::with_label("Export…");
+    coll_export_button.set_valign(gtk4::Align::Center);
     coll_export_row.add_suffix(&coll_export_button);
     coll_export_row.set_activatable_widget(Some(&coll_export_button));
     {
@@ -67,6 +68,7 @@ pub fn build_preferences_window(
     coll_import_row
         .set_subtitle("Restore from a previously exported file; existing collections are kept");
     let coll_import_button = gtk4::Button::with_label("Import…");
+    coll_import_button.set_valign(gtk4::Align::Center);
     coll_import_row.add_suffix(&coll_import_button);
     coll_import_row.set_activatable_widget(Some(&coll_import_button));
     {
@@ -98,7 +100,7 @@ pub fn build_preferences_window(
     library_page.add(&collections_group);
     library_page.add(&build_visual_search_group(parent));
 
-    window.add(&library_page);
+    dialog.add(&library_page);
 
     let appearance_page = libadwaita::PreferencesPage::new();
     appearance_page.set_title("Appearance");
@@ -148,9 +150,9 @@ pub fn build_preferences_window(
     appearance_group.add(&metadata_row);
     appearance_group.add(&cache_row);
     appearance_page.add(&appearance_group);
-    window.add(&appearance_page);
+    dialog.add(&appearance_page);
 
-    window
+    dialog
 }
 
 /// Indexing progress, and where to install the model (D23).
@@ -211,6 +213,7 @@ fn build_library_row(
     row.set_title(&library.name);
     row.set_subtitle(&library_subtitle(library));
     let edit_button = gtk4::Button::with_label("Edit…");
+    edit_button.set_valign(gtk4::Align::Center);
     row.add_suffix(&edit_button);
     row.set_activatable_widget(Some(&edit_button));
     let library_id = library.id.clone();

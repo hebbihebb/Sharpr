@@ -578,15 +578,34 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 **Status (October 15): steps 0–2b done; the look is committed (`cb57749`..`52595e5`), not deployed.**
 - **Step 0, the map:** 83 controls marked by the user. **Step 2a, research:** 18 ideas, 15 wanted. **Step 2b, the look:** the hybrid (D26), then the Sharpr design language (D27), built in two prototype passes and tried hands-on by the user on a copy of the library ("all in all i like it").
-- **Built so far:** I6, I7, I12, I14, I15, I17 (in part: the library switcher and Open Folder are hidden), the combined Sort and Filter with chips (option A), the readout face, restyled chips and pill, and key hints.
+- **Built so far:** I6, I7, I8 (Preferences and Shortcuts), I12, I14, I15, I17 (in part: the library switcher and Open Folder are hidden), the combined Sort and Filter with chips (option A), the readout face, restyled chips and pill, and key hints.
 - **Finishing touches** (user's trial, October 15, plus code):
-  - Preferences and Keyboard Shortcuts are separate windows on deprecated parts (`AdwPreferencesWindow`, `GtkShortcutsWindow`), so the look's stylesheet, scoped to the main window, never reaches them: the user saw Preferences keep the plain Libadwaita look and font while the in-window sheets (Find Copies, Library Overview, the Manual) changed. They become sheets in the main window (`AdwPreferencesDialog`, `AdwShortcutsDialog`), in Sharpr's style (I8). First in line.
+  - **Implemented: Preferences and Keyboard Shortcuts as styled sheets (I8).** They now use `AdwPreferencesDialog` and `AdwShortcutsDialog` in the main window, inheriting the approved monospace face and compact styling. The old separate windows missed this styling. Nested library editors return to Preferences; the settings controls and existing menu actions are retained, with Ctrl+? for shortcuts. The unused click-outside helper is removed. Verified by `cargo build`, `./check.sh` (211 regular tests), all 12 GTK tests, and light/dark screenshots at 1024×600 and 1600×900; not deployed or accepted.
   - Bundle JetBrains Mono (OFL) for other machines and the Flatpak; today it comes from the user's system.
   - In Compare and crop, the viewer's bar still shows search; the mode's own controls belong there.
   - Size filters from the old Filter popover (minimum width and height) are gone; size chips such as `4k` replace them.
-  - Remove the prototype leftovers: the unused click-outside helper and the old Filter popover.
+  - Remove the hidden old Filter popover; the unused click-outside helper is already removed.
   - Hands-on trials pass `~/.local/share/icons` through: isolating the data folder hid the user's "dreams" icon theme, which is why icons drew broken and the menu showed ≡ instead of "…".
 - **Next:** the finishing touches, then proposals for the behaviour ideas (I1–I5, I10, I13).
+
+**Evidence and user choices, retained from the handoff:**
+
+- **Step 0, the map: published October 15** at https://claude.ai/artifact/1uJDcNEQbrAcTRZ6GXp6jQ (private). It has 83 controls in 10 areas, 30 screenshots, two diagrams, 9 counted tasks, and 18 observations (N1–N18). The user's marks and notes save in the page's database (`marks/<control id>`, `notes/general`); read them back with ArtifactData before the review.
+- **Screenshots** come from the `interface_tour_screenshots` GTK test (`8d6111b`), which writes `tour/` beside the fixtures. Rerun it after interface changes for before-and-after pictures.
+- **The user's marks (October 15), 82 of 83:**
+  - **Daily:** Filter, Sort, the folder tree, buckets, type to search, chips, minus words, right-click Add to Collection and Compare, scroll zoom and pan, the Compare split divider.
+  - **Never:** the Library and Photos titles, Open Folder, the library switcher, the indexing ring, every Show Overlay switch, Fit and 1:1 in ≡, Presentation (F11), right-click Info, Rename, Whole library, Show More, the Manual, Shortcuts, About, the two tag tools, and Preferences' libraries, collections, and cache.
+  - **Confusing:** Compare's `[` `]` dismiss keys ("bad shortcut key, not easy to find on keyboard") and its "4 of 4 left" with Undo.
+  - **Notes:** "dialogs and right click menus are chunky"; the overlay "would be better to be contextual or appear on hover"; zoom by scroll wheel alone "works well"; double-click for full screen; the window is usually maximized, and closing it quits.
+  - **How the filmstrip is used:** to scroll fast through many images with the scroll wheel or by dragging the small scrollbar handle, finding and reviewing by eye. Arrow keys would be far too slow; they suit left-and-right stepping where that applies.
+  - **Icons (N16):** the sidebar toggle, the menu button, and the Appearance tab render in the real app, so the broken icons are a test-window artifact. The real menu button shows "…", not ≡ (the test window uses a different icon theme).
+- **Step 2a, research: published October 15** at https://claude.ai/artifact/1eX3MVj6LwfafrLeTYyaKd (private). It covers Lightroom, darktable, FastRawViewer, Eagle, Photo Mechanic, Google Photos and Immich, Loupe, Strata and Zed, with sources. It has 18 ideas (I1–I18), with Want / Maybe / No reactions saved in `reactions/<idea id>`. Its reading of the evidence: the hybrid look.
+- **The user's reactions (October 15), all 18:**
+  - **Want:** I1 fast-scroll handle; I2 arrow keys pick the Compare winner; I3 a thumbnail row instead of "4 of 4 left"; I4 a key for Compare; I5 Survey view; I6 compact menus; I7 pickers as popups; I8 one dialog style; I10 add to the last bucket; I12 the chip on pointer movement; I13 hover grows the chip into Info; I14 a neutral dark canvas; I15 one top row; I17 remove unused controls; I18 one Help item and a slimmer main menu.
+  - **Maybe:** I9 a type-to-filter bucket picker; I16 a sort button that names its sort.
+  - **No:** I11 number keys for buckets.
+- **Look comparisons:** https://claude.ai/artifact/NKxHfeUMzB6YCrVo2EZvWs (private). D26–D27 record the chosen hybrid, monospace everywhere, aligned columns, and filter chips. The trial data lives in `.tmp/look-trial/`.
+- **Behavior ideas still needing proposals:** I1 fast-scroll handle; I2 arrows pick the Compare winner; I3 candidate thumbnails replace “4 of 4 left”; I4 a Compare shortcut; I5 Survey view; I10 add to the last bucket; I13 expand the readout into Info on hover.
 
 **Added October 14 at the user's request.** Placed near the end, "but no less important".
 
