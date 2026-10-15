@@ -2,9 +2,12 @@
 
 ## Awaiting acceptance: Phase 9 interface review (October 15, 2026)
 
-**Deployed:** the desktop launcher runs `679bbe1` (installed October 15, 21:03);
-`ef91d32` stays installed for rollback. The user's final manual pass is pending.
-The user wants to merge into `main` after it; merge only once they accept.
+**Deployed:** the desktop launcher runs `2b5f070`; `679bbe1` and `ef91d32` stay
+installed for rollback. The user's pass of `679bbe1` accepted Phases 4–7 and most
+of Phase 9 (`ROADMAP.md`). Since then: the Info readout tooltip is gone and the
+fast-scroll column shrank from 46 to 14 px. Open: Survey "does nothing" in the
+user's try (it needs two or more selected images and is silent otherwise; ask
+how it was tried). The user wants to merge into `main` once Phase 9 is accepted.
 
 **Approved scope:** complete Phase 9, then install its test build, with off-screen
 screenshots preferred (D30). The user explicitly confirmed Survey as a way to
