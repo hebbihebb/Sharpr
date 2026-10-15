@@ -14,7 +14,7 @@ The user asked Codex to review Claude's UI work and continue. Started from a cle
 
 **Accepted: WebP export sheet** (`fde5a52`, user test October 15). The compact form stays on the main window's surface during folder selection; the failed popup recreation and recovery toast are removed. Click-away still cancels. Verified by full checks (211 tests), all 14 GTK tests, Select/Cancel and same-surface checks, actual two-image export, original-byte preservation, and light/dark screenshots at both sizes. Crop also worked for the user. Not deployed. The subsequent Compare and Preferences/Shortcuts checks also passed; the current UI units are accepted. Phase 9 remains active for the planned work below.
 
-**Next implementation:** remove the hidden old Filter popover. Then propose the remaining behavior ideas (I1, I3–I5, I10, I13) before implementing them. The full plan, outstanding observations, user reactions, and acceptance criteria are in `ROADMAP.md` Phase 9. The one-library-root change remains planned there.
+**Next implementation, planned only:** remove the detached old Filter widgets, their callback/reset wiring and unused independent dimension-filter state. Keep dimension caching, aspect sorting and chip semantics. Replace the GTK test that injects hidden state with coverage of the actual Sort and Filter action and chip removal/restoration. Small research pass complete; the bounded scope and verification plan are in `ROADMAP.md` Phase 9. No implementation started. Compare thumbnails/shortcut and the remaining ideas (I1, I3–I5, I10, I13), plus one-library-root work, remain separate proposals.
 
 ## Earlier work and acceptance
 
