@@ -125,10 +125,19 @@ pub enum Aspect {
     Square,
     /// Width:height within 2%, matching the existing 16:9 filter's tolerance.
     Ratio(u32, u32),
+    Narrower(u32, u32),
+    Wider(u32, u32),
 }
 
 impl Aspect {
     fn parse(word: &str) -> Option<Self> {
+        if let Some(rest) = word.strip_prefix('<').or_else(|| word.strip_prefix('>')) {
+            return match Self::parse(rest)? {
+                Self::Ratio(a, b) if word.starts_with('<') => Some(Self::Narrower(a, b)),
+                Self::Ratio(a, b) => Some(Self::Wider(a, b)),
+                _ => None,
+            };
+        }
         Some(match word {
             "landscape" => Self::Landscape,
             "portrait" => Self::Portrait,
@@ -147,6 +156,8 @@ impl Aspect {
             Self::Landscape => w > h,
             Self::Portrait => h > w,
             Self::Square => w == h,
+            Self::Narrower(a, b) => u64::from(w) * u64::from(b) < u64::from(h) * u64::from(a),
+            Self::Wider(a, b) => u64::from(w) * u64::from(b) > u64::from(h) * u64::from(a),
             Self::Ratio(a, b) => {
                 ((w as f64 / h as f64) / (a as f64 / b as f64) - 1.0).abs() <= 0.020_000_000_1
             }
@@ -159,6 +170,8 @@ impl Aspect {
             Self::Portrait => "Portrait".into(),
             Self::Square => "Square".into(),
             Self::Ratio(a, b) => format!("{a}:{b}"),
+            Self::Narrower(a, b) => format!("Narrower than {a}:{b}"),
+            Self::Wider(a, b) => format!("Wider than {a}:{b}"),
         }
     }
 }
@@ -218,6 +231,8 @@ impl Chip {
                 Aspect::Portrait => "portrait".into(),
                 Aspect::Square => "square".into(),
                 Aspect::Ratio(a, b) => format!("{a}:{b}"),
+                Aspect::Narrower(a, b) => format!("<{a}:{b}"),
+                Aspect::Wider(a, b) => format!(">{a}:{b}"),
             },
             Self::Not(_) | Self::Without(_) | Self::WithoutStrictly(_) => {
                 unreachable!("returned above")
@@ -232,6 +247,7 @@ impl Chip {
         match self {
             Self::Format(_) => Some(0),
             Self::AtLeast(_) | Self::Below(_) => Some(1),
+            Self::Aspect(Aspect::Narrower(..) | Aspect::Wider(..)) => None,
             Self::Aspect(_) => Some(2),
             Self::Not(_) | Self::Without(_) | Self::WithoutStrictly(_) => None,
         }
@@ -330,7 +346,9 @@ fn parse_words(words: &[&str]) -> ParsedQuery {
             i += 1;
             Some(Chip::Below(resolution))
         } else if let Some(rest) = lower.strip_prefix('<') {
-            Resolution::parse(rest).map(Chip::Below)
+            Resolution::parse(rest)
+                .map(Chip::Below)
+                .or_else(|| Aspect::parse(&lower).map(Chip::Aspect))
         } else if let Some(rest) = lower
             .strip_prefix("--")
             .filter(|r| !r.is_empty() && !r.starts_with('-'))
@@ -449,6 +467,8 @@ const SUGGESTED_WORDS: &[&str] = &[
     "below 1080p",
     "16:9",
     "21:9",
+    "<16:9",
+    ">16:9",
     "16:10",
     "4:3",
     "3:2",
@@ -511,6 +531,30 @@ pub fn apply_suggestion(input: &str, suggestion: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aspect_comparisons_form_strict_ranges_without_rounding() {
+        let filters = ChipFilters {
+            chips: parse(">4:3 <16:9").chips,
+        };
+        let path = Path::new("/images/wallpaper.png");
+        assert!(filters.matches(path, Some((1600, 1000))));
+        assert!(!filters.matches(path, Some((1600, 900))));
+        assert!(!filters.matches(path, Some((1600, 1200))));
+        assert!(!filters.matches(path, Some((2400, 900))));
+        assert!(!filters.matches(path, Some((900, 1600))));
+        assert!(!filters.matches(path, None));
+        assert!(!filters.matches(path, Some((0, 0))));
+        let wider = ChipFilters {
+            chips: parse(">16:9").chips,
+        };
+        assert!(wider.matches(path, Some((u32::MAX, u32::MAX / 2))));
+        assert_eq!(parse("<16:9").chips[0].as_literal(), "\"<16:9\"");
+        assert_eq!(
+            parse("<4k").chips,
+            vec![Chip::Below(Resolution::parse("4k").unwrap())]
+        );
+    }
 
     fn four_k() -> Resolution {
         Resolution::parse("4k").unwrap()

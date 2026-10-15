@@ -154,13 +154,13 @@ pub(super) fn show_new_collection_dialog<F>(
 ) where
     F: Fn() + Clone + 'static,
 {
-    let dialog = libadwaita::AlertDialog::new(Some("New Collection"), None);
+    let dialog = libadwaita::AlertDialog::new(Some("New Bucket"), None);
     dialog.add_response("create", "Create");
     dialog.set_default_response(Some("create"));
     dialog.set_close_response("cancel");
     dialog.set_response_appearance("create", libadwaita::ResponseAppearance::Suggested);
     let name_entry = gtk4::Entry::new();
-    name_entry.set_placeholder_text(Some("Collection name"));
+    name_entry.set_placeholder_text(Some("Bucket name"));
     name_entry.set_text(&initial_name);
     let (color_swatch_row, selected_color) = build_color_swatch_row(None);
     let entry_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -243,7 +243,7 @@ pub(super) fn show_rename_collection_dialog<F>(
         return;
     };
 
-    let dialog = libadwaita::AlertDialog::new(Some("Rename Collection"), None);
+    let dialog = libadwaita::AlertDialog::new(Some("Rename Bucket"), None);
     dialog.add_response("save", "Save");
     dialog.set_default_response(Some("save"));
     dialog.set_close_response("cancel");
@@ -353,7 +353,7 @@ pub(super) fn show_change_color_dialog<F>(
         return;
     };
 
-    let dialog = libadwaita::AlertDialog::new(Some("Change Collection Color"), None);
+    let dialog = libadwaita::AlertDialog::new(Some("Change Bucket Color"), None);
     dialog.add_response("save", "Save");
     dialog.set_default_response(Some("save"));
     dialog.set_close_response("cancel");
@@ -384,7 +384,7 @@ pub(super) fn show_change_color_dialog<F>(
                 let before = idx
                     .collection(id)
                     .map_err(|e| e.to_string())?
-                    .ok_or("Collection no longer exists")?;
+                    .ok_or("Bucket no longer exists")?;
                 idx.update_collection(
                     id,
                     &before.name,

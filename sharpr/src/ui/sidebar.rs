@@ -313,13 +313,13 @@ impl SidebarPane {
 
         self.populate_default_folders(state.clone());
 
-        // Collections section header: label + "New Collection" + button
+        // Collections section header: label + "New Bucket" + button
         let collections_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-        let collections_label = section_label("Collections");
+        let collections_label = section_label("Buckets");
         collections_label.set_hexpand(true);
         let new_collection_btn = gtk4::Button::from_icon_name("list-add-symbolic");
         new_collection_btn.add_css_class("flat");
-        new_collection_btn.set_tooltip_text(Some("New Collection"));
+        new_collection_btn.set_tooltip_text(Some("New Bucket"));
         new_collection_btn.set_valign(gtk4::Align::Center);
         new_collection_btn.set_margin_end(8);
         collections_header.append(&collections_label);
@@ -817,13 +817,13 @@ impl SidebarPane {
             move_section.append(Some("Promote to Top Level"), Some("collection.promote"));
         }
         move_section.append(
-            Some("Move into Collection\u{2026}"),
+            Some("Move into Bucket\u{2026}"),
             Some("collection.move-into"),
         );
         menu.append_section(None, &move_section);
 
         let delete_section = gio::Menu::new();
-        delete_section.append(Some("Delete Collection"), Some("collection.delete"));
+        delete_section.append(Some("Delete Bucket"), Some("collection.delete"));
         menu.append_section(None, &delete_section);
 
         let popover = gtk4::PopoverMenu::from_model(Some(&menu));
@@ -904,7 +904,7 @@ impl SidebarPane {
             let body = format!(
                 "\u{201c}{name}\u{201d} and any child collections will be removed from the sidebar. The images themselves are not touched."
             );
-            let dialog = libadwaita::AlertDialog::new(Some("Delete Collection?"), Some(&body));
+            let dialog = libadwaita::AlertDialog::new(Some("Delete Bucket?"), Some(&body));
             dialog.add_response("cancel", "Cancel");
             dialog.add_response("delete", "Delete");
             dialog.set_close_response("cancel");

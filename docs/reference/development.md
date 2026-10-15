@@ -21,6 +21,13 @@ Debug builds are unoptimized, so image decoding and filmstrip speed look much sl
 
 ## Tests
 
+For screenshots and GTK checks without desktop windows, prefix the command
+with `python3 ../tools/gtk-offscreen.py --`. It starts the installed Mutter in
+headless mode with a private D-Bus session and runtime directory, then cleans
+up its compositor. Pass the isolated XDG/fixture/schema variables below as
+usual. No additional packages are installed. The GTK renderer uses Cairo;
+compare performance only against a baseline using the same runner/backend.
+
 ```bash
 cargo nextest run                     # whole suite (cargo test works if nextest is unavailable)
 cargo nextest run <name-filter>       # targeted tests

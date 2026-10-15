@@ -120,6 +120,8 @@ fn sort_and_filter_menu(sort: &gio::MenuModel) -> gio::Menu {
         ("Square", "square"),
         ("16:9", "16:9"),
         ("Not 16:9", "-16:9"),
+        ("Narrower than 16:9", "<16:9"),
+        ("Wider than 16:9", ">16:9"),
         ("4K and Larger", "4k"),
     ] {
         let item = gio::MenuItem::new(Some(label), None);
@@ -1200,7 +1202,7 @@ impl SharprWindow {
         };
 
         let dialog = gtk4::FileDialog::new();
-        dialog.set_title("Export Collections");
+        dialog.set_title("Export Buckets");
 
         let now = glib::DateTime::now_local().unwrap();
         let filename = format!(
@@ -1228,9 +1230,8 @@ impl SharprWindow {
                                             "Export failed: {e}"
                                         )));
                                     } else {
-                                        window.add_toast(libadwaita::Toast::new(
-                                            "Collections exported",
-                                        ));
+                                        window
+                                            .add_toast(libadwaita::Toast::new("Buckets exported"));
                                     }
                                 }
                                 Err(e) => {
@@ -1262,7 +1263,7 @@ impl SharprWindow {
         };
 
         let dialog = gtk4::FileDialog::new();
-        dialog.set_title("Import Collections");
+        dialog.set_title("Import Buckets");
 
         let filter = gtk4::FileFilter::new();
         filter.set_name(Some("JSON files"));
@@ -2244,7 +2245,7 @@ impl SharprWindow {
         // Populate sidebar collections on startup.
         refresh_sidebar_collections();
 
-        // "New Collection" + button → create root collection metadata.
+        // "New Bucket" + button → create root collection metadata.
         {
             let state_c = state.clone();
             let toast_overlay_c = toast_overlay.clone();
@@ -2521,7 +2522,7 @@ impl SharprWindow {
                     return;
                 }
 
-                let dialog = libadwaita::AlertDialog::new(Some("Move into Collection"), None);
+                let dialog = libadwaita::AlertDialog::new(Some("Move into Bucket"), None);
                 dialog.add_response("cancel", "Cancel");
                 dialog.set_close_response("cancel");
                 let list_box = gtk4::ListBox::new();
@@ -3181,7 +3182,7 @@ impl SharprWindow {
             });
         }
 
-        // "Add to Collection…" context menu → pick / create collection → add paths.
+        // "Add to Bucket…" context menu → pick / create collection → add paths.
         {
             let state_c = state.clone();
             let toast_overlay_c = toast_overlay.clone();
@@ -3219,9 +3220,9 @@ impl SharprWindow {
                 list_box.add_css_class("boxed-list");
                 list_box.set_selection_mode(gtk4::SelectionMode::None);
 
-                // "New Collection…" entry at top
+                // "New Bucket…" entry at top
                 let new_row = gtk4::ListBoxRow::new();
-                let new_label = gtk4::Label::new(Some("New Collection\u{2026}"));
+                let new_label = gtk4::Label::new(Some("New Bucket\u{2026}"));
                 new_label.set_halign(gtk4::Align::Start);
                 new_label.set_margin_top(8);
                 new_label.set_margin_bottom(8);
@@ -3318,7 +3319,7 @@ impl SharprWindow {
                         if let Some(popover) = popover_weak.upgrade() {
                             popover.popdown();
                         }
-                        let new_dialog = libadwaita::AlertDialog::new(Some("New Collection"), None);
+                        let new_dialog = libadwaita::AlertDialog::new(Some("New Bucket"), None);
                         new_dialog.add_response("cancel", "Cancel");
                         new_dialog.add_response("create", "Create");
                         new_dialog.set_default_response(Some("create"));
@@ -3328,7 +3329,7 @@ impl SharprWindow {
                             libadwaita::ResponseAppearance::Suggested,
                         );
                         let entry = gtk4::Entry::new();
-                        entry.set_placeholder_text(Some("Collection name"));
+                        entry.set_placeholder_text(Some("Bucket name"));
                         let eb = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
                         eb.set_margin_top(6);
                         eb.append(&entry);

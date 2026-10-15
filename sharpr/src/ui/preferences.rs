@@ -47,10 +47,10 @@ pub fn build_preferences_dialog(
     library_page.add(&library_group);
 
     let collections_group = libadwaita::PreferencesGroup::new();
-    collections_group.set_title("Collections");
+    collections_group.set_title("Buckets");
 
     let coll_export_row = libadwaita::ActionRow::new();
-    coll_export_row.set_title("Export Collections");
+    coll_export_row.set_title("Export Buckets");
     coll_export_row.set_subtitle("Save collection hierarchy and image assignments to a JSON file");
     let coll_export_button = gtk4::Button::with_label("Export…");
     coll_export_button.set_valign(gtk4::Align::Center);
@@ -64,7 +64,7 @@ pub fn build_preferences_dialog(
     }
 
     let coll_import_row = libadwaita::ActionRow::new();
-    coll_import_row.set_title("Import Collections");
+    coll_import_row.set_title("Import Buckets");
     coll_import_row
         .set_subtitle("Restore from a previously exported file; existing collections are kept");
     let coll_import_button = gtk4::Button::with_label("Import…");

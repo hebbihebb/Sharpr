@@ -518,7 +518,7 @@ impl SharprWindow {
 
     /// "Add to Bucket…": the selection when there is one; otherwise the
     /// user picks the strong matches or everything shown. The bucket picker
-    /// (with "New Collection…") follows, so three actions make a bucket.
+    /// (with "New Bucket…") follows, so three actions make a bucket.
     pub(super) fn add_search_results_to_bucket(&self) {
         let Some(filmstrip) = self.imp().filmstrip.borrow().clone() else {
             return;

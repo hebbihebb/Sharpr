@@ -95,13 +95,13 @@ fn build_context_menu_model(in_collection: bool, is_multi: bool) -> gio::Menu {
 
     let sec2 = gio::Menu::new();
     sec2.append_item(&menu_item(
-        "Add to Collection\u{2026}",
+        "Add to Bucket\u{2026}",
         "filmstrip.add-to-collection",
         None,
     ));
     if in_collection {
         sec2.append_item(&menu_item(
-            "Remove from Collection",
+            "Remove from Bucket",
             "filmstrip.remove-from-collection",
             None,
         ));
@@ -481,7 +481,7 @@ impl FilmstripPane {
         imp.save_search_btn.add_css_class("flat");
         imp.save_search_btn.set_valign(gtk4::Align::Center);
         imp.save_search_btn
-            .set_tooltip_text(Some("Save search as Collection"));
+            .set_tooltip_text(Some("Save search as Bucket"));
         search_row.append(&imp.save_search_btn);
         imp.search_bar.set_child(Some(&search_row));
         imp.search_bar.set_show_close_button(true);
@@ -824,6 +824,11 @@ impl FilmstripPane {
             .set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
         imp.scroll.set_vexpand(true);
         imp.scroll.set_hexpand(true);
+        imp.scroll.set_overlay_scrolling(false);
+        let fast_scroll = imp.scroll.vscrollbar();
+        fast_scroll.add_css_class("sharpr-fast-scroll");
+        fast_scroll.set_tooltip_text(Some("Drag to jump through the images"));
+        fast_scroll.update_property(&[gtk4::accessible::Property::Label("Browse images")]);
         imp.scroll.set_child(Some(&imp.list_view));
 
         imp.content_stack.add_named(&imp.scroll, Some("list"));

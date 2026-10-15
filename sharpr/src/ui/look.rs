@@ -211,6 +211,15 @@ window.sharpr .metadata-osd-buckets {
 }
 
 /* Key hints in Compare and crop. */
+window.sharpr scrollbar.sharpr-fast-scroll.vertical {
+  min-width: 14px;
+}
+window.sharpr scrollbar.sharpr-fast-scroll.vertical slider {
+  min-width: 10px;
+  min-height: 44px;
+  margin: 2px;
+  border-radius: 4px;
+}
 window.sharpr .compare-candidates listview {
   background: transparent;
 }

@@ -1078,7 +1078,7 @@ fn visual_search_ranks_by_content() {
         window.visible_dialog().is_some_and(|d| {
             d.downcast_ref::<libadwaita::AlertDialog>()
                 .and_then(|d| d.heading())
-                .is_some_and(|h| h.as_str() == "Add to Collection")
+                .is_some_and(|h| h.as_str() == "Add to Bucket")
         })
     });
     // Clicking a bucket only ticks it; "Add" adds.
@@ -1100,9 +1100,7 @@ fn visual_search_ranks_by_content() {
         index.all_bucket_members().unwrap().len()
     };
     let before = members();
-    let row = list
-        .row_at_index(1)
-        .expect("a bucket row after New Collection");
+    let row = list.row_at_index(1).expect("a bucket row after New Bucket");
     list.emit_by_name::<()>("row-activated", &[&row]);
     let settle = std::time::Instant::now();
     pump_until(|| settle.elapsed() > std::time::Duration::from_millis(300));
@@ -2774,7 +2772,7 @@ fn interface_tour_screenshots() {
     close_dialog();
     let new_bucket = find_widgets::<gtk4::Button>(sidebar.upcast_ref())
         .into_iter()
-        .find(|b| b.tooltip_text().as_deref() == Some("New Collection"))
+        .find(|b| b.tooltip_text().as_deref() == Some("New Bucket"))
         .unwrap();
     new_bucket.emit_clicked();
     pump_until(|| window.visible_dialog().is_some());

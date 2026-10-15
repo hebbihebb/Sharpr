@@ -18,7 +18,7 @@ impl SharprWindow {
             )
         };
         let Some(index) = index else {
-            self.add_toast(libadwaita::Toast::new("Collection database is unavailable"));
+            self.add_toast(libadwaita::Toast::new("Bucket database is unavailable"));
             return;
         };
         let count = paths.len();
@@ -87,7 +87,7 @@ impl SharprWindow {
             )
         };
         let Some(index) = index else {
-            self.add_toast(libadwaita::Toast::new("Collection database is unavailable"));
+            self.add_toast(libadwaita::Toast::new("Bucket database is unavailable"));
             return;
         };
         let (tx, rx) = async_channel::bounded(1);
