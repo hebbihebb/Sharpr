@@ -58,7 +58,11 @@ Approach agreed with the user (`ROADMAP.md` Phase 9, "The user's direction"): th
   - **How the filmstrip is used:** to scroll fast through many images with the scroll wheel or by dragging the small scrollbar handle, finding and reviewing by eye. Arrow keys would be far too slow; they suit left-and-right stepping where that applies.
   - **Icons (N16):** the sidebar toggle, the menu button, and the Appearance tab render in the real app, so the broken icons are a test-window artifact. The real menu button shows "…", not ≡ (the test window uses a different icon theme).
 - **Step 2a, research: published October 15** at https://claude.ai/artifact/1eX3MVj6LwfafrLeTYyaKd (private). It covers Lightroom, darktable, FastRawViewer, Eagle, Photo Mechanic, Google Photos and Immich, Loupe, Strata and Zed, with sources. It has 18 ideas (I1–I18), with Want / Maybe / No reactions saved in `reactions/<idea id>`. Its reading of the evidence: the hybrid look.
-- **Next:** the user's reactions, then the look prototype (step 2b) on a separate branch.
+- **The user's reactions (October 15), all 18:**
+  - **Want:** I1 fast-scroll handle; I2 arrow keys pick the Compare winner; I3 a thumbnail row instead of "4 of 4 left"; I4 a key for Compare; I5 Survey view; I6 compact menus; I7 pickers as popups; I8 one dialog style; I10 add to the last bucket; I12 the chip on pointer movement; I13 hover grows the chip into Info; I14 a neutral dark canvas; I15 one top row; I17 remove unused controls; I18 one Help item and a slimmer main menu.
+  - **Maybe:** I9 a type-to-filter bucket picker; I16 a sort button that names its sort.
+  - **No:** I11 number keys for buckets.
+- **Next:** the look prototype (step 2b) on a separate branch: the visual ideas (I6, I7, I14, I15, and I12 if cheap) built in the hybrid style, screenshotted beside today's Sharpr and Strata for the Libadwaita decision. Behaviour ideas (Compare keys, I1, I10) wait for proposals.
 
 ## State (October 14, 2026)
 
