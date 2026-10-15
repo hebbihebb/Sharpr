@@ -42,9 +42,11 @@ The user asked for Phases 6, 7, and 8 to be finished, then a proper install to t
 2. **Click outside closes** the bucket picker, the "Add Search Results to a Bucket" choice, and the WebP export, like Cancel (`15b5d7e`).
 3. **Undo for filmstrip trash** (`475249c`): "Moved N images to the trash · Undo" for 10 seconds. Undo puts each file back by the freedesktop.org trash spec, never over a file now at its name. A file that can't return stays in the trash and is reported. In a folder view the folder reopens with the image selected; a bucket or search view shows it again when reopened.
 
-**Next:** install with the user's approval (backup first), then the user checks these three.
+**Install:** not now (user, October 15). It stays undeployed until the user asks.
 
-After the round: Phase 9 (interface review) starts with its inventory once the user confirms.
+## Next: Phase 9, Interface Review (October 15)
+
+Approach agreed with the user (`ROADMAP.md` Phase 9, "The user's direction"): the map and the user's marks first, then research, then an early look decision (Libadwaita kept, hybrid, or plain GTK4), then proposals. No build work until proposals are approved. First step: the map page.
 
 ## State (October 14, 2026)
 

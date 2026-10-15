@@ -580,7 +580,13 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 **Outcome:** Every control has one clear home, a name or recognisable icon, and a stable position. Nothing is duplicated without reason. Controls that matter only in a context appear in that context. Each change is a decision the user approved.
 
+**The user's direction (October 15):**
+- **The core is the filmstrip plus the big viewer.** The user calls it their one good design idea; every other control is judged by whether it serves or crowds it.
+- **No reference app exists**, which is why Sharpr was made. The user likes Strata and the Zed editor, and finds Libadwaita and GNOME Files limiting, with "strange conventions". Pure Rust on GNOME stays. Strata shows a pure Rust GTK4 app can have its own look without Libadwaita (Zed uses its own toolkit, so it is a reference for the look only).
+- **Plan approved by the user:** map, then the user's marks, then research, then the look decision, then proposals, then build.
+
 **Method:**
+0. **Map and marks.** A private page holds an overview diagram of the window and how its parts connect, one diagram per area, screenshots, and a table of every control. It also walks the user's real tasks (find, bucket, crop and export, clean up copies, compare, cull) and counts the steps each takes. The user marks each control "daily", "sometimes", "never", or "confusing", and notes GNOME or Libadwaita conventions that bother them. The inventory in step 1 feeds it.
 1. **Inventory.** GTK tests screenshot every surface and state: folder, bucket, search, chips, Compare, fullscreen, the empty library, dialogs, and menus. They do this at 1024×600 and at a wide size, in light and dark. Every control is listed with its location, label or icon, shortcut, and any duplicate.
 2. **Review** each control against these questions:
    - Is it duplicated or redundant?
@@ -588,6 +594,8 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
    - Should it always be visible, or appear only in context (principle 6, quiet interface)?
    - Can the keyboard reach it, with an accessible name?
    - Does it follow the GNOME HIG?
+2a. **Research,** aimed at the problems the marks find. Look: Strata, Zed, and one or two apps known for clean interfaces. Workflow: Lightroom's grid and compare views, Photo Mechanic's culling, and Eagle's collections. What to borrow, not what to copy.
+2b. **The look decision comes early** (the Libadwaita question below), because the proposals are mocked up in the chosen style. Options: keep Libadwaita and restyle; a hybrid that keeps its invisible parts (system light, dark, and accent, toasts, Preferences) and drops the conventions the user dislikes (separate header bars, alert dialogs for everything, the ≡ button); or plain GTK4 like Strata.
 3. **Proposals** go on a page with before-and-after screenshots, one yes/no decision each. Approved changes are recorded in the decision log, as D18 and D21 were.
 4. **Build** in small commits, with screenshot tests that hold the agreed layout.
 
