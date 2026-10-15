@@ -57,7 +57,7 @@ if tmp_link.is_symlink():
 tmp_link.symlink_to(short)
 os.replace(tmp_link, link)
 
-icon_dir = Path.home() / '.local/share/icons/hicolor/256x256/apps'
+icon_dir = Path.home() / '.local/share/icons/hicolor/512x512/apps'
 icon_dir.mkdir(parents=True, exist_ok=True)
 shutil.copy2(app / 'data/io.github.hebbihebb.Sharpr.png', icon_dir / 'io.github.hebbihebb.Sharpr.png')
 
