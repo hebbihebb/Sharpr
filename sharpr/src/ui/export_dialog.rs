@@ -21,6 +21,41 @@ fn folder_label(dir: &std::path::Path) -> String {
     }
 }
 
+// Retain D25's click-away cancellation for this quick export form. This is
+// the earlier dialog handler, scoped to export now that other pickers use
+// popovers. The window capture sees backdrop clicks without a native grab.
+fn close_on_click_outside(window: &SharprWindow, dialog: &libadwaita::Dialog) {
+    let click = gtk4::GestureClick::new();
+    click.set_name(Some("export-sheet-outside"));
+    click.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    let weak_window = window.downgrade();
+    let weak_dialog = dialog.downgrade();
+    click.connect_pressed(move |gesture, _, x, y| {
+        let (Some(window), Some(dialog)) = (weak_window.upgrade(), weak_dialog.upgrade()) else {
+            return;
+        };
+        if window.visible_dialog().as_ref() != Some(&dialog) {
+            return;
+        }
+        let point = gtk4::graphene::Point::new(x as f32, y as f32);
+        let inside = dialog
+            .child()
+            .and_then(|card| card.compute_bounds(&window))
+            .is_some_and(|bounds| bounds.contains_point(&point));
+        if !inside {
+            gesture.set_state(gtk4::EventSequenceState::Claimed);
+            dialog.close();
+        }
+    });
+    window.add_controller(click.clone());
+    let window = window.downgrade();
+    dialog.connect_closed(move |_| {
+        if let Some(window) = window.upgrade() {
+            window.remove_controller(&click);
+        }
+    });
+}
+
 pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
     if sources.is_empty() {
         return;
@@ -31,8 +66,6 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
     ));
 
     let count = sources.len();
-    // Look prototype: a compact popup at the pointer instead of a centred
-    // card (I7).
     let heading = gtk4::Label::new(Some(&if count == 1 {
         "Export Image as WebP".to_string()
     } else {
@@ -44,12 +77,20 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
     note.add_css_class("dim-label");
     note.add_css_class("caption");
     note.set_xalign(0.0);
-    let popover_cell: Rc<glib::WeakRef<gtk4::Popover>> = Rc::new(glib::WeakRef::new());
+    // Keep the form on the main window's surface while the native chooser
+    // opens and closes. Recreating a grabbing Wayland popup here can fail.
+    let dialog = libadwaita::Dialog::new();
+    dialog.add_css_class("sharpr-sheet");
+    dialog.set_title(&heading.label());
+    dialog.set_content_width(460);
+    dialog.set_presentation_mode(libadwaita::DialogPresentationMode::Floating);
 
     let group = libadwaita::PreferencesGroup::new();
     let folder_row = libadwaita::ActionRow::new();
     folder_row.set_title("Folder");
     folder_row.set_subtitle(&folder_label(&folder.borrow()));
+    folder_row.set_subtitle_lines(1);
+    folder_row.set_tooltip_text(Some(&folder.borrow().display().to_string()));
     let wallpapers = gtk4::Button::with_label("Wallpapers");
     wallpapers.set_valign(gtk4::Align::Center);
     wallpapers.add_css_class("flat");
@@ -60,6 +101,7 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
         wallpapers.connect_clicked(move |_| {
             *folder.borrow_mut() = wallpapers_dir();
             row.set_subtitle(&folder_label(&folder.borrow()));
+            row.set_tooltip_text(Some(&folder.borrow().display().to_string()));
         });
     }
     let choose = gtk4::Button::with_label("Choose…");
@@ -68,16 +110,10 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
         let folder = folder.clone();
         let row = folder_row.clone();
         let window = window.downgrade();
-        let popover_cell = popover_cell.clone();
         choose.connect_clicked(move |_| {
             let Some(window) = window.upgrade() else {
                 return;
             };
-            // The folder chooser is another window; the popup stays open.
-            let popover = popover_cell.upgrade();
-            if let Some(popover) = popover.as_ref() {
-                popover.set_autohide(false);
-            }
             let chooser = gtk4::FileDialog::new();
             chooser.set_initial_folder(Some(&gio::File::for_path(&*folder.borrow())));
             let folder = folder.clone();
@@ -85,10 +121,8 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
             chooser.select_folder(Some(&window), None::<&gio::Cancellable>, move |result| {
                 if let Some(path) = result.ok().and_then(|file| file.path()) {
                     row.set_subtitle(&folder_label(&path));
+                    row.set_tooltip_text(Some(&path.display().to_string()));
                     *folder.borrow_mut() = path;
-                }
-                if let Some(popover) = popover.as_ref() {
-                    popover.set_autohide(true);
                 }
             });
         });
@@ -137,27 +171,40 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
     buttons.append(&export);
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
     content.set_width_request(380);
-    content.append(&heading);
     content.append(&note);
     content.append(&group);
     content.append(&buttons);
-    let popover = window.popover_at_pointer(&content);
-    popover.set_default_widget(Some(&export));
-    popover_cell.set(Some(&popover));
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    note.set_wrap(true);
+    let header = libadwaita::HeaderBar::new();
+    header.set_title_widget(Some(&heading));
+    let scroll = gtk4::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .propagate_natural_height(true)
+        .child(&content)
+        .build();
+    let view = libadwaita::ToolbarView::new();
+    view.add_top_bar(&header);
+    view.set_content(Some(&scroll));
+    dialog.set_child(Some(&view));
+    dialog.set_default_widget(Some(&export));
     {
-        let popover = popover.downgrade();
+        let dialog = dialog.downgrade();
         cancel.connect_clicked(move |_| {
-            if let Some(popover) = popover.upgrade() {
-                popover.popdown();
+            if let Some(dialog) = dialog.upgrade() {
+                dialog.close();
             }
         });
     }
 
     let window_weak = window.downgrade();
-    let popover_weak = popover.downgrade();
+    let dialog_weak = dialog.downgrade();
     export.connect_clicked(move |_| {
-        if let Some(popover) = popover_weak.upgrade() {
-            popover.popdown();
+        if let Some(dialog) = dialog_weak.upgrade() {
+            dialog.close();
         }
         let Some(window) = window_weak.upgrade() else {
             return;
@@ -188,4 +235,6 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
             },
         );
     });
+    close_on_click_outside(window, &dialog);
+    dialog.present(Some(window));
 }

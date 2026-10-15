@@ -1145,8 +1145,11 @@ fn library_overview_counts_the_library() {
 /// job writes lossless WebP copies without touching the originals.
 #[test]
 #[ignore = "requires isolated GSettings/data directories and a graphical session"]
+#[allow(deprecated)] // Inspect GTK's native-chooser fallback in this process only.
 fn webp_export_runs_in_the_background() {
     let root = isolated_fixture("export");
+    // Exercise the real FileDialog callbacks without driving a host portal.
+    std::env::set_var("GDK_DEBUG", "no-portals");
     std::fs::create_dir_all(&root).unwrap();
     let mut sources = Vec::new();
     for (name, colour) in [("a.png", [200, 40, 40]), ("b.png", [40, 40, 200])] {
@@ -1160,6 +1163,9 @@ fn webp_export_runs_in_the_background() {
     libadwaita::init().unwrap();
     crate::register_resources();
     let mut settings = AppSettings::load();
+    let mut export_settings = settings.webp_export.clone();
+    export_settings.dir = Some(root.clone());
+    settings.set_webp_export(export_settings);
     settings.libraries.clear();
     settings
         .add_library("Test", root.clone(), FolderMode::TopLevel)
@@ -1176,45 +1182,149 @@ fn webp_export_runs_in_the_background() {
     pump_until(|| window.imp().state.borrow().library.image_count() == 2 && window.is_mapped());
 
     crate::ui::export_dialog::present(&window, sources.clone());
-    // Look prototype: the export is a popover, which closes on a click away
-    // by itself (I7). Never Export: it would go to the real Pictures folder,
-    // which an isolated test must never touch.
-    let picker = || {
-        find_widgets::<gtk4::Popover>(window.upcast_ref())
-            .into_iter()
-            .find(|p| p.is_visible() && p.has_css_class("sharpr-picker"))
-    };
-    pump_until(|| picker().is_some());
-    let popover = picker().unwrap();
-    assert!(popover.is_autohide(), "a click away closes it");
-    let heading = find_widgets::<gtk4::Label>(popover.upcast_ref())
-        .into_iter()
-        .find(|l| l.has_css_class("heading"))
-        .unwrap();
-    assert_eq!(heading.label().as_str(), "Export 2 Images as WebP");
-    let settle = std::time::Instant::now();
-    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
-    screenshot_widget(
-        &window,
-        popover.upcast_ref(),
-        &root.parent().unwrap().join("export-dialog.png"),
+    pump_until(|| window.visible_dialog().is_some());
+    let dialog = window.visible_dialog().unwrap();
+    assert!(dialog.has_css_class("sharpr-sheet"));
+    assert_eq!(dialog.title(), "Export 2 Images as WebP");
+    pump_until(|| dialog.is_mapped());
+    let main_surface = window.surface().unwrap();
+    assert_eq!(
+        dialog.native().unwrap().surface().as_ref(),
+        Some(&main_surface)
     );
-    popover.popdown();
-    pump_until(|| picker().is_none());
-
-    let out = root.parent().unwrap().join("export-out");
-    window.start_webp_export(
-        sources.clone(),
-        crate::export::batch::WebpOptions {
-            destination: out.clone(),
-            lossless: true,
-            quality: 90,
-            fit: Some((48, 48)),
-        },
+    assert!(!find_widgets::<gtk4::Popover>(window.upcast_ref())
+        .iter()
+        .any(|p| p.is_visible() && p.has_css_class("sharpr-picker")));
+    for (theme, scheme) in [
+        ("light", libadwaita::ColorScheme::ForceLight),
+        ("dark", libadwaita::ColorScheme::ForceDark),
+    ] {
+        libadwaita::StyleManager::default().set_color_scheme(scheme);
+        for (width, height) in [(1600, 900), (1024, 600)] {
+            window.set_default_size(width, height);
+            pump_until(|| window.width() == width && window.height() == height);
+            settle(250);
+            let bounds = dialog.child().unwrap().compute_bounds(&window).unwrap();
+            assert!(bounds.width() <= width as f32 && bounds.height() <= height as f32);
+            screenshot(
+                &window,
+                &root
+                    .parent()
+                    .unwrap()
+                    .join(format!("export-{theme}-{width}.png")),
+            );
+        }
+    }
+    let button = |sheet: &libadwaita::Dialog, label: &str| {
+        find_widgets::<gtk4::Button>(sheet.upcast_ref())
+            .into_iter()
+            .find(|b| b.label().as_deref() == Some(label))
+            .unwrap()
+    };
+    button(&dialog, "Cancel").emit_clicked();
+    pump_until(|| window.visible_dialog().is_none());
+    crate::ui::export_dialog::present(&window, sources.clone());
+    pump_until(|| window.visible_dialog().is_some());
+    let dialog = window.visible_dialog().unwrap();
+    settle(400);
+    let controllers = window.observe_controllers();
+    let outside = (0..controllers.n_items())
+        .filter_map(|i| controllers.item(i).and_downcast::<gtk4::GestureClick>())
+        .find(|c| c.name().as_deref() == Some("export-sheet-outside"))
+        .unwrap();
+    let center = dialog
+        .child()
+        .unwrap()
+        .compute_bounds(&window)
+        .unwrap()
+        .center();
+    outside.emit_by_name::<()>(
+        "pressed",
+        &[&1i32, &f64::from(center.x()), &f64::from(center.y())],
+    );
+    assert_eq!(window.visible_dialog().as_ref(), Some(&dialog));
+    outside.emit_by_name::<()>("pressed", &[&1i32, &4.0f64, &4.0f64]);
+    pump_until(|| window.visible_dialog().is_none());
+    let controllers = window.observe_controllers();
+    assert!(!(0..controllers.n_items())
+        .filter_map(|i| controllers.item(i).and_downcast::<gtk4::GestureClick>())
+        .any(|c| c.name().as_deref() == Some("export-sheet-outside")));
+    crate::ui::export_dialog::present(&window, sources.clone());
+    pump_until(|| window.visible_dialog().is_some());
+    let dialog = window.visible_dialog().unwrap();
+    let lossless = find_widgets::<libadwaita::SwitchRow>(dialog.upcast_ref())
+        .into_iter()
+        .find(|row| row.title() == "Lossless")
+        .unwrap();
+    lossless.set_active(false);
+    let quality = find_widgets::<libadwaita::SpinRow>(dialog.upcast_ref())
+        .into_iter()
+        .find(|row| row.title() == "Quality")
+        .unwrap();
+    quality.set_value(83.0);
+    let native_chooser = || {
+        gtk4::Window::toplevels()
+            .iter::<glib::Object>()
+            .filter_map(Result::ok)
+            .filter_map(|w| w.downcast::<gtk4::FileChooserDialog>().ok())
+            .find(|w| w.is_visible())
+    };
+    let out = root.join("export-out");
+    std::fs::create_dir_all(&out).unwrap();
+    for response in [gtk4::ResponseType::Cancel, gtk4::ResponseType::Accept] {
+        button(&dialog, "Choose…").emit_clicked();
+        pump_until(|| native_chooser().is_some());
+        let chooser = native_chooser().unwrap();
+        if response == gtk4::ResponseType::Accept {
+            // FileDialog applies its initial folder asynchronously. Wait for
+            // that before navigating, or it can replace our test selection.
+            pump_until(|| chooser.current_folder().and_then(|f| f.path()).as_ref() == Some(&root));
+            chooser
+                .set_current_folder(Some(&gio::File::for_path(&out)))
+                .unwrap();
+            pump_until(|| chooser.file().and_then(|f| f.path()).as_ref() == Some(&out));
+        }
+        chooser.response(response);
+        pump_until(|| !chooser.is_visible());
+        settle(200);
+        assert!(
+            window.visible_dialog().as_ref() == Some(&dialog) && dialog.is_mapped(),
+            "the same export sheet must stay mapped after the chooser: {response:?}"
+        );
+        assert!(!lossless.is_active(), "folder choice keeps edited options");
+        assert_eq!(quality.value(), 83.0);
+    }
+    assert!(find_widgets::<libadwaita::ActionRow>(dialog.upcast_ref())
+        .iter()
+        .any(|r| r.subtitle().is_some_and(|s| s.ends_with("/export-out"))));
+    // Use lossless export below for an exact decoded-pixel comparison.
+    lossless.set_active(true);
+    find_widgets::<libadwaita::SwitchRow>(dialog.upcast_ref())
+        .into_iter()
+        .find(|row| row.title() == "Fit Within")
+        .unwrap()
+        .set_active(true);
+    for row in find_widgets::<libadwaita::SpinRow>(dialog.upcast_ref()) {
+        if row.title() == "Width" || row.title() == "Height" {
+            row.set_value(48.0);
+        }
+    }
+    button(&dialog, "Export").emit_clicked();
+    pump_until(|| window.visible_dialog().is_none());
+    assert_eq!(
+        window
+            .app_state()
+            .borrow()
+            .settings
+            .webp_export
+            .dir
+            .as_ref(),
+        Some(&out)
     );
     pump_until(|| out.join("a.webp").exists() && out.join("b.webp").exists());
     let exported = image::open(out.join("a.webp")).unwrap();
     assert_eq!((exported.width(), exported.height()), (48, 27), "fitted");
+    assert!(exported.to_rgb8().pixels().all(|p| p.0 == [200, 40, 40]));
     for (source, original) in sources.iter().zip(&originals) {
         assert_eq!(&std::fs::read(source).unwrap(), original);
     }
@@ -2369,9 +2479,9 @@ fn interface_tour_screenshots() {
         &window,
         vec![path_at("alpine-dawn.png"), path_at("city-dusk.jpg")],
     );
-    pump_until(|| picker().is_some());
-    shot_widget(picker().unwrap().upcast_ref(), "07-export");
-    picker().unwrap().popdown();
+    pump_until(|| window.visible_dialog().is_some());
+    shot("07-export");
+    close_dialog();
     let new_bucket = find_widgets::<gtk4::Button>(sidebar.upcast_ref())
         .into_iter()
         .find(|b| b.tooltip_text().as_deref() == Some("New Collection"))
