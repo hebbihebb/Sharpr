@@ -20,6 +20,9 @@ libadwaita = { version = "0.9", features = ["v1_8"] }
 glib = "0.22"
 gio = "0.22"
 gdk4 = { version = "0.11", features = ["v4_16"] }
+# Already used by GTK. Enable its application-font API (Pango 1.56),
+# provided by Fedora and GNOME 50; no additional package or runtime service.
+pango = { version = "0.22", features = ["v1_56"] }
 
 # Image decoding and thumbnail generation (pure Rust, thread-safe)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp", "ico"] }

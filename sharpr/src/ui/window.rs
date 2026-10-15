@@ -2933,7 +2933,7 @@ impl SharprWindow {
         outer_split.set_min_sidebar_width(170.0);
         outer_split.set_max_sidebar_width(210.0);
         toast_overlay.set_child(Some(&outer_split));
-        crate::ui::look::install();
+        crate::ui::look::install(self);
         self.add_css_class("sharpr");
         // The user chose the readout face everywhere (pass 2);
         // SHARPR_LOOK_MONO=numbers shows the numbers-only version.

@@ -75,6 +75,14 @@ mod imp {
                     dialog.set_version(APP_DISPLAY_VERSION);
                     dialog.set_license_type(gtk4::License::Gpl30Only);
                     dialog.set_copyright("© 2026 Sharpr Contributors");
+                    dialog.add_legal_section(
+                        "JetBrains Mono",
+                        Some("Copyright 2020 The JetBrains Mono Project Authors"),
+                        gtk4::License::Custom,
+                        Some(&glib::markup_escape_text(include_str!(
+                            "../data/fonts/OFL.txt"
+                        ))),
+                    );
                     dialog.set_website("https://github.com/hebbihebb/Sharpr");
                     dialog.set_issue_url("https://github.com/hebbihebb/Sharpr/issues");
                     dialog.add_credit_section(

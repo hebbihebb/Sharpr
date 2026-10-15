@@ -138,12 +138,15 @@ fn screenshot(window: &SharprWindow, path: &Path) {
 /// Renders a single widget, such as a popover, with the window's renderer.
 /// Screenshots are for people to review, not assertions: when the desktop
 /// gives no frame, the test notes it and carries on.
-fn screenshot_widget(window: &SharprWindow, widget: &gtk4::Widget, path: &Path) {
+fn screenshot_widget(window: &impl IsA<gtk4::Window>, widget: &gtk4::Widget, path: &Path) {
     let Some(node) = render_node(widget) else {
         eprintln!("screenshot skipped, no frame drawn: {}", path.display());
         return;
     };
-    let renderer = window.renderer().expect("realized window has a renderer");
+    let renderer = window
+        .as_ref()
+        .renderer()
+        .expect("realized window has a renderer");
     renderer
         .render_texture(&node, None)
         .save_to_png(path)
@@ -1669,6 +1672,74 @@ fn find_widgets<T: IsA<gtk4::Widget>>(root: &gtk4::Widget) -> Vec<T> {
 fn settle(ms: u64) {
     let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
     pump_until(|| std::time::Instant::now() > until);
+}
+
+/// A real Fontconfig configuration with no font directories proves that
+/// Pango loads the embedded files, rather than a matching desktop font.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn bundled_fonts_work_without_system_fonts() {
+    let root = isolated_fixture("bundled-fonts");
+    std::fs::create_dir_all(&root).unwrap();
+    let config = root.join("fonts.conf");
+    std::fs::write(
+        &config,
+        format!(
+            "<?xml version=\"1.0\"?><!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n\
+             <fontconfig><reset-dirs/><cachedir>{}</cachedir></fontconfig>",
+            root.join("font-cache").display()
+        ),
+    )
+    .unwrap();
+    // Nextest starts this test in its own process, before GTK/Pango starts.
+    std::env::set_var("FONTCONFIG_FILE", config);
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let window = gtk4::Window::new();
+    let context = window.pango_context();
+    let font_map = context.font_map().unwrap();
+    // Pango still lists generic families such as "Sans" in an empty map.
+    assert!(
+        !font_map
+            .list_families()
+            .iter()
+            .any(|f| f.name().contains("JetBrains")),
+        "the UI font is unavailable before loading the bundled files"
+    );
+    crate::ui::look::install(&window);
+    // Loading again must leave the original anonymous files alive.
+    crate::ui::look::install(&window);
+    for weight in [
+        pango::Weight::Normal,
+        pango::Weight::Medium,
+        pango::Weight::Bold,
+    ] {
+        for style in [pango::Style::Normal, pango::Style::Italic] {
+            let mut description = pango::FontDescription::from_string("JetBrains Mono 13");
+            description.set_weight(weight);
+            description.set_style(style);
+            let font = context
+                .load_font(&description)
+                .expect("embedded font is usable");
+            assert_eq!(font.describe().family().as_deref(), Some("JetBrains Mono"));
+            assert_eq!(font.describe().weight(), weight);
+            assert_eq!(font.describe().style(), style);
+            for character in "Sharpr ÆÞÐ 3840×2160 →".chars() {
+                assert!(font.has_char(character), "missing {character}");
+            }
+        }
+    }
+    window.add_css_class("sharpr");
+    window.add_css_class("sharpr-mono-all");
+    let label = gtk4::Label::new(Some("Sharpr  ·  3840×2160  ·  ÆÞÐ  ·  Ctrl+?"));
+    window.set_child(Some(&label));
+    window.set_default_size(800, 160);
+    window.present();
+    pump_until(|| window.is_mapped());
+    settle(500);
+    screenshot_widget(&window, label.upcast_ref(), &root.join("bundled-font.png"));
+    window.close();
 }
 
 /// The sheets must belong to the styled window, preserve settings wiring,

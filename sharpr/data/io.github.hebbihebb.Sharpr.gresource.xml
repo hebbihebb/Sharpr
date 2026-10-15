@@ -6,5 +6,8 @@
     <file>manual.md</file>
     <file>collection.css</file>
     <file>viewer-osd.css</file>
+    <file compressed="true">fonts/JetBrainsMono.ttf</file>
+    <file compressed="true">fonts/JetBrainsMono-Italic.ttf</file>
+    <file>fonts/OFL.txt</file>
   </gresource>
 </gresources>

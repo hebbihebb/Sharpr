@@ -45,6 +45,7 @@ See `architecture.md`. In UI code this means:
 ## Approved Look (D26–D27)
 
 - Libadwaita supplies adaptive sheets, theme/accent handling, and toasts. Sharpr's shared look lives in `sharpr/src/ui/look.rs`; the main window has `.sharpr` and `.sharpr-mono-all`.
+- `sharpr/data/fonts/` contains the official JetBrains Mono v2.304 variable fonts and OFL licence, embedded in GResource. `ui/fonts.rs` registers them once with Pango (≥ 1.56), using process-owned anonymous files held open for later font reads. No desktop font installation or user-cache extraction is needed. CSS prefers `JetBrains Mono`; the platform monospace face remains a fallback. About includes the font licence.
 - Preferences and Keyboard Shortcuts are `AdwPreferencesDialog` and `AdwShortcutsDialog` sheets presented in the main window. They inherit its font and use `.sharpr-sheet` for compact rows and headers. Keep the existing `win.show-preferences` and `win.show-help-overlay` actions.
 - Quick pickers use popovers and dismiss on click-away. Preferences and other editing sheets use their own close controls and Escape.
 - One Sort and Filter menu adds the same removable chips as typing filter words. The old independent Filter popover is hidden and scheduled for removal.

@@ -17,6 +17,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `display_scale.rs` | Screen-sized copies of very large images for the viewer (GTK-free) |
 | `library_overview.rs`, `ui/library_overview.rs` | The Library Overview: library size and formats, below-4K count, disabled folders, fingerprints and exact copies, buckets, and visual-search progress. Gathered on a worker when the window opens. |
 | `fingerprint.rs` | Content fingerprints (xxh3-128) and the background pass service (GTK-free) |
+| `ui/look.rs`, `ui/fonts.rs` | Shared UI style and the embedded JetBrains Mono fonts. Fonts are registered once on GTK's Pango font map from anonymous `memfd` files; their handles stay alive on the UI thread, with `CLOEXEC` so inference children do not inherit them. |
 | `ui/sidebar.rs` | Folder tree and buckets (the Tags page was removed on 2026-10-13, D20) |
 | `ui/export_dialog.rs`, `ui/crop_mode.rs`, `export/batch.rs` | Phase 6 output: the "Export as WebP…" dialog and its background batch job, and Crop Copy in the viewer at full size |
 | `ui/state.rs` | `AppState` (`Rc<RefCell<_>>`, GTK thread only) and `ViewScope` |

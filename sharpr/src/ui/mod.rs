@@ -6,6 +6,7 @@ pub mod copies_dialog;
 pub mod crop_mode;
 pub mod export_dialog;
 pub mod filmstrip;
+mod fonts;
 pub mod help_window;
 pub mod library_overview;
 pub mod look;

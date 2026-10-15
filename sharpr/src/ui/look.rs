@@ -4,11 +4,11 @@
 //! instead of raised bars, compact menus and pickers, and images on a
 //! neutral canvas.
 
-use gtk4::gdk;
+use gtk4::{gdk, prelude::*};
 
 const CSS: &str = r#"
 window.sharpr {
-  --sharpr-mono: "JetBrainsMono Nerd Font", "JetBrains Mono", "Adwaita Mono", monospace;
+  --sharpr-mono: "JetBrains Mono", "Adwaita Mono", monospace;
   --sharpr-radius: 4px;
 }
 
@@ -239,16 +239,18 @@ window.sharpr .sharpr-keys-osd {
 
 /// Loads the stylesheet once for the whole display, above the older
 /// per-widget sheets it restyles.
-pub fn install() {
+pub fn install(widget: &impl IsA<gtk4::Widget>) {
     thread_local! {
         static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
-    if DONE.with(|d| d.replace(true)) {
+    if DONE.with(|d| d.get()) {
         return;
     }
     let Some(display) = gdk::Display::default() else {
         return;
     };
+    super::fonts::install(widget);
+    DONE.with(|d| d.set(true));
     let provider = gtk4::CssProvider::new();
     provider.load_from_string(CSS);
     gtk4::style_context_add_provider_for_display(

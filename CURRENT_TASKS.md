@@ -6,9 +6,11 @@ The user asked Codex to review Claude's UI work and continue. Started from a cle
 
 **Approved direction:** hybrid GTK4/Libadwaita (D26), then Sharpr's design language (D27): monospace everywhere, aligned 42 px top bars, compact menus and popover pickers, narrow sidebar, neutral image canvas, hover/movement readout, filter chips and one Sort and Filter menu. Implemented in `cb57749`..`52595e5`; the user liked the isolated hands-on trial. Not deployed.
 
-**Completed unit:** matching Preferences and Keyboard Shortcuts sheets, implemented and verified; included in this checkpoint commit. The deprecated separate windows are replaced by `AdwPreferencesDialog` and `AdwShortcutsDialog`, inheriting the main window's font and compact styling. Nested editors return to Preferences, settings remain wired, Ctrl+? opens shortcuts, and the unused click-outside helper is removed. `cargo build`, `./check.sh` (211 regular tests, clippy, deny, machete), and all 12 GTK tests pass; light/dark screenshots at 1024×600 and 1600×900 checked. Cargo sources regenerated unchanged. Not deployed; user acceptance pending.
+**Completed:** Preferences and Keyboard Shortcuts now use styled sheets (`8b6ac1d`), retaining settings wiring and nested editors. Verified by build, full checks, and 12 GTK tests. Not deployed or accepted.
 
-**Next:** bundle JetBrains Mono with its licence; put Compare/crop controls in the viewer's top bar; remove the hidden old Filter popover. Then propose the remaining behavior ideas (I1–I5, I10, I13) before implementing them. The full plan, outstanding observations, user reactions, and acceptance criteria are in `ROADMAP.md` Phase 9. The one-library-root change remains planned there.
+**Completed unit:** bundled JetBrains Mono v2.304 variable fonts, upright and italic (weights 100–800), plus OFL licence/source checksums. Embedded in GResource and loaded by Pango from anonymous process-owned files; no desktop font installation or runtime downloads. CSS prefers the bundled family; About includes its licence. Implemented and verified by `./check.sh` (211 regular tests, strict clippy, deny, machete), all 13 GTK tests including one with system fonts excluded, and light/dark screenshot review at 1024×600 and 1600×900. Cargo sources regenerated unchanged; no crate versions changed. Included in this checkpoint commit; not deployed or accepted.
+
+**Next:** put Compare/crop controls in the viewer's top bar; remove the hidden old Filter popover. Then propose the remaining behavior ideas (I1–I5, I10, I13) before implementing them. The full plan, outstanding observations, user reactions, and acceptance criteria are in `ROADMAP.md` Phase 9. The one-library-root change remains planned there.
 
 ## Earlier work and acceptance
 
