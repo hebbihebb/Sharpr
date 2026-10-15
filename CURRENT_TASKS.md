@@ -36,11 +36,13 @@ The user asked for Phases 6, 7, and 8 to be finished, then a proper install to t
 
 ## Next: Fix Round After `ef91d32` (October 15)
 
-One step at a time, one commit each, with a GTK test where the behaviour is testable. Then one install, with the user's approval and a backup first.
+**Done: committed and verified, not deployed.** `./check.sh` and all 10 GTK tests pass.
 
-1. **Ctrl+A after clicking a thumbnail** selects every image shown. First confirm the cause: the filmstrip `ListView`'s built-in Ctrl+A takes the key before the window shortcut. In the search box, Ctrl+A keeps selecting the text.
-2. **Click outside closes** the bucket picker (Ctrl+B, Add to Bucket…) and the WebP export (Ctrl+E), like Cancel. Nothing is added or exported.
-3. **Undo for filmstrip trash** (Delete, right-click → Move to Trash): a toast "Moved N images to the trash · Undo". Undo finds each file in the trash by its original path and moves it back, never over an existing file; a file that can't return stays in the trash and is reported. This is a file operation: a regression test of the data path, then `./check.sh`. Find Copies keeps its confirmation.
+1. **Ctrl+A after clicking a thumbnail** (`9c6eb14`). Cause confirmed by a test: the filmstrip `ListView`'s built-in Ctrl+A took the key first. It is now off, so the window selects every image shown. In the search box, Ctrl+A still selects the text.
+2. **Click outside closes** the bucket picker, the "Add Search Results to a Bucket" choice, and the WebP export, like Cancel (`15b5d7e`).
+3. **Undo for filmstrip trash** (`475249c`): "Moved N images to the trash · Undo" for 10 seconds. Undo puts each file back by the freedesktop.org trash spec, never over a file now at its name. A file that can't return stays in the trash and is reported. In a folder view the folder reopens with the image selected; a bucket or search view shows it again when reopened.
+
+**Next:** install with the user's approval (backup first), then the user checks these three.
 
 After the round: Phase 9 (interface review) starts with its inventory once the user confirms.
 

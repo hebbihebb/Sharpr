@@ -703,6 +703,7 @@ Optional and unordered. Pick something up only when a phase touches that area, o
 - Index AVIF and HEIC/HEIF for visual search, with a bounded decoder on the worker (Phase 5 audit, finding 13). The live library has none; weigh the Flatpak cost before adding decoders.
 - Library Overview: refresh the fingerprint, copy, bucket, and index-file figures while it is open, or label them as a snapshot; show gathering errors instead of "…"; count unsupported formats apart from unreadable files (Phases 6–8 audit, finding 12).
 - Compare: decode at most one image per side at a time, dropping superseded decodes, and give the canvas a screen-sized preview at Fit with full pixels only when zoomed in (Phases 6–8 audit, finding 6). Each decode is already within the 3 GB limit.
+- Trash Undo in the Flatpak (D25): the sandbox trashes through the portal into the host's trash, which Undo, reading `$XDG_DATA_HOME/Trash`, may not find. It then reports the file as not restorable, and it stays in the trash. Check this in the Phase 10 Flatpak build.
 - GTK test harness: `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs); make it deterministic. The screenshot timeout is solved (October 14): a window the compositor isn't drawing (covered, for example by a fullscreen video while the user works) gives no frame, so screenshots are now best-effort and never fail a test.
 
 ### Considered, Not Planned
