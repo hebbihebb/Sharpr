@@ -119,6 +119,142 @@ pub fn rename_no_replace(src: &Path, dest: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Puts back a file that `gio::File::trash` moved to the trash (D25). It
+/// looks in the home trash and in the trash of the drive the file was on,
+/// following the freedesktop.org trash spec. The newest entry recorded for
+/// `original` moves back, never over a file now at that name.
+pub fn restore_from_trash(original: &Path) -> Result<(), String> {
+    let mut trashes = vec![(glib::user_data_dir().join("Trash"), None)];
+    if let Some(top) = mount_top(&lexical(original)) {
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        for dir in [
+            top.join(".Trash").join(uid.to_string()),
+            top.join(format!(".Trash-{uid}")),
+        ] {
+            trashes.push((dir, Some(top.clone())));
+        }
+    }
+    restore_from_trashes(original, &trashes)
+}
+
+/// `path` without `.` and `..` components, resolved as text the way GIO
+/// records a trashed file's original path (symbolic links are not followed).
+fn lexical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The top directory of the drive holding `path`'s folder.
+fn mount_top(path: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let mut top = path.parent()?.to_path_buf();
+    let device = std::fs::metadata(&top).ok()?.dev();
+    while let Some(parent) = top.parent() {
+        if std::fs::metadata(parent).ok()?.dev() != device {
+            break;
+        }
+        top = parent.to_path_buf();
+    }
+    Some(top)
+}
+
+/// `trashes` pairs each trash directory with the top directory its relative
+/// paths start from (`None` for the home trash, whose paths are absolute).
+fn restore_from_trashes(
+    original: &Path,
+    trashes: &[(PathBuf, Option<PathBuf>)],
+) -> Result<(), String> {
+    let original = lexical(original);
+    let original = original.as_path();
+    let mut newest: Option<(String, PathBuf, PathBuf)> = None;
+    for (trash, top) in trashes {
+        let Ok(entries) = std::fs::read_dir(trash.join("info")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let info = entry.path();
+            let Some(name) = info
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".trashinfo"))
+            else {
+                continue;
+            };
+            let Ok(text) = std::fs::read_to_string(&info) else {
+                continue;
+            };
+            let (mut path, mut date) = (None, String::new());
+            for line in text.lines() {
+                if let Some(value) = line.strip_prefix("Path=") {
+                    path = Some(percent_decode(value));
+                } else if let Some(value) = line.strip_prefix("DeletionDate=") {
+                    date = value.to_string();
+                }
+            }
+            let Some(path) = path else {
+                continue;
+            };
+            let path = match top {
+                Some(top) if path.is_relative() => top.join(path),
+                _ => path,
+            };
+            // ISO 8601 dates sort as text.
+            if path == original && newest.as_ref().is_none_or(|(d, _, _)| date > *d) {
+                newest = Some((date, trash.join("files").join(name), info));
+            }
+        }
+    }
+    let Some((_, trashed, info)) = newest else {
+        return Err("it is no longer in the trash".into());
+    };
+    rename_no_replace(&trashed, original).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => "another file now has its name".to_string(),
+        std::io::ErrorKind::NotFound => {
+            "it is no longer in the trash, or its folder is gone".to_string()
+        }
+        _ => e.to_string(),
+    })?;
+    // The file is back; a leftover record would only list a missing item.
+    let _ = std::fs::remove_file(info);
+    Ok(())
+}
+
+/// Decodes the `%XX` escapes of a `.trashinfo` path into raw bytes.
+fn percent_decode(value: &str) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    PathBuf::from(std::ffi::OsString::from_vec(out))
+}
+
 /// Copies `src` to the same directory with a non-colliding name.
 /// Returns the new path on success.
 pub fn duplicate_file(src: &Path) -> Result<PathBuf, String> {
@@ -262,5 +398,123 @@ mod tests {
         let dir = Path::new("/tmp");
         let result = next_available_path(dir, "foo", "", make_exists(&[dir.join("foo")]));
         assert_eq!(result, dir.join("foo (copy)"));
+    }
+
+    /// Lays out a trash entry as GIO does: the file under `files/`, its
+    /// record under `info/`.
+    fn trash_entry(trash: &Path, name: &str, recorded: &str, date: &str, bytes: &[u8]) {
+        std::fs::create_dir_all(trash.join("files")).unwrap();
+        std::fs::create_dir_all(trash.join("info")).unwrap();
+        std::fs::write(trash.join("files").join(name), bytes).unwrap();
+        std::fs::write(
+            trash.join("info").join(format!("{name}.trashinfo")),
+            format!("[Trash Info]\nPath={recorded}\nDeletionDate={date}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn restore_puts_the_newest_trashed_copy_back() {
+        let dir = temp_dir("restore");
+        let trash = dir.join("Trash");
+        let folder = dir.join("my pictures");
+        std::fs::create_dir_all(&folder).unwrap();
+        let recorded = folder
+            .join("sea view.png")
+            .to_str()
+            .unwrap()
+            .replace(' ', "%20");
+        // GIO records the path without `..`; the caller's may still have it.
+        let original = folder.join("../my pictures/./sea view.png");
+        trash_entry(
+            &trash,
+            "sea view.png",
+            &recorded,
+            "2026-10-14T09:00:00",
+            b"older",
+        );
+        trash_entry(
+            &trash,
+            "sea view.2.png",
+            &recorded,
+            "2026-10-15T01:00:00",
+            b"newest",
+        );
+
+        restore_from_trashes(&original, &[(trash.clone(), None)]).unwrap();
+        assert_eq!(std::fs::read(&original).unwrap(), b"newest");
+        assert!(!trash.join("files/sea view.2.png").exists());
+        assert!(!trash.join("info/sea view.2.png.trashinfo").exists());
+        assert!(
+            trash.join("files/sea view.png").exists(),
+            "the older one stays"
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restore_never_replaces_a_file_at_the_original_name() {
+        let dir = temp_dir("restore-taken");
+        let trash = dir.join("Trash");
+        let original = dir.join("a.jpg");
+        trash_entry(
+            &trash,
+            "a.jpg",
+            original.to_str().unwrap(),
+            "2026-10-15T01:00:00",
+            b"trashed",
+        );
+        std::fs::write(&original, b"new file").unwrap();
+
+        let error = restore_from_trashes(&original, &[(trash.clone(), None)]).unwrap_err();
+        assert_eq!(error, "another file now has its name");
+        assert_eq!(std::fs::read(&original).unwrap(), b"new file");
+        assert_eq!(
+            std::fs::read(trash.join("files/a.jpg")).unwrap(),
+            b"trashed"
+        );
+        assert!(
+            trash.join("info/a.jpg.trashinfo").exists(),
+            "still restorable"
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restore_reads_drive_trashes_relative_to_their_top() {
+        let dir = temp_dir("restore-drive");
+        let trash = dir.join(".Trash-1000");
+        std::fs::create_dir_all(dir.join("photos")).unwrap();
+        let original = dir.join("photos/b.webp");
+        trash_entry(
+            &trash,
+            "b.webp",
+            "photos/b.webp",
+            "2026-10-15T01:00:00",
+            b"b",
+        );
+
+        let missing = dir.join("photos/c.webp");
+        assert_eq!(
+            restore_from_trashes(&missing, &[(trash.clone(), Some(dir.clone()))]).unwrap_err(),
+            "it is no longer in the trash"
+        );
+        restore_from_trashes(&original, &[(trash, Some(dir.clone()))]).unwrap();
+        assert_eq!(std::fs::read(&original).unwrap(), b"b");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn trashinfo_paths_decode_escapes_to_raw_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(
+            percent_decode("/a%20b/%C3%A9.png"),
+            PathBuf::from("/a b/é.png")
+        );
+        assert_eq!(percent_decode("/x%FF").as_os_str().as_bytes(), b"/x\xff");
+        assert_eq!(percent_decode("/100%"), PathBuf::from("/100%"));
     }
 }

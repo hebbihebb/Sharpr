@@ -111,9 +111,10 @@ fn text_input_has_focus(widget: &gtk4::Widget) -> bool {
         .is_some_and(|focus| focus.is::<gtk4::Text>() || focus.is::<gtk4::SearchEntry>())
 }
 
-/// Moves `paths` to the system trash and drops them from the view. Tags are
-/// kept, so restoring a file from the trash restores its buckets. Files that
-/// cannot be trashed are reported instead of being skipped silently.
+/// Moves `paths` to the system trash and drops them from the view, then
+/// offers Undo (D25). Tags are kept, so restoring a file from the trash
+/// restores its buckets. Files that cannot be trashed are reported instead of
+/// being skipped silently.
 fn trash_paths(
     window: Option<&SharprWindow>,
     state: &Rc<RefCell<AppState>>,
@@ -122,9 +123,11 @@ fn trash_paths(
     paths: &[PathBuf],
 ) {
     let mut failures = Vec::new();
+    let mut trashed = Vec::new();
     for path in paths {
         match gio::File::for_path(path).trash(None::<&gio::Cancellable>) {
             Ok(()) => {
+                trashed.push(path.clone());
                 let mut state = state.borrow_mut();
                 state.library.remove_path(path);
                 remove_path_from_action_selection(&mut state, path);
@@ -148,6 +151,21 @@ fn trash_paths(
         if let Some(next_path) = next_path {
             filmstrip.set_action_selection_to_path(&next_path);
         }
+    }
+    if let (Some(window), false) = (window, trashed.is_empty()) {
+        let toast = libadwaita::Toast::new(&format!(
+            "Moved {} to the trash",
+            crate::ui::copies_dialog::images_text(trashed.len())
+        ));
+        toast.set_button_label(Some("Undo"));
+        toast.set_timeout(10);
+        let weak = window.downgrade();
+        toast.connect_button_clicked(move |_| {
+            if let Some(window) = weak.upgrade() {
+                window.restore_trashed(trashed.clone());
+            }
+        });
+        window.add_toast(toast);
     }
     if let Some((path, error)) = failures.first() {
         crate::bench_warn!(
@@ -717,6 +735,65 @@ impl SharprWindow {
             if let Some(window) = window.upgrade() {
                 window.remove_controller(&click);
             }
+        });
+    }
+
+    /// Undo for the filmstrip's trash (D25): puts `paths` back on a worker,
+    /// never over a file now at the same name, and reopens their folder if
+    /// it is the one in view. Those that can't return stay in the trash.
+    pub(crate) fn restore_trashed(&self, paths: Vec<PathBuf>) {
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let mut restored = Vec::new();
+            let mut failed = Vec::new();
+            for path in paths {
+                match crate::file_ops::restore_from_trash(&path) {
+                    Ok(()) => restored.push(path),
+                    Err(error) => failed.push((path, error)),
+                }
+            }
+            let _ = tx.send_blocking((restored, failed));
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok((restored, failed)) = rx.recv().await else {
+                return;
+            };
+            let Some(win) = weak.upgrade() else { return };
+            crate::bench_event!(
+                "file.trash.undo",
+                serde_json::json!({"restored": restored.len(), "failed": failed.len()})
+            );
+            let in_view = {
+                let st = win.imp().state.borrow();
+                match &st.scope {
+                    ViewScope::Folder(folder) => restored
+                        .iter()
+                        .find(|p| p.parent() == Some(folder.as_path()))
+                        .cloned(),
+                    _ => None,
+                }
+            };
+            if let Some(path) = in_view {
+                // Reopens the folder with the restored image selected.
+                win.show_created_copy(path);
+            }
+            let message = match failed.first() {
+                None => format!(
+                    "Restored {}",
+                    crate::ui::copies_dialog::images_text(restored.len())
+                ),
+                Some((path, error)) => {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    let mut message = format!("Couldn’t restore “{name}”: {error}");
+                    if failed.len() > 1 {
+                        message.push_str(&format!(" ({} not restored)", failed.len()));
+                    }
+                    message.push_str(". Find it in the system trash.");
+                    message
+                }
+            };
+            win.add_toast(libadwaita::Toast::new(&message));
         });
     }
 

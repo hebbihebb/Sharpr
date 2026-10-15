@@ -1553,3 +1553,83 @@ fn enter_turns_a_final_minus_word_into_a_chip() {
     assert_eq!(entry.text(), "tower");
     window.close();
 }
+
+/// D25: Delete trashes at once, and Undo puts the image back where it was,
+/// never over a file that has since taken its name. (The isolated
+/// `XDG_DATA_HOME` holds the test's trash.)
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn filmstrip_trash_can_be_undone() {
+    let root = isolated_fixture("trash-undo");
+    std::fs::create_dir_all(&root).unwrap();
+    for (name, colour) in [
+        ("a.png", [200, 40, 40]),
+        ("b.png", [40, 200, 40]),
+        ("c.png", [40, 40, 200]),
+    ] {
+        image::RgbImage::from_pixel(96, 54, image::Rgb(colour))
+            .save(root.join(name))
+            .unwrap();
+    }
+    let (a, b) = (root.join("a.png"), root.join("b.png"));
+    let (a_bytes, b_bytes) = (std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    let count = || window.imp().state.borrow().library.image_count();
+    pump_until(|| count() == 3 && window.is_mapped());
+    let state = window.app_state();
+    let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+
+    super::trash_paths(
+        Some(&window),
+        &state,
+        &filmstrip,
+        &viewer,
+        std::slice::from_ref(&a),
+    );
+    assert!(!a.exists());
+    assert_eq!(count(), 2);
+    window.restore_trashed(vec![a.clone()]);
+    pump_until(|| {
+        a.exists()
+            && count() == 3
+            && state.borrow().library.selected_entry().map(|e| e.path()) == Some(a.clone())
+    });
+    assert_eq!(std::fs::read(&a).unwrap(), a_bytes, "back unchanged");
+
+    // A new file at the name stays; the trashed one waits in the trash.
+    super::trash_paths(
+        Some(&window),
+        &state,
+        &filmstrip,
+        &viewer,
+        std::slice::from_ref(&b),
+    );
+    assert!(!b.exists());
+    std::fs::write(&b, b"a new file").unwrap();
+    assert_eq!(
+        crate::file_ops::restore_from_trash(&b).unwrap_err(),
+        "another file now has its name"
+    );
+    assert_eq!(std::fs::read(&b).unwrap(), b"a new file");
+    std::fs::remove_file(&b).unwrap();
+    crate::file_ops::restore_from_trash(&b).unwrap();
+    assert_eq!(std::fs::read(&b).unwrap(), b_bytes, "still restorable");
+    window.close();
+}

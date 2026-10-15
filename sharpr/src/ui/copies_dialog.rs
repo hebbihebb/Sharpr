@@ -224,7 +224,7 @@ fn checked_note(report: &CopyReport) -> String {
     note
 }
 
-fn images_text(n: usize) -> String {
+pub(crate) fn images_text(n: usize) -> String {
     format!("{} {}", count(n), if n == 1 { "image" } else { "images" })
 }
 
