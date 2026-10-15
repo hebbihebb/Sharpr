@@ -17,14 +17,20 @@ Sharpr"; Vulkan `llama-server` in the Flatpak now; Flatpak may write home.
    RTX 4060 and embeds an image in 0.05 s warm (first 12.7 s, shader warm-up)
    against 0.38 s for the CPU build.
 3. **Committed:** README feature list.
-4. Release checklist: **passed** `./check.sh` (218 tests), all 18 GTK workflows
-   and the full Flatpak build on `38a0758`. Native launcher runs `38a0758`.
-   **Open:** the user's manual workflow pass on the real library (find, curate,
-   prepare a wallpaper, clean up, compare, view), whose log gives the
-   performance comparison with the Phase 0 baseline (498 ms startup, 116–162 ms
-   for the 2,216-image folder, 2.3 GB peak) with no heavy job running; earlier
-   October 15 logs overlapped builds and do not count. Then tag `v0.5.0` and
-   fast-forward `main` (push is the user's call).
+4. Release checklist: **passed** `./check.sh` (218 tests), all 19 GTK workflows
+   and the full Flatpak build. The user's manual pass of `38a0758` on the real
+   library: "the application runs, nothing seems strange". One bug found and
+   fixed in `d25bf91` (an image smaller than the screen did not fill it on
+   entering fullscreen until a zoom; GTK regression test), installed natively.
+   **Performance** (that pass, `run-1792106879183-54945.jsonl`, quiet machine)
+   against the Phase 0 baseline: startup 470 ms (was 498); the 2,213-image
+   Wallpapers folder opened eight times in 139–231 ms, median 155 (was
+   116–162); RSS peak 1,522 MB with 15,868 thumbnails applied (was 2,345 MB
+   with about 8,000); longest browsing stall 139 ms.
+   **Open:** the user confirms the fullscreen fix; then tag `v0.5.0` on the
+   release commit and fast-forward `main` (push is the user's call). The
+   Flatpak was built from `38a0758`; rebuild it from the tag if a bundle is
+   wanted.
 
 Possible follow-up (user, October 15): build the Flatpak on the `gigabyte`
 server over SSH, on its local disk, and fetch the bundle.
