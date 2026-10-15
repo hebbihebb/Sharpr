@@ -159,10 +159,17 @@ impl AppSettings {
         let active_last_folder = active_library_id
             .as_ref()
             .and_then(|id| library_by_id(&libraries, id))
-            .and_then(|library| library.last_folder.clone());
+            .and_then(|library| {
+                library
+                    .last_folder
+                    .as_ref()
+                    .or(last_folder.as_ref())
+                    .filter(|folder| folder.starts_with(&library.root))
+                    .cloned()
+            });
 
         Self {
-            last_folder: active_last_folder.or(last_folder),
+            last_folder: active_last_folder,
             metadata_visible: settings.boolean("metadata-visible"),
             visual_search_gpu: settings.boolean("visual-search-gpu"),
             window_width: settings.int("window-width").clamp(400, 7680),
@@ -233,18 +240,6 @@ impl AppSettings {
         self.libraries.iter_mut().find(|library| library.id == id)
     }
 
-    pub fn set_active_library(&mut self, id: &str) {
-        if self.libraries.iter().any(|library| library.id == id) {
-            self.active_library_id = Some(id.to_string());
-            self.last_folder = self
-                .libraries
-                .iter()
-                .find(|library| library.id == id)
-                .and_then(|library| library.last_folder.clone());
-            self.save();
-        }
-    }
-
     pub fn add_library(
         &mut self,
         name: &str,
@@ -263,37 +258,27 @@ impl AppSettings {
         Ok(id)
     }
 
-    pub fn update_library(
-        &mut self,
-        id: &str,
-        name: &str,
-        root: PathBuf,
-        folder_mode: FolderMode,
-    ) -> Result<(), String> {
-        validate_library_fields(name, &root)?;
-        validate_no_root_overlap(&self.libraries, &root, Some(id))?;
-        let library_last_folder = {
-            let Some(library) = self.libraries.iter_mut().find(|library| library.id == id) else {
-                return Err("Library not found".into());
-            };
-            library.name = name.trim().to_string();
-            library.root = root;
-            library.folder_mode = folder_mode;
-            library
-                .ignored_folders
-                .retain(|path| path.starts_with(&library.root));
-            if library
-                .last_folder
-                .as_ref()
-                .is_some_and(|path| !path.starts_with(&library.root))
-            {
-                library.last_folder = None;
-            }
-            library.last_folder.clone()
-        };
-        if self.active_library_id.as_deref() == Some(id) {
-            self.last_folder = library_last_folder;
+    /// Changes the root of the one active library without replacing its
+    /// identity, inactive configurations, legacy folder mode or exclusions.
+    /// Directory existence is checked on the caller's worker thread.
+    pub fn set_single_library_root(&mut self, root: PathBuf) -> Result<(), String> {
+        if !root.is_absolute()
+            || root
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err("Choose an absolute library folder".into());
         }
+        let library = self.active_library_mut().ok_or("Library not found")?;
+        library.root = root.clone();
+        if library
+            .last_folder
+            .as_ref()
+            .is_none_or(|path| !path.starts_with(&root))
+        {
+            library.last_folder = Some(root);
+        }
+        self.last_folder = library.last_folder.clone();
         self.save();
         Ok(())
     }
@@ -438,21 +423,10 @@ fn sanitize_libraries(libraries: &mut Vec<LibraryConfig>) {
         if library.name.is_empty() {
             library.name = default_library_name(&library.root);
         }
-        library
-            .ignored_folders
-            .retain(|path| path.starts_with(&library.root));
-        if library
-            .last_folder
-            .as_ref()
-            .is_some_and(|path| !path.starts_with(&library.root))
-        {
-            library.last_folder = None;
-        }
-        if !out.iter().any(|existing: &LibraryConfig| {
-            roots_overlap(existing.root.as_path(), library.root.as_path())
-        }) {
-            out.push(library);
-        }
+        // Old records and exclusions outside today's root remain stored.
+        // Widening the root must recover them, even if it overlaps a retired
+        // library configuration.
+        out.push(library);
     }
     if out.is_empty() {
         let root = default_library_root();
@@ -648,5 +622,27 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+    #[test]
+    fn narrowed_root_reload_preserves_exclusions_and_inactive_libraries() {
+        let backend = test_settings();
+        let mut app = AppSettings::load_from_settings(backend.clone());
+        let mut active =
+            LibraryConfig::new("Active".into(), "/tmp/root".into(), FolderMode::TopLevel);
+        active.ignored_folders = vec!["/tmp/root/disabled".into()];
+        let inactive = LibraryConfig::new(
+            "Stored".into(),
+            "/tmp/root/narrow/stored".into(),
+            FolderMode::TopLevel,
+        );
+        app.active_library_id = Some(active.id.clone());
+        // The active root can later overlap an old inactive config. Both
+        // records, their identities and legacy options must survive reload.
+        active.root = "/tmp/root/narrow".into();
+        app.libraries = vec![active.clone(), inactive.clone()];
+        app.save();
+        let loaded = AppSettings::load_from_settings(backend);
+        assert_eq!(loaded.libraries, vec![active, inactive]);
+        assert_eq!(loaded.active_library_id, app.active_library_id);
     }
 }

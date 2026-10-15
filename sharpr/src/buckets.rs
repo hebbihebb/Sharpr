@@ -142,12 +142,13 @@ fn resolve(
             .fingerprint
             .clone()
             .unwrap_or_else(|| row.last_path.to_string_lossy().into_owned());
-        let mut exists = false;
-        if stamp_of(&row.last_path).is_some() {
+        // Out-of-scope members are hidden, even if their files are unavailable.
+        // Do not probe disabled folders or a previous, wider root.
+        let eligible = visible(&row.last_path, root, disabled);
+        let mut exists = !eligible;
+        if eligible && stamp_of(&row.last_path).is_some() {
             exists = true;
-            if visible(&row.last_path, root, disabled) {
-                paths.insert(row.last_path.clone());
-            }
+            paths.insert(row.last_path.clone());
         }
         for (path, size, mtime) in row
             .fingerprint
@@ -156,12 +157,13 @@ fn resolve(
             .into_iter()
             .flatten()
         {
+            if !visible(path, root, disabled) {
+                continue;
+            }
             // A cached fingerprint counts only while the file is unchanged.
             if stamp_of(path) == Some((*size, *mtime)) {
                 exists = true;
-                if visible(path, root, disabled) {
-                    paths.insert(path.clone());
-                }
+                paths.insert(path.clone());
             }
         }
         if exists {

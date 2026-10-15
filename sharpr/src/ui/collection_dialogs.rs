@@ -2,12 +2,9 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use gtk4::gio;
 use gtk4::prelude::*;
-use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 
-use crate::config::FolderMode;
 use crate::ui::filmstrip::FilmstripPane;
 use crate::ui::sidebar::SidebarPane;
 use crate::ui::state::{AppState, ViewScope};
@@ -406,115 +403,4 @@ pub(super) fn show_change_color_dialog<F>(
         );
     });
     dialog.present(Some(&window));
-}
-
-pub(super) fn show_new_library_dialog(
-    window: gtk4::Window,
-    state: Rc<RefCell<AppState>>,
-    sidebar: SidebarPane,
-    toast_overlay: libadwaita::ToastOverlay,
-) {
-    let dialog = libadwaita::AlertDialog::new(Some("Create Library"), None);
-    dialog.add_response("create", "Create");
-    dialog.set_default_response(Some("create"));
-    dialog.set_close_response("cancel");
-    dialog.set_response_appearance("create", libadwaita::ResponseAppearance::Suggested);
-
-    let name_entry = gtk4::Entry::new();
-    name_entry.set_placeholder_text(Some("Library name"));
-    let root_entry = gtk4::Entry::new();
-    root_entry.set_editable(false);
-    root_entry.set_hexpand(true);
-    let choose_button = gtk4::Button::with_label("Choose…");
-    let top_level = gtk4::CheckButton::with_label("Top level only");
-    let drill_down = gtk4::CheckButton::with_label("Drill into subfolders");
-    drill_down.set_group(Some(&top_level));
-    top_level.set_active(true);
-    let root_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-    root_row.append(&root_entry);
-    root_row.append(&choose_button);
-
-    let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-    box_.set_margin_top(6);
-    box_.append(&name_entry);
-    box_.append(&root_row);
-    box_.append(&top_level);
-    box_.append(&drill_down);
-    dialog.set_extra_child(Some(&box_));
-
-    {
-        let root_entry_c = root_entry.clone();
-        let window_c = window.clone();
-        choose_button.connect_clicked(move |_| {
-            let chooser = gtk4::FileDialog::new();
-            chooser.set_title("Choose Library Root");
-            let root_entry_inner = root_entry_c.clone();
-            chooser.select_folder(Some(&window_c), None::<&gio::Cancellable>, move |result| {
-                if let Ok(file) = result {
-                    if let Some(path) = file.path() {
-                        root_entry_inner.set_text(&path.to_string_lossy());
-                    }
-                }
-            });
-        });
-    }
-
-    dialog.connect_response(None, move |_, response| {
-        if response != "create" {
-            return;
-        }
-        let root = PathBuf::from(root_entry.text().as_str());
-        let folder_mode = if drill_down.is_active() {
-            FolderMode::DrillDown
-        } else {
-            FolderMode::TopLevel
-        };
-        let created = {
-            let mut st = state.borrow_mut();
-            let result =
-                st.settings
-                    .add_library(name_entry.text().as_str(), root.clone(), folder_mode);
-            match result {
-                Ok(id) => {
-                    st.settings.set_active_library(&id);
-                    st.disabled_folders = st
-                        .settings
-                        .active_library()
-                        .map(|library| library.ignored_folders.clone())
-                        .unwrap_or_default();
-                    Ok(())
-                }
-                Err(err) => Err(err),
-            }
-        };
-        match created {
-            Ok(()) => {
-                sidebar.refresh_active_library(state.clone());
-                toast_overlay.add_toast(libadwaita::Toast::new("Library created"));
-            }
-            Err(err) => toast_overlay.add_toast(libadwaita::Toast::new(&err)),
-        }
-    });
-    dialog.present(Some(&window));
-}
-
-pub(super) fn switch_active_library(
-    library_id: &str,
-    state: &Rc<RefCell<AppState>>,
-    sidebar: &SidebarPane,
-) {
-    {
-        let mut st = state.borrow_mut();
-        st.settings.set_active_library(library_id);
-        st.disabled_folders = st
-            .settings
-            .active_library()
-            .map(|library| library.ignored_folders.clone())
-            .unwrap_or_default();
-        st.selected_paths.clear();
-        st.scope = ViewScope::Search;
-        let _ = st.library.load_virtual(&[]);
-    }
-    sidebar.imp().collapsed_folder_paths.borrow_mut().clear();
-    sidebar.refresh_active_library(state.clone());
 }

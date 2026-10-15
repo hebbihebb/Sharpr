@@ -1,11 +1,7 @@
-use std::path::PathBuf;
-use std::rc::Rc;
-
-use gio::prelude::*;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
-use crate::config::{AppSettings, FolderMode, LibraryConfig};
+use crate::config::AppSettings;
 use crate::ui::window::SharprWindow;
 
 pub fn build_preferences_dialog(
@@ -21,65 +17,43 @@ pub fn build_preferences_dialog(
     library_page.set_icon_name(Some("folder-symbolic"));
 
     let library_group = libadwaita::PreferencesGroup::new();
-    library_group.set_title("Libraries");
-
-    let library_group_rc = Rc::new(library_group.clone());
-    for library in &settings.libraries {
-        let row = build_library_row(library, parent, library_group_rc.clone());
-        library_group.add(&row);
-    }
-
-    let add_library_row = libadwaita::ActionRow::new();
-    add_library_row.set_title("Add Library");
-    add_library_row.set_subtitle("Create another library root and folder mode");
-    let add_button = gtk4::Button::with_label("Create…");
-    add_button.set_valign(gtk4::Align::Center);
-    add_library_row.add_suffix(&add_button);
-    add_library_row.set_activatable_widget(Some(&add_button));
-    {
-        let parent_c = parent.clone();
-        let group_c = library_group_rc.clone();
-        add_button.connect_clicked(move |_| {
-            present_library_editor(None, None, &parent_c, group_c.clone());
-        });
-    }
-    library_group.add(&add_library_row);
+    library_group.set_title("Library");
+    let root_row = libadwaita::ActionRow::new();
+    root_row.set_title("Library Root");
+    root_row.set_subtitle(
+        &settings
+            .active_library()
+            .map(|library| library.root.display().to_string())
+            .unwrap_or_default(),
+    );
+    let choose = gtk4::Button::with_label("Choose…");
+    choose.set_valign(gtk4::Align::Center);
+    choose.set_action_name(Some("win.choose-library-root"));
+    root_row.add_suffix(&choose);
+    root_row.set_activatable_widget(Some(&choose));
+    library_group.add(&root_row);
+    library_group.set_description(Some(
+        "Browse this folder and all its subfolders. Disabled folders stay excluded.",
+    ));
     library_page.add(&library_group);
-
     let collections_group = libadwaita::PreferencesGroup::new();
     collections_group.set_title("Buckets");
-
-    let coll_export_row = libadwaita::ActionRow::new();
-    coll_export_row.set_title("Export Buckets");
-    coll_export_row.set_subtitle("Save collection hierarchy and image assignments to a JSON file");
-    let coll_export_button = gtk4::Button::with_label("Export…");
-    coll_export_button.set_valign(gtk4::Align::Center);
-    coll_export_row.add_suffix(&coll_export_button);
-    coll_export_row.set_activatable_widget(Some(&coll_export_button));
-    {
-        let parent_c = parent.clone();
-        coll_export_button.connect_clicked(move |_| {
-            parent_c.handle_collection_export_requested();
-        });
-    }
-
-    let coll_import_row = libadwaita::ActionRow::new();
-    coll_import_row.set_title("Import Buckets");
-    coll_import_row
-        .set_subtitle("Restore from a previously exported file; existing collections are kept");
-    let coll_import_button = gtk4::Button::with_label("Import…");
-    coll_import_button.set_valign(gtk4::Align::Center);
-    coll_import_row.add_suffix(&coll_import_button);
-    coll_import_row.set_activatable_widget(Some(&coll_import_button));
-    {
-        let parent_c = parent.clone();
-        coll_import_button.connect_clicked(move |_| {
-            parent_c.handle_collection_import_requested();
-        });
-    }
-
-    collections_group.add(&coll_export_row);
-    collections_group.add(&coll_import_row);
+    let weak_row = root_row.downgrade();
+    let weak_parent = parent.downgrade();
+    gtk4::glib::timeout_add_seconds_local(1, move || {
+        let (Some(row), Some(parent)) = (weak_row.upgrade(), weak_parent.upgrade()) else {
+            return gtk4::glib::ControlFlow::Break;
+        };
+        let root = parent
+            .app_state()
+            .borrow()
+            .settings
+            .active_library()
+            .map(|library| library.root.display().to_string())
+            .unwrap_or_default();
+        row.set_subtitle(&root);
+        gtk4::glib::ControlFlow::Continue
+    });
 
     // Fingerprints let buckets follow images moved or renamed outside Sharpr.
     let fingerprint_row = libadwaita::ActionRow::new();
@@ -202,204 +176,6 @@ fn fingerprint_status(window: &SharprWindow) -> String {
         Some(p) if p.done < p.total => format!("Fingerprinting {} of {} images…", p.done, p.total),
         Some(p) => format!("All {} images have fingerprints", p.total),
     }
-}
-
-fn build_library_row(
-    library: &LibraryConfig,
-    parent: &SharprWindow,
-    group: Rc<libadwaita::PreferencesGroup>,
-) -> libadwaita::ActionRow {
-    let row = libadwaita::ActionRow::new();
-    row.set_title(&library.name);
-    row.set_subtitle(&library_subtitle(library));
-    let edit_button = gtk4::Button::with_label("Edit…");
-    edit_button.set_valign(gtk4::Align::Center);
-    row.add_suffix(&edit_button);
-    row.set_activatable_widget(Some(&edit_button));
-    let library_id = library.id.clone();
-    let parent_c = parent.clone();
-    let row_c = row.clone();
-    edit_button.connect_clicked(move |_| {
-        present_library_editor(
-            Some(library_id.clone()),
-            Some(row_c.clone()),
-            &parent_c,
-            group.clone(),
-        );
-    });
-    row
-}
-
-fn present_library_editor(
-    library_id: Option<String>,
-    row: Option<libadwaita::ActionRow>,
-    parent: &SharprWindow,
-    group: Rc<libadwaita::PreferencesGroup>,
-) {
-    let window = parent.clone().upcast::<gtk4::Window>();
-    let existing = library_id.as_ref().and_then(|id| {
-        parent
-            .app_state()
-            .borrow()
-            .settings
-            .libraries
-            .iter()
-            .find(|library| library.id == *id)
-            .cloned()
-    });
-
-    let dialog = libadwaita::AlertDialog::new(
-        Some(if existing.is_some() {
-            "Edit Library"
-        } else {
-            "Create Library"
-        }),
-        None,
-    );
-    dialog.add_response("save", if existing.is_some() { "Save" } else { "Create" });
-    dialog.set_default_response(Some("save"));
-    dialog.set_close_response("cancel");
-    dialog.set_response_appearance("save", libadwaita::ResponseAppearance::Suggested);
-
-    let name_entry = gtk4::Entry::new();
-    name_entry.set_placeholder_text(Some("Library name"));
-    if let Some(library) = existing.as_ref() {
-        name_entry.set_text(&library.name);
-    }
-
-    let root_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-    let root_entry = gtk4::Entry::new();
-    root_entry.set_hexpand(true);
-    root_entry.set_editable(false);
-    if let Some(library) = existing.as_ref() {
-        root_entry.set_text(&library.root.to_string_lossy());
-    }
-    let choose_button = gtk4::Button::with_label("Choose…");
-    root_row.append(&root_entry);
-    root_row.append(&choose_button);
-
-    let top_level = gtk4::CheckButton::with_label("Top level only");
-    let drill_down = gtk4::CheckButton::with_label("Drill into subfolders");
-    drill_down.set_group(Some(&top_level));
-    match existing
-        .as_ref()
-        .map(|library| library.folder_mode)
-        .unwrap_or(FolderMode::TopLevel)
-    {
-        FolderMode::TopLevel => top_level.set_active(true),
-        FolderMode::DrillDown => drill_down.set_active(true),
-    }
-
-    let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-    box_.set_margin_top(6);
-    box_.append(&name_entry);
-    box_.append(&root_row);
-    box_.append(&top_level);
-    box_.append(&drill_down);
-    dialog.set_extra_child(Some(&box_));
-
-    {
-        let root_entry_c = root_entry.clone();
-        let parent_window = window.clone();
-        choose_button.connect_clicked(move |_| {
-            let chooser = gtk4::FileDialog::new();
-            chooser.set_title("Choose Library Root");
-            let root_entry_inner = root_entry_c.clone();
-            chooser.select_folder(
-                Some(&parent_window),
-                None::<&gio::Cancellable>,
-                move |result| {
-                    if let Ok(file) = result {
-                        if let Some(path) = file.path() {
-                            root_entry_inner.set_text(&path.to_string_lossy());
-                        }
-                    }
-                },
-            );
-        });
-    }
-
-    let pref_window = group
-        .root()
-        .and_then(|r| r.downcast::<gtk4::Window>().ok())
-        .unwrap_or_else(|| window.clone());
-
-    let parent_c = parent.clone();
-    dialog.connect_response(None, move |_, response| {
-        if response != "save" {
-            return;
-        }
-        let folder_mode = if drill_down.is_active() {
-            FolderMode::DrillDown
-        } else {
-            FolderMode::TopLevel
-        };
-        let root = PathBuf::from(root_entry.text().as_str());
-        let name = name_entry.text().to_string();
-        let (result, updated_settings) = {
-            let mut settings = parent_c.app_state().borrow().settings.clone();
-            if let Some(id) = library_id.as_deref() {
-                let result = settings.update_library(id, &name, root, folder_mode);
-                (result, settings)
-            } else {
-                let result = settings.add_library(&name, root, folder_mode).map(|_| ());
-                (result, settings)
-            }
-        };
-
-        match result {
-            Ok(()) => {
-                let libraries = updated_settings.libraries.clone();
-                let disabled_folders = updated_settings
-                    .active_library()
-                    .map(|library| library.ignored_folders.clone())
-                    .unwrap_or_default();
-                {
-                    let app_state_ref = parent_c.app_state();
-                    let mut state = app_state_ref.borrow_mut();
-                    state.settings = updated_settings;
-                    state.disabled_folders = disabled_folders;
-                }
-                if let Some(row) = row.as_ref() {
-                    if let Some(library) = libraries
-                        .iter()
-                        .find(|library| library_id.as_deref() == Some(library.id.as_str()))
-                    {
-                        row.set_title(&library.name);
-                        row.set_subtitle(&library_subtitle(library));
-                    }
-                } else if let Some(library) = libraries.last() {
-                    let row = build_library_row(library, &parent_c, group.clone());
-                    if let Some(add_row) = group.last_child() {
-                        group.remove(&add_row);
-                        group.add(&row);
-                        group.add(&add_row);
-                    } else {
-                        group.add(&row);
-                    }
-                }
-            }
-            Err(err) => {
-                let error =
-                    libadwaita::AlertDialog::new(Some("Could not save library"), Some(&err));
-                error.add_response("ok", "OK");
-                error.present(Some(parent_c.upcast_ref::<gtk4::Window>()));
-            }
-        }
-    });
-
-    dialog.present(Some(&pref_window));
-}
-
-fn library_subtitle(library: &LibraryConfig) -> String {
-    format!(
-        "{}  •  {}",
-        library.root.to_string_lossy(),
-        match library.folder_mode {
-            FolderMode::TopLevel => "Top level only",
-            FolderMode::DrillDown => "Drill into subfolders",
-        }
-    )
 }
 
 fn action_state_bool(window: &SharprWindow, action_name: &str) -> Option<bool> {

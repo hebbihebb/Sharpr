@@ -2359,7 +2359,7 @@ fn bundled_fonts_work_without_system_fonts() {
 }
 
 /// The sheets must belong to the styled window, preserve settings wiring,
-/// and allow a nested editor to close back to Preferences.
+/// and expose the single library-root action.
 #[test]
 #[ignore = "requires isolated GSettings/data directories and a graphical session"]
 fn preferences_and_shortcuts_share_the_main_window() {
@@ -2415,21 +2415,12 @@ fn preferences_and_shortcuts_share_the_main_window() {
                 .into_iter()
                 .find(|p| p.title() == "Appearance")
                 .unwrap();
-            // A nested library editor is another sheet above Preferences.
-            let create = find_widgets::<gtk4::Button>(prefs.upcast_ref())
+            let root_button = find_widgets::<gtk4::Button>(prefs.upcast_ref())
                 .into_iter()
-                .find(|b| b.label().as_deref() == Some("Create…"))
-                .unwrap();
-            create.emit_clicked();
-            pump_until(|| {
-                window
-                    .visible_dialog()
-                    .is_some_and(|d| d.is::<libadwaita::AlertDialog>())
-            });
-            window.visible_dialog().unwrap().close();
-            pump_until(|| window.visible_dialog() == Some(prefs.clone().upcast()));
-            // Wait for the nested sheet's closing animation before capturing.
-            settle(600);
+                .find(|button| button.action_name().as_deref() == Some("win.choose-library-root"))
+                .expect("one root chooser shares the window action");
+            assert!(root_button.is_sensitive());
+            settle(250);
             screenshot(
                 &window,
                 &out.join(format!("{theme}-{width}-preferences-library.png")),
@@ -3115,5 +3106,203 @@ fn survey_narrows_selection_and_restores_browsing_without_file_changes() {
     for (path, bytes) in paths.iter().zip(originals) {
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
+    window.close();
+}
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn one_root_preserves_library_identity_members_fingerprints_and_vectors() {
+    let root = isolated_fixture("one-root");
+    let narrow = root.join("keep");
+    let deep = narrow.join("nested");
+    let disabled = root.join("disabled");
+    let blocked = narrow.join("blocked");
+    for path in [&root, &narrow, &deep, &disabled, &blocked] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let paths = [
+        root.join("outside.png"),
+        narrow.join("inside.png"),
+        deep.join("deep.png"),
+        disabled.join("secret.png"),
+        blocked.join("blocked.png"),
+    ];
+    for (i, path) in paths.iter().enumerate() {
+        image::RgbImage::from_pixel(64, 48, image::Rgb([i as u8 * 40, 90, 150]))
+            .save(path)
+            .unwrap();
+    }
+    let originals: Vec<_> = paths
+        .iter()
+        .map(|path| std::fs::read(path).unwrap())
+        .collect();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    let library = settings
+        .add_library("Original identity", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    settings.set_active_library_ignored_folders(vec![disabled.clone(), blocked.clone()]);
+    let mut inactive = settings.active_library().unwrap().clone();
+    inactive.id = "inactive-preserved".into();
+    inactive.name = "Retired configuration".into();
+    inactive.root = deep.clone();
+    settings.libraries.push(inactive.clone());
+    settings.save();
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.app_state().borrow().library.image_count() == 1 && window.is_mapped());
+    let index = window.app_state().borrow().library_index.clone().unwrap();
+    let tags = window.app_state().borrow().tags.clone().unwrap();
+    tags.add_tag(&paths[0], "legacy-kept");
+    let tag_rows = tags.stored_rows().unwrap();
+    let bucket = index
+        .create_collection(&library, None, "Kept", &[], None, None)
+        .unwrap();
+    crate::buckets::add_to_bucket(&index, bucket.id, &paths[..3]).unwrap();
+    let members = index.all_bucket_members().unwrap();
+    let fingerprints = index.cached_fingerprints().unwrap();
+    let vectors =
+        crate::visual_search::store::Store::open(&crate::visual_search::store::default_path())
+            .unwrap();
+    for row in &members {
+        vectors
+            .put_vector(
+                "root-test",
+                row.fingerprint.as_ref().unwrap(),
+                &vec![0.25; crate::visual_search::DIMENSIONS],
+            )
+            .unwrap();
+    }
+    let before_vectors = vectors.vectors("root-test").unwrap();
+    let sidebar = window.imp().sidebar.borrow().clone().unwrap();
+    // Even a legacy top-level config now exposes deep folders. Expanding
+    // doesn't decode files or enter disabled children.
+    sidebar.imp().collapsed_folder_paths.borrow_mut().clear();
+    sidebar.refresh_active_library(window.app_state());
+    settle(150);
+    let visible_folder_paths = || {
+        find_widgets::<crate::ui::sidebar::FolderRow>(sidebar.upcast_ref())
+            .iter()
+            .map(|row| row.path())
+            .collect::<Vec<_>>()
+    };
+    // Root is initially collapsed by the default tree. Open it and keep.
+    let expand = |path: &Path| {
+        let row = find_widgets::<crate::ui::sidebar::FolderRow>(sidebar.upcast_ref())
+            .into_iter()
+            .find(|row| row.path() == path)
+            .unwrap();
+        row.disclosure_button().unwrap().emit_clicked();
+    };
+    expand(&narrow);
+    pump_until(|| visible_folder_paths().contains(&deep));
+    assert!(window.lookup_action("choose-library-root").is_some());
+    assert!(window
+        .change_library_root(PathBuf::from("relative"))
+        .is_err());
+    window.change_library_root(narrow.clone()).unwrap();
+    pump_until(|| {
+        window
+            .app_state()
+            .borrow()
+            .settings
+            .active_library()
+            .unwrap()
+            .root
+            == narrow
+            && window.app_state().borrow().library.image_count() == 1
+    });
+    let view = crate::buckets::view(
+        &index,
+        bucket.id,
+        Some(&narrow),
+        &[disabled.clone(), blocked.clone()],
+    )
+    .unwrap();
+    assert_eq!(view.paths.len(), 2);
+    assert!(!view.paths.contains(&paths[0]));
+    assert_eq!(view.missing, 0);
+    let reloaded = AppSettings::load();
+    assert_eq!(
+        reloaded.active_library_id.as_deref(),
+        Some(library.as_str())
+    );
+    assert_eq!(
+        reloaded.active_library().unwrap().folder_mode,
+        FolderMode::TopLevel
+    );
+    assert_eq!(
+        reloaded.active_library().unwrap().ignored_folders,
+        vec![disabled.clone(), blocked.clone()]
+    );
+    assert_eq!(reloaded.libraries[1], inactive);
+    // Narrow again then widen immediately: the old sidebar worker must not
+    // restore its tree or open the stale root after the latest choice.
+    window.change_library_root(deep.clone()).unwrap();
+    window.change_library_root(root.clone()).unwrap();
+    pump_until(|| {
+        window.app_state().borrow().library.current_folder.as_ref() == Some(&deep)
+            && visible_folder_paths().contains(&root)
+    });
+    settle(200);
+    assert_eq!(
+        window
+            .app_state()
+            .borrow()
+            .settings
+            .active_library()
+            .unwrap()
+            .root,
+        root
+    );
+    let view = crate::buckets::view(
+        &index,
+        bucket.id,
+        Some(&root),
+        &[disabled.clone(), blocked.clone()],
+    )
+    .unwrap();
+    assert_eq!((view.paths.len(), view.missing), (3, 0));
+    assert_eq!(index.all_bucket_members().unwrap().len(), members.len());
+    for (path, value) in fingerprints {
+        assert_eq!(
+            index.cached_fingerprints().unwrap().get(&path),
+            Some(&value)
+        );
+    }
+    assert_eq!(vectors.vectors("root-test").unwrap(), before_vectors);
+    assert_eq!(tags.stored_rows().unwrap(), tag_rows);
+    for (path, bytes) in paths.iter().zip(originals) {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    gio::prelude::ActionGroupExt::activate_action(&window, "show-preferences", None);
+    pump_until(|| window.visible_dialog().is_some());
+    let rows = find_widgets::<libadwaita::ActionRow>(window.visible_dialog().unwrap().upcast_ref());
+    assert!(rows.iter().any(|row| row.title() == "Library Root"));
+    assert!(!rows.iter().any(|row| matches!(
+        row.title().as_str(),
+        "Add Library" | "Export Buckets" | "Import Buckets"
+    )));
+    pump_until(|| {
+        window
+            .visible_dialog()
+            .is_some_and(|dialog| dialog.is_mapped())
+    });
+    settle(200);
+    screenshot(
+        &window,
+        &root.parent().unwrap().join("one-root-preferences.png"),
+    );
+    window.visible_dialog().unwrap().close();
     window.close();
 }

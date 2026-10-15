@@ -66,3 +66,8 @@ See `architecture.md`. In UI code this means:
 
 - Select two or more images, then Ctrl+Shift+S or image menu → Survey Selected Images. A virtualized adaptive GtkGridView replaces browsing, with a contextual remaining count, Undo and Done. Delete dismisses the selected tile; Ctrl+Z restores the last dismissal in original order; Escape finishes with survivors selected. Dismissal changes no files or bucket memberships. Search and chips return unchanged.
 - Survey and Compare share a serial viewport-fed thumbnail lane through the existing cache/decoder, with session generations and recycled-row checks. Filmstrip pools and visible-thumbnail priority stay unchanged. File actions and search are guarded during review.
+
+## One library root (D32)
+
+- Main menu → Library → Open Library Root and Preferences → Library Root activate the same window action. The native folder chooser checks directory availability on a worker. Applying the choice retains the active identity and saved disabled paths, retires browse/thumbnail generations, clears the old view, refreshes the sidebar, and restarts scoped indexing/fingerprints. The folder tree has its own generation so retired scans cannot reopen an old root.
+- Folder browsing is recursive regardless of the stored legacy folder mode. Disabled rows remain available for enabling, without scanning their children. Inactive library settings remain serialized, without switch/create controls. Buckets and fingerprint/vector rows are not migrated or deleted by changing the root.

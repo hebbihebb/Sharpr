@@ -18,8 +18,7 @@ use crate::model::{ImageEntry, LibraryManager};
 use crate::thumbnails::worker::ThumbnailWorkerResponse;
 use crate::thumbnails::ThumbnailWorker;
 use crate::ui::collection_dialogs::{
-    show_change_color_dialog, show_new_collection_dialog, show_new_library_dialog,
-    show_rename_collection_dialog, switch_active_library,
+    show_change_color_dialog, show_new_collection_dialog, show_rename_collection_dialog,
 };
 use crate::ui::compare_item::ordered_selection;
 use crate::ui::filmstrip::FilmstripPane;
@@ -31,6 +30,7 @@ use crate::ui::viewer::{ViewerPane, ZoomMode};
 
 mod bucket_repeat;
 mod compare_controller;
+mod library_root;
 pub(crate) mod mode_header;
 mod survey_controller;
 /// Gets Compare's survivors when someone else opened it (Find Copies).
@@ -2110,31 +2110,6 @@ impl SharprWindow {
         {
             let state_c = state.clone();
             let sidebar_c = sidebar.clone();
-            let refresh_sidebar_collections_c = refresh_sidebar_collections.clone();
-            sidebar.connect_library_selected(move |library_id| {
-                switch_active_library(&library_id, &state_c, &sidebar_c);
-                refresh_sidebar_collections_c();
-            });
-        }
-
-        {
-            let state_c = state.clone();
-            let sidebar_c = sidebar.clone();
-            let toast_overlay_c = toast_overlay.clone();
-            let window = self.clone().upcast::<gtk4::Window>();
-            sidebar.connect_library_create_requested(move || {
-                show_new_library_dialog(
-                    window.clone(),
-                    state_c.clone(),
-                    sidebar_c.clone(),
-                    toast_overlay_c.clone(),
-                );
-            });
-        }
-
-        {
-            let state_c = state.clone();
-            let sidebar_c = sidebar.clone();
             let filmstrip_c = filmstrip.clone();
             let viewer_c = viewer.clone();
             let toast_overlay_c = toast_overlay.clone();
@@ -2877,6 +2852,7 @@ impl SharprWindow {
         self.add_action(&compare_action);
         self.install_compare_shortcut();
         self.setup_bucket_repeat();
+        self.setup_library_root();
         {
             let compare_action = compare_action.clone();
             let weak = self.downgrade();
@@ -4383,6 +4359,7 @@ impl SharprWindow {
         // Image actions live on the filmstrip's right-click menu (decision D21).
 
         let library_section = gio::Menu::new();
+        library_section.append(Some("Open Library Root…"), Some("win.choose-library-root"));
         library_section.append(Some("Find Copies…"), Some("win.find-duplicates"));
         library_section.append(Some("Library Overview…"), Some("win.library-overview"));
         library_section.append(Some("Turn Tags into Buckets…"), Some("win.tags-to-buckets"));

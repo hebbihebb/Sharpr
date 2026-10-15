@@ -9,14 +9,12 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 
-use crate::config::{FolderMode, LibraryConfig};
+use crate::config::LibraryConfig;
 use crate::library_index::Collection;
 use crate::ui::state::AppState;
 
 type FolderSelectedCallback = Box<dyn Fn(PathBuf) + 'static>;
 type FolderIgnoredChangedCallback = Box<dyn Fn(PathBuf, bool) + 'static>;
-type LibraryCreateRequestedCallback = Box<dyn Fn() + 'static>;
-type LibrarySelectedCallback = Box<dyn Fn(String) + 'static>;
 type CollectionSelectedCallback = Box<dyn Fn(i64) + 'static>;
 type CollectionAddRequestedCallback = Box<dyn Fn() + 'static>;
 type CollectionRenameRequestedCallback = Box<dyn Fn(i64) + 'static>;
@@ -50,19 +48,13 @@ mod imp {
 
     pub struct SidebarPane {
         pub toolbar_view: libadwaita::ToolbarView,
-        /// Look prototype: the header and its Open Folder button.
-        pub header_bar: RefCell<Option<(libadwaita::HeaderBar, gtk4::Button)>>,
+        pub header_bar: RefCell<Option<libadwaita::HeaderBar>>,
+        pub folder_generation: Cell<u64>,
         pub list_box: gtk4::ListBox,
         pub collection_list: gtk4::ListBox,
-        pub library_menu_btn: gtk4::MenuButton,
-        pub library_menu: gio::Menu,
-        pub library_switch_action: gio::SimpleAction,
-        pub library_header_label: libadwaita::WindowTitle,
         pub active_library_label: gtk4::Label,
         pub folder_selected_cb: RefCell<Option<FolderSelectedCallback>>,
         pub folder_ignored_changed_cb: RefCell<Option<FolderIgnoredChangedCallback>>,
-        pub library_create_requested_cb: RefCell<Option<LibraryCreateRequestedCallback>>,
-        pub library_selected_cb: RefCell<Option<LibrarySelectedCallback>>,
         pub collection_selected_cb: RefCell<Option<CollectionSelectedCallback>>,
         pub collection_add_requested_cb: RefCell<Option<CollectionAddRequestedCallback>>,
         pub collection_rename_requested_cb: RefCell<Option<CollectionRenameRequestedCallback>>,
@@ -87,21 +79,12 @@ mod imp {
             Self {
                 toolbar_view: libadwaita::ToolbarView::new(),
                 header_bar: RefCell::new(None),
+                folder_generation: Cell::new(0),
                 list_box: gtk4::ListBox::new(),
                 collection_list: gtk4::ListBox::new(),
-                library_menu_btn: gtk4::MenuButton::new(),
-                library_menu: gio::Menu::new(),
-                library_switch_action: gio::SimpleAction::new_stateful(
-                    "switch-library",
-                    Some(glib::VariantTy::STRING),
-                    &"".to_variant(),
-                ),
-                library_header_label: libadwaita::WindowTitle::new("Library", ""),
                 active_library_label: gtk4::Label::new(None),
                 folder_selected_cb: RefCell::new(None),
                 folder_ignored_changed_cb: RefCell::new(None),
-                library_create_requested_cb: RefCell::new(None),
-                library_selected_cb: RefCell::new(None),
                 collection_selected_cb: RefCell::new(None),
                 collection_add_requested_cb: RefCell::new(None),
                 collection_rename_requested_cb: RefCell::new(None),
@@ -163,45 +146,8 @@ impl SidebarPane {
         let header = libadwaita::HeaderBar::new();
         header.set_show_end_title_buttons(false);
 
-        let open_btn = gtk4::Button::from_icon_name("folder-open-symbolic");
-        open_btn.set_tooltip_text(Some("Open Folder"));
-        header.pack_start(&open_btn);
-
-        header.set_title_widget(Some(&imp.library_header_label));
-
-        let widget_weak = self.downgrade();
-        open_btn.connect_clicked(move |btn| {
-            let Some(widget) = widget_weak.upgrade() else {
-                return;
-            };
-            let Some(root) = btn.root() else { return };
-            let Some(window) = root.downcast_ref::<gtk4::Window>() else {
-                return;
-            };
-
-            let chooser = gtk4::FileDialog::new();
-            chooser.set_title("Open Image Folder");
-
-            let widget_weak2 = widget.downgrade();
-            let window_clone = window.clone();
-            chooser.select_folder(
-                Some(&window_clone),
-                None::<&gio::Cancellable>,
-                move |result| {
-                    if let Ok(file) = result {
-                        if let Some(path) = file.path() {
-                            if let Some(widget) = widget_weak2.upgrade() {
-                                widget.select_folder(&path);
-                                widget.emit_folder_selected(path);
-                            }
-                        }
-                    }
-                },
-            );
-        });
-
         imp.toolbar_view.add_top_bar(&header);
-        *imp.header_bar.borrow_mut() = Some((header.clone(), open_btn.clone()));
+        *imp.header_bar.borrow_mut() = Some(header.clone());
 
         imp.list_box.add_css_class("navigation-sidebar");
         imp.list_box.set_activate_on_single_click(true);
@@ -265,51 +211,11 @@ impl SidebarPane {
         scroll.set_child(Some(&imp.list_box));
         let active_library_label = imp.active_library_label.clone();
         active_library_label.add_css_class("caption-heading");
-        let active_library_name = state
-            .borrow()
-            .settings
-            .active_library()
-            .map(|lib| lib.name.clone())
-            .unwrap_or_else(|| "Library".to_string());
-        set_bold_label_text(&active_library_label, &active_library_name);
+        set_bold_label_text(&active_library_label, "Folders");
         active_library_label.set_halign(gtk4::Align::Start);
         active_library_label.set_margin_start(12);
         active_library_label.set_margin_top(8);
         active_library_label.set_margin_bottom(4);
-
-        let library_menu_btn = imp.library_menu_btn.clone();
-        library_menu_btn.set_icon_name("pan-down-symbolic");
-        library_menu_btn.add_css_class("flat");
-        library_menu_btn.set_tooltip_text(Some("Switch Library"));
-
-        let group = gio::SimpleActionGroup::new();
-
-        let widget_weak = self.downgrade();
-        let switch_library = imp.library_switch_action.clone();
-        switch_library.connect_activate(move |action, param| {
-            let Some(library_id) = param.and_then(|p| p.get::<String>()) else {
-                return;
-            };
-            action.set_state(&library_id.to_variant());
-            if let Some(widget) = widget_weak.upgrade() {
-                widget.emit_library_selected(library_id);
-            }
-        });
-        group.add_action(&switch_library);
-
-        let widget_weak = self.downgrade();
-        let create_library = gio::SimpleAction::new("create-library", None);
-        create_library.connect_activate(move |_, _| {
-            if let Some(widget) = widget_weak.upgrade() {
-                widget.emit_library_create_requested();
-            }
-        });
-        group.add_action(&create_library);
-
-        self.insert_action_group("sidebar", Some(&group));
-        self.refresh_library_menu(state.clone());
-        library_menu_btn.set_menu_model(Some(&imp.library_menu));
-        header.pack_end(&library_menu_btn);
 
         self.populate_default_folders(state.clone());
 
@@ -367,6 +273,8 @@ impl SidebarPane {
     }
 
     fn populate_default_folders(&self, state: Rc<RefCell<AppState>>) {
+        let generation = self.imp().folder_generation.get().wrapping_add(1);
+        self.imp().folder_generation.set(generation);
         let (tx, rx) = async_channel::bounded::<Vec<FolderNode>>(1);
         let active_library = state.borrow().settings.active_library().cloned();
         std::thread::spawn(move || {
@@ -386,6 +294,9 @@ impl SidebarPane {
                 return;
             };
 
+            if widget.imp().folder_generation.get() != generation {
+                return;
+            }
             let ignored_folders = state.borrow().disabled_folders.clone();
             widget.set_folder_tree(&tree, &ignored_folders);
 
@@ -435,46 +346,16 @@ impl SidebarPane {
     }
 
     pub fn refresh_active_library(&self, state: Rc<RefCell<AppState>>) {
-        let active_name = state
-            .borrow()
-            .settings
-            .active_library()
-            .map(|lib| lib.name.clone())
-            .unwrap_or_else(|| "Library".to_string());
-        set_bold_label_text(&self.imp().active_library_label, &active_name);
-        self.refresh_library_menu(state.clone());
-        self.populate_default_folders(state);
-    }
-
-    fn refresh_library_menu(&self, state: Rc<RefCell<AppState>>) {
-        let imp = self.imp();
-        let menu = imp.library_menu.clone();
-        menu.remove_all();
-
-        let settings = state.borrow().settings.clone();
-        let active_id = settings.active_library_id.as_deref().unwrap_or("");
-        imp.library_switch_action.set_state(&active_id.to_variant());
-
-        if settings.libraries.len() > 1 {
-            let library_section = gio::Menu::new();
-            for library in &settings.libraries {
-                let label = format!("Switch to {}", library.name);
-                let item = gio::MenuItem::new(Some(&label), None);
-                item.set_action_and_target_value(
-                    Some("sidebar.switch-library"),
-                    Some(&library.id.to_variant()),
-                );
-                library_section.append_item(&item);
-            }
-            menu.append_section(None, &library_section);
-        }
-
-        let create_section = gio::Menu::new();
-        create_section.append(
-            Some("Create Library\u{2026}"),
-            Some("sidebar.create-library"),
+        self.imp().active_library_label.set_tooltip_text(
+            state
+                .borrow()
+                .settings
+                .active_library()
+                .map(|library| library.root.display().to_string())
+                .as_deref(),
         );
-        menu.append_section(None, &create_section);
+        self.set_folder_tree(&[], &state.borrow().disabled_folders);
+        self.populate_default_folders(state);
     }
 
     pub fn connect_folder_selected<F: Fn(PathBuf) + 'static>(&self, f: F) {
@@ -483,14 +364,6 @@ impl SidebarPane {
 
     pub fn connect_folder_ignored_changed<F: Fn(PathBuf, bool) + 'static>(&self, f: F) {
         *self.imp().folder_ignored_changed_cb.borrow_mut() = Some(Box::new(f));
-    }
-
-    pub fn connect_library_create_requested<F: Fn() + 'static>(&self, f: F) {
-        *self.imp().library_create_requested_cb.borrow_mut() = Some(Box::new(f));
-    }
-
-    pub fn connect_library_selected<F: Fn(String) + 'static>(&self, f: F) {
-        *self.imp().library_selected_cb.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn set_folder_ignored(&self, path: &Path, ignored: bool) {
@@ -524,12 +397,10 @@ impl SidebarPane {
     /// switcher and the "Library" title go (one library root replaces them).
     pub fn quiet_header(&self) {
         let imp = self.imp();
-        if let Some((header, open)) = imp.header_bar.borrow().as_ref() {
+        if let Some(header) = imp.header_bar.borrow().as_ref() {
             header.set_title_widget(Some(&gtk4::Box::new(gtk4::Orientation::Horizontal, 0)));
             header.add_css_class("sharpr-top");
-            open.set_visible(false);
         }
-        imp.library_menu_btn.set_visible(false);
         self.add_css_class("sharpr-sidebar");
     }
 
@@ -591,18 +462,6 @@ impl SidebarPane {
     fn emit_folder_ignored_changed(&self, path: PathBuf, ignored: bool) {
         if let Some(cb) = self.imp().folder_ignored_changed_cb.borrow().as_ref() {
             cb(path, ignored);
-        }
-    }
-
-    fn emit_library_create_requested(&self) {
-        if let Some(cb) = self.imp().library_create_requested_cb.borrow().as_ref() {
-            cb();
-        }
-    }
-
-    fn emit_library_selected(&self, library_id: String) {
-        if let Some(cb) = self.imp().library_selected_cb.borrow().as_ref() {
-            cb(library_id);
         }
     }
 
@@ -1271,45 +1130,18 @@ fn install_collection_css() {
 
 fn build_folder_tree(library: &LibraryConfig) -> Vec<FolderNode> {
     let root = library.root.clone();
-    match library.folder_mode {
-        FolderMode::TopLevel => {
-            let mut nodes = Vec::new();
-            if directory_contains_images(&root) {
-                nodes.push(FolderNode {
-                    path: root.clone(),
-                    children: Vec::new(),
-                });
-            }
-            let Ok(entries) = std::fs::read_dir(&root) else {
-                return nodes;
-            };
-            let mut children = Vec::new();
-            for entry in entries.filter_map(Result::ok) {
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
-                };
-                if !file_type.is_dir() {
-                    continue;
-                }
-                let path = entry.path();
-                if directory_contains_images(&path) {
-                    children.push(FolderNode {
-                        path,
-                        children: Vec::new(),
-                    });
-                }
-            }
-            children.sort_by(|a, b| path_sort_key(a.path.as_path(), b.path.as_path()));
-            nodes.extend(children);
-            nodes
-        }
-        FolderMode::DrillDown => build_folder_node_recursive(&root)
-            .map(|node| vec![node])
-            .unwrap_or_default(),
-    }
+    build_folder_node_recursive(&root, &library.ignored_folders)
+        .map(|node| vec![node])
+        .unwrap_or_default()
 }
 
-fn build_folder_node_recursive(path: &Path) -> Option<FolderNode> {
+fn build_folder_node_recursive(path: &Path, disabled: &[PathBuf]) -> Option<FolderNode> {
+    if row_is_ignored(path, disabled) {
+        return Some(FolderNode {
+            path: path.to_path_buf(),
+            children: Vec::new(),
+        });
+    }
     let Ok(entries) = std::fs::read_dir(path) else {
         return None;
     };
@@ -1326,7 +1158,7 @@ fn build_folder_node_recursive(path: &Path) -> Option<FolderNode> {
         if !file_type.is_dir() {
             continue;
         }
-        if let Some(child) = build_folder_node_recursive(&entry.path()) {
+        if let Some(child) = build_folder_node_recursive(&entry.path(), disabled) {
             children.push(child);
         }
     }
@@ -1424,16 +1256,6 @@ fn path_sort_key(a: &Path, b: &Path) -> std::cmp::Ordering {
     a.to_string_lossy()
         .to_lowercase()
         .cmp(&b.to_string_lossy().to_lowercase())
-}
-
-fn directory_contains_images(dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-
-    entries.filter_map(Result::ok).any(|entry| {
-        entry.file_type().map(|t| t.is_file()).unwrap_or(false) && is_image_file(&entry.path())
-    })
 }
 
 fn is_image_file(path: &Path) -> bool {

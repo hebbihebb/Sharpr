@@ -121,3 +121,7 @@ Rules:
 - The app ID is `io.github.hebbihebb.Sharpr`. The desktop file and metainfo are in `sharpr/data/`.
 - The Flatpak manifest (`sharpr/packaging/io.github.hebbihebb.Sharpr.yml`, GNOME 50) builds from an rsync of the working tree in `.flatpak-source`. It is not pinned to a Git commit. It has no ONNX or Real-ESRGAN modules.
 - The version comes from `build.rs`, which derives it from the commit count. This disagrees with metainfo and with the bundle file names (`ROADMAP.md` Phase 10).
+
+## Single-root scope
+
+`ui/window/library_root.rs` changes the active library root in place; the library id, inactive JSON configurations, legacy folder modes and outside-root exclusions are preserved. Runtime folder trees recurse and have a generation independent of the filmstrip. Root changes retire browse results, invalidate thumbnail requests and request new fingerprint/visual-index scopes. Existing fingerprint/vector rows and bucket memberships remain stored, so widening reuses them. Bucket resolution filters candidates before file probes: outside-root and disabled members are hidden, not reported missing.
