@@ -576,6 +576,19 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 
 ## Phase 9: Interface Review
 
+**Status (October 15): steps 0–2b done; the look is committed (`cb57749`..`52595e5`), not deployed.**
+- **Step 0, the map:** 83 controls marked by the user. **Step 2a, research:** 18 ideas, 15 wanted. **Step 2b, the look:** the hybrid (D26), then the Sharpr design language (D27), built in two prototype passes and tried hands-on by the user on a copy of the library ("all in all i like it").
+- **Built so far:** I6, I7, I12, I14, I15, I17 (in part: the library switcher and Open Folder are hidden), the combined Sort and Filter with chips (option A), the readout face, restyled chips and pill, and key hints.
+- **Finishing touches** (user's trial, October 15, plus code):
+  - Preferences, Keyboard Shortcuts, the Manual and About are still separate Libadwaita windows; they become sheets in Sharpr's style (I8).
+  - The user reported "the preferences menu does not" get the new font; to be pinned down.
+  - Bundle JetBrains Mono (OFL) for other machines and the Flatpak; today it comes from the user's system.
+  - In Compare and crop, the viewer's bar still shows search; the mode's own controls belong there.
+  - Size filters from the old Filter popover (minimum width and height) are gone; size chips such as `4k` replace them.
+  - Remove the prototype leftovers: the unused click-outside helper and the old Filter popover.
+  - Hands-on trials pass `~/.local/share/icons` through: isolating the data folder hid the user's "dreams" icon theme, which is why icons drew broken and the menu showed ≡ instead of "…".
+- **Next:** the finishing touches, then proposals for the behaviour ideas (I1–I5, I10, I13).
+
 **Added October 14 at the user's request.** Placed near the end, "but no less important".
 
 **Outcome:** Every control has one clear home, a name or recognisable icon, and a stable position. Nothing is duplicated without reason. Controls that matter only in a context appear in that context. Each change is a decision the user approved.

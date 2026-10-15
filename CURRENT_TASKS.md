@@ -68,7 +68,10 @@ Approach agreed with the user (`ROADMAP.md` Phase 9, "The user's direction"): th
   - **Filters (user, October 15): option A,** provided the chips look good in the new style. Typed chips become the one filter language; a combined Sort and Filter menu adds chips; "closest to 16:9" stays a sort (settles N2). Needs a decision-log entry once the chip design is accepted.
   - **Design language (user, October 15):** "Sharpr needs to be Sharpr." Draft in pass 2: 4 px corners, a JetBrains Mono readout for numbers, chips, the corner pill and key hints, hairlines instead of raised bars, a neutral image canvas. The user disliked the old corner pill.
   - **Pass 2 built** on `look-prototype` (`9ad237c`): the top row follows the columns (all bars 42 px), one Sort and Filter button, a 170–210 px sidebar, the readout face, restyled chips and pill, key hints in Compare and crop, and `SHARPR_LOOK_MONO=all` for the monospace-everywhere variant. 11 GTK tests and `check.sh` pass. The comparison page shows it; answers save to `decision/pass2` (`choice`: numbers, all, or unsure; `extras`: what works; `note`).
-  - **Next:** the user's pass-2 answers.
+  - **The user's pass-2 answers:** monospace everywhere; all seven items work (columns, Sort and Filter, sidebar, chips, pill, key hints, corners). No folder name above the filmstrip: the sidebar shows it (`52595e5`).
+  - **Hands-on trial (October 15):** a release build on a copy of the library, data, cache and settings in `.tmp/look-trial/` (copies byte-identical, databases intact). The user: "i like it … i generally like the direction". Decided as D27.
+  - **Committed:** the prototype is rebased onto `viewer-reset` (`cb57749`..`52595e5`); the `look-prototype` branch is kept. Not deployed.
+  - **Next:** the finishing touches in `ROADMAP.md` Phase 9, then proposals for the behaviour ideas.
 
 ## State (October 14, 2026)
 
