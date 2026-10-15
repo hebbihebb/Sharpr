@@ -552,7 +552,7 @@ Earlier status (October 14): built, committed, and verified.
 
 ## Phase 9: Interface Review
 
-**User's manual pass of `679bbe1` (October 15):** Compare (including the candidate row), add to last bucket, the viewer right-click menu and hover-expanded Info work, and the rest is as expected. The readout's "Image info" tooltip covered the expanding card and was removed. Survey "does nothing" in the user's try: under investigation. Phase 9 stays open until that is settled.
+**Status: accepted by the user on October 15, 2026** (builds `679bbe1` and `2b5f070`) and merged into `main`. The user's pass: Compare (including the candidate row), Survey from the right-click menu, add to last bucket, the viewer right-click menu and hover-expanded Info work; the rest is as expected. Fixed during the pass: the readout's "Image info" tooltip covered the expanding card and was removed, and the fast-scroll column shrank from 46 to 14 px, which also aligned the Sort button with the cards. Ctrl+Shift+S opened the GTK Inspector instead of Survey on the user's desktop ("not a biggy"; Backlog).
 
 **Checkpoint (October 15): implementation and verification complete; paused at the user's request before installation.** Fast scrolling, aspect comparisons, last bucket, hover-expanded Info, Survey, one library root and the final style/icon/Help/shared-menu work are implemented. `CURRENT_TASKS.md` records commits, checks and the verified live-data backup; `docs/reference/interface-inventory.md` records control dispositions. Latest checks: 217 regular tests, 18 GTK workflows and focused high-contrast checks at minimum/wide sizes. The installed build is still `ef91d32`. Final installation and the user's manual acceptance remain pending, so this phase stays open.
 
@@ -721,6 +721,7 @@ Optional and unordered. Pick something up only when a phase touches that area, o
 - Support non-UTF-8 paths.
 - Make Flatpak `home` access writable for move and rename, if the user needs it.
 - Guard the startup legacy-bucket migration (`migrate_legacy_collections_to_tags`) with a backup and count check, or retire it, before old databases are treated as a supported upgrade (audit finding 12).
+- Ctrl+Shift+S opened the GTK Inspector instead of Survey on the user's desktop (October 15). Find what claims the key, or choose another.
 - Re-link a bucket member moved outside Sharpr before the user opens its new folder. Today the bucket shows "image not found" until a pass reaches that folder (user, October 15).
 - Tune Find Copies on the real library: the user found it "improved but not perfect" (October 15).
 - Keep thumbnail generations through to completion: a failure or success from an old request must not mark a newer view's row (audit finding 7).

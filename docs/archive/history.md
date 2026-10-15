@@ -96,3 +96,14 @@ The detailed per-item log lived in `CURRENT_TASKS.md` until October 13; the comm
 Compare serves two or more selected images through Side by Side, Split and Flip, per-side thumbnail pickers, linked zoom/pan and reversible choices. Done returns with survivors selected; no files change. Find Copies uses the same view and returns dismissed candidates as checked extras, without touching the browsing selection or trashing until confirmation. Earlier focus and type-to-search faults were fixed. D28 (`c5699d7`) added contextual headers and Left/Right winner choices with matching Keep buttons and Ctrl+Z.
 
 The `ef91d32` manual test covered the original controls and action guards. In the October 15 isolated trial of `fde5a52`, the user also accepted the new choices/Undo, modes, zoom/pan, survivor selection and search/chip restoration, closing the remaining feel check. Unit/GTK coverage includes five images to one, shared zoom geometry and original-file preservation. The final checks passed 211 regular tests and all 14 GTK tests. Committed on `viewer-reset`; the current interface is not deployed or merged into `main`. Candidate thumbnails and other Phase 9 proposals remain separate.
+
+## October 15: Phases 4–7 and 9 accepted, merged into `main`
+
+After testing the installed builds `679bbe1` and `2b5f070`, the user accepted:
+- **Phase 4:** fingerprints and bucket membership.
+- **Phase 5:** visual search and tag retirement. The manual browsing-during-indexing checks stand in for a measured comparison, and file-name matches stay first.
+- **Phase 6:** WebP export and crop.
+- **Phase 7:** Find Copies, which found three real copies the user had missed.
+- **Phase 9:** the interface review, D26–D33.
+
+Follow-ups went to the Backlog in `ROADMAP.md`: re-linking a moved bucket member before its new folder is opened, Find Copies tuning, and the Ctrl+Shift+S clash. Final checks: `./check.sh` (217 tests) and all 18 GTK workflows, run off screen. `main` was fast-forwarded to `viewer-reset` with the user's approval; nothing was pushed.
