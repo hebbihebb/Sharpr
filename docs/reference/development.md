@@ -54,10 +54,11 @@ The GTK end-to-end test is `#[ignore]`d by default. It needs a graphical session
 
 ```bash
 glib-compile-schemas data/
+GTK_TMP="$(dirname "$PWD")/.tmp/gtk"   # no `..`: library roots must be clean absolute paths
 GSETTINGS_BACKEND=memory GSETTINGS_SCHEMA_DIR=data \
-XDG_DATA_HOME="$PWD/../.tmp/gtk/data" XDG_CONFIG_HOME="$PWD/../.tmp/gtk/config" \
-XDG_CACHE_HOME="$PWD/../.tmp/gtk/cache" \
-SHARPR_GTK_FIXTURE="$PWD/../.tmp/gtk/fixtures" \
+XDG_DATA_HOME="$GTK_TMP/data" XDG_CONFIG_HOME="$GTK_TMP/config" \
+XDG_CACHE_HOME="$GTK_TMP/cache" \
+SHARPR_GTK_FIXTURE="$GTK_TMP/fixtures" \
 cargo nextest run --run-ignored ignored-only -E 'test(gtk_tests)'
 ```
 
