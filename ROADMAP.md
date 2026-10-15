@@ -62,7 +62,7 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
             → Phase 9 Interface review → Phase 10 Release
 ```
 
-- **Phase 0 is done**; see `docs/archive/history.md`.
+- **Phases 0 and 8 are done**; see `docs/archive/history.md` for their completion summaries.
 - **Mandatory:** Phases 1, 2, 4, 6, 7, 8, 9, and 10. Phase 3 is a mandatory evaluation; Phase 5 happens only if Phase 3 says go.
 - **Finding comes first** after the data-safety work (D19). Phases 2 and 3 can run in parallel, because Phase 3 is mostly human relevance judging.
 - **Phase 4 is shared groundwork.** Phase 5 (vector identity) and Phase 7 (exact duplicates) both need it.
@@ -543,46 +543,15 @@ Phase 1 ─┬→ Phase 2 Finding ───────────────�
 - Nothing is trashed without confirmation.
 - Grouping runs off the GTK thread.
 
-## Phase 8: Compare
-
-**Status (October 14): built, committed, and verified; not deployed or accepted.**
-- Two or more selected images enable Compare. The `Knockout` model and the canvas geometry have unit tests (five images to one with undo; same region for a 4K and a 1080p version at 100%; zoom keeps the point under the pointer).
-- A GTK test narrows five images to one, checks the shared view across a flip at 100% and the split while zoomed, and checks the survivor is selected after closing and no file changed.
-- Delete, F2, and Ctrl+D are off while Compare is open.
-- **From Find Copies (user's suggestion, October 14):** each group's Compare button opens it in Compare, keeper on the left; Done returns to the copies window with the dismissed files ticked and the survivors not. The browsing selection is untouched, and nothing moves until Move to Trash is confirmed.
-- **User test, October 14 (`5044c72`):** the keys for moving through several images were "convoluted". Each side now has a picker of the images not yet dismissed, numbered, with thumbnails; picking the other side's image swaps them.
-- **User test, October 14 (`baa007d`): "works for two images only".** Cause: Compare tried to take the focus before its page was visible, so the filmstrip kept it; `[` and `]` then went to type-to-search, which opened a search and left Compare without closing it. Fixed: Compare's keys are handled at the window and type-to-search is off while Compare is open. Compare takes the focus once visible, and anything that switches the content away closes Compare properly, keeping the survivors.
-- **User test of `ef91d32` (October 15):** every item passed: the pickers, `[` `]`, Ctrl+Z, Space, the × buttons, all three modes, zoom lock across a 4K original and its 1080p copy, returning with the survivors selected, and Delete, F2, Ctrl+D, and Shift+F10 doing nothing while comparing or cropping.
-- **Left for acceptance:** the user's judgement of the feel of zooming, panning, and the split on real images.
-
-**Outcome:** One on-demand Compare tool serves both version inspection and choosing the best of several (D8).
-
-**Scope:**
-
-- Select N ≥ 2 images; Compare shows two at a time.
-- Modes: A/B flip (Space is a natural key for it), a draggable split, and side by side.
-- Dismissing the current loser brings in the next candidate.
-- A zoom-lock toggle keeps zoom and pan in sync: on for versions, off for different images.
-- Closing returns to browsing with the survivors selected.
-- Compare never changes files.
-- Images from several folders arrive through a bucket (D10).
-
-**Acceptance:**
-
-- Five images narrow down to one through knockouts.
-- With zoom lock on, flipping keeps the same region at 100%.
-- The split slider works at any zoom.
-- Leaving Compare restores browsing with the survivors selected.
-
 ## Phase 9: Interface Review
 
 **Status (October 15): steps 0–2b done; the look is committed (`cb57749`..`52595e5`), not deployed.**
 - **Step 0, the map:** 83 controls marked by the user. **Step 2a, research:** 18 ideas, 15 wanted. **Step 2b, the look:** the hybrid (D26), then the Sharpr design language (D27), built in two prototype passes and tried hands-on by the user on a copy of the library ("all in all i like it").
 - **Built so far:** I6, I7, I8 (Preferences and Shortcuts), I12, I14, I15, I17 (in part: the library switcher and Open Folder are hidden), the combined Sort and Filter with chips (option A), the readout face, restyled chips and pill, and key hints.
 - **Finishing touches** (user's trial, October 15, plus code):
-  - **Implemented: Preferences and Keyboard Shortcuts as styled sheets (I8).** They now use `AdwPreferencesDialog` and `AdwShortcutsDialog` in the main window, inheriting the approved monospace face and compact styling. The old separate windows missed this styling. Nested library editors return to Preferences; the settings controls and existing menu actions are retained, with Ctrl+? for shortcuts. The unused click-outside helper is removed. Verified by `cargo build`, `./check.sh` (211 regular tests), all 12 GTK tests, and light/dark screenshots at 1024×600 and 1600×900; not deployed or accepted.
-  - **Implemented: bundled JetBrains Mono (D27).** Official v2.304 upright and italic variable fonts (weights 100–800), with OFL licence and source checksums, are embedded in GResource. Pango loads them for this process only through anonymous files; native and Flatpak binaries carry the same assets, with no font installation or downloads. CSS prefers the bundled family, and About includes its licence. Verified by build, `./check.sh`, and all 13 GTK tests, including actual font loading with system fonts excluded; screenshot layouts reviewed. Not deployed or accepted.
-  - **Implemented (D28): contextual Compare/crop controls.** Compare's viewing modes, Linked zoom, Fit/100%, Undo and Done use the existing top bar; per-side pickers and Keep Left/Keep Right buttons sit below the canvas. Arrows keep that side and dismiss the other, with Undo and no file changes. A simple remaining count replaces “N of N left”. Crop's top bar holds aspect, live dimensions, destination, Cancel and Save Copy. Browsing search/chips return intact; late search/sidebar events cannot replace an active mode. Side panels stay hidden at wide sizes and restore with the current adaptive layout. Candidate thumbnails are a separate proposal. Verified by build, `./check.sh` (211 tests), all 14 GTK tests, original-byte/cropped-copy checks, and light/dark screenshots at 1024×600 and 1600×900. Committed as `c5699d7`. The user approved the preview appearance on October 15; hands-on behavior acceptance is pending. Not deployed.
+  - **Accepted: Preferences and Keyboard Shortcuts as styled sheets (I8).** They now use `AdwPreferencesDialog` and `AdwShortcutsDialog` in the main window, inheriting the approved monospace face and compact styling. The old separate windows missed this styling. Nested library editors return to Preferences; the settings controls and existing menu actions are retained, with Ctrl+? for shortcuts. The unused click-outside helper is removed. Verified by `cargo build`, `./check.sh` (211 regular tests), all 12 GTK tests, and light/dark screenshots at 1024×600 and 1600×900; accepted in the October 15 hands-on UI checks, not deployed.
+  - **Accepted: bundled JetBrains Mono (D27).** Official v2.304 upright and italic variable fonts (weights 100–800), with OFL licence and source checksums, are embedded in GResource. Pango loads them for this process only through anonymous files; native and Flatpak binaries carry the same assets, with no font installation or downloads. CSS prefers the bundled family, and About includes its licence. Verified by build, `./check.sh`, and all 13 GTK tests, including actual font loading with system fonts excluded; screenshot layouts reviewed. Accepted in the October 15 UI trial. Not deployed.
+  - **Accepted (D28): contextual Compare/crop controls.** Compare's viewing modes, Linked zoom, Fit/100%, Undo and Done use the existing top bar; per-side pickers and Keep Left/Keep Right buttons sit below the canvas. Arrows keep that side and dismiss the other, with Undo and no file changes. A simple remaining count replaces “N of N left”. Crop's top bar holds aspect, live dimensions, destination, Cancel and Save Copy. Browsing search/chips return intact; late search/sidebar events cannot replace an active mode. Side panels stay hidden at wide sizes and restore with the current adaptive layout. Candidate thumbnails are a separate proposal. Verified by build, `./check.sh` (211 tests), all 14 GTK tests, original-byte/cropped-copy checks, and light/dark screenshots at 1024×600 and 1600×900. Committed as `c5699d7`. The user accepted the October 15 hands-on checks: choices/Undo, viewing modes, linked zoom/pan, survivors and restored search/chips. Not deployed.
   - Size filters from the old Filter popover (minimum width and height) are gone; size chips such as `4k` replace them.
   - **Accepted: WebP export as a compact in-window sheet.** Recreating the popup after a native folder choice and a Continue Export workaround both failed the real desktop trial, despite in-process chooser tests passing. Live inspection found a visible but unmapped Wayland popup and an idle GTK loop. The settings form now uses the established `.sharpr-sheet` style on the main window's native surface and stays mapped throughout the folder chooser. No popup recreation or recovery toast. The selected folder and edited options survive Select/Cancel; D25's click-away cancellation is retained with the earlier scoped capture handler. Verified by full checks (211 tests), all 14 GTK tests and build: same sheet/surface, both chooser responses, actual two-image export, fitted lossless pixels, unchanged originals, and light/dark layouts at 1024×600 and 1600×900. The user tested and accepted `fde5a52` on October 15. Not deployed.
   - Remove the hidden old Filter popover; the unused click-outside helper is already removed.

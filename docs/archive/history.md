@@ -90,3 +90,9 @@ The detailed per-item log lived in `CURRENT_TASKS.md` until October 13; the comm
 - **Phase 3 tooling:** blind judging sheet, scorer, parity, and provenance.
 - **Deployment:** release build `66f3d94` was installed on October 13 for the user's acceptance test.
 - **Independent audit:** a Codex `gpt-6.1-sol` (high effort) audit was attempted twice. The first run was stopped by low system memory; the second hit "model at capacity" after running the 157-test suite (all passed). It flagged only that `CURRENT_TASKS.md` contradicted itself about what was deployed, which was corrected.
+
+## October 15: Phase 8 Compare accepted
+
+Compare serves two or more selected images through Side by Side, Split and Flip, per-side thumbnail pickers, linked zoom/pan and reversible choices. Done returns with survivors selected; no files change. Find Copies uses the same view and returns dismissed candidates as checked extras, without touching the browsing selection or trashing until confirmation. Earlier focus and type-to-search faults were fixed. D28 (`c5699d7`) added contextual headers and Left/Right winner choices with matching Keep buttons and Ctrl+Z.
+
+The `ef91d32` manual test covered the original controls and action guards. In the October 15 isolated trial of `fde5a52`, the user also accepted the new choices/Undo, modes, zoom/pan, survivor selection and search/chip restoration, closing the remaining feel check. Unit/GTK coverage includes five images to one, shared zoom geometry and original-file preservation. The final checks passed 211 regular tests and all 14 GTK tests. Committed on `viewer-reset`; the current interface is not deployed or merged into `main`. Candidate thumbnails and other Phase 9 proposals remain separate.
