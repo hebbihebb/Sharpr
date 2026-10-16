@@ -1,14 +1,16 @@
 # Current Tasks
 
-## Planned: 16:9 viewer guide (D36)
+## Active: 0.5.0 audit — awaiting user decisions
 
-Added to `ROADMAP.md` on `main` at the user's explicit request: a toggleable
-16:9 border/ruler for judging landscape wallpaper proportions. Planning only;
-implementation starts on its own feature branch.
-
-The 0.5.0 audit remains on `codex/audit-0.5.0` (`eca6019`), with 13 proposed
-findings awaiting user decisions. Its report and fixes stay off `main`; Claude
-handles merging after acceptance. No audit fixes have been authorized yet.
+Branch: `codex/audit-0.5.0`, from `main` at `0d81115`. Stage 1 is complete:
+`AUDIT.md` has 13 proposed findings; no application code changed. Offline
+build and 220 default tests pass; temporary file/database and off-screen GTK
+probes confirmed the key findings. Fixtures stay in `/tmp/sharpr-audit-050/`.
+Next: review every ID with the user (agreed/rejected/deferred), commit the
+decisions, then fix only agreed findings. No fixes before those decisions.
+Do not merge, push, deploy, access real data or build Flatpak for this task;
+Claude handles merging after acceptance. See `AUDIT.md` and the user's staged
+instructions for the remaining workflow, including final report deletion.
 
 ## Done: Edit buckets (D35) accepted (October 16, 2026)
 
@@ -18,7 +20,7 @@ user tested `f50cd9f` ("works") and approved pushing; `main` was
 fast-forwarded and `main`, `viewer-reset` and `v0.5.0` were pushed to GitHub.
 Installed natively: `f50cd9f`.
 
-Other candidates: the Backlog in `ROADMAP.md`, condensing the
+Later candidates: the Backlog in `ROADMAP.md`, condensing the
 accepted phase sections into `docs/archive/history.md`, and building the Flatpak
 on the `gigabyte` server.
 
@@ -50,7 +52,7 @@ The accepted phase sections in `ROADMAP.md` can later be condensed into
 - Branches (October 16): `main` holds accepted work only; each phase, feature or
   fix gets its own branch from `main`, merged after the user accepts it
   (`AGENTS.md` → Git). `viewer-reset` was retired into `main`. Active branch:
-  none. Push only with the user's permission. Keep all archive/prototype branches (`preserve/october-12-wip`,
+  `codex/audit-0.5.0`. No push for the audit. Keep all archive/prototype branches (`preserve/october-12-wip`,
   `visual-search-trial-wip`, `look-prototype`).
 - Verified live backup: `~/.local/share/sharpr.backup-20261015-205204`, including
   settings. All database table counts match: 815 bucket members, 5,899 fingerprints,
