@@ -47,7 +47,11 @@ Images will be found through visual search and typed filters, not manual tags, a
 - **Size tasks by outcome:** goal, effort, verification, and essential guardrails. For work spanning sessions, keep the durable plan in `CURRENT_TASKS.md`.
 - **Prefer extending proven code to rebuilding it.** Extract a focused controller only when you are already changing that area. No broad rewrites. Before writing infrastructure, check GTK, GNOME, and existing crates.
 - **Justify every dependency** by its packaging, Flatpak, and maintenance cost.
-- **Finish, then stop.** Do one self-review per milestone. Fix real defects, record the rest in `ROADMAP.md` under Backlog, and close the milestone when its acceptance criteria are met. Do not start review, audit, and remediation loops, and do not write dated audit documents into the repository.
+- **Finish, then stop.** Do one self-review per milestone. Fix real defects, record the rest in `ROADMAP.md` under Backlog, and close the milestone when its acceptance criteria are met. Do not start review, audit, and remediation loops on your own, and do not write dated audit documents into the repository.
+- **Audits happen only when the user asks,** in three stages on one branch, `codex/audit-<version>` (or `audit-<version>` for other agents):
+  1. **Audit.** Look for bugs against the invariants, interface out of line with the approved design (D-decisions, `docs/reference/interface-inventory.md`), dead or stale code, and documentation drift. Change no code. Approved decisions and existing Backlog items are not findings. Write `AUDIT.md` at the repository root (ID, category, severity, `file:line`, scenario, confirmed or suspected, proposed fix, status), commit it on the branch, and stop.
+  2. **Review.** Go through the findings with the user in plain language. They agree, reject, or defer each one; record that in `AUDIT.md`. Fix nothing before they decide.
+  3. **Fix.** Fix only the agreed findings: test-first for bugs, one commit per finding or tightly related group, docs updated with behaviour. Move deferred findings to `ROADMAP.md` → Backlog. Then delete `AUDIT.md` in a final commit, so it never reaches `main`. The branch merges like any other once the user accepts the fixes.
 - **Report state precisely** using these words:
   - *planned*: in the roadmap
   - *implemented*: in the working tree
