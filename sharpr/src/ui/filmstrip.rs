@@ -217,6 +217,7 @@ mod imp {
         #[allow(private_interfaces)]
         pub menu_ctx: RefCell<Option<MenuContext>>,
         pub context_actions: gio::SimpleActionGroup,
+        pub clipboard_decoder: RefCell<Option<crate::image_pipeline::clipboard::Decoder>>,
         pub sort_order_changed_cb: RefCell<Option<SortOrderChangedCallback>>,
         pub save_search_as_collection_cb: RefCell<Option<SaveSearchAsCollectionCallback>>,
         pub current_sort_order: Cell<SortOrder>,
@@ -298,6 +299,7 @@ mod imp {
                 duplicate_requested_cb: RefCell::new(None),
                 menu_ctx: RefCell::new(None),
                 context_actions: gio::SimpleActionGroup::new(),
+                clipboard_decoder: RefCell::new(None),
                 sort_order_changed_cb: RefCell::new(None),
                 save_search_as_collection_cb: RefCell::new(None),
                 current_sort_order: Cell::new(SortOrder::default()),
@@ -334,6 +336,7 @@ mod imp {
 
     impl ObjectImpl for FilmstripPane {
         fn dispose(&self) {
+            self.clipboard_decoder.borrow_mut().take();
             self.toolbar_view.unparent();
         }
     }
@@ -995,7 +998,7 @@ impl FilmstripPane {
                     .as_ref()
                     .map(|c| c.clicked_path.clone());
                 if let Some(p) = path {
-                    copy_image_to_clipboard(&p, widget.upcast_ref::<gtk4::Widget>());
+                    widget.copy_image_to_clipboard(&p);
                 }
             });
         }
@@ -2206,10 +2209,75 @@ fn launch_default_for_path(path: &Path) {
     let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
 }
 
-fn copy_image_to_clipboard(path: &Path, widget: &gtk4::Widget) {
-    let file = gio::File::for_path(path);
-    if let Ok(texture) = gdk4::Texture::from_file(&file) {
-        widget.clipboard().set_texture(&texture);
+impl FilmstripPane {
+    fn copy_image_to_clipboard(&self, path: &Path) {
+        let visible = |path: &Path| {
+            self.imp().state.borrow().as_ref().is_some_and(|state| {
+                let state = state.borrow();
+                crate::buckets::visible(
+                    path,
+                    state.settings.active_library().map(|l| l.root.as_path()),
+                    &state.disabled_folders,
+                )
+            })
+        };
+        if !visible(path) {
+            return;
+        }
+        if self.imp().clipboard_decoder.borrow().is_none() {
+            let (decoder, results) = crate::image_pipeline::clipboard::Decoder::start();
+            *self.imp().clipboard_decoder.borrow_mut() = Some(decoder);
+            let weak = self.downgrade();
+            glib::MainContext::default().spawn_local(async move {
+                while let Ok(result) = results.recv().await {
+                    let Some(strip) = weak.upgrade() else { return };
+                    if !strip
+                        .imp()
+                        .clipboard_decoder
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|d| d.is_current(result.generation))
+                    {
+                        continue;
+                    }
+                    let visible = strip.imp().state.borrow().as_ref().is_some_and(|state| {
+                        let state = state.borrow();
+                        crate::buckets::visible(
+                            &result.path,
+                            state.settings.active_library().map(|l| l.root.as_path()),
+                            &state.disabled_folders,
+                        )
+                    });
+                    if !visible {
+                        continue;
+                    }
+                    match result.image {
+                        Ok(image) => {
+                            let texture = gdk4::MemoryTexture::new(
+                                image.width as i32,
+                                image.height as i32,
+                                gdk4::MemoryFormat::R8g8b8a8,
+                                &glib::Bytes::from_owned(image.rgba),
+                                image.width as usize * 4,
+                            );
+                            strip.clipboard().set_texture(&texture);
+                        }
+                        Err(error) => {
+                            if let Some(window) =
+                                strip.root().and_downcast::<super::window::SharprWindow>()
+                            {
+                                window.add_toast(libadwaita::Toast::new(&format!(
+                                    "Could not copy image: {error}"
+                                )));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        if let Some(decoder) = self.imp().clipboard_decoder.borrow().as_ref() {
+            decoder.request(path.to_path_buf());
+        }
     }
 }
 

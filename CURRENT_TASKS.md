@@ -4,8 +4,9 @@
 
 Branch: `codex/audit-0.5.0`. The user authorized all 13 findings, fixed in
 severity order with one commit per finding. Order: A1, A2 (high); A3–A7,
-A13 (medium); A8–A12 (low). A1 (`cd32145`) and A2 (`dcc9cbf`) are committed. A3 is verified (229 tests
-and full offline checks); A4 is next. Bugs get failing regression tests
+A13 (medium); A8–A12 (low). A1 (`cd32145`), A2 (`dcc9cbf`), A3 (`ff4846f`) are committed. A4 is
+verified (231 tests, full offline checks, clipboard GTK and 5,000-image
+before/after navigation logs in `/tmp/sharpr-audit-050/`); A5 is next. Bugs get failing regression tests
 before fixes; each completed finding is committed separately.
 All tests use temporary data and memory GSettings; heavy jobs run one at a
 time, offline. Never build Flatpak, deploy, merge or push. Claude merges

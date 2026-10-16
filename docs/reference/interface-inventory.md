@@ -64,7 +64,7 @@ removed means the control is absent, with stored user data retained.
 | Image menu | Info / Ctrl+I | Kept; expands/pins the same readout card | D31 |
 | Image menu | Open in default viewer / Return | Kept | D21 |
 | Image menu | Show in File Manager | Kept | D21 |
-| Image menu | Copy to Clipboard / Ctrl+C | Kept; Compare has its own shortcut | D21, D29 |
+| Image menu | Copy to Clipboard / Ctrl+C | Kept; the menu decodes off-thread with newest-request protection and visible errors; GTK provides the viewer’s Ctrl+C; Compare has its own shortcut | D21, D29 |
 | Image menu | Crop Copy | Kept for one image, in the viewer | D28 |
 | Image menu | Export as WebP / Ctrl+E | Kept for one or many images | D13 |
 | Image menu | Add / remove bucket membership | Kept in the shared menu and writer | D5, D31 |

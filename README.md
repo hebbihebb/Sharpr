@@ -16,7 +16,7 @@ Sharpr is for people with thousands of downloaded images, generated artwork, and
 - **Survey** a selection in a grid and dismiss the ones you don't want, to narrow it down without touching any file.
 - **Prepare wallpapers.** Crop a copy, or batch-export a selection as WebP (lossless by default, optionally fitted within a size such as 3840×2160) in the background. Every copy is a new, uniquely named file.
 - **Clean up copies.** Find exact copies, and resized or converted copies of the same picture (crops and variants are left alone), keep the highest resolution, and move the rest to the trash after you confirm.
-- **View** JPEG, PNG, WebP, JPEG XL, GIF, TIFF, and BMP, with zoom, fullscreen, and a corner readout that expands into file details and EXIF on hover. The large image has the same right-click menu as the filmstrip.
+- **View** JPEG, PNG, WebP, JPEG XL, GIF, TIFF, and BMP, with zoom, fullscreen, and a corner readout that expands into file details and EXIF on hover. The large image has the same right-click menu as the filmstrip. Copy to Clipboard prepares the image in the background and reports decoding errors.
 
 ## Why It Works Well
 

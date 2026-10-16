@@ -24,7 +24,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `model/library.rs` | `LibraryManager`: list store, path index, selection, and metadata caches |
 | `model/browse.rs` | Pure aspect, resolution, and orientation filter and sort logic |
 | `thumbnails/` | Visible and preload worker pools, and the memory and disk thumbnail caches |
-| `image_pipeline/` | Viewer preview and metadata workers |
+| `image_pipeline/` | Viewer preview, metadata, and a lazy serial clipboard decoder with one coalesced pending request |
 | `library_index/` | SQLite index of folders, images, and buckets (`schema.rs` sets up new databases) |
 | `tags/db.rs` | SQLite manual tags and sharpness store |
 | `export/`, `collection_export.rs` | WebP copies (crop and batch export) with safe output reservation, and crop geometry; bucket import and export |
@@ -42,6 +42,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 - Heavy work runs on `std::thread::spawn` or `rayon::spawn` and sends results back over `async_channel`. Results are drained in `glib::MainContext::spawn_local`. There is no async runtime; do not add Tokio.
 - Every result that can go stale is checked against a generation counter before it is applied. This applies to the viewer, thumbnails, virtual views, search, the viewer's bucket summary, and Compare.
 - The viewer never hands GTK a very large image to upload on the main thread. An sRGB image with 8-bit channels and more than about 1.15 times the screen in each direction is shown as a screen-sized copy, made on a worker (about 30–70 ms in release for 33–270 megapixels). Zoom math uses the original size, and full resolution loads only when zooming needs more pixels than the copy has.
+- **Clipboard image copies** decode on one lazy worker using the oriented export decoder and its 3 GB budget. At most one request waits behind the running decode; newer requests retire older results. GTK only publishes the completed RGBA texture, checks current scope, and shows decode failures. Closing the filmstrip retires its clipboard worker.
 - **Visual search** runs EmbeddingGemma 2 in `llama-server` children that listen only on 127.0.0.1 with a random key (D24). They die with the thread that started them (`PR_SET_PDEATHSIG`). Every child runs with `--offline`, and inherited llama.cpp settings (`LLAMA_*`, `HF_*`, `MTMD_*`) are stripped, so an environment that names a remote model can't make it download or replace the installed one.
   - **Indexing:** a `visual-index` thread at nice 19 and idle I/O, requested after every completed fingerprint pass. It embeds each fingerprint without a vector or recorded failure, one image at a time, and writes each vector at once, so passes resume. Its server, with the projector, runs only while a pass has work.
   - **On the graphics card by default:** with a GPU (Vulkan) build in the model folder's `runtime-gpu/` and the `visual-search-gpu` setting on, indexing runs on the first card that `--list-devices` reports with at least 2 GB free. That is about 17 times faster than the processor, with matching vectors. With no such card, or if the GPU server fails to start or dies mid-pass, the pass continues on the processor (2 threads). Queries always use the processor build.

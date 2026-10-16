@@ -79,6 +79,8 @@ Select images and press Ctrl+E, or right-click → **Export as WebP…**. Choose
 
 **Rename and Move.** File Actions → Rename (F2) and Move to Folder carry bucket membership and retained legacy tags to the new path. A missing image’s bucket or tag records still reserve its name: choose another name when renaming, or let Move choose the next free one.
 
+**Copy to Clipboard.** The image-menu command prepares the full image in the background, in its displayed orientation. You can keep browsing; repeated copy requests keep the latest image. A failure is reported without replacing the clipboard contents.
+
 **File copies.** Duplicate (Ctrl+D) and File Actions → Copy to Folder create new files with unique names, choosing `name (copy)` and numbered copies when needed. Existing files and links are never replaced.
 
 ## Preferences

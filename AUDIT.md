@@ -71,7 +71,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Evidence: confirmed by code trace and a temporary fixture: the scoped fingerprint pass skipped the disabled subtree, but `relink` still changed `last_path` to its file; `identical_elsewhere` has no exclusion input. Bucket display resolution itself correctly filters exclusions before probes.
 - Proposed fix: pass the current library scope into re-linking and copy-count queries, filter before filesystem probes or writes, and leave excluded members stored untouched. Add disabled-folder and narrowed-root regressions.
 - Verification: the excluded-candidate regression failed before the fix. All 229 default tests and full offline checks pass; scoped tests cover disabled/outside-root candidates, unchanged excluded member rows, missing counts and Info counts.
-- Status: fixed (A3 commit; hash recorded at the next checkpoint)
+- Status: fixed (ff4846f)
 
 ### A4 — The clipboard menu decodes full images on the GTK thread
 
@@ -82,7 +82,8 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: right-click a large image → Copy to Clipboard → the GTK event loop waits for full file reading/decoding, so navigation and window interaction stall; load failures are silently ignored.
 - Evidence: confirmed call path; stall duration was not benchmarked. This is the image clipboard decoder, separate from the Backlog's ordinary file copy/move/trash work.
 - Proposed fix: prepare clipboard image data on a bounded decoding worker, publish it on GTK, and report failures. Reuse existing orientation/format handling and test original bytes plus main-loop responsiveness.
-- Status: agreed
+- Verification: the clipboard error UI regression failed before the fix; success/error UI and the 5,000-image navigation workflow pass off-screen. All 231 default tests and full offline checks pass. A gated worker test proves nonblocking requests and superseded-request coalescing; an EXIF fixture checks orientation and original bytes. Debug/Cairo before/after logs: `/tmp/sharpr-audit-050/a4-{before,after}.jsonl`; first-folder load 314/281 ms, browsing stalls ≥50 ms 0/0, peak RSS 164/167 MB. These synthetic debug checks do not establish real-library release performance or user acceptance.
+- Status: fixed (A4 commit; hash recorded at the next checkpoint)
 
 ### A5 — The bucket-membership upgrade blocks window construction
 

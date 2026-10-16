@@ -3801,3 +3801,73 @@ fn internal_rename_keeps_buckets_when_the_old_filename_is_reused() {
     assert_eq!(tags.tags_for_path(&renamed), vec!["legacy"]);
     window.close();
 }
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn clipboard_decode_failure_is_reported_without_changing_the_source() {
+    let root = isolated_fixture("clipboard-error");
+    std::fs::create_dir_all(&root).unwrap();
+    let broken = root.join("broken.png");
+    std::fs::write(&broken, b"invalid image bytes").unwrap();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Clipboard", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    pump_until(|| window.is_mapped() && window.app_state().borrow().library.image_count() == 1);
+    let viewer = window.imp_viewer().unwrap();
+    viewer.load_image(broken.clone());
+    let strip = window.imp().filmstrip.borrow().clone().unwrap();
+    assert!(strip.open_viewer_menu(&viewer, 10.0, 10.0));
+    gtk4::prelude::WidgetExt::activate_action(&strip, "filmstrip.copy-to-clipboard", None).unwrap();
+    for popover in find_widgets::<gtk4::Popover>(window.upcast_ref()) {
+        popover.popdown();
+    }
+    pump_until(|| {
+        find_widgets::<gtk4::Label>(window.upcast_ref())
+            .iter()
+            .any(|label| label.text().contains("Could not copy image"))
+    });
+    assert_eq!(std::fs::read(&broken).unwrap(), b"invalid image bytes");
+    let good = broken.with_file_name("good.png");
+    image::RgbImage::from_pixel(4, 2, image::Rgb([21, 43, 65]))
+        .save(&good)
+        .unwrap();
+    let original = std::fs::read(&good).unwrap();
+    viewer.load_image(good.clone());
+    assert!(strip.open_viewer_menu(&viewer, 10.0, 10.0));
+    gtk4::prelude::WidgetExt::activate_action(&strip, "filmstrip.copy-to-clipboard", None).unwrap();
+    for popover in find_widgets::<gtk4::Popover>(window.upcast_ref()) {
+        popover.popdown();
+    }
+    // The GTK loop delivers the worker's texture; the clipboard is readable
+    // locally, without opening another application or changing any source.
+    pump_until(|| {
+        strip
+            .clipboard()
+            .formats()
+            .contains_type(gdk4::Texture::static_type())
+    });
+    let read = Rc::new(RefCell::new(None));
+    let received = read.clone();
+    let clipboard = strip.clipboard();
+    glib::MainContext::default().spawn_local(async move {
+        *received.borrow_mut() = Some(clipboard.read_texture_future().await);
+    });
+    pump_until(|| read.borrow().is_some());
+    let texture = read.borrow_mut().take().unwrap().unwrap().unwrap();
+    assert_eq!((texture.width(), texture.height()), (4, 2));
+    assert_eq!(std::fs::read(good).unwrap(), original);
+    window.close();
+}
