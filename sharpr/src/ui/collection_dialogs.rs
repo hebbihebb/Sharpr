@@ -1,15 +1,10 @@
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
-use crate::ui::filmstrip::FilmstripPane;
-use crate::ui::sidebar::SidebarPane;
 use crate::ui::state::{AppState, ViewScope};
-use crate::ui::viewer::ViewerPane;
-use crate::ui::window::{apply_scope_to_sidebar, load_virtual_async};
 
 pub(super) fn run_collection_write<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
@@ -218,16 +213,12 @@ pub(super) fn show_new_collection_dialog<F>(
     dialog.present(Some(&window));
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn show_rename_collection_dialog<F>(
     window: gtk4::Window,
     id: i64,
     state: Rc<RefCell<AppState>>,
     toast_overlay: libadwaita::ToastOverlay,
     refresh: F,
-    filmstrip: FilmstripPane,
-    viewer: ViewerPane,
-    sidebar: SidebarPane,
 ) where
     F: Fn() + Clone + 'static,
 {
@@ -256,21 +247,16 @@ pub(super) fn show_rename_collection_dialog<F>(
     let state_d = state.clone();
     let toast_d = toast_overlay.clone();
     let refresh_d = refresh.clone();
-    let filmstrip_d = filmstrip.clone();
-    let viewer_d = viewer.clone();
-    let sidebar_d = sidebar.clone();
     let name_clone = name_entry.clone();
     let window_weak = window.downgrade();
     dialog.connect_response(None, move |_, response| {
         if response != "save" {
             return;
         }
-        let (index, root, disabled, library_id) = {
+        let (index, library_id) = {
             let st = state_d.borrow();
             (
                 st.library_index.clone(),
-                st.settings.active_library().map(|l| l.root.clone()),
-                st.disabled_folders.clone(),
                 st.settings.active_library_id.clone(),
             )
         };
@@ -280,24 +266,21 @@ pub(super) fn show_rename_collection_dialog<F>(
         let new_name = name_clone.text().to_string();
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let result = (|| -> Result<Vec<PathBuf>, String> {
+            let result = (|| -> Result<(), String> {
                 crate::buckets::rename_bucket(&index, id, &new_name)?;
                 crate::bench_event!("collection.rename.finish", serde_json::json!({"id":id}));
-                Ok(crate::buckets::view(&index, id, root.as_deref(), &disabled)?.paths)
+                Ok(())
             })();
             let _ = tx.send_blocking(result);
         });
         let state = state_d.clone();
         let toast = toast_d.clone();
         let refresh = refresh_d.clone();
-        let filmstrip = filmstrip_d.clone();
-        let viewer = viewer_d.clone();
-        let sidebar = sidebar_d.clone();
         let weak = window_weak.clone();
         glib::MainContext::default().spawn_local(async move {
             let Ok(result) = rx.recv().await else { return };
             match result {
-                Ok(paths) => {
+                Ok(()) => {
                     refresh();
                     let active = {
                         let st = state.borrow();
@@ -309,16 +292,7 @@ pub(super) fn show_rename_collection_dialog<F>(
                             .upgrade()
                             .and_then(|w| w.downcast::<super::window::SharprWindow>().ok())
                         {
-                            window.clear_browse_filters();
-                        }
-                        load_virtual_async(&state, &paths);
-                        filmstrip.refresh_virtual();
-                        apply_scope_to_sidebar(&ViewScope::Collection(id), &sidebar);
-                        if state.borrow().library.image_count() > 0 {
-                            state.borrow_mut().library.selected_index = Some(0);
-                            filmstrip.navigate_to(0);
-                        } else {
-                            viewer.clear();
+                            window.refresh_current_bucket(id);
                         }
                     }
                 }

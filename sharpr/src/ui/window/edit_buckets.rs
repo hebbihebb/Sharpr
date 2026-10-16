@@ -51,11 +51,7 @@ impl SharprWindow {
         }
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let result = crate::buckets::add_edit_copies(&index, &library_id, kind, &paths)
-                .and_then(|(id, added)| {
-                    let shown = crate::buckets::view(&index, id, root.as_deref(), &disabled)?;
-                    Ok((id, added, shown.paths))
-                });
+            let result = crate::buckets::add_edit_copies(&index, &library_id, kind, &paths);
             let _ = tx.send_blocking(result);
         });
         let weak = self.downgrade();
@@ -63,7 +59,7 @@ impl SharprWindow {
             let Ok(result) = rx.recv().await else { return };
             let Some(win) = weak.upgrade() else { return };
             match result {
-                Ok((id, added, shown)) => {
+                Ok((id, added)) => {
                     crate::bench_event!(
                         "collection.edit_copies",
                         serde_json::json!({"bucket": name, "added": added}),
@@ -75,8 +71,7 @@ impl SharprWindow {
                     }
                     if win.imp().state.borrow().scope == scope && scope == ViewScope::Collection(id)
                     {
-                        load_virtual_async(&win.imp().state, &shown);
-                        win.present_browse_paths(None);
+                        win.refresh_current_bucket(id);
                     }
                 }
                 Err(error) => win.add_toast(libadwaita::Toast::new(&format!(

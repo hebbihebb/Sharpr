@@ -3979,3 +3979,84 @@ fn check_bucket_upgrade(fail_backup: bool) {
     assert!(backup.join("tags.sqlite3").is_file());
     window.close();
 }
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn late_bucket_write_preserves_newer_search_and_navigation() {
+    let root = isolated_fixture("late-bucket-write");
+    std::fs::create_dir_all(&root).unwrap();
+    let a = root.join("a.png");
+    let b = root.join("b.png");
+    for (path, color) in [(&a, [60, 90, 120]), (&b, [120, 90, 60])] {
+        image::RgbImage::from_pixel(32, 18, image::Rgb(color))
+            .save(path)
+            .unwrap();
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    let library = settings
+        .add_library("Late write", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    pump_until(|| window.is_mapped() && window.app_state().borrow().library.image_count() == 2);
+    let index = window.app_state().borrow().library_index.clone().unwrap();
+    let bucket = index
+        .create_collection(&library, None, "Keep", &[], None, None)
+        .unwrap();
+    crate::buckets::add_to_bucket(&index, bucket.id, &[a.clone(), b.clone()]).unwrap();
+    window.app_state().borrow_mut().scope = ViewScope::Collection(bucket.id);
+    load_virtual_async(&window.app_state(), &[a.clone(), b.clone()]);
+    window.change_collection_tags(bucket.id, vec![a.clone()], true);
+    // Finish the worker but hold its GTK completion while the user starts a
+    // newer query. These pictures must differ, since bucket removal uses identity.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while index.bucket_members(&[bucket.id]).unwrap().len() != 1 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
+    entry.set_text("a");
+    window.run_scoped_search("a".into());
+    settle(400);
+    assert_eq!(
+        entry.text().as_str(),
+        "a",
+        "a late bucket completion must not erase newer input"
+    );
+    pump_until(|| window.app_state().borrow().library.image_count() == 0);
+    entry.set_text("");
+    window.run_scoped_search(String::new());
+    pump_until(|| window.app_state().borrow().library.image_count() == 1);
+    assert_eq!(
+        window
+            .app_state()
+            .borrow()
+            .library
+            .entry_at(0)
+            .unwrap()
+            .path(),
+        b
+    );
+
+    window.change_collection_tags(bucket.id, vec![a.clone()], false);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while index.bucket_members(&[bucket.id]).unwrap().len() != 2 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    window.imp().open_folder_cb.borrow().as_ref().unwrap()(root.clone());
+    settle(400);
+    assert_eq!(window.app_state().borrow().scope, ViewScope::Folder(root));
+    assert_eq!(window.app_state().borrow().library.image_count(), 2);
+    window.close();
+}

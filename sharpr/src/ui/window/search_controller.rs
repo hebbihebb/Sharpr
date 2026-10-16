@@ -160,6 +160,7 @@ pub(crate) struct BrowseSnapshot {
     pub action_selection: std::collections::HashSet<PathBuf>,
     pub scroll: f64,
     pub sort_order: crate::model::library::SortOrder,
+    pub members_changed: bool,
 }
 
 #[derive(Clone, Default)]
@@ -175,6 +176,104 @@ impl BrowseOptions {
 }
 
 impl SharprWindow {
+    /// A bucket write is independent of the user's current search. Re-read
+    /// membership, then rerun the latest inputs without clearing them or
+    /// publishing an older worker's unfiltered snapshot.
+    pub(crate) fn refresh_current_bucket(&self, id: i64) {
+        if file_actions_blocked(self.upcast_ref())
+            || self.app_state().borrow().scope != ViewScope::Collection(id)
+        {
+            return;
+        }
+        let (index, root, disabled) = {
+            let state = self.app_state();
+            let state = state.borrow();
+            (
+                state.library_index.clone(),
+                state.settings.active_library().map(|l| l.root.clone()),
+                state.disabled_folders.clone(),
+            )
+        };
+        let Some(index) = index else { return };
+        let generation = self.imp().bucket_open_generation.get().wrapping_add(1);
+        self.imp().bucket_open_generation.set(generation);
+        self.imp().bucket_open_pending.set(Some(generation));
+        let search = self.imp().inline_search_generation.get().wrapping_add(1);
+        self.imp().inline_search_generation.set(search);
+        self.imp()
+            .browse_generation
+            .store(search, std::sync::atomic::Ordering::Relaxed);
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(crate::buckets::view(&index, id, root.as_deref(), &disabled));
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(result) = rx.recv().await else { return };
+            let Some(window) = weak.upgrade() else { return };
+            if window.imp().bucket_open_pending.get() == Some(generation) {
+                window.imp().bucket_open_pending.set(None);
+            }
+            if window.imp().bucket_open_generation.get() != generation
+                || window.app_state().borrow().scope != ViewScope::Collection(id)
+                || file_actions_blocked(window.upcast_ref())
+            {
+                return;
+            }
+            let paths = match result {
+                Ok(view) => view.paths,
+                Err(error) => {
+                    window.add_toast(libadwaita::Toast::new(&format!(
+                        "Could not refresh bucket: {error}"
+                    )));
+                    return;
+                }
+            };
+            let paths = {
+                let state = window.app_state();
+                let state = state.borrow();
+                filter_paths_for_library(
+                    paths,
+                    state.settings.active_library().map(|l| l.root.as_path()),
+                    &state.disabled_folders,
+                )
+            };
+            window.capture_browse_view();
+            if let Some(snapshot) = window.imp().browse_snapshot.borrow_mut().as_mut() {
+                let old: HashMap<_, _> = snapshot
+                    .entries
+                    .iter()
+                    .map(|e| (e.path(), e.clone()))
+                    .collect();
+                snapshot.entries = paths
+                    .into_iter()
+                    .map(|path| {
+                        old.get(&path)
+                            .cloned()
+                            .unwrap_or_else(|| ImageEntry::new(path))
+                    })
+                    .collect();
+                snapshot.folder = None;
+                snapshot.members_changed = true;
+            }
+            // Invalidate cached rankings and whole-library candidate lists.
+            window
+                .imp()
+                .browse_session
+                .set(window.imp().browse_session.get().wrapping_add(1));
+            let query = window
+                .imp()
+                .inline_search_entry
+                .borrow()
+                .as_ref()
+                .map(|e| e.text().to_string())
+                .unwrap_or_default();
+            // The existing extend path preserves the current selection/scroll;
+            // the new session forces fresh ranking rather than reusing a page.
+            window.run_browse_query_with_limit(query, true, true);
+        });
+    }
+
     pub(super) fn capture_browse_view(&self) {
         if self.imp().browse_snapshot.borrow().is_some() {
             return;
@@ -206,6 +305,7 @@ impl SharprWindow {
             action_selection: st.selected_paths.clone(),
             scroll,
             sort_order: st.sort_order,
+            members_changed: false,
         });
     }
 
@@ -223,7 +323,18 @@ impl SharprWindow {
         {
             let mut st = self.imp().state.borrow_mut();
             st.scope = snapshot.scope.clone();
-            st.library.restore_view(&entries, snapshot.folder);
+            if !snapshot.members_changed {
+                st.library.restore_view(&entries, snapshot.folder.clone());
+            }
+        }
+        if snapshot.members_changed {
+            load_virtual_async(
+                &self.app_state(),
+                &entries.iter().map(|e| e.path()).collect::<Vec<_>>(),
+            );
+        }
+        {
+            let mut st = self.imp().state.borrow_mut();
             st.selected_paths = snapshot
                 .action_selection
                 .into_iter()
@@ -901,6 +1012,14 @@ impl SharprWindow {
                         win.imp().state.borrow_mut().selected_paths.clear();
                     }
                     load_virtual_async(&win.imp().state, &paths);
+                    if extend {
+                        let shown: std::collections::HashSet<_> = paths.iter().collect();
+                        win.imp()
+                            .state
+                            .borrow_mut()
+                            .selected_paths
+                            .retain(|path| shown.contains(path));
+                    }
                     win.present_browse_paths(selected.as_deref());
                     if extend {
                         if let (Some(filmstrip), Some(scroll)) =

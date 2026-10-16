@@ -79,39 +79,24 @@ impl SharprWindow {
     }
 
     pub(super) fn reparent_collection(&self, id: i64, parent: Option<i64>) {
-        let (index, root, disabled, scope) = {
+        let (index, scope) = {
             let state = self.imp().state.borrow();
-            (
-                state.library_index.clone(),
-                state.settings.active_library().map(|l| l.root.clone()),
-                state.disabled_folders.clone(),
-                state.scope.clone(),
-            )
+            (state.library_index.clone(), state.scope.clone())
         };
         let Some(index) = index else {
             self.add_toast(libadwaita::Toast::new("Bucket database is unavailable"));
             return;
         };
         let (tx, rx) = async_channel::bounded(1);
-        let worker_scope = scope.clone();
         std::thread::spawn(move || {
-            let result = (|| -> Result<_, String> {
-                let name = crate::buckets::reparent_bucket(&index, id, parent)?;
-                let remaining = if let ViewScope::Collection(active) = worker_scope {
-                    Some(crate::buckets::view(&index, active, root.as_deref(), &disabled)?.paths)
-                } else {
-                    None
-                };
-                Ok((name, remaining))
-            })();
-            let _ = tx.send_blocking(result);
+            let _ = tx.send_blocking(crate::buckets::reparent_bucket(&index, id, parent));
         });
         let weak = self.downgrade();
         glib::MainContext::default().spawn_local(async move {
             let Ok(result) = rx.recv().await else { return };
             let Some(win) = weak.upgrade() else { return };
             match result {
-                Ok((name, remaining)) => {
+                Ok(name) => {
                     crate::bench_event!(
                         "collection.reparent",
                         serde_json::json!({"id":id,"parent":parent})
@@ -122,10 +107,8 @@ impl SharprWindow {
                         refresh();
                     }
                     if win.imp().state.borrow().scope == scope {
-                        if let Some(paths) = remaining {
-                            win.clear_inline_search(true);
-                            load_virtual_async(&win.imp().state, &paths);
-                            win.present_browse_paths(None);
+                        if let ViewScope::Collection(active) = scope {
+                            win.refresh_current_bucket(active);
                         }
                     }
                     win.add_toast(libadwaita::Toast::new(&format!("Moved collection {name}")));
@@ -187,8 +170,7 @@ impl SharprWindow {
                     .map_err(|e| e.to_string())?
                     .map(|c| c.name)
                     .unwrap_or_else(|| "collection".into());
-                let remaining = crate::buckets::view(&index, id, root.as_deref(), &disabled)?.paths;
-                Ok((name, changed, remaining))
+                Ok((name, changed))
             })();
             let _ = tx.send_blocking(result);
         });
@@ -197,7 +179,7 @@ impl SharprWindow {
             let Ok(result) = rx.recv().await else { return };
             let Some(win) = weak.upgrade() else { return };
             match result {
-                Ok((name, changed, remaining)) => {
+                Ok((name, changed)) => {
                     if !remove {
                         settings.remember_bucket(id);
                     }
@@ -212,9 +194,7 @@ impl SharprWindow {
                     }
                     if win.imp().state.borrow().scope == scope && scope == ViewScope::Collection(id)
                     {
-                        win.clear_inline_search(true);
-                        load_virtual_async(&win.imp().state, &remaining);
-                        win.present_browse_paths(None);
+                        win.refresh_current_bucket(id);
                     }
                     win.add_toast(libadwaita::Toast::new(&format!(
                         "{} {count} images {} {name}",

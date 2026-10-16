@@ -52,7 +52,7 @@ removed means the control is absent, with stored user data retained.
 | Buckets | Bucket rows and counts | Kept, scoped to the active identity and enabled root | D3, D4 |
 | Buckets | Nested disclosure buttons | Kept, with inherited parent membership | D4 |
 | Buckets | New Bucket (+) / name / parent / colour | Kept in the compact editing sheet | D27 |
-| Buckets | Rename / change colour | Kept in the bucket context menu; originals are untouched | D3 |
+| Buckets | Rename / change colour | Kept in the bucket context menu; originals are untouched; membership/rename refreshes preserve the current search and filters | D3 |
 | Buckets | Move under parent / promote / move children | Kept in the bucket context menu with cycle checks | D4 |
 | Buckets | Delete bucket | Kept with effect/confirmation; image files stay | D3 |
 | Buckets | Drag images onto a bucket | Kept; same background writer as picker and repeat | D5, D31 |

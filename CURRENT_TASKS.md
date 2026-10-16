@@ -14,11 +14,14 @@ Committed and verified:
 - A3 `ff4846f`: scoped re-linking and Info counts; excluded data untouched (229).
 - A4 `e7c6e0a`: serial/coalesced clipboard worker; orientation, original bytes,
   newest-request handling and GTK success/error verified (231).
+- A5 `9301db7`: membership backup/migration runs after window construction
+  on a worker; failure preserves data and disables bucket edits (24 GTK tests).
+- A6: bucket updates preserve newer search/filter inputs and navigation; the
+  regression failed first and now passes; offline checks pass (231 tests),
+  all 25 isolated GTK workflows pass, including rapid navigation.
 
-A5 is verified: membership backup/migration runs on a worker after window
-construction, with preparing/error UI and edit guards. Its regression failed
-first; full offline checks (231 default tests) and all 24 GTK workflows pass.
-Next: commit A5, then A6, A7, A13 (medium), then A8–A12 (low).
+Paused at the user’s request after the A6 commit.
+Remaining: A7, A13 (medium), then A8–A12 (low). Do not start A7 this session.
 Bugs require a failing regression first. Record each fixed hash in `AUDIT.md`.
 
 ## Verification and safety

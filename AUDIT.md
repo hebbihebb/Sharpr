@@ -95,7 +95,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Evidence: confirmed call path from application activation through `SharprWindow` construction to `AppState::new`; no large-upgrade timing was attempted. The backup/count checks themselves are present. This is separate from the Backlog's unguarded *legacy collection-to-tag* migration.
 - Proposed fix: run this upgrade on a worker and show an initializing state, keeping bucket edits disabled until success. Preserve the existing backup, count validation and failure behavior.
 - Verification: the construction/backup regression failed first; successful and failed upgrades preserve image bytes, tags and definitions, verify backups, and gate bucket controls. Full offline checks (231 default tests) and all 24 isolated GTK workflows pass. GTK trash tests require same-filesystem workspace `.tmp` fixtures; an initial `/tmp` run failed for that environment reason. A5 debug/Cairo navigation log `/tmp/sharpr-audit-050/a5-after.jsonl`: 5,000-image open 300 ms (prior 281 ms), peak RSS 171 MB (167), one 126 ms browsing stall during the rapid synthetic navigation loop (prior zero). Release/manual performance is not claimed.
-- Status: fixed (A5 commit; hash recorded at the next checkpoint)
+- Status: fixed (9301db7)
 
 ### A6 — A late bucket update erases a newer search
 
@@ -106,7 +106,10 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: while viewing a bucket, start an Add/Remove operation → type a new search before its worker's completion is dispatched → completion sees the same bucket ID, clears the new search and replaces the newer view with the full bucket.
 - Evidence: confirmed in the off-screen GTK probe by delaying main-context delivery of a bucket-write result until a newer query was submitted; the query text was then cleared. Similar scope-only refreshes exist after reparent and rename.
 - Proposed fix: validate the captured view/search generation before applying a refresh; when search has changed, refresh or rerun the current query without clearing it. Test delayed completion against a newer query and navigation.
-- Status: agreed
+- Status: fixed (A6 commit; hash recorded at next checkpoint)
+
+- Fix: shared background membership refresh retires older query results, updates the saved bucket membership, and reruns the latest search/filter inputs while preserving selection and scroll. Rename, reparent, membership writes and edit buckets use it.
+- Regression: failed first when the late completion cleared `a`; passes with the newer query retained, removed members absent after clearing search, and newer folder navigation preserved. Offline `./check.sh` passes (231 default tests). All 25 isolated offscreen GTK workflows pass. Synthetic 5,000-image navigation: 352 ms first-folder readiness, one 85 ms browsing stall, peak RSS 172 MB (debug/Cairo); prior A5 sample: 300 ms, one 126 ms stall, 171 MB. These samples are not a release/manual performance claim.
 
 ### A7 — F11 and double-click enter different fullscreen modes
 

@@ -2385,9 +2385,6 @@ impl SharprWindow {
 
         // Collection row context actions.
         {
-            let filmstrip_c = filmstrip.clone();
-            let viewer_c = viewer.clone();
-            let sidebar_c = sidebar.clone();
             let state_c = state.clone();
             let toast_overlay_c = toast_overlay.clone();
             let refresh_c = refresh_sidebar_collections.clone();
@@ -2402,9 +2399,6 @@ impl SharprWindow {
                     state_c.clone(),
                     toast_overlay_c.clone(),
                     refresh_c.clone(),
-                    filmstrip_c.clone(),
-                    viewer_c.clone(),
-                    sidebar_c.clone(),
                 );
             });
         }
@@ -4106,10 +4100,6 @@ impl SharprWindow {
             entry.grab_focus();
             entry.set_position(-1);
         }
-    }
-
-    pub(super) fn clear_browse_filters(&self) {
-        self.clear_inline_search(true);
     }
 
     pub(super) fn close_browse_search(&self) {
