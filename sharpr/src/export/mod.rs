@@ -306,6 +306,16 @@ impl Pending {
         std::fs::symlink_metadata(&self.partial).is_ok_and(|m| file_id(&m) == self.id)
     }
 
+    /// Streams an ordinary file copy into this owned partial, without
+    /// holding the whole image in memory or opening its final name for writing.
+    pub(crate) fn copy_from(&mut self, source: &mut std::fs::File) -> Result<(), ResizeError> {
+        std::io::copy(source, &mut self.file)
+            .and_then(|_| source.metadata())
+            .and_then(|metadata| self.file.set_permissions(metadata.permissions()))
+            .and_then(|_| self.file.sync_all())
+            .map_err(|e| ResizeError::Io(format!("copying {}: {e}", self.partial.display())))
+    }
+
     /// Moves the written file to the first free name from the claimed one
     /// on, never replacing a file that appeared there meanwhile.
     pub(crate) fn publish(mut self) -> Result<PathBuf, ResizeError> {

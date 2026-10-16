@@ -3825,17 +3825,7 @@ impl SharprWindow {
                         let mut copied = 0usize;
                         let mut errors = 0usize;
                         for src in &paths {
-                            let stem = src
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or_default()
-                                .to_string();
-                            let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
-                            let dest =
-                                crate::file_ops::next_available_path(&dest_dir, &stem, ext, |p| {
-                                    p.exists()
-                                });
-                            match std::fs::copy(src, &dest) {
+                            match crate::file_ops::copy_to_folder(src, &dest_dir) {
                                 Ok(_) => copied += 1,
                                 Err(_) => errors += 1,
                             }

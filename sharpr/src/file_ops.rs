@@ -8,38 +8,23 @@ pub fn next_available_path<F>(dir: &Path, stem: &str, ext: &str, exists: F) -> P
 where
     F: Fn(&Path) -> bool,
 {
-    let make = |name: String| dir.join(name);
+    (0..)
+        .map(|suffix| copy_candidate(dir, stem, ext, suffix))
+        .find(|path| !exists(path))
+        .expect("an unused copy name exists")
+}
 
-    let base = if ext.is_empty() {
-        make(stem.to_string())
-    } else {
-        make(format!("{stem}.{ext}"))
+fn copy_candidate(dir: &Path, stem: &str, ext: &str, suffix: u32) -> PathBuf {
+    let name = match suffix {
+        0 => stem.to_string(),
+        1 => format!("{stem} (copy)"),
+        n => format!("{stem} (copy {n})"),
     };
-    if !exists(&base) {
-        return base;
-    }
-
-    let copy1 = if ext.is_empty() {
-        make(format!("{stem} (copy)"))
+    dir.join(if ext.is_empty() {
+        name
     } else {
-        make(format!("{stem} (copy).{ext}"))
-    };
-    if !exists(&copy1) {
-        return copy1;
-    }
-
-    let mut n = 2u32;
-    loop {
-        let candidate = if ext.is_empty() {
-            make(format!("{stem} (copy {n})"))
-        } else {
-            make(format!("{stem} (copy {n}).{ext}"))
-        };
-        if !exists(&candidate) {
-            return candidate;
-        }
-        n += 1;
-    }
+        format!("{name}.{ext}")
+    })
 }
 
 /// Renames `src` to `new_name` in the same directory without ever replacing
@@ -261,15 +246,30 @@ pub fn duplicate_file(src: &Path) -> Result<PathBuf, String> {
     let parent = src
         .parent()
         .ok_or_else(|| format!("no parent directory for {}", src.display()))?;
+    copy_to_folder(src, parent)
+}
+
+/// Copies bytes through an exclusively owned partial file, then publishes
+/// under a unique name without replacing files or following destination links.
+pub fn copy_to_folder(src: &Path, destination: &Path) -> Result<PathBuf, String> {
     let stem = src
         .file_stem()
         .and_then(|s| s.to_str())
-        .ok_or_else(|| format!("invalid filename: {}", src.display()))?;
-    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-    let dest = next_available_path(parent, stem, ext, |p| p.exists());
-    std::fs::copy(src, &dest).map_err(|e| format!("copy failed: {e}"))?;
-    Ok(dest)
+        .ok_or_else(|| format!("invalid filename: {}", src.display()))?
+        .to_string();
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_string();
+    let mut source = std::fs::File::open(src).map_err(|e| format!("copy failed: {e}"))?;
+    let destination = destination.to_path_buf();
+    let mut pending = crate::export::Pending::reserve(move |suffix| {
+        copy_candidate(&destination, &stem, &ext, suffix)
+    })
+    .map_err(|e| e.to_string())?;
+    pending.copy_from(&mut source).map_err(|e| e.to_string())?;
+    pending.publish().map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -319,6 +319,86 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn duplicate_skips_dangling_symlinks_and_preserves_original_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("copy-symlink");
+        let src = dir.join("a.png");
+        let unexpected = dir.join("must-not-create.png");
+        let occupied = dir.join("a (copy).png");
+        std::fs::write(&src, b"original pixels").unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink(&unexpected, &occupied).unwrap();
+
+        let copy = duplicate_file(&src).unwrap();
+
+        assert_eq!(copy, dir.join("a (copy 2).png"));
+        assert!(
+            !unexpected.exists(),
+            "an occupied symlink must never be followed"
+        );
+        assert!(occupied
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read(&src).unwrap(), b"original pixels");
+        assert_eq!(std::fs::read(&copy).unwrap(), b"original pixels");
+        assert_eq!(
+            std::fs::metadata(copy).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_folder_copies_keep_every_output_and_existing_file() {
+        let dir = temp_dir("concurrent-copy");
+        let destination = dir.join("out");
+        std::fs::create_dir(&destination).unwrap();
+        let src = dir.join("a.png");
+        let bytes = vec![73; 1024 * 1024];
+        std::fs::write(&src, &bytes).unwrap();
+        std::fs::write(destination.join("a.png"), b"existing file").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let (src, destination, barrier) =
+                    (src.clone(), destination.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    copy_to_folder(&src, &destination).unwrap()
+                })
+            })
+            .collect();
+        let copies: HashSet<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        assert_eq!(copies.len(), 8);
+        for copy in copies {
+            assert_eq!(std::fs::read(copy).unwrap(), bytes);
+        }
+        assert_eq!(std::fs::read(&src).unwrap(), bytes);
+        assert_eq!(
+            std::fs::read(destination.join("a.png")).unwrap(),
+            b"existing file"
+        );
+        assert_eq!(std::fs::read_dir(destination).unwrap().count(), 9);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_folder_copy_removes_only_its_partial() {
+        let dir = temp_dir("copy-failed");
+        let source = dir.join("source");
+        let destination = dir.join("out");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        // Opening a directory succeeds on Linux, but reading its bytes fails.
+        assert!(copy_to_folder(&source, &destination).is_err());
+        assert!(source.is_dir());
+        assert_eq!(std::fs::read_dir(destination).unwrap().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

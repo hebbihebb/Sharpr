@@ -77,6 +77,8 @@ Select images and press Ctrl+E, or right-click → **Export as WebP…**. Choose
 
 **Crop Copy…** on the right-click menu crops in the viewer at full size: the side panels make way (press F11 for fullscreen), and you drag the selection to move it or its corners to resize it, in 16:9 or freely. The top bar shows 16:9/Free, the crop's live pixel dimensions, the destination, **Cancel**, and **Save Copy**. **Save Copy** (or Enter) saves the selection as a new lossless WebP in the export folder, Wallpapers unless you chose another; Escape cancels. If the image changes on disk while you crop, Save Copy refuses rather than crop the new file.
 
+**File copies.** Duplicate (Ctrl+D) and File Actions → Copy to Folder create new files with unique names, choosing `name (copy)` and numbered copies when needed. Existing files and links are never replaced.
+
 ## Preferences
 
 Preferences holds the library root and graphics-card indexing setting. Library Overview holds counts, progress, and the model folder. Help has the guide, shortcuts, About, and the legacy tag maintenance tools.

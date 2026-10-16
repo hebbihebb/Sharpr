@@ -46,7 +46,8 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: choose a free copy name → another program creates a file at that name before copying → Sharpr truncates and replaces that file; alternatively a dangling symlink occupies the candidate name → Duplicate follows it and creates its target, treating an occupied name as free.
 - Evidence: confirmed by the temporary copy probe, including the actual `duplicate_file` helper; crop/export's safer `Pending` path is not affected.
 - Proposed fix: use a shared exclusive copy helper with collision retries and owned-partial cleanup; treat symlinks as occupied names. Keep originals and pre-existing targets byte-identical in regression tests.
-- Status: agreed
+- Verification: regression failed before the fix; 223 default tests, fmt, strict clippy, offline deny and machete pass. Copy tests cover dangling links, concurrent destinations, source bytes/permissions and partial cleanup.
+- Status: fixed (A1 commit; hash recorded at the next checkpoint)
 
 ### A2 — Internal Rename/Move can transfer a bucket to an unrelated replacement
 

@@ -114,6 +114,7 @@ Rules:
 
 - Crop copies and batch WebP exports decode the source in its displayed orientation (a 3 GB decode budget) and write to a new file. Only WebP is written: crops are lossless, and exports are lossless by default or lossy at a chosen quality, optionally fitted within a size that only shrinks. Batch export runs at the lowest priority and checks for cancellation between images and before keeping each output. The output name is reserved with `create_new`, the data is written to a hidden partial file, and the partial is renamed into place. Encoder flushes are checked, and failed outputs are removed.
 - Originals are only ever opened for reading. The exceptions are explicit trash, move, and rename actions. Rename and Move to… go through `file_ops::rename_no_replace`, which never replaces an existing file.
+- Duplicate and Copy to Folder stream bytes into the same exclusive `Pending` output mechanism, preserve source permissions and choose `name (copy)` suffixes on collisions. Destination symlinks count as occupied; failed copies remove only their own partial.
 - Embedded metadata is never written.
 
 ## Packaging And Identity
