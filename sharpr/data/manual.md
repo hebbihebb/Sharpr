@@ -46,7 +46,7 @@ Buckets are hand-picked groups of images; the files stay in their folders. A buc
 
 **Edits.** Crop Copy, Export as WebP and Duplicate put the original and the new copy in a bucket under **Edits**: **Cropped**, **Exported** or **Duplicated**, made the first time they are needed. To compare a copy with its original, open that bucket, select the two, and press Ctrl+Shift+C; it works wherever you saved the copy, as long as it is inside your library. Remove images, or the whole bucket, when you are done; the files stay. Preferences → Library → **Collect Edits in Buckets** turns this off.
 
-Tags are retired. Main Menu → Library → Turn Tags into Buckets… offers each old tag as a new bucket. Your tags themselves are kept, unused, and Main Menu → Library → Remove Old Automatic Tags… clears the format and resolution tags Sharpr once added (a backup is made first).
+Tags are retired. Main Menu → Help → Library Maintenance → Turn Tags into Buckets… offers each old tag as a new bucket. Your tags themselves are kept, unused, and Main Menu → Help → Library Maintenance → Remove Old Automatic Tags… clears the format and resolution tags Sharpr once added (a backup is made first).
 
 ## Copies And Resolution
 

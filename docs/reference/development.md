@@ -123,7 +123,7 @@ python3 tools/install-visual-search-model.py --models DIR --runtime DIR [--gpu-r
 - `--runtime` holds a `llama-server` build with its `lib*.so*` files: `.tmp/native-benchmark/runtime/llama-b11457/` (the prebuilt Ubuntu x64 release).
 - `--gpu-runtime` holds the Vulkan build, `.tmp/native-benchmark/runtime/vulkan/llama-b11457/` (official release, checksum verified). It goes to `runtime-gpu/` and indexing then runs on the graphics card. For tests, `SHARPR_LLAMA_SERVER_GPU` points at one directly.
 - Files go to `~/.local/share/sharpr-models/embeddinggemma-2/` (and `runtime/`). Each is verified against its source; identical files are skipped.
-- Preferences → Library → Visual Search shows what Sharpr found and the indexing progress. `~/.cache/sharpr/logs/llama-server-*.log` holds the server's own messages.
+- Main Menu → Library → Library Overview… shows model availability and indexing progress. Preferences → Library → Use Graphics Card controls GPU indexing. `~/.cache/sharpr/logs/llama-server-*.log` holds the server's own messages.
 - Deleting `~/.local/share/sharpr/visual-search.sqlite` only forces a reindex.
 
 ## Flatpak

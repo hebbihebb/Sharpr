@@ -19,9 +19,10 @@ Committed and verified:
 - A9 `5c79227`: active messages consistently say bucket.
 - A10 `c72fa97`: valid thumbnail loading CSS; scheduler unchanged.
 
-A11 verified: retired import/export, hidden tag-search/save-search and quality
-views removed; shared data/helpers retained. Offline checks pass (229 tests),
-four GTK search/bucket/navigation workflows pass, build passes. Commit, then A12.
+A11 `ab3e01f`: retired paths removed; 229 default tests, four GTK workflows
+and build pass. A12: menu directions checked against live UI definitions.
+All 13 findings fixed. Next: full GTK verification, delete AUDIT in final
+cleanup commit, then required final offline check/build.
 Record fixed hashes in `AUDIT.md`; after all fixes, delete it in a final commit,
 run `./check.sh` and `cargo build`. No deferred findings currently.
 

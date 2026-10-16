@@ -172,7 +172,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: a maintainer follows these apparently supported handlers while changing bucket/search behavior → they must maintain obsolete paths that the current UI cannot invoke, and the hidden search still describes “Search tags…”.
 - Evidence: confirmed reference tracing: import/export handlers have no callers; the old filmstrip SearchBar is never appended to the visible layout or activated by a caller; quality-view helpers have only internal/test references. The active viewer search has its own implementation.
 - Proposed fix: remove these retired implementations and exclusive wiring/tests, retaining shared metadata/filter helpers and every legacy table/settings key. Do not include the perceptual-hash cleanup already in Backlog.
-- Status: fixed (A11 commit; hash recorded at next checkpoint)
+- Status: fixed (ab3e01f)
 
 - Verification: retired handlers/module, unparented widgets/callbacks and quality-view helpers have no remaining source references. Shared cancellable scan/metadata/scoring helpers and all persistence definitions retained; the exclusion regression now calls the active scanner. Full offline checks pass (229 tests; two tests exclusive to removed quality views retired); four active GTK search/bucket/navigation workflows pass. Synthetic 5,000-image navigation: 332 ms, one 51 ms browsing stall, peak RSS 167 MB vs A10 338 ms/82 ms/170 MB (debug/Cairo). Build and diff check pass.
 
@@ -185,7 +185,9 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: follow the guide to Library → Turn Tags into Buckets or Remove Old Automatic Tags → neither item is there; follow model setup instructions to Preferences → Visual Search → the documented status section is absent.
 - Evidence: confirmed against `ui/help_window.rs:29`, `ui/preferences.rs` and `ui/library_overview.rs`; the manual's own final paragraph already describes the newer Help location.
 - Proposed fix: point both maintenance actions to Help → Library Maintenance and model/status instructions to Library → Library Overview; keep Preferences' GPU switch location.
-- Status: agreed
+- Status: fixed (A12 commit; hash recorded at next checkpoint)
+
+- Verification: paths checked against Help’s Library Maintenance rows, Library Overview’s model/status section and Preferences’ GPU switch. Corrected the matching stale AGENTS menu pointer. `git diff --check` passes.
 
 ### A13 — The architecture reference misclassifies user data and describes obsolete packaging
 

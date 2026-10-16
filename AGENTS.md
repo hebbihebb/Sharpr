@@ -35,7 +35,7 @@ Images will be found through visual search and typed filters, not manual tags, a
 ## Scope
 
 - **Established:** viewer, filmstrip, folders, buckets, search, filters, Compare, duplicates, Crop Copy, WebP export, and explicit trash.
-- **Retired:** manual tags (D1). Phase 5 removed the last tag UI (the tag popover, Ctrl+T, on-image pills, tag search, and the extra-tags field in bucket dialogs). Main menu → Library → "Turn Tags into Buckets…" offers each unused manual tag as a bucket. Tag rows stay in `tags.sqlite3`, unused; renames and moves still carry them along. Add no tag UI.
+- **Retired:** manual tags (D1). Phase 5 removed the last tag UI (the tag popover, Ctrl+T, on-image pills, tag search, and the extra-tags field in bucket dialogs). Main menu → Help → Library Maintenance → "Turn Tags into Buckets…" offers each unused manual tag as a bucket. Tag rows stay in `tags.sqlite3`, unused; renames and moves still carry them along. Add no tag UI.
 - **Replaced:** quality views by resolution filters (Phase 2); Resize Copy and non-WebP output by batch WebP export and crop in the viewer (Phase 6). Viewing JPEG XL stays.
 - **In progress:** the roadmap phases.
 - **Being built (Phase 5):** visual search, in `src/visual_search/`. It is on by default but does nothing until the user installs the model (D23); without it, search matches file names. The old trial wiring on the `visual-search-trial-wip` branch is reference only.
