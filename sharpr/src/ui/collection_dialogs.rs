@@ -145,6 +145,7 @@ pub(super) fn show_new_collection_dialog<F>(
     F: Fn() + Clone + 'static,
 {
     let dialog = libadwaita::AlertDialog::new(Some("New Bucket"), None);
+    dialog.add_css_class("sharpr-sheet");
     dialog.add_response("create", "Create");
     dialog.set_default_response(Some("create"));
     dialog.set_close_response("cancel");
@@ -230,6 +231,7 @@ pub(super) fn show_rename_collection_dialog<F>(
     };
 
     let dialog = libadwaita::AlertDialog::new(Some("Rename Bucket"), None);
+    dialog.add_css_class("sharpr-sheet");
     dialog.add_response("save", "Save");
     dialog.set_default_response(Some("save"));
     dialog.set_close_response("cancel");
@@ -323,6 +325,7 @@ pub(super) fn show_change_color_dialog<F>(
     };
 
     let dialog = libadwaita::AlertDialog::new(Some("Change Bucket Color"), None);
+    dialog.add_css_class("sharpr-sheet");
     dialog.add_response("save", "Save");
     dialog.set_default_response(Some("save"));
     dialog.set_close_response("cancel");

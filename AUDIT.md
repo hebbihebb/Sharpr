@@ -133,7 +133,9 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: open New Bucket, then Preferences or Export → the first dialog bypasses the compact dialog rules applied to the latter surfaces, contrary to the shared-style inventory/D26–D27.
 - Evidence: confirmed by source and the off-screen probe inspecting the presented New Bucket dialog; it has no `sharpr-sheet` class. No replacement of confirmation semantics is proposed.
 - Proposed fix: apply the existing shared dialog styling consistently to these editing surfaces and check minimum-size layout, keyboard dismissal and focus.
-- Status: agreed
+- Status: fixed (A8 commit; hash recorded at next checkpoint)
+
+- Verification: shared class applied to all four named dialogs, picker New Bucket and Move into Bucket. Existing GTK tour and Rename data-preservation workflow pass; refreshed New Bucket screenshot inspected with unclipped fields, palette and action. Native response/focus handling is retained; build and diff check pass.
 
 ### A9 — Active bucket notifications still call buckets “collections”
 
@@ -188,7 +190,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: use the storage table to decide which index records may be rebuilt → bucket member lists appear disposable even though they are irreplaceable; follow the packaging description → it contradicts the actual committed-source build and Cargo version source.
 - Evidence: confirmed against `library_index/schema.rs:71`, the same reference's membership section, `packaging/sync-flatpak-source.sh`, `app.rs:12`, `Cargo.toml:3` and the current interface inventory.
 - Proposed fix: explicitly classify bucket membership as non-rebuildable user data; correct packaging/version and indexing-status descriptions to the shipped implementation. No data migration is involved.
-- Status: fixed (A13 commit; hash recorded at next checkpoint)
+- Status: fixed (effc5df)
 
 - Verification: storage wording checked against `library_index/schema.rs` and bucket migration; packaging/version wording against the sync script, `app.rs`, `build.rs`, Cargo manifest and metainfo regression; progress wording against Library Overview’s one-second timer. `git diff --check` passes.
 

@@ -2517,6 +2517,7 @@ impl SharprWindow {
                 }
 
                 let dialog = libadwaita::AlertDialog::new(Some("Move into Bucket"), None);
+                dialog.add_css_class("sharpr-sheet");
                 dialog.add_response("cancel", "Cancel");
                 dialog.set_close_response("cancel");
                 let list_box = gtk4::ListBox::new();
@@ -3294,6 +3295,7 @@ impl SharprWindow {
                             popover.popdown();
                         }
                         let new_dialog = libadwaita::AlertDialog::new(Some("New Bucket"), None);
+                        new_dialog.add_css_class("sharpr-sheet");
                         new_dialog.add_response("cancel", "Cancel");
                         new_dialog.add_response("create", "Create");
                         new_dialog.set_default_response(Some("create"));
@@ -3963,6 +3965,7 @@ impl SharprWindow {
                     .unwrap_or("")
                     .to_string();
                 let dialog = libadwaita::AlertDialog::new(Some("Rename"), None);
+                dialog.add_css_class("sharpr-sheet");
                 dialog.add_response("cancel", "Cancel");
                 dialog.add_response("rename", "Rename");
                 dialog.set_default_response(Some("rename"));
