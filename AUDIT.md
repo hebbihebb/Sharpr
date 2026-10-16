@@ -185,7 +185,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: follow the guide to Library → Turn Tags into Buckets or Remove Old Automatic Tags → neither item is there; follow model setup instructions to Preferences → Visual Search → the documented status section is absent.
 - Evidence: confirmed against `ui/help_window.rs:29`, `ui/preferences.rs` and `ui/library_overview.rs`; the manual's own final paragraph already describes the newer Help location.
 - Proposed fix: point both maintenance actions to Help → Library Maintenance and model/status instructions to Library → Library Overview; keep Preferences' GPU switch location.
-- Status: fixed (A12 commit; hash recorded at next checkpoint)
+- Status: fixed (463514c)
 
 - Verification: paths checked against Help’s Library Maintenance rows, Library Overview’s model/status section and Preferences’ GPU switch. Corrected the matching stale AGENTS menu pointer. `git diff --check` passes.
 
@@ -223,3 +223,15 @@ Approved decisions and existing Backlog items are excluded from the findings.
   passes `--offline`, strips inherited remote-model settings and has no downloader.
 - No reachable Tasks/pipeline, generated-tag, upscaling or remote-inference UI
   was found. The ordinary transient operation indicator is still intentional.
+
+## Final fix verification
+
+All 13 agreed findings have separate fix commits named above. No findings were
+rejected or deferred, so there are no deferred additions to Backlog. The final
+isolated offscreen GTK suite passes all 27 workflows, including the new CSS
+parser, fullscreen, stale-search, migration, clipboard and rename regressions.
+The latest full offline checks pass all 229 default tests (the two retired
+quality-view tests were removed with their exclusive implementation).
+No real user data was accessed, no Flatpak was built, and nothing was merged,
+pushed or deployed. Delete this report in the audit cleanup commit, then run
+the required final offline check and build.
