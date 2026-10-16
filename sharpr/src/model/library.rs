@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use crate::config::FolderMode;
 use crate::library_index::{basic_info_from_path, BasicImageInfo, IndexedImage};
 use crate::model::image_entry::ImageEntry;
-use crate::quality::{QualityClass, QualityScore};
+use crate::quality::QualityScore;
 
 /// Process-wide, so a stale virtual load never matches a newer one.
 fn next_virtual_generation() -> u64 {
@@ -629,92 +629,6 @@ impl LibraryManager {
         duplicates
     }
 
-    pub fn bg_scan_quality_prep(
-        &self,
-    ) -> (
-        Vec<PathBuf>,
-        Option<PathBuf>,
-        FxHashMap<PathBuf, CachedImageData>,
-    ) {
-        (
-            self.indexed_library_paths.clone(),
-            self.current_folder.clone(),
-            self.metadata_cache.clone(),
-        )
-    }
-
-    pub fn bg_scan_quality_finish(
-        &mut self,
-        paths: Vec<PathBuf>,
-        cache: FxHashMap<PathBuf, CachedImageData>,
-    ) {
-        self.indexed_library_paths = paths;
-        self.metadata_cache = cache;
-    }
-
-    pub fn compute_paths_for_quality_class(
-        library_root: Option<PathBuf>,
-        folder_mode: FolderMode,
-        class: QualityClass,
-        mut indexed_paths: Vec<PathBuf>,
-        current_folder: Option<PathBuf>,
-        mut metadata_cache: FxHashMap<PathBuf, CachedImageData>,
-        disabled_folders: Vec<PathBuf>,
-    ) -> (
-        Vec<PathBuf>,
-        FxHashMap<PathBuf, CachedImageData>,
-        Vec<PathBuf>,
-    ) {
-        let paths = collect_library_image_paths(
-            library_root,
-            folder_mode,
-            current_folder.as_deref(),
-            &disabled_folders,
-        );
-        if paths != indexed_paths {
-            for path in &paths {
-                Self::cached_image_data_static(path, &mut metadata_cache);
-            }
-            indexed_paths = paths;
-        }
-
-        let filtered = indexed_paths
-            .iter()
-            .filter(|path| {
-                metadata_cache
-                    .get(*path)
-                    .map(|cached| cached.quality.class == class)
-                    .unwrap_or(false)
-            })
-            .cloned()
-            .collect();
-
-        (indexed_paths, metadata_cache, filtered)
-    }
-
-    pub fn filter_paths_by_quality_class(
-        class: QualityClass,
-        paths: Vec<PathBuf>,
-        indexed_paths: Vec<PathBuf>,
-        mut metadata_cache: FxHashMap<PathBuf, CachedImageData>,
-    ) -> (
-        Vec<PathBuf>,
-        FxHashMap<PathBuf, CachedImageData>,
-        Vec<PathBuf>,
-    ) {
-        let filtered = paths
-            .into_iter()
-            .filter(|path| {
-                Self::cached_image_data_static(path, &mut metadata_cache)
-                    .quality
-                    .class
-                    == class
-            })
-            .collect();
-
-        (indexed_paths, metadata_cache, filtered)
-    }
-
     pub fn cached_image_data_static(
         path: &Path,
         cache: &mut FxHashMap<PathBuf, CachedImageData>,
@@ -782,21 +696,6 @@ impl Default for LibraryManager {
     fn default() -> Self {
         Self::new()
     }
-}
-
-pub(crate) fn collect_library_image_paths(
-    library_root: Option<PathBuf>,
-    folder_mode: FolderMode,
-    current_folder: Option<&Path>,
-    disabled: &[PathBuf],
-) -> Vec<PathBuf> {
-    collect_library_image_paths_cancellable(
-        library_root,
-        folder_mode,
-        current_folder,
-        disabled,
-        &|| false,
-    )
 }
 
 /// Cancellation is cooperative between filesystem operations; no GTK work is done here.
@@ -934,7 +833,6 @@ pub fn sort_raw_entries(entries: &mut [RawImageEntry], order: SortOrder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AppSettings;
     use image::codecs::jpeg::JpegEncoder;
     use image::{ImageBuffer, ImageFormat, Rgb};
 
@@ -975,11 +873,12 @@ mod tests {
         write_bmp(&enabled.join("new.bmp"), 16, 9);
         write_bmp(&disabled.join("hidden.bmp"), 16, 9);
         write_bmp(&disabled.join("deep/hidden.bmp"), 16, 9);
-        let paths = collect_library_image_paths(
+        let paths = collect_library_image_paths_cancellable(
             Some(root.clone()),
             FolderMode::DrillDown,
             None,
             std::slice::from_ref(&disabled),
+            &|| false,
         );
         assert_eq!(paths.len(), 2);
         assert!(paths.contains(&enabled.join("new.bmp")));
@@ -1084,76 +983,6 @@ mod tests {
         );
         library.load_virtual(&[]);
         assert!(library.active_thumbnail_cache.is_empty());
-    }
-
-    #[test]
-    fn quality_paths_are_global_across_library_folders() {
-        let root = temp_path("root");
-        let folder_a = root.join("A");
-        let folder_b = root.join("B");
-        std::fs::create_dir_all(&folder_a).unwrap();
-        std::fs::create_dir_all(&folder_b).unwrap();
-
-        let excellent = folder_b.join("excellent.bmp");
-        let needs_upscale = folder_a.join("small.jpg");
-        // Use a larger lossless fixture so it still lands in the top bucket
-        // under the stricter metadata-based quality calibration.
-        write_bmp(&excellent, 6000, 4000);
-        write_jpeg(&needs_upscale, 960, 640, 8);
-
-        let mut settings = AppSettings::default();
-        settings.library_root = Some(root.clone());
-        settings.libraries[0].root = root.clone();
-        let mut library = LibraryManager::new();
-        library.scan_folder(&folder_a);
-
-        let (indexed_paths, current_folder, metadata_cache) = library.bg_scan_quality_prep();
-        let (_, _, excellent_paths) = LibraryManager::compute_paths_for_quality_class(
-            settings.library_root.clone(),
-            FolderMode::TopLevel,
-            QualityClass::Excellent,
-            indexed_paths.clone(),
-            current_folder.clone(),
-            metadata_cache.clone(),
-            Vec::new(),
-        );
-        let (_, _, upscale_paths) = LibraryManager::compute_paths_for_quality_class(
-            settings.library_root.clone(),
-            FolderMode::TopLevel,
-            QualityClass::NeedsUpscale,
-            indexed_paths,
-            current_folder,
-            metadata_cache,
-            Vec::new(),
-        );
-
-        assert_eq!(excellent_paths, vec![excellent]);
-        assert_eq!(upscale_paths, vec![needs_upscale]);
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn filter_paths_by_quality_class_uses_cached_file_info() {
-        let root = temp_path("quality-filter");
-        std::fs::create_dir_all(&root).unwrap();
-
-        let poor = root.join("poor.jpg");
-        let excellent = root.join("excellent.bmp");
-        write_jpeg(&poor, 1600, 900, 65);
-        write_bmp(&excellent, 6000, 4000);
-
-        let (_, cache, filtered) = LibraryManager::filter_paths_by_quality_class(
-            QualityClass::Poor,
-            vec![poor.clone(), excellent.clone()],
-            Vec::new(),
-            FxHashMap::default(),
-        );
-
-        assert_eq!(filtered, vec![poor]);
-        assert!(cache.contains_key(&excellent));
-
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

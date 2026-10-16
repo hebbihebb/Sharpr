@@ -43,7 +43,7 @@ removed means the control is absent, with stored user data retained.
 | Search | Coverage/strength/unavailable status | Kept with results, never mistaken for an empty read | D22 |
 | Search | Show More | Kept only when another result page exists | D22 |
 | Search | Add results to bucket | Kept; explicit selection first, otherwise choose strong/all shown | D5 |
-| Search | Saved-search controls | Removed from the active UI; buckets keep chosen results | D5 |
+| Search | Saved-search controls | Removed with exclusive hidden widget/callback wiring; buckets keep chosen results | D5 |
 | Folders | Open Folder button | Removed; Open Library Root changes the single root | D32 |
 | Folders | Library switcher / create-library menu | Removed; inactive configurations remain stored | D11, D32 |
 | Folders | Library list / names / root / top-level-versus-drill-down editor | Changed to one root action; identity and legacy options survive | D32 |

@@ -159,7 +159,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: open a folder, Survey or Compare before its thumbnails finish → GTK emits “Unknown name of pseudo-class” and the intended placeholder rule is discarded.
 - Evidence: confirmed parser warning during the private GTK probe, with the selector and location reported above.
 - Proposed fix: use a supported explicit loading class/state when binding/updating pictures, and validate CSS without parser errors. Leave scheduling and generation logic unchanged.
-- Status: fixed (A10 commit; hash recorded at next checkpoint)
+- Status: fixed (c72fa97)
 
 - Verification: GTK parser test failed first with the unsupported pseudo-class and now passes without errors. Four GTK checks pass (parser, Compare candidates, Survey, rapid folder/selection changes). Paintable notifications update the shared loading class on initial bind, completion and reuse; scheduler unchanged. Full offline checks pass (231 default tests). Synthetic 5,000-image navigation: 338 ms first-folder readiness, one 82 ms browsing stall, peak RSS 170 MB; A6 baseline: 352 ms, 85 ms, 172 MB (debug/Cairo samples, not release performance).
 
@@ -172,7 +172,9 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: a maintainer follows these apparently supported handlers while changing bucket/search behavior → they must maintain obsolete paths that the current UI cannot invoke, and the hidden search still describes “Search tags…”.
 - Evidence: confirmed reference tracing: import/export handlers have no callers; the old filmstrip SearchBar is never appended to the visible layout or activated by a caller; quality-view helpers have only internal/test references. The active viewer search has its own implementation.
 - Proposed fix: remove these retired implementations and exclusive wiring/tests, retaining shared metadata/filter helpers and every legacy table/settings key. Do not include the perceptual-hash cleanup already in Backlog.
-- Status: agreed
+- Status: fixed (A11 commit; hash recorded at next checkpoint)
+
+- Verification: retired handlers/module, unparented widgets/callbacks and quality-view helpers have no remaining source references. Shared cancellable scan/metadata/scoring helpers and all persistence definitions retained; the exclusion regression now calls the active scanner. Full offline checks pass (229 tests; two tests exclusive to removed quality views retired); four active GTK search/bucket/navigation workflows pass. Synthetic 5,000-image navigation: 332 ms, one 51 ms browsing stall, peak RSS 167 MB vs A10 338 ms/82 ms/170 MB (debug/Cairo). Build and diff check pass.
 
 ### A12 — The guide and setup reference send users to removed menu locations
 

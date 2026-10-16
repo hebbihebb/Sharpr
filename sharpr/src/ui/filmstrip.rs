@@ -17,9 +17,6 @@ use crate::thumbnails::worker::WorkerRequest;
 use crate::ui::state::{AppState, ViewScope};
 
 type ImageSelectedCallback = Box<dyn Fn(u32) + 'static>;
-type SearchChangedCallback = Box<dyn Fn(&str) + 'static>;
-type SearchActivateCallback = Box<dyn Fn(&str) + 'static>;
-type SearchDismissedCallback = Box<dyn Fn() + 'static>;
 type TrashRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type AddToCollectionRequestedCallback = Box<dyn Fn(Vec<PathBuf>) + 'static>;
 type CopyRequestedCallback = Box<dyn Fn(CopyKind, Vec<PathBuf>) + 'static>;
@@ -41,7 +38,6 @@ type RenameRequestedCallback = Box<dyn Fn(PathBuf) + 'static>;
 type DuplicateRequestedCallback = Box<dyn Fn(PathBuf) + 'static>;
 
 type SortOrderChangedCallback = Box<dyn Fn(SortOrder) + 'static>;
-type SaveSearchAsCollectionCallback = Box<dyn Fn(&str) + 'static>;
 
 pub(crate) struct MenuContext {
     pub(crate) clicked_path: PathBuf,
@@ -187,20 +183,12 @@ mod imp {
     pub struct FilmstripPane {
         pub toolbar_view: libadwaita::ToolbarView,
         pub root_box: gtk4::Box,
-        pub search_bar: gtk4::SearchBar,
-        pub search_entry: gtk4::SearchEntry,
-        pub save_search_btn: gtk4::Button,
-        pub suggestions_popover: gtk4::Popover,
-        pub suggestions_list: gtk4::ListBox,
         pub scroll: gtk4::ScrolledWindow,
         pub list_view: gtk4::ListView,
         pub content_stack: gtk4::Stack,
         pub empty_status: libadwaita::StatusPage,
         pub selection_model: gtk4::SingleSelection,
         pub image_selected_cb: RefCell<Option<ImageSelectedCallback>>,
-        pub search_changed_cb: RefCell<Option<SearchChangedCallback>>,
-        pub search_activate_cb: RefCell<Option<SearchActivateCallback>>,
-        pub search_dismissed_cb: RefCell<Option<SearchDismissedCallback>>,
         pub trash_requested_cb: RefCell<Option<TrashRequestedCallback>>,
         pub add_to_collection_requested_cb: RefCell<Option<AddToCollectionRequestedCallback>>,
         pub copy_requested_cb: RefCell<Option<CopyRequestedCallback>>,
@@ -219,7 +207,6 @@ mod imp {
         pub context_actions: gio::SimpleActionGroup,
         pub clipboard_decoder: RefCell<Option<crate::image_pipeline::clipboard::Decoder>>,
         pub sort_order_changed_cb: RefCell<Option<SortOrderChangedCallback>>,
-        pub save_search_as_collection_cb: RefCell<Option<SaveSearchAsCollectionCallback>>,
         pub current_sort_order: Cell<SortOrder>,
         pub sort_btn: RefCell<Option<gtk4::MenuButton>>,
         pub header_bar: RefCell<Option<libadwaita::HeaderBar>>,
@@ -256,24 +243,9 @@ mod imp {
             // would swallow the key.
             list_view.action_set_enabled("list.select-all", false);
 
-            let search_bar = gtk4::SearchBar::new();
-            let search_entry = gtk4::SearchEntry::new();
-            let save_search_btn = {
-                let b = gtk4::Button::from_icon_name("bookmark-new-symbolic");
-                b.set_visible(false);
-                b
-            };
-            let suggestions_list = gtk4::ListBox::new();
-            let suggestions_popover = gtk4::Popover::new();
-
             Self {
                 toolbar_view: libadwaita::ToolbarView::new(),
                 root_box: gtk4::Box::new(gtk4::Orientation::Vertical, 0),
-                search_bar,
-                search_entry,
-                save_search_btn,
-                suggestions_popover,
-                suggestions_list,
                 scroll: gtk4::ScrolledWindow::new(),
                 list_view,
                 content_stack: gtk4::Stack::new(),
@@ -283,9 +255,6 @@ mod imp {
                     .build(),
                 selection_model,
                 image_selected_cb: RefCell::new(None),
-                search_changed_cb: RefCell::new(None),
-                search_activate_cb: RefCell::new(None),
-                search_dismissed_cb: RefCell::new(None),
                 trash_requested_cb: RefCell::new(None),
                 add_to_collection_requested_cb: RefCell::new(None),
                 copy_requested_cb: RefCell::new(None),
@@ -301,7 +270,6 @@ mod imp {
                 context_actions: gio::SimpleActionGroup::new(),
                 clipboard_decoder: RefCell::new(None),
                 sort_order_changed_cb: RefCell::new(None),
-                save_search_as_collection_cb: RefCell::new(None),
                 current_sort_order: Cell::new(SortOrder::default()),
                 sort_btn: RefCell::new(None),
                 header_bar: RefCell::new(None),
@@ -479,29 +447,6 @@ impl FilmstripPane {
         menu.append_section(None, &direction_section);
 
         sort_btn.set_menu_model(Some(&menu));
-
-        imp.search_entry.set_placeholder_text(Some("Search tags…"));
-        let search_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-        search_row.append(&imp.search_entry);
-        imp.save_search_btn.add_css_class("flat");
-        imp.save_search_btn.set_valign(gtk4::Align::Center);
-        imp.save_search_btn
-            .set_tooltip_text(Some("Save search as Bucket"));
-        search_row.append(&imp.save_search_btn);
-        imp.search_bar.set_child(Some(&search_row));
-        imp.search_bar.set_show_close_button(true);
-        imp.search_bar.connect_entry(&imp.search_entry);
-
-        imp.suggestions_list.add_css_class("boxed-list");
-        imp.suggestions_list
-            .set_selection_mode(gtk4::SelectionMode::None);
-        imp.suggestions_popover.set_has_arrow(false);
-        imp.suggestions_popover.set_autohide(true);
-        imp.suggestions_popover
-            .set_position(gtk4::PositionType::Bottom);
-        imp.suggestions_popover
-            .set_child(Some(&imp.suggestions_list));
-        imp.suggestions_popover.set_parent(&imp.search_entry);
 
         let factory = gtk4::SignalListItemFactory::new();
 
@@ -883,67 +828,6 @@ impl FilmstripPane {
                     widget.emit_image_selected(index);
                 }
             });
-
-        let widget_weak = self.downgrade();
-        imp.search_entry.connect_search_changed(move |entry| {
-            if let Some(widget) = widget_weak.upgrade() {
-                widget.emit_search_changed(entry.text().as_ref());
-            }
-        });
-
-        let btn_weak = imp.save_search_btn.downgrade();
-        imp.search_entry.connect_search_changed(move |entry| {
-            if let Some(btn) = btn_weak.upgrade() {
-                btn.set_visible(!entry.text().is_empty());
-            }
-        });
-
-        let widget_weak = self.downgrade();
-        imp.search_entry.connect_activate(move |entry| {
-            if let Some(widget) = widget_weak.upgrade() {
-                widget.emit_search_activate(entry.text().as_ref());
-            }
-        });
-
-        let widget_weak = self.downgrade();
-        imp.search_bar
-            .connect_search_mode_enabled_notify(move |search_bar| {
-                if !search_bar.is_search_mode() {
-                    if let Some(widget) = widget_weak.upgrade() {
-                        widget.show_autocomplete(vec![]);
-                        widget.emit_search_dismissed();
-                    }
-                }
-            });
-
-        let btn_weak = imp.save_search_btn.downgrade();
-        imp.search_bar
-            .connect_search_mode_enabled_notify(move |bar| {
-                if let Some(btn) = btn_weak.upgrade() {
-                    if !bar.is_search_mode() {
-                        btn.set_visible(false);
-                    }
-                }
-            });
-
-        let widget_weak = self.downgrade();
-        imp.save_search_btn.connect_clicked(move |_| {
-            let Some(widget) = widget_weak.upgrade() else {
-                return;
-            };
-            let query = widget.imp().search_entry.text().to_string();
-            widget.emit_save_search_as_collection(&query);
-        });
-
-        let search_entry = imp.search_entry.clone();
-        imp.suggestions_list.connect_row_activated(move |_, row| {
-            let Some(child) = row.child() else { return };
-            let Ok(label) = child.downcast::<gtk4::Label>() else {
-                return;
-            };
-            search_entry.set_text(label.text().as_ref());
-            search_entry.activate();
-        });
 
         self.setup_context_menu_actions();
     }
@@ -1622,75 +1506,12 @@ impl FilmstripPane {
         self.imp().selection_model.set_selected(index);
     }
 
-    pub fn activate_search(&self) {
-        let imp = self.imp();
-        imp.search_bar.set_search_mode(true);
-        imp.search_entry.grab_focus();
-    }
-
-    pub fn is_search_active(&self) -> bool {
-        self.imp().search_bar.is_search_mode()
-    }
-
-    pub fn deactivate_search(&self) {
-        let imp = self.imp();
-        imp.search_bar.set_search_mode(false);
-        imp.search_entry.set_text("");
-        self.show_autocomplete(vec![]);
-    }
-
-    pub fn set_search_capture_widget<W: IsA<gtk4::Widget>>(&self, widget: &W) {
-        self.imp().search_bar.set_key_capture_widget(Some(widget));
-    }
-
-    pub fn connect_search_changed<F: Fn(&str) + 'static>(&self, f: F) {
-        *self.imp().search_changed_cb.borrow_mut() = Some(Box::new(f));
-    }
-
-    pub fn connect_search_activate<F: Fn(&str) + 'static>(&self, f: F) {
-        *self.imp().search_activate_cb.borrow_mut() = Some(Box::new(f));
-    }
-
-    pub fn connect_search_dismissed<F: Fn() + 'static>(&self, f: F) {
-        *self.imp().search_dismissed_cb.borrow_mut() = Some(Box::new(f));
-    }
-
     pub fn connect_trash_requested<F: Fn(Vec<PathBuf>) + 'static>(&self, f: F) {
         *self.imp().trash_requested_cb.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn set_sort_order_changed_cb<F: Fn(SortOrder) + 'static>(&self, cb: F) {
         *self.imp().sort_order_changed_cb.borrow_mut() = Some(Box::new(cb));
-    }
-
-    pub fn connect_save_search_as_collection<F: Fn(&str) + 'static>(&self, f: F) {
-        *self.imp().save_search_as_collection_cb.borrow_mut() = Some(Box::new(f));
-    }
-
-    pub fn show_autocomplete(&self, suggestions: Vec<String>) {
-        let imp = self.imp();
-        while let Some(child) = imp.suggestions_list.first_child() {
-            imp.suggestions_list.remove(&child);
-        }
-
-        if suggestions.is_empty() {
-            imp.suggestions_popover.popdown();
-            return;
-        }
-
-        for suggestion in suggestions {
-            let row = gtk4::ListBoxRow::new();
-            let label = gtk4::Label::new(Some(&suggestion));
-            label.set_halign(gtk4::Align::Start);
-            label.set_margin_top(6);
-            label.set_margin_bottom(6);
-            label.set_margin_start(10);
-            label.set_margin_end(10);
-            row.set_child(Some(&label));
-            imp.suggestions_list.append(&row);
-        }
-
-        imp.suggestions_popover.popup();
     }
 
     pub fn connect_image_selected<F: Fn(u32) + 'static>(&self, f: F) {
@@ -1700,30 +1521,6 @@ impl FilmstripPane {
     fn emit_image_selected(&self, index: u32) {
         if let Some(cb) = self.imp().image_selected_cb.borrow().as_ref() {
             cb(index);
-        }
-    }
-
-    fn emit_search_changed(&self, text: &str) {
-        if let Some(cb) = self.imp().search_changed_cb.borrow().as_ref() {
-            cb(text);
-        }
-    }
-
-    pub fn emit_search_activate(&self, text: &str) {
-        if let Some(cb) = self.imp().search_activate_cb.borrow().as_ref() {
-            cb(text);
-        }
-    }
-
-    fn emit_save_search_as_collection(&self, query: &str) {
-        if let Some(cb) = self.imp().save_search_as_collection_cb.borrow().as_ref() {
-            cb(query);
-        }
-    }
-
-    fn emit_search_dismissed(&self) {
-        if let Some(cb) = self.imp().search_dismissed_cb.borrow().as_ref() {
-            cb();
         }
     }
 
