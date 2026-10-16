@@ -120,7 +120,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: press F11 while browsing → the window becomes fullscreen without entering presentation mode → close Info if needed and press Escape → it stays fullscreen, unlike fullscreen entered by double-click.
 - Evidence: confirmed in the off-screen GTK probe: `is_fullscreen()` was true while `presentation_mode` was false, and Escape did not exit; the shared presentation path did hide the sidebar. No proposal here changes D11's approved fullscreen feature.
 - Proposed fix: route fullscreen entry/exit through one mode-aware action, preserving the Compare/crop header and Escape's Info-first behavior. Test both entry points and mode transitions.
-- Status: fixed (A7 commit; hash recorded at next checkpoint)
+- Status: fixed (f73623d)
 
 - Verification: regression failed first on F11/presentation mismatch; passes with shared action, hidden panels, Info-first Escape, panel restoration, and Compare/crop controls. Existing mode-header and small-image/fullscreen resize workflows also pass.
 
@@ -188,7 +188,9 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: use the storage table to decide which index records may be rebuilt → bucket member lists appear disposable even though they are irreplaceable; follow the packaging description → it contradicts the actual committed-source build and Cargo version source.
 - Evidence: confirmed against `library_index/schema.rs:71`, the same reference's membership section, `packaging/sync-flatpak-source.sh`, `app.rs:12`, `Cargo.toml:3` and the current interface inventory.
 - Proposed fix: explicitly classify bucket membership as non-rebuildable user data; correct packaging/version and indexing-status descriptions to the shipped implementation. No data migration is involved.
-- Status: agreed
+- Status: fixed (A13 commit; hash recorded at next checkpoint)
+
+- Verification: storage wording checked against `library_index/schema.rs` and bucket migration; packaging/version wording against the sync script, `app.rs`, `build.rs`, Cargo manifest and metainfo regression; progress wording against Library Overview’s one-second timer. `git diff --check` passes.
 
 ## Areas checked with no additional findings
 

@@ -20,9 +20,11 @@ Committed and verified:
   regression failed first and now passes; offline checks pass (231 tests),
   all 25 isolated GTK workflows pass, including rapid navigation.
 
-A7 verified: F11 and double-click share presentation, hide side panels and
-restore them; Info-first Escape and Compare/crop controls pass GTK regressions.
-Next: commit A7, then A13 (medium), then A8–A12 (low).
+A7 `f73623d`: F11/double-click share presentation; Info-first Escape and
+Compare/crop controls verified (231 default tests, three GTK checks, build).
+A13: architecture correctly identifies bucket members as user data and
+describes committed Flatpak sources, Cargo versions and Overview progress.
+Next: A8–A12 (low), one commit per finding.
 Bugs require a failing regression first. Record each fixed hash in `AUDIT.md`.
 
 ## Verification and safety

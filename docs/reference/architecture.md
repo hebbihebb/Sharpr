@@ -46,7 +46,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 - **Visual search** runs EmbeddingGemma 2 in `llama-server` children that listen only on 127.0.0.1 with a random key (D24). They die with the thread that started them (`PR_SET_PDEATHSIG`). Every child runs with `--offline`, and inherited llama.cpp settings (`LLAMA_*`, `HF_*`, `MTMD_*`) are stripped, so an environment that names a remote model can't make it download or replace the installed one.
   - **Indexing:** a `visual-index` thread at nice 19 and idle I/O, requested after every completed fingerprint pass. It embeds each fingerprint without a vector or recorded failure, one image at a time, and writes each vector at once, so passes resume. Its server, with the projector, runs only while a pass has work.
   - **On the graphics card by default:** with a GPU (Vulkan) build in the model folder's `runtime-gpu/` and the `visual-search-gpu` setting on, indexing runs on the first card that `--list-devices` reports with at least 2 GB free. That is about 17 times faster than the processor, with matching vectors. With no such card, or if the GPU server fails to start or dies mid-pass, the pass continues on the processor (2 threads). Queries always use the processor build.
-  - **Progress:** the service reports a pace (images per second and time left, once 5 seconds of a pass have run) and when the last pass finished. The header's activity indicator shows a progress ring while a pass runs, polled once a second. "Rebuild Index…" in the Library Overview asks the service to delete the vector file between passes, never during one.
+  - **Progress:** the service reports a pace (images per second and time left, once 5 seconds of a pass have run) and when the last pass finished. Library Overview shows indexing coverage and activity, refreshed once a second while open; the header indexing ring is retired (D33). "Rebuild Index…" in the Library Overview asks the service to delete the vector file between passes, never during one.
   - **Queries:** a `visual-search` thread owns a text-only server (identical query vectors, faster start). It starts at the first search and stops after 5 minutes without one. The browse worker blocks on it for the query vector, then ranks the candidates left after scope, disabled folders, and chips. File-name matches come first, then the closest 200 ("Show More" adds 200).
   - **Match strength:** the fifth-best score after subtracting each image's closeness to generic prompts, calibrated on the judged Phase 3 sample. It isn't judged below 50 indexed candidates. The order itself stays plain closeness.
   - **Without a model,** or before anything is indexed, words match file names as before, and the status line says so.
@@ -79,7 +79,7 @@ The thumbnail caches are an unbounded per-view memory cache, a global memory cac
 
 | Store | Location | Contents | Rebuildable? |
 | --- | --- | --- | --- |
-| `library-index.sqlite` | `~/.local/share/sharpr/` | folders, images (oriented dimensions, quality, phash), bucket definitions (`collections`, including colour and icon), and legacy `pipelines`, `pipeline_steps`, and `collection_items` | Bucket definitions: **no**. Everything else: yes. |
+| `library-index.sqlite` | `~/.local/share/sharpr/` | folders, images (oriented dimensions, quality, phash), bucket definitions (`collections`, including colour and icon), member lists (`bucket_members`), fingerprint caches, and legacy `pipelines`, `pipeline_steps`, and `collection_items` | Bucket definitions and member lists: **no**, they are user data. Image/folder metadata and fingerprints: yes. Preserve all legacy tables and rows. |
 | `tags.sqlite3` | `~/.local/share/sharpr/` | `file_tags(path, tag)` and `image_quality` (sharpness) | Tags: **no** |
 | GSettings `io.github.hebbihebb.Sharpr` | dconf | libraries, disabled folders, and preferences | No |
 | `~/.config/sharpr/settings.json` | config dir | legacy file; current code does not read it | n/a |
@@ -121,8 +121,8 @@ Rules:
 ## Packaging And Identity
 
 - The app ID is `io.github.hebbihebb.Sharpr`. The desktop file and metainfo are in `sharpr/data/`.
-- The Flatpak manifest (`sharpr/packaging/io.github.hebbihebb.Sharpr.yml`, GNOME 50) builds from an rsync of the working tree in `.flatpak-source`. It is not pinned to a Git commit. It has no ONNX or Real-ESRGAN modules.
-- The version comes from `build.rs`, which derives it from the commit count. This disagrees with metainfo and with the bundle file names (`ROADMAP.md` Phase 10).
+- The Flatpak manifest (`sharpr/packaging/io.github.hebbihebb.Sharpr.yml`, GNOME 50) builds from `.flatpak-source`, exported by `packaging/sync-flatpak-source.sh` using `git archive` of the committed `sharpr/` tree at HEAD. The sync refuses a dirty tracked tree and records the source commit in `.flatpak-source/COMMIT`. It has no ONNX or Real-ESRGAN modules.
+- `Cargo.toml` is the one version source. `app.rs` reads `CARGO_PKG_VERSION`; the metainfo regression checks that it matches, and bundle names use that version. `build.rs` compiles schemas and resources.
 
 ## Single-root scope
 
