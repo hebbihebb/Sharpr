@@ -118,3 +118,7 @@ Phase 10 shipped Sharpr 0.5.0 (tag `v0.5.0`).
 - **Performance:** startup and memory improved on the Phase 0 baseline; big-folder opens stayed in about the same range.
 
 Next: edit buckets (D35).
+
+## October 16: edit buckets accepted, pushed
+
+Edit buckets (D35) shipped after 0.5.0. Crop Copy, WebP export and Duplicate put each original and its copy in Edits › Cropped, Exported or Duplicated, so a copy can be compared with its original wherever it was saved. They are on by default, with a Preferences switch. The user accepted the feature, and `main`, `viewer-reset` and the `v0.5.0` tag were pushed to GitHub for the first time since the realignment.
