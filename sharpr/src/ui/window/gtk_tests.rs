@@ -3790,7 +3790,7 @@ fn internal_rename_keeps_buckets_when_the_old_filename_is_reused() {
         .save(&original)
         .unwrap();
     crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
-    crate::buckets::relink(&index).unwrap();
+    crate::buckets::relink(&index, None, &[]).unwrap();
     assert_eq!(
         crate::buckets::view(&index, bucket.id, Some(&root), &[])
             .unwrap()

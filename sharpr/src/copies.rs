@@ -267,8 +267,17 @@ pub fn group(
 }
 
 /// How many other existing files have exactly the bytes of `path`, from
-/// cached fingerprints only (nothing is read or hashed here).
-pub fn identical_elsewhere(index: &LibraryIndex, path: &Path) -> usize {
+/// cached fingerprints only. Only in-scope file stamps are checked; image
+/// bytes are never read or hashed here.
+pub fn identical_elsewhere(
+    index: &LibraryIndex,
+    path: &Path,
+    root: Option<&Path>,
+    disabled: &[PathBuf],
+) -> usize {
+    if !crate::buckets::visible(path, root, disabled) {
+        return 0;
+    }
     let Ok(metadata) = std::fs::metadata(path) else {
         return 0;
     };
@@ -285,6 +294,7 @@ pub fn identical_elsewhere(index: &LibraryIndex, path: &Path) -> usize {
         .flatten()
         .filter(|(other, size, mtime)| {
             other != path
+                && crate::buckets::visible(other, root, disabled)
                 && std::fs::metadata(other)
                     .is_ok_and(|m| crate::fingerprint::file_stamp(&m) == (*size, *mtime))
         })
@@ -414,6 +424,59 @@ pub fn verify(group: &TrashGroup) -> Vec<Verdict> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn info_copy_counts_only_include_the_enabled_root() {
+        let root = std::env::temp_dir().join(format!(
+            "sharpr-copy-scope-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let active = root.join("active");
+        let disabled = active.join("disabled");
+        std::fs::create_dir_all(&disabled).unwrap();
+        let source = active.join("a.png");
+        let allowed = active.join("b.png");
+        let hidden = disabled.join("c.png");
+        let outside = root.join("d.png");
+        for path in [&source, &allowed, &hidden, &outside] {
+            std::fs::write(path, b"same image bytes").unwrap();
+        }
+        let index = crate::library_index::LibraryIndex::open_in_memory().unwrap();
+        crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
+        assert_eq!(identical_elsewhere(&index, &source, None, &[]), 3);
+        assert_eq!(
+            identical_elsewhere(
+                &index,
+                &source,
+                Some(&active),
+                std::slice::from_ref(&disabled)
+            ),
+            1
+        );
+        assert_eq!(
+            identical_elsewhere(
+                &index,
+                &hidden,
+                Some(&active),
+                std::slice::from_ref(&disabled)
+            ),
+            0
+        );
+        assert_eq!(
+            identical_elsewhere(
+                &index,
+                &outside,
+                Some(&active),
+                std::slice::from_ref(&disabled)
+            ),
+            0
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use super::*;
 
     fn unit(values: &[(usize, f32)]) -> Vec<f32> {

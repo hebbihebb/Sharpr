@@ -1428,7 +1428,7 @@ impl SharprWindow {
                         root: job.root.clone(),
                         disabled: job.disabled.clone(),
                     });
-                    match crate::buckets::relink(&relink_index) {
+                    match crate::buckets::relink(&relink_index, Some(&job.root), &job.disabled) {
                         Ok(relinked) => {
                             crate::bench_event!(
                                 "buckets.relink",

@@ -97,7 +97,7 @@ Rules:
     - Removing removes from the bucket and its sub-buckets, by path and by fingerprint.
     - Rename and reparent change no members.
     - Deleting a bucket deletes its rows (`ON DELETE CASCADE`).
-  - **Re-linking:** after every fingerprint pass, `buckets::relink` updates stored members from cached fingerprints.
+  - **Re-linking:** after every fingerprint pass, `buckets::relink` updates stored members from cached fingerprints within that pass’s root and enabled folders. Excluded stored members remain untouched, and excluded candidates are filtered before any filesystem probe. The viewer’s identical-copy count uses the same scope.
     - A member whose file is at its path gets that file's current fingerprint: the first one known, or a new one after an edit.
     - A member whose file is gone moves to an unchanged file with its fingerprint, if one exists.
     - Members are fingerprinted first in each pass. The sidebar counts and badge colours then refresh.

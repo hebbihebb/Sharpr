@@ -107,7 +107,7 @@ pub fn current_fingerprint(index: &LibraryIndex, path: &Path) -> Option<String> 
     Some(hash)
 }
 
-fn visible(path: &Path, root: Option<&Path>, disabled: &[PathBuf]) -> bool {
+pub(crate) fn visible(path: &Path, root: Option<&Path>, disabled: &[PathBuf]) -> bool {
     root.is_none_or(|root| path.starts_with(root)) && !disabled.iter().any(|d| path.starts_with(d))
 }
 
@@ -401,8 +401,18 @@ pub struct RelinkSummary {
 ///   (first known, or changed because the file was edited);
 /// - a member whose file is gone moves to an unchanged file with its
 ///   fingerprint, if there is one. Others stay, as missing.
-pub fn relink(index: &LibraryIndex) -> Result<RelinkSummary, String> {
-    let rows = index.all_bucket_members().map_err(|e| e.to_string())?;
+pub fn relink(
+    index: &LibraryIndex,
+    root: Option<&Path>,
+    disabled: &[PathBuf],
+) -> Result<RelinkSummary, String> {
+    // Excluded members remain stored, untouched, without even a metadata probe.
+    let rows: Vec<_> = index
+        .all_bucket_members()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|row| visible(&row.last_path, root, disabled))
+        .collect();
     let mut summary = RelinkSummary::default();
     let lost: Vec<String> = rows
         .iter()
@@ -434,7 +444,9 @@ pub fn relink(index: &LibraryIndex) -> Result<RelinkSummary, String> {
                     .and_then(|hash| by_hash.get(hash))
                     .into_iter()
                     .flatten()
-                    .filter(|(path, size, mtime)| stamp(path) == Some((*size, *mtime)))
+                    .filter(|(path, size, mtime)| {
+                        visible(path, root, disabled) && stamp(path) == Some((*size, *mtime))
+                    })
                     .map(|(path, _, _)| path)
                     .collect();
                 candidates.sort();
@@ -772,6 +784,60 @@ mod tests {
     }
 
     #[test]
+    fn relink_leaves_disabled_and_outside_root_members_and_candidates_untouched() {
+        for excluded in ["disabled", "outside"] {
+            let f = Fixture::migrated(excluded);
+            let root = f.root.join("active");
+            std::fs::create_dir_all(&root).unwrap();
+            let source = f.image("active/a.png");
+            let hidden = f.root.join("hidden/b.png");
+            std::fs::create_dir_all(hidden.parent().unwrap()).unwrap();
+            std::fs::copy(&source, &hidden).unwrap();
+            let bucket = f.bucket("Keep", None);
+            add_to_bucket(&f.index, bucket, std::slice::from_ref(&source)).unwrap();
+            crate::fingerprint::run_pass(&f.index, &f.root, &[], &[], &|| false, &|_| {}).unwrap();
+            let disabled = if excluded == "disabled" {
+                vec![hidden.parent().unwrap().to_path_buf()]
+            } else {
+                vec![]
+            };
+            let active = if excluded == "disabled" {
+                &f.root
+            } else {
+                &root
+            };
+            std::fs::remove_file(&source).unwrap();
+            let before = f.index.bucket_members(&[bucket]).unwrap();
+            let summary = relink(&f.index, Some(active), &disabled).unwrap();
+            assert_eq!(
+                summary.relinked, 0,
+                "must not probe or choose an excluded candidate"
+            );
+            assert_eq!(f.index.bucket_members(&[bucket]).unwrap(), before);
+            assert_eq!(
+                view(&f.index, bucket, Some(active), &disabled)
+                    .unwrap()
+                    .missing,
+                1
+            );
+            // Conversely, an excluded stored member must not be re-linked
+            // into the enabled tree just because an identical copy is there.
+            std::fs::write(&source, b"enabled copy").unwrap();
+            std::fs::write(&hidden, b"enabled copy").unwrap();
+            crate::fingerprint::run_pass(&f.index, &f.root, &[], &[], &|| false, &|_| {}).unwrap();
+            let hidden_bucket = f.bucket("Hidden", None);
+            add_to_bucket(&f.index, hidden_bucket, std::slice::from_ref(&hidden)).unwrap();
+            std::fs::remove_file(&hidden).unwrap();
+            let hidden_before = f.index.bucket_members(&[hidden_bucket]).unwrap();
+            relink(&f.index, Some(active), &disabled).unwrap();
+            assert_eq!(
+                f.index.bucket_members(&[hidden_bucket]).unwrap(),
+                hidden_before
+            );
+        }
+    }
+
+    #[test]
     fn members_follow_moves_and_copies_and_missing_ones_are_counted() {
         let f = Fixture::migrated("identity");
         let bucket = f.bucket("Wallpapers", None);
@@ -878,7 +944,7 @@ mod tests {
         let never = || false;
         let pass = || {
             crate::fingerprint::run_pass(&f.index, &f.root, &[], &[], &never, &|_| {}).unwrap();
-            relink(&f.index).unwrap()
+            relink(&f.index, None, &[]).unwrap()
         };
         assert_eq!(
             pass(),

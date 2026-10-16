@@ -4,7 +4,7 @@ Sharpr is a local-first image curation viewer for GNOME. Visual search runs a mo
 
 ## Library And Filmstrip
 
-Main Menu → Library → **Open Library Root…** chooses the one library folder, retaining its buckets and known files. Its image-containing subfolders appear in the sidebar. Disabled folders stay excluded. Narrowing the root hides outside members; widening restores them. Choose a sidebar folder to load its images. Thumbnails decode in the background, with visible images prioritized over preload work. Click an image to view it; Ctrl-click adds or removes images from the selection, Shift-click selects everything from the last clicked image to this one, and Ctrl+A selects all. A selection made this way counts even when it is down to one image: actions such as export, Delete, and Add to Bucket use it rather than the image you are viewing.
+Main Menu → Library → **Open Library Root…** chooses the one library folder, retaining its buckets and known files. Its image-containing subfolders appear in the sidebar. Disabled folders stay excluded, including from Info’s identical-copy count and background bucket re-linking. Narrowing the root hides outside members; widening restores them. Choose a sidebar folder to load its images. Thumbnails decode in the background, with visible images prioritized over preload work. Click an image to view it; Ctrl-click adds or removes images from the selection, Shift-click selects everything from the last clicked image to this one, and Ctrl+A selects all. A selection made this way counts even when it is down to one image: actions such as export, Delete, and Add to Bucket use it rather than the image you are viewing.
 
 ## Viewer Shortcuts
 

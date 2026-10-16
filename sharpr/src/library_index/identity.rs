@@ -547,7 +547,7 @@ mod tests {
             }
             std::fs::write(&source, b"unrelated replacement").unwrap();
             crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
-            crate::buckets::relink(&index).unwrap();
+            crate::buckets::relink(&index, None, &[]).unwrap();
             for id in [one, two] {
                 assert_eq!(
                     crate::buckets::view(&index, id, Some(&root), &[])

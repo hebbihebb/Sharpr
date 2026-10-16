@@ -77,7 +77,7 @@ removed means the control is absent, with stored user data retained.
 | Viewer | Show Overlay switch / Alt+Return | Removed; legacy preference value remains stored unused | D30, D33 |
 | Viewer | Metadata pill and separate Info pill | Changed to one movement readout that expands on hover or pins by click/key | D27, D31 |
 | Viewer | Resolution/format/below-4K/buckets readout | Kept; other metadata is in expanded Info | D18, D31 |
-| Viewer | Filename/location/dates/size/EXIF/resolution score | Kept in expanded Info; Escape closes it before fullscreen exits | D18, D31 |
+| Viewer | Filename/location/dates/size/EXIF/resolution score | Kept in expanded Info; identical-copy counts exclude disabled/outside-root files; Escape closes it before fullscreen exits | D18, D31 |
 | Viewer | Canvas | Kept neutral in light, dark and high contrast | D27 |
 | Compare | Context action / Ctrl+Shift+C | Kept/added for at least two images, guarded while typing or in modes | D29 |
 | Compare | Side by Side / Split / Flip | Kept in the contextual top bar | D28 |

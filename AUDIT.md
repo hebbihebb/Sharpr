@@ -59,7 +59,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Evidence: confirmed by the temporary rename probe using the same file/tag helpers as the UI, followed by the real fingerprint and re-link pass; the legacy tag did follow `b.png`. This is distinct from the Backlog's delayed discovery of moves made outside Sharpr.
 - Proposed fix: carry bucket member paths and fresh fingerprints through successful internal moves/renames alongside legacy tags; protect retained destination memberships and report persistence failures. Test filename reuse as well as normal Rename and Move.
 - Verification: the real Rename-dialog regression failed before the fix and passes afterward. All 227 default tests and full offline checks pass, including moves with/without cached fingerprints, multiple buckets, retained destinations, filesystem collisions and injected tag-write rollback.
-- Status: fixed (A2 commit; hash recorded at the next checkpoint)
+- Status: fixed (dcc9cbf)
 
 ### A3 — Re-linking and Info copy counts bypass library exclusions
 
@@ -70,7 +70,8 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: index two identical images, then disable the second image's folder and remove the first → an enabled-library fingerprint pass invokes unscoped re-linking → the stored member moves into the disabled folder; before removal, Info still counts that disabled copy. Narrowing the root leaves the same unscoped behavior for cached outside-root copies.
 - Evidence: confirmed by code trace and a temporary fixture: the scoped fingerprint pass skipped the disabled subtree, but `relink` still changed `last_path` to its file; `identical_elsewhere` has no exclusion input. Bucket display resolution itself correctly filters exclusions before probes.
 - Proposed fix: pass the current library scope into re-linking and copy-count queries, filter before filesystem probes or writes, and leave excluded members stored untouched. Add disabled-folder and narrowed-root regressions.
-- Status: agreed
+- Verification: the excluded-candidate regression failed before the fix. All 229 default tests and full offline checks pass; scoped tests cover disabled/outside-root candidates, unchanged excluded member rows, missing counts and Info counts.
+- Status: fixed (A3 commit; hash recorded at the next checkpoint)
 
 ### A4 — The clipboard menu decodes full images on the GTK thread
 
