@@ -23,7 +23,7 @@ Main Menu → Library → **Open Library Root…** chooses the one library folde
 | Ctrl + I | Image info: file, folder, camera, resolution score, buckets |
 | Shift + F10 | Image menu: copies, compare, file actions |
 | F9 | Toggle Library sidebar |
-| F11 | Toggle presentation mode |
+| Double-click or F11 | Toggle fullscreen presentation; Escape exits after closing Info |
 | Delete | Move selected images to trash |
 
 ## Visual Search

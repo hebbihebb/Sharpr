@@ -16,12 +16,13 @@ Committed and verified:
   newest-request handling and GTK success/error verified (231).
 - A5 `9301db7`: membership backup/migration runs after window construction
   on a worker; failure preserves data and disables bucket edits (24 GTK tests).
-- A6: bucket updates preserve newer search/filter inputs and navigation; the
+- A6 `1215b16`: bucket updates preserve newer search/filter inputs and navigation; the
   regression failed first and now passes; offline checks pass (231 tests),
   all 25 isolated GTK workflows pass, including rapid navigation.
 
-Paused at the user’s request after the A6 commit.
-Remaining: A7, A13 (medium), then A8–A12 (low). Do not start A7 this session.
+A7 verified: F11 and double-click share presentation, hide side panels and
+restore them; Info-first Escape and Compare/crop controls pass GTK regressions.
+Next: commit A7, then A13 (medium), then A8–A12 (low).
 Bugs require a failing regression first. Record each fixed hash in `AUDIT.md`.
 
 ## Verification and safety
@@ -48,3 +49,7 @@ The 16:9 viewer guide (D36) is planned separately on `main` (`494075d`).
 Do not implement it during audit fixes. Installed native build: `f50cd9f`;
 release 0.5.0 and prior phase acceptance remain in `ROADMAP.md`/archive.
 Keep all archive/prototype branches. No real data was accessed for this work.
+
+Follow-up approved: Crop Copy keeps the source format, including JPEG
+(recompression tradeoff accepted); batch WebP export stays as-is. Handle
+separately after the agreed audit findings, with tests and a product decision.

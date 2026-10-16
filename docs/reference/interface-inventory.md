@@ -73,7 +73,7 @@ removed means the control is absent, with stored user data retained.
 | Image menu | Rename/F2 and Duplicate/Ctrl+D | Kept under File Actions for one image; Rename carries bucket membership and legacy tags and refuses retained names; Duplicate and Copy to Folder exclusively create unique outputs, never replacing files or links | D21 |
 | Image menu | Move to Trash/Delete | Kept with immediate system trash and Undo; no source overwrite | D25 |
 | Viewer | Scroll zoom / drag pan / Ctrl+0 fit | Kept | D27 |
-| Viewer | Double-click / F11 fullscreen | Kept; contextual mode controls survive fullscreen | D11, D28 |
+| Viewer | Double-click / F11 fullscreen | Kept through one presentation action; side panels hide, Escape closes Info first then exits; contextual mode controls survive fullscreen | D11, D28 |
 | Viewer | Fit/1:1 entries in main menu | Removed; Ctrl+0 and contextual Compare controls remain | D30, D33 |
 | Viewer | Show Overlay switch / Alt+Return | Removed; legacy preference value remains stored unused | D30, D33 |
 | Viewer | Metadata pill and separate Info pill | Changed to one movement readout that expands on hover or pins by click/key | D27, D31 |

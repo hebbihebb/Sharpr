@@ -559,8 +559,7 @@ mod imp {
         pub(super) browse_snapshot: RefCell<Option<search_controller::BrowseSnapshot>>,
         pub(super) browse_options: RefCell<search_controller::BrowseOptions>,
         pub presentation_mode: Cell<bool>,
-        pub presentation_sidebar_was_visible: Cell<bool>,
-        pub presentation_filmstrip_was_visible: Cell<bool>,
+        pub(super) presentation_panels: RefCell<Option<SidePanels>>,
         pub presentation_header: RefCell<Option<libadwaita::HeaderBar>>,
         pub(super) mode_header: RefCell<Option<mode_header::ModeHeader>>,
         /// Look prototype: the last pointer position, where pickers open.
@@ -632,8 +631,7 @@ mod imp {
                 browse_snapshot: RefCell::new(None),
                 browse_options: RefCell::new(Default::default()),
                 presentation_mode: Cell::new(false),
-                presentation_sidebar_was_visible: Cell::new(false),
-                presentation_filmstrip_was_visible: Cell::new(false),
+                presentation_panels: RefCell::new(None),
                 presentation_header: RefCell::new(None),
                 mode_header: RefCell::new(None),
                 last_pointer: Cell::new(None),
@@ -3403,23 +3401,16 @@ impl SharprWindow {
         if imp.presentation_mode.get() {
             return;
         }
-        let outer = imp.presentation_outer_split.borrow();
-        let inner = imp.presentation_inner_split.borrow();
-        let hdr = imp.presentation_header.borrow();
-        if let (Some(o), Some(i), Some(h)) = (outer.as_ref(), inner.as_ref(), hdr.as_ref()) {
-            imp.presentation_sidebar_was_visible.set(o.shows_sidebar());
-            imp.presentation_filmstrip_was_visible
-                .set(i.shows_sidebar());
-            o.set_show_sidebar(false);
-            i.set_show_sidebar(false);
-            h.set_visible(
+        imp.presentation_mode.set(true);
+        *imp.presentation_panels.borrow_mut() = Some(self.hide_side_panels());
+        if let Some(header) = imp.presentation_header.borrow().as_ref() {
+            header.set_visible(
                 imp.mode_header
                     .borrow()
                     .as_ref()
                     .is_some_and(mode_header::ModeHeader::active),
             );
         }
-        imp.presentation_mode.set(true);
         self.fullscreen();
     }
 
@@ -3428,15 +3419,13 @@ impl SharprWindow {
         if !imp.presentation_mode.get() {
             return;
         }
-        let outer = imp.presentation_outer_split.borrow();
-        let inner = imp.presentation_inner_split.borrow();
-        let hdr = imp.presentation_header.borrow();
-        if let (Some(o), Some(i), Some(h)) = (outer.as_ref(), inner.as_ref(), hdr.as_ref()) {
-            o.set_show_sidebar(imp.presentation_sidebar_was_visible.get());
-            i.set_show_sidebar(imp.presentation_filmstrip_was_visible.get());
-            h.set_visible(true);
-        }
         imp.presentation_mode.set(false);
+        if let Some(saved) = imp.presentation_panels.borrow_mut().take() {
+            self.restore_side_panels(saved);
+        }
+        if let Some(header) = imp.presentation_header.borrow().as_ref() {
+            header.set_visible(true);
+        }
         self.unfullscreen();
 
         if let Some(viewer) = imp.viewer.borrow().as_ref() {
@@ -3506,21 +3495,10 @@ impl SharprWindow {
             )),
         ));
 
-        // F11 — Toggle fullscreen.
+        // F11 and viewer double-click share the mode-aware presentation action.
         shortcuts.add_shortcut(gtk4::Shortcut::new(
             Some(gtk4::ShortcutTrigger::parse_string("F11").unwrap()),
-            Some(gtk4::CallbackAction::new(move |widget, _| {
-                if let Some(win) = widget.downcast_ref::<SharprWindow>() {
-                    if win.imp().presentation_mode.get() {
-                        win.exit_presentation_mode();
-                    } else if win.is_fullscreen() {
-                        win.unfullscreen();
-                    } else {
-                        win.fullscreen();
-                    }
-                }
-                glib::Propagation::Stop
-            })),
+            Some(gtk4::NamedAction::new("win.toggle-presentation")),
         ));
 
         // Escape — Exit presentation mode.

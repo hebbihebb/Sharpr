@@ -91,7 +91,7 @@ Indexing then starts on its own. Main Menu → Library → Library Overview show
 | F2 | Rename |
 | Delete | Move the selection to the trash |
 | F9 | Toggle the library sidebar |
-| Double-click or F11 | Fullscreen |
+| Double-click or F11 | Fullscreen presentation; Escape exits after closing Info |
 | Ctrl+? | All shortcuts |
 
 ## Where Your Data Lives

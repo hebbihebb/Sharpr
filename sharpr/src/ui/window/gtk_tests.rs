@@ -4060,3 +4060,100 @@ fn late_bucket_write_preserves_newer_search_and_navigation() {
     assert_eq!(window.app_state().borrow().library.image_count(), 2);
     window.close();
 }
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn fullscreen_shortcuts_share_presentation_and_preserve_mode_controls() {
+    let root = isolated_fixture("fullscreen-entry-points");
+    std::fs::create_dir_all(&root).unwrap();
+    let paths: Vec<_> = ["a.png", "b.png"].map(|name| root.join(name)).into();
+    for path in &paths {
+        image::RgbImage::from_pixel(64, 36, image::Rgb([60, 90, 120]))
+            .save(path)
+            .unwrap();
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Fullscreen", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+    pump_until(|| window.is_mapped() && viewer.imp().picture.paintable().is_some());
+    let outer = window
+        .imp()
+        .presentation_outer_split
+        .borrow()
+        .clone()
+        .unwrap();
+    let inner = window
+        .imp()
+        .presentation_inner_split
+        .borrow()
+        .clone()
+        .unwrap();
+    let header = window.imp().presentation_header.borrow().clone().unwrap();
+    let panels = (outer.shows_sidebar(), inner.shows_sidebar());
+    assert!(window_shortcut(&window, "F11"));
+    pump_until(|| window.is_fullscreen());
+    assert!(
+        window.imp().presentation_mode.get(),
+        "F11 must enter the same mode as double-click"
+    );
+    assert!(!outer.shows_sidebar() && !inner.shows_sidebar());
+    assert!(!header.is_visible());
+    viewer.show_info();
+    pump_until(|| viewer.imp().metadata_chip.is_info_open());
+    assert!(window_shortcut(&window, "Escape"));
+    assert!(
+        window.imp().presentation_mode.get(),
+        "Info closes before fullscreen"
+    );
+    assert!(!viewer.imp().metadata_chip.is_info_open());
+    assert!(window_shortcut(&window, "Escape"));
+    pump_until(|| !window.is_fullscreen());
+    pump_until(|| (outer.shows_sidebar(), inner.shows_sidebar()) == panels);
+    // The double-click action and F11 must also toggle each other's state.
+    gtk4::prelude::WidgetExt::activate_action(&viewer, "win.toggle-presentation", None).unwrap();
+    pump_until(|| window.is_fullscreen());
+    assert!(window_shortcut(&window, "F11"));
+    pump_until(|| !window.is_fullscreen());
+    for crop in [false, true] {
+        if crop {
+            window
+                .present_copy_dialog(crate::ui::filmstrip::CopyKind::Crop, vec![paths[0].clone()]);
+            pump_until(|| window.crop_session().is_some());
+        } else {
+            window.enter_compare_mode(paths.clone());
+            pump_until(|| window.imp().compare_page.borrow().is_some());
+        }
+        assert!(window_shortcut(&window, "F11"));
+        pump_until(|| window.is_fullscreen());
+        assert!(
+            header.is_visible(),
+            "mode controls remain available in fullscreen"
+        );
+        assert!(window_shortcut(&window, "F11"));
+        pump_until(|| !window.is_fullscreen());
+        assert!(header.is_visible());
+        if crop {
+            window.crop_session().unwrap().close();
+            pump_until(|| window.crop_session().is_none());
+        } else {
+            let page = window.imp().compare_page.borrow().clone().unwrap();
+            page.close();
+            pump_until(|| window.app_state().borrow().scope != ViewScope::Compare);
+        }
+    }
+    window.close();
+}

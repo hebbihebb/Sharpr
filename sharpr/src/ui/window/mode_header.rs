@@ -79,11 +79,12 @@ impl SharprWindow {
             let window = self.downgrade();
             split.connect_collapsed_notify(move |split| {
                 let active = window.upgrade().is_some_and(|w| {
-                    w.imp()
-                        .mode_header
-                        .borrow()
-                        .as_ref()
-                        .is_some_and(ModeHeader::active)
+                    w.imp().presentation_mode.get()
+                        || w.imp()
+                            .mode_header
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(ModeHeader::active)
                 });
                 if active && !split.is_collapsed() {
                     split.set_collapsed(true);

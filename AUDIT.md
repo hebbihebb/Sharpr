@@ -106,7 +106,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: while viewing a bucket, start an Add/Remove operation → type a new search before its worker's completion is dispatched → completion sees the same bucket ID, clears the new search and replaces the newer view with the full bucket.
 - Evidence: confirmed in the off-screen GTK probe by delaying main-context delivery of a bucket-write result until a newer query was submitted; the query text was then cleared. Similar scope-only refreshes exist after reparent and rename.
 - Proposed fix: validate the captured view/search generation before applying a refresh; when search has changed, refresh or rerun the current query without clearing it. Test delayed completion against a newer query and navigation.
-- Status: fixed (A6 commit; hash recorded at next checkpoint)
+- Status: fixed (1215b16)
 
 - Fix: shared background membership refresh retires older query results, updates the saved bucket membership, and reruns the latest search/filter inputs while preserving selection and scroll. Rename, reparent, membership writes and edit buckets use it.
 - Regression: failed first when the late completion cleared `a`; passes with the newer query retained, removed members absent after clearing search, and newer folder navigation preserved. Offline `./check.sh` passes (231 default tests). All 25 isolated offscreen GTK workflows pass. Synthetic 5,000-image navigation: 352 ms first-folder readiness, one 85 ms browsing stall, peak RSS 172 MB (debug/Cairo); prior A5 sample: 300 ms, one 126 ms stall, 171 MB. These samples are not a release/manual performance claim.
@@ -120,7 +120,9 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: press F11 while browsing → the window becomes fullscreen without entering presentation mode → close Info if needed and press Escape → it stays fullscreen, unlike fullscreen entered by double-click.
 - Evidence: confirmed in the off-screen GTK probe: `is_fullscreen()` was true while `presentation_mode` was false, and Escape did not exit; the shared presentation path did hide the sidebar. No proposal here changes D11's approved fullscreen feature.
 - Proposed fix: route fullscreen entry/exit through one mode-aware action, preserving the Compare/crop header and Escape's Info-first behavior. Test both entry points and mode transitions.
-- Status: agreed
+- Status: fixed (A7 commit; hash recorded at next checkpoint)
+
+- Verification: regression failed first on F11/presentation mismatch; passes with shared action, hidden panels, Info-first Escape, panel restoration, and Compare/crop controls. Existing mode-header and small-image/fullscreen resize workflows also pass.
 
 ### A8 — Bucket/file editing dialogs miss the shared sheet style
 
