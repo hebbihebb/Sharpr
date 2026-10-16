@@ -112,3 +112,17 @@ pub fn install(widget: &impl IsA<gtk4::Widget>) {
             .add_resource_path("/io/github/hebbihebb/Sharpr/icons");
     }
 }
+
+/// Style empty thumbnail pictures using GTK-supported state. Paintable changes
+/// include factory rebinds and async completions; no scheduler state is touched.
+pub fn thumbnail_feedback(picture: &gtk4::Picture) {
+    fn update(picture: &gtk4::Picture) {
+        if picture.paintable().is_none() {
+            picture.add_css_class("sharpr-thumbnail-loading");
+        } else {
+            picture.remove_css_class("sharpr-thumbnail-loading");
+        }
+    }
+    update(picture);
+    picture.connect_paintable_notify(update);
+}

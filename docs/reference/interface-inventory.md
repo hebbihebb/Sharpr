@@ -23,7 +23,7 @@ removed means the control is absent, with stored user data retained.
 | Window | Preparing library state | Added for background bucket upgrades; verified backup/count checks stay; bucket edits wait for success, with persistent failure feedback | D3, D4 |
 | Window | Transient operation indicator | Kept for operations that last; does not navigate | D27 |
 | Window | Presentation menu item | Removed; double-click and F11 retain fullscreen | D11, D27 |
-| Filmstrip | Thumbnail list, labels and index pills | Kept, virtualized; placeholders and hover/press feedback use CSS | D27, D30 |
+| Filmstrip | Thumbnail list, labels and index pills | Kept, virtualized; placeholders use a paintable-driven loading class shared with Survey/Compare; hover/press feedback uses CSS | D27, D30 |
 | Filmstrip | Small scrollbar handle | Changed to a wider, always-available native handle | D30 |
 | Filmstrip | Single selection / Ctrl-click / Shift-click / Ctrl+A | Kept; explicit action selection is visible, including one survivor | D25 |
 | Filmstrip | Scroll, row activation and arrow navigation | Kept; visible rows retain thumbnail priority and generations | D27, D30 |

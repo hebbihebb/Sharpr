@@ -25,8 +25,9 @@ Compare/crop controls verified (231 default tests, three GTK checks, build).
 A13 `effc5df`: architecture correctly identifies bucket members as user data and
 describes committed Flatpak sources, Cargo versions and Overview progress.
 A8 `262f34a`: editing dialogs use the shared sheet style; GTK tour and Rename
-workflow pass, New Bucket screenshot inspected. A9 verified: active messages say bucket; two GTK workflows pass.
-Next: A10–A12 (low).
+workflow pass, New Bucket screenshot inspected. A9 `5c79227`: active messages say bucket; two GTK workflows pass.
+A10 verified: valid shared loading CSS; parser regression, Compare, Survey
+and rapid navigation pass; offline checks pass (231 tests). Next: A11–A12.
 Bugs require a failing regression first. Record each fixed hash in `AUDIT.md`.
 
 ## Verification and safety

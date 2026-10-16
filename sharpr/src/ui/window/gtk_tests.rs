@@ -4157,3 +4157,22 @@ fn fullscreen_shortcuts_share_presentation_and_preserve_mode_controls() {
     }
     window.close();
 }
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn application_stylesheet_parses_without_errors() {
+    isolated_fixture("stylesheet-parser");
+    gtk4::init().unwrap();
+    let errors = Rc::new(RefCell::new(Vec::new()));
+    let captured = errors.clone();
+    let provider = gtk4::CssProvider::new();
+    provider.connect_parsing_error(move |_, _, error| {
+        captured.borrow_mut().push(error.to_string());
+    });
+    provider.load_from_string(include_str!("../../../data/style.css"));
+    assert!(
+        errors.borrow().is_empty(),
+        "CSS errors: {:?}",
+        errors.borrow()
+    );
+}

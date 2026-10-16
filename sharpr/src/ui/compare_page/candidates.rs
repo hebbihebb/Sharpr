@@ -104,6 +104,7 @@ impl CandidateStrip {
             card.add_css_class("compare-candidate");
             let overlay = gtk4::Overlay::new();
             let picture = gtk4::Picture::new();
+            crate::ui::look::thumbnail_feedback(&picture);
             picture.set_size_request(96, 60);
             picture.set_can_shrink(true);
             picture.set_content_fit(gtk4::ContentFit::Contain);

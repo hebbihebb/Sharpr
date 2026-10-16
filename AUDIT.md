@@ -146,7 +146,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: create a bucket → the dialog says New Bucket but its notification says “Created collection”; reparenting or failed bucket edits also use the retired term.
 - Evidence: confirmed active string paths, independent of internal Rust/SQL names, which may legitimately retain `collection`.
 - Proposed fix: change active user-facing strings to “bucket” consistently; keep persistence names intact.
-- Status: fixed (A9 commit; hash recorded at next checkpoint)
+- Status: fixed (5c79227)
 
 - Verification: active notification/error/confirmation strings traced and changed, including surfaced validation errors. Internal actions, SQL and log event names retained. Existing repeat-bucket/Info and edit-bucket GTK workflows pass; build and diff check pass.
 
@@ -159,7 +159,9 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: open a folder, Survey or Compare before its thumbnails finish → GTK emits “Unknown name of pseudo-class” and the intended placeholder rule is discarded.
 - Evidence: confirmed parser warning during the private GTK probe, with the selector and location reported above.
 - Proposed fix: use a supported explicit loading class/state when binding/updating pictures, and validate CSS without parser errors. Leave scheduling and generation logic unchanged.
-- Status: agreed
+- Status: fixed (A10 commit; hash recorded at next checkpoint)
+
+- Verification: GTK parser test failed first with the unsupported pseudo-class and now passes without errors. Four GTK checks pass (parser, Compare candidates, Survey, rapid folder/selection changes). Paintable notifications update the shared loading class on initial bind, completion and reuse; scheduler unchanged. Full offline checks pass (231 default tests). Synthetic 5,000-image navigation: 338 ms first-folder readiness, one 82 ms browsing stall, peak RSS 170 MB; A6 baseline: 352 ms, 85 ms, 172 MB (debug/Cairo samples, not release performance).
 
 ### A11 — Retired feature implementations and wiring remain compiled
 

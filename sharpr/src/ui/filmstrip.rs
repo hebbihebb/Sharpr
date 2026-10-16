@@ -520,6 +520,7 @@ impl FilmstripPane {
 
             let overlay = gtk4::Overlay::new();
             let picture = gtk4::Picture::new();
+            crate::ui::look::thumbnail_feedback(&picture);
             picture.set_content_fit(gtk4::ContentFit::Cover);
             picture.set_size_request(-1, 160);
             picture.add_css_class("thumbnail-frame");

@@ -267,6 +267,7 @@ impl SurveyPage {
             card.add_css_class("survey-tile");
             let overlay = gtk4::Overlay::new();
             let picture = gtk4::Picture::new();
+            crate::ui::look::thumbnail_feedback(&picture);
             picture.set_can_shrink(true);
             picture.set_content_fit(gtk4::ContentFit::Contain);
             picture.set_size_request(200, page.tile_height.get());
