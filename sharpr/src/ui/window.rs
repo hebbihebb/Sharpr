@@ -3877,12 +3877,23 @@ impl SharprWindow {
                         let Some(dest_dir) = file.path() else { return };
                         let mut moved = 0usize;
                         let mut errors = 0usize;
-                        let mut tag_errors = 0usize;
-                        let tags_db = state_c.borrow().tags.clone();
+                        let mut first_error = None;
+                        let (Some(index), Some(tags_db)) = (
+                            state_c.borrow().library_index.clone(),
+                            state_c.borrow().tags.clone(),
+                        ) else {
+                            if let Some(w) = win_weak.upgrade() {
+                                w.add_toast(libadwaita::Toast::new(
+                                    "Cannot move files: bucket or tag database is unavailable",
+                                ));
+                            }
+                            return;
+                        };
                         // A name whose missing file still has tags counts as taken.
                         let taken = |p: &std::path::Path| {
                             p.symlink_metadata().is_ok()
-                                || tags_db.as_ref().is_some_and(|t| !t.tags_for_path(p).is_empty())
+                                || !tags_db.tags_for_path(p).is_empty()
+                                || index.retains_bucket_path(p).unwrap_or(false)
                         };
                         for src in &paths {
                             let stem = src
@@ -3892,31 +3903,18 @@ impl SharprWindow {
                                 .to_string();
                             let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
                             // Re-pick a free name if one appears between choosing and moving.
-                            let mut result = Err(std::io::ErrorKind::AlreadyExists.into());
-                            let mut dest = PathBuf::new();
+                            let mut result = Err("No unused name available".to_string());
                             for _ in 0..5 {
-                                dest = crate::file_ops::next_available_path(
-                                    &dest_dir,
-                                    &stem,
-                                    ext,
-                                    taken,
+                                let dest = crate::file_ops::next_available_path(
+                                    &dest_dir, &stem, ext, taken,
                                 );
-                                result = crate::file_ops::rename_no_replace(src, &dest);
-                                if !matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
+                                result = index.relocate_file(src, &dest, &tags_db);
+                                if result.is_ok() || !taken(&dest) {
                                     break;
                                 }
                             }
                             match result {
                                 Ok(()) => {
-                                    if let Some(tags) = &tags_db {
-                                        if let Err(error) = tags.rename_path(src, &dest) {
-                                            tag_errors += 1;
-                                            crate::bench_warn!(
-                                                "file.move.tags_fail",
-                                                serde_json::json!({"error": error})
-                                            );
-                                        }
-                                    }
                                     {
                                         let mut state = state_c.borrow_mut();
                                         state.library.remove_path(src);
@@ -3924,7 +3922,10 @@ impl SharprWindow {
                                     }
                                     moved += 1;
                                 }
-                                Err(_) => errors += 1,
+                                Err(error) => {
+                                    errors += 1;
+                                    first_error.get_or_insert(error);
+                                }
                             }
                         }
                         if moved > 0 {
@@ -3956,8 +3957,8 @@ impl SharprWindow {
                                 errors
                             )
                         };
-                        if tag_errors > 0 {
-                            msg.push_str(&format!("; tags not updated for {tag_errors}"));
+                        if let Some(error) = first_error {
+                            msg.push_str(&format!(": {error}"));
                         }
                         if let Some(w) = win_weak.upgrade() {
                             w.add_toast(libadwaita::Toast::new(&msg));
@@ -4006,24 +4007,22 @@ impl SharprWindow {
                     if new_name == current_name {
                         return;
                     }
-                    let tags_db = state_d.borrow().tags.clone();
-                    let retained = path.parent().is_some_and(|dir| {
-                        tags_db.as_ref().is_some_and(|t| {
-                            !t.tags_for_path(&dir.join(&new_name)).is_empty()
-                        })
-                    });
-                    let msg = if retained {
-                        format!(
-                            "Sharpr still keeps tags for a missing file named “{new_name}”. Choose another name."
-                        )
-                    } else {
-                        match crate::file_ops::rename_within_dir(&path, &new_name) {
-                        Ok(new_path) => {
-                            let tag_error = state_d
-                                .borrow()
-                                .tags
-                                .clone()
-                                .and_then(|tags| tags.rename_path(&path, &new_path).err());
+                    let result = (|| -> Result<PathBuf, String> {
+                        let dest = crate::file_ops::rename_destination(&path, &new_name)?;
+                        let (index, tags) = {
+                            let state = state_d.borrow();
+                            (state.library_index.clone(), state.tags.clone())
+                        };
+                        let (Some(index), Some(tags)) = (index, tags) else {
+                            return Err(
+                                "Cannot rename: bucket or tag database is unavailable".into()
+                            );
+                        };
+                        index.relocate_file(&path, &dest, &tags)?;
+                        Ok(dest)
+                    })();
+                    let msg = match result {
+                        Ok(_new_path) => {
                             {
                                 let mut state = state_d.borrow_mut();
                                 state.library.remove_path(&path);
@@ -4046,19 +4045,9 @@ impl SharprWindow {
                                     filmstrip_d.set_action_selection_to_path(&p);
                                 }
                             }
-                            match tag_error {
-                                None => "File renamed".to_string(),
-                                Some(error) => {
-                                    crate::bench_warn!(
-                                        "file.rename.tags_fail",
-                                        serde_json::json!({"error": error})
-                                    );
-                                    format!("File renamed, but its tags were not updated: {error}")
-                                }
-                            }
+                            "File renamed".to_string()
                         }
-                        Err(e) => e,
-                        }
+                        Err(error) => error,
                     };
                     if let Some(w) = win_weak.upgrade() {
                         w.add_toast(libadwaita::Toast::new(&msg));

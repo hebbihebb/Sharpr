@@ -3727,3 +3727,77 @@ fn edits_collect_originals_and_copies_in_buckets() {
     assert_eq!(std::fs::read(&b).unwrap(), originals[1]);
     window.close();
 }
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn internal_rename_keeps_buckets_when_the_old_filename_is_reused() {
+    let root = isolated_fixture("audit-rename");
+    std::fs::create_dir_all(&root).unwrap();
+    let original = root.join("a.png");
+    let renamed = root.join("b.png");
+    image::RgbImage::from_pixel(160, 90, image::Rgb([200, 40, 40]))
+        .save(&original)
+        .unwrap();
+    let bytes = std::fs::read(&original).unwrap();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Audit rename", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    pump_until(|| window.is_mapped() && window.app_state().borrow().library.image_count() == 1);
+    let state = window.app_state();
+    let index = state.borrow().library_index.clone().unwrap();
+    let tags = state.borrow().tags.clone().unwrap();
+    let library = state.borrow().settings.active_library_id.clone().unwrap();
+    let bucket = index
+        .create_collection(&library, None, "Keep", &[], None, None)
+        .unwrap();
+    crate::buckets::add_to_bucket(&index, bucket.id, std::slice::from_ref(&original)).unwrap();
+    tags.add_tag(&original, "legacy");
+    window
+        .imp()
+        .filmstrip
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .emit_rename_requested(original.clone());
+    let dialog = window
+        .visible_dialog()
+        .unwrap()
+        .downcast::<libadwaita::AlertDialog>()
+        .unwrap();
+    let entries = find_widgets::<gtk4::Entry>(dialog.upcast_ref());
+    assert_eq!(entries.len(), 1);
+    entries[0].set_text("b.png");
+    find_widgets::<gtk4::Button>(dialog.upcast_ref())
+        .into_iter()
+        .find(|button| button.label().as_deref() == Some("Rename"))
+        .unwrap()
+        .emit_clicked();
+    pump_until(|| renamed.exists());
+    image::RgbImage::from_pixel(160, 90, image::Rgb([40, 40, 200]))
+        .save(&original)
+        .unwrap();
+    crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
+    crate::buckets::relink(&index).unwrap();
+    assert_eq!(
+        crate::buckets::view(&index, bucket.id, Some(&root), &[])
+            .unwrap()
+            .paths,
+        vec![renamed.clone()]
+    );
+    assert_eq!(std::fs::read(&renamed).unwrap(), bytes);
+    assert_eq!(tags.tags_for_path(&renamed), vec!["legacy"]);
+    window.close();
+}

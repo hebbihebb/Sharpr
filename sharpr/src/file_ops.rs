@@ -27,9 +27,8 @@ fn copy_candidate(dir: &Path, stem: &str, ext: &str, suffix: u32) -> PathBuf {
     })
 }
 
-/// Renames `src` to `new_name` in the same directory without ever replacing
-/// an existing file. Returns the new path.
-pub fn rename_within_dir(src: &Path, new_name: &str) -> Result<PathBuf, String> {
+/// Validates a single filename before a file-and-curation relocation.
+pub fn rename_destination(src: &Path, new_name: &str) -> Result<PathBuf, String> {
     if new_name.is_empty()
         || new_name == "."
         || new_name == ".."
@@ -41,17 +40,7 @@ pub fn rename_within_dir(src: &Path, new_name: &str) -> Result<PathBuf, String> 
     let parent = src
         .parent()
         .ok_or_else(|| format!("no parent directory for {}", src.display()))?;
-    let dest = parent.join(new_name);
-    if dest == src {
-        return Ok(dest);
-    }
-    match rename_no_replace(src, &dest) {
-        Ok(()) => Ok(dest),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            Err(format!("A file named “{new_name}” already exists"))
-        }
-        Err(e) => Err(format!("rename failed: {e}")),
-    }
+    Ok(parent.join(new_name))
 }
 
 /// Renames `src` to `dest` unless `dest` exists, in which case it fails with
@@ -276,6 +265,22 @@ pub fn copy_to_folder(src: &Path, destination: &Path) -> Result<PathBuf, String>
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    /// Renames `src` to `new_name` in the same directory without ever replacing
+    /// an existing file. Returns the new path.
+    fn rename_within_dir(src: &Path, new_name: &str) -> Result<PathBuf, String> {
+        let dest = rename_destination(src, new_name)?;
+        if dest == src {
+            return Ok(dest);
+        }
+        match rename_no_replace(src, &dest) {
+            Ok(()) => Ok(dest),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(format!("A file named “{new_name}” already exists"))
+            }
+            Err(e) => Err(format!("rename failed: {e}")),
+        }
+    }
 
     fn make_exists(paths: &[PathBuf]) -> impl Fn(&Path) -> bool + '_ {
         let set: HashSet<PathBuf> = paths.iter().cloned().collect();

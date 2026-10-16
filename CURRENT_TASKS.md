@@ -4,8 +4,8 @@
 
 Branch: `codex/audit-0.5.0`. The user authorized all 13 findings, fixed in
 severity order with one commit per finding. Order: A1, A2 (high); A3–A7,
-A13 (medium); A8–A12 (low). A1 is implemented and verified (223 tests and full offline checks); A2 is
-next. Bugs get failing regression tests
+A13 (medium); A8–A12 (low). A1 is committed (`cd32145`). A2 is verified (227 tests, full offline checks
+and its GTK regression); A3 is next. Bugs get failing regression tests
 before fixes; each completed finding is committed separately.
 All tests use temporary data and memory GSettings; heavy jobs run one at a
 time, offline. Never build Flatpak, deploy, merge or push. Claude merges

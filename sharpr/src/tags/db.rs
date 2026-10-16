@@ -732,6 +732,43 @@ mod tests {
         std::env::temp_dir().join(unique).join(name)
     }
 
+    #[test]
+    fn failed_tag_relocation_restores_file_and_bucket_paths() {
+        let source = temp_path("relocate-tag-failure.png");
+        let destination = source.with_extension("moved.png");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"original bytes").unwrap();
+        let index = crate::library_index::LibraryIndex::open_in_memory().unwrap();
+        let tags = TagDatabase::open_in_memory().unwrap();
+        crate::buckets::migrate(&index, &tags, &source.with_extension("backups")).unwrap();
+        let bucket = index
+            .create_collection("test", None, "Keep", &[], None, None)
+            .unwrap();
+        crate::buckets::add_to_bucket(&index, bucket.id, std::slice::from_ref(&source)).unwrap();
+        tags.add_tag(&source, "legacy");
+        let members = index.bucket_members(&[bucket.id]).unwrap();
+        let hashes = index.cached_fingerprints().unwrap();
+        tags.conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_tag_move BEFORE INSERT ON file_tags
+             BEGIN SELECT RAISE(ABORT, 'simulated tag failure'); END;",
+            )
+            .unwrap();
+        assert!(index
+            .relocate_file(&source, &destination, &tags)
+            .unwrap_err()
+            .contains("simulated tag failure"));
+        assert_eq!(std::fs::read(&source).unwrap(), b"original bytes");
+        assert!(!destination.exists());
+        assert_eq!(index.bucket_members(&[bucket.id]).unwrap(), members);
+        assert_eq!(index.cached_fingerprints().unwrap(), hashes);
+        assert_eq!(tags.tags_for_path(&source), vec!["legacy"]);
+        assert!(tags.tags_for_path(&destination).is_empty());
+        std::fs::remove_dir_all(source.parent().unwrap()).unwrap();
+    }
+
     fn stored_rows(db: &TagDatabase, tag: &str) -> i64 {
         db.conn
             .lock()

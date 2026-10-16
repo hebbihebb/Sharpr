@@ -62,6 +62,82 @@ fn insert_members(
 }
 
 impl LibraryIndex {
+    /// A missing file's bucket paths still reserve its name, just like tags.
+    pub fn retains_bucket_path(&self, path: &Path) -> rusqlite::Result<bool> {
+        self.conn()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM bucket_members WHERE last_path = ?1)",
+            params![path_to_string(path)],
+            |row| row.get(0),
+        )
+    }
+
+    /// Explicit file move/rename: carry bucket paths, cached identity and
+    /// legacy tags together. Serialize with re-link writes and roll back a
+    /// failed operation rather than leaving the old path attached to a new file.
+    pub fn relocate_file(
+        &self,
+        from: &Path,
+        to: &Path,
+        tags: &crate::tags::TagDatabase,
+    ) -> Result<(), String> {
+        if from == to {
+            return Ok(());
+        }
+        let mut conn = self.conn().map_err(|e| e.to_string())?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        if !membership_migrated(&tx).map_err(|e| e.to_string())? {
+            return Err("Wait until buckets have been upgraded before moving files".into());
+        }
+        let retained: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM bucket_members WHERE last_path = ?1)",
+                params![path_to_string(to)],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if retained || !tags.tags_for_path_checked(to)?.is_empty() {
+            return Err(format!(
+                "Sharpr still keeps buckets or tags for {}; choose another name",
+                to.display()
+            ));
+        }
+        // Prepare database changes first, so SQL errors leave the file alone.
+        tx.execute(
+            "UPDATE bucket_members SET last_path = ?2 WHERE last_path = ?1",
+            params![path_to_string(from), path_to_string(to)],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM file_fingerprints WHERE path = ?1",
+            params![path_to_string(to)],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE file_fingerprints SET path = ?2 WHERE path = ?1",
+            params![path_to_string(from), path_to_string(to)],
+        )
+        .map_err(|e| e.to_string())?;
+        crate::file_ops::rename_no_replace(from, to).map_err(|e| e.to_string())?;
+        if let Err(error) = tags.rename_path(from, to) {
+            return match crate::file_ops::rename_no_replace(to, from) {
+                Ok(()) => Err(format!("File left unchanged: {error}")),
+                Err(restore) => Err(format!("File moved to {}, but tags failed: {error}; restoring its old name also failed: {restore}", to.display())),
+            };
+        }
+        if let Err(error) = tx.commit() {
+            let restored = crate::file_ops::rename_no_replace(to, from)
+                .map_err(|e| e.to_string())
+                .and_then(|()| tags.rename_path(to, from));
+            return Err(match restored {
+                Ok(()) => format!("File left unchanged: could not save bucket paths: {error}"),
+                Err(restore) => format!("Could not save bucket paths: {error}; restoring the file and tags failed: {restore}"),
+            });
+        }
+        Ok(())
+    }
+
     /// Every image size the index has read, by path. Some older rows may be
     /// unrotated, so use them only where orientation doesn't matter.
     pub fn stored_dimensions(&self) -> rusqlite::Result<HashMap<String, (u32, u32)>> {
@@ -411,6 +487,138 @@ impl LibraryIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn relocation_fixture() -> (LibraryIndex, crate::tags::TagDatabase, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "sharpr-relocate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let index = LibraryIndex::open_in_memory().unwrap();
+        let tags = crate::tags::TagDatabase::open_in_memory().unwrap();
+        crate::buckets::migrate(&index, &tags, &root.join("backups")).unwrap();
+        (index, tags, root)
+    }
+
+    #[test]
+    fn relocation_carries_every_bucket_and_tag_with_or_without_a_fingerprint() {
+        for cached in [false, true] {
+            let (index, tags, root) = relocation_fixture();
+            let source = root.join("a.png");
+            let destination = root.join("sub/b.png");
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::write(&source, b"curated original").unwrap();
+            let one = index
+                .create_collection("test", None, "One", &[], None, None)
+                .unwrap()
+                .id;
+            let two = index
+                .create_collection("test", Some(one), "Two", &[], None, None)
+                .unwrap()
+                .id;
+            let hash =
+                cached.then(|| crate::buckets::current_fingerprint(&index, &source).unwrap());
+            for id in [one, two] {
+                index
+                    .add_bucket_members(id, &[(source.clone(), hash.clone())])
+                    .unwrap();
+            }
+            tags.add_tag(&source, "legacy");
+
+            index.relocate_file(&source, &destination, &tags).unwrap();
+            assert_eq!(std::fs::read(&destination).unwrap(), b"curated original");
+            assert!(!source.exists());
+            assert_eq!(tags.tags_for_path(&destination), vec!["legacy"]);
+            assert!(tags.tags_for_path(&source).is_empty());
+            for row in index.bucket_members(&[one, two]).unwrap() {
+                assert_eq!(row.last_path, destination);
+            }
+            if cached {
+                let fingerprints = index.cached_fingerprints().unwrap();
+                assert!(!fingerprints.contains_key(source.to_str().unwrap()));
+                assert_eq!(
+                    Some(&fingerprints[destination.to_str().unwrap()].2),
+                    hash.as_ref()
+                );
+            }
+            std::fs::write(&source, b"unrelated replacement").unwrap();
+            crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
+            crate::buckets::relink(&index).unwrap();
+            for id in [one, two] {
+                assert_eq!(
+                    crate::buckets::view(&index, id, Some(&root), &[])
+                        .unwrap()
+                        .paths,
+                    vec![destination.clone()]
+                );
+            }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn relocation_refuses_retained_bucket_or_tag_destinations_without_moving_anything() {
+        for bucket_destination in [false, true] {
+            let (index, tags, root) = relocation_fixture();
+            let source = root.join("a.png");
+            let destination = root.join("missing.png");
+            std::fs::write(&source, b"original").unwrap();
+            let bucket = index
+                .create_collection("test", None, "Keep", &[], None, None)
+                .unwrap()
+                .id;
+            index
+                .add_bucket_members(bucket, &[(source.clone(), None)])
+                .unwrap();
+            tags.add_tag(&source, "source");
+            if bucket_destination {
+                index
+                    .add_bucket_members(bucket, &[(destination.clone(), None)])
+                    .unwrap();
+            } else {
+                tags.add_tag(&destination, "retained");
+            }
+            let before = index.bucket_members(&[bucket]).unwrap();
+            let tag_rows = tags.stored_rows().unwrap();
+            assert!(index
+                .relocate_file(&source, &destination, &tags)
+                .unwrap_err()
+                .contains("still keeps"));
+            assert_eq!(std::fs::read(&source).unwrap(), b"original");
+            assert!(!destination.exists());
+            assert_eq!(index.bucket_members(&[bucket]).unwrap(), before);
+            assert_eq!(tags.stored_rows().unwrap(), tag_rows);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn relocation_rolls_back_bucket_changes_when_the_filesystem_refuses_the_move() {
+        let (index, tags, root) = relocation_fixture();
+        let source = root.join("a.png");
+        let destination = root.join("b.png");
+        std::fs::write(&source, b"original").unwrap();
+        std::fs::write(&destination, b"existing").unwrap();
+        let bucket = index
+            .create_collection("test", None, "Keep", &[], None, None)
+            .unwrap()
+            .id;
+        crate::buckets::add_to_bucket(&index, bucket, std::slice::from_ref(&source)).unwrap();
+        tags.add_tag(&source, "legacy");
+        let before = index.bucket_members(&[bucket]).unwrap();
+        let hashes = index.cached_fingerprints().unwrap();
+        assert!(index.relocate_file(&source, &destination, &tags).is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), b"original");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"existing");
+        assert_eq!(index.bucket_members(&[bucket]).unwrap(), before);
+        assert_eq!(index.cached_fingerprints().unwrap(), hashes);
+        assert_eq!(tags.tags_for_path(&source), vec!["legacy"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn a_failed_member_write_leaves_no_bucket_behind() {

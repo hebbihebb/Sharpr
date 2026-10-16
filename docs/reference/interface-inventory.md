@@ -68,8 +68,8 @@ removed means the control is absent, with stored user data retained.
 | Image menu | Crop Copy | Kept for one image, in the viewer | D28 |
 | Image menu | Export as WebP / Ctrl+E | Kept for one or many images | D13 |
 | Image menu | Add / remove bucket membership | Kept in the shared menu and writer | D5, D31 |
-| Image menu | Copy/Move to Folder | Kept under File Actions; disabled while reviewing/cropping | D21, D28 |
-| Image menu | Rename/F2 and Duplicate/Ctrl+D | Kept under File Actions for one image; Duplicate and Copy to Folder exclusively create unique outputs, never replacing files or links | D21 |
+| Image menu | Copy/Move to Folder | Kept under File Actions; Move carries bucket membership and legacy tags and avoids retained names; disabled while reviewing/cropping | D21, D28 |
+| Image menu | Rename/F2 and Duplicate/Ctrl+D | Kept under File Actions for one image; Rename carries bucket membership and legacy tags and refuses retained names; Duplicate and Copy to Folder exclusively create unique outputs, never replacing files or links | D21 |
 | Image menu | Move to Trash/Delete | Kept with immediate system trash and Undo; no source overwrite | D25 |
 | Viewer | Scroll zoom / drag pan / Ctrl+0 fit | Kept | D27 |
 | Viewer | Double-click / F11 fullscreen | Kept; contextual mode controls survive fullscreen | D11, D28 |

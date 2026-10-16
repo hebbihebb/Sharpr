@@ -47,7 +47,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Evidence: confirmed by the temporary copy probe, including the actual `duplicate_file` helper; crop/export's safer `Pending` path is not affected.
 - Proposed fix: use a shared exclusive copy helper with collision retries and owned-partial cleanup; treat symlinks as occupied names. Keep originals and pre-existing targets byte-identical in regression tests.
 - Verification: regression failed before the fix; 223 default tests, fmt, strict clippy, offline deny and machete pass. Copy tests cover dangling links, concurrent destinations, source bytes/permissions and partial cleanup.
-- Status: fixed (A1 commit; hash recorded at the next checkpoint)
+- Status: fixed (cd32145)
 
 ### A2 — Internal Rename/Move can transfer a bucket to an unrelated replacement
 
@@ -58,7 +58,8 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: add `a.png` to a bucket → rename it inside Sharpr to `b.png` → put an unrelated image at `a.png` → the next fingerprint pass replaces the stored member fingerprint with the new `a.png`'s fingerprint → `b.png` loses its membership and the unrelated image gains it.
 - Evidence: confirmed by the temporary rename probe using the same file/tag helpers as the UI, followed by the real fingerprint and re-link pass; the legacy tag did follow `b.png`. This is distinct from the Backlog's delayed discovery of moves made outside Sharpr.
 - Proposed fix: carry bucket member paths and fresh fingerprints through successful internal moves/renames alongside legacy tags; protect retained destination memberships and report persistence failures. Test filename reuse as well as normal Rename and Move.
-- Status: agreed
+- Verification: the real Rename-dialog regression failed before the fix and passes afterward. All 227 default tests and full offline checks pass, including moves with/without cached fingerprints, multiple buckets, retained destinations, filesystem collisions and injected tag-write rollback.
+- Status: fixed (A2 commit; hash recorded at the next checkpoint)
 
 ### A3 — Re-linking and Info copy counts bypass library exclusions
 
