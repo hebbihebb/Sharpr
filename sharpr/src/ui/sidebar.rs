@@ -51,6 +51,7 @@ mod imp {
         pub folder_generation: Cell<u64>,
         pub list_box: gtk4::ListBox,
         pub collection_list: gtk4::ListBox,
+        pub bucket_box: gtk4::Box,
         pub active_library_label: gtk4::Label,
         pub folder_selected_cb: RefCell<Option<FolderSelectedCallback>>,
         pub folder_ignored_changed_cb: RefCell<Option<FolderIgnoredChangedCallback>>,
@@ -81,6 +82,7 @@ mod imp {
                 folder_generation: Cell::new(0),
                 list_box: gtk4::ListBox::new(),
                 collection_list: gtk4::ListBox::new(),
+                bucket_box: gtk4::Box::new(gtk4::Orientation::Vertical, 0),
                 active_library_label: gtk4::Label::new(None),
                 folder_selected_cb: RefCell::new(None),
                 folder_ignored_changed_cb: RefCell::new(None),
@@ -263,8 +265,9 @@ impl SidebarPane {
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         vbox.append(&active_library_label);
         vbox.append(&scroll);
-        vbox.append(&collections_header);
-        vbox.append(&imp.collection_list);
+        imp.bucket_box.append(&collections_header);
+        imp.bucket_box.append(&imp.collection_list);
+        vbox.append(&imp.bucket_box);
 
         imp.toolbar_view.set_content(Some(&vbox));
         imp.toolbar_view.set_parent(self);

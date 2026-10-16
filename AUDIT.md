@@ -83,7 +83,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Evidence: confirmed call path; stall duration was not benchmarked. This is the image clipboard decoder, separate from the Backlog's ordinary file copy/move/trash work.
 - Proposed fix: prepare clipboard image data on a bounded decoding worker, publish it on GTK, and report failures. Reuse existing orientation/format handling and test original bytes plus main-loop responsiveness.
 - Verification: the clipboard error UI regression failed before the fix; success/error UI and the 5,000-image navigation workflow pass off-screen. All 231 default tests and full offline checks pass. A gated worker test proves nonblocking requests and superseded-request coalescing; an EXIF fixture checks orientation and original bytes. Debug/Cairo before/after logs: `/tmp/sharpr-audit-050/a4-{before,after}.jsonl`; first-folder load 314/281 ms, browsing stalls ≥50 ms 0/0, peak RSS 164/167 MB. These synthetic debug checks do not establish real-library release performance or user acceptance.
-- Status: fixed (A4 commit; hash recorded at the next checkpoint)
+- Status: fixed (e7c6e0a)
 
 ### A5 — The bucket-membership upgrade blocks window construction
 
@@ -94,7 +94,8 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: launch with an unmigrated database containing many tag-backed bucket members → the first window cannot finish constructing or process UI events until the full backup and migration finishes.
 - Evidence: confirmed call path from application activation through `SharprWindow` construction to `AppState::new`; no large-upgrade timing was attempted. The backup/count checks themselves are present. This is separate from the Backlog's unguarded *legacy collection-to-tag* migration.
 - Proposed fix: run this upgrade on a worker and show an initializing state, keeping bucket edits disabled until success. Preserve the existing backup, count validation and failure behavior.
-- Status: agreed
+- Verification: the construction/backup regression failed first; successful and failed upgrades preserve image bytes, tags and definitions, verify backups, and gate bucket controls. Full offline checks (231 default tests) and all 24 isolated GTK workflows pass. GTK trash tests require same-filesystem workspace `.tmp` fixtures; an initial `/tmp` run failed for that environment reason. A5 debug/Cairo navigation log `/tmp/sharpr-audit-050/a5-after.jsonl`: 5,000-image open 300 ms (prior 281 ms), peak RSS 171 MB (167), one 126 ms browsing stall during the rapid synthetic navigation loop (prior zero). Release/manual performance is not claimed.
+- Status: fixed (A5 commit; hash recorded at the next checkpoint)
 
 ### A6 — A late bucket update erases a newer search
 

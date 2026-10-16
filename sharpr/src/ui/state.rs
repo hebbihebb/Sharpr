@@ -18,6 +18,7 @@ pub struct AppState {
     /// Set when moving bucket membership out of tags failed (Phase 4); the
     /// databases were left as they were.
     pub bucket_migration_error: Option<String>,
+    pub bucket_migration_pending: bool,
     pub ops: crate::ops::queue::OpQueue,
     pub selected_paths: HashSet<PathBuf>,
     /// Whether `selected_paths` was chosen on purpose (Ctrl- or
@@ -73,24 +74,10 @@ impl AppState {
         if let (Some(index), Some(library)) = (&library_index, settings.active_library()) {
             let _ = index.assign_orphan_collections(&library.id);
         }
-        // One-time move of bucket membership out of tags, after a backup.
-        let bucket_migration_error = match (&library_index, &tags) {
-            (Some(index), Some(tags)) => {
-                let backups = dirs::data_local_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join("sharpr")
-                    .join("backups");
-                crate::buckets::migrate(index, tags, &backups)
-                    .err()
-                    .inspect(|error| {
-                        crate::bench_error!(
-                            "buckets.migrate.fail",
-                            serde_json::json!({"error": error})
-                        );
-                    })
-            }
-            _ => None,
-        };
+        // The window starts the backed-up membership upgrade on a worker
+        // after construction. No bulk backups or member probes run here.
+        let bucket_migration_pending = library_index.is_some() && tags.is_some();
+        let bucket_migration_error = None;
         Self {
             library,
             settings,
@@ -100,6 +87,7 @@ impl AppState {
             tags,
             tags_error,
             bucket_migration_error,
+            bucket_migration_pending,
             ops,
             selected_paths: HashSet::new(),
             selection_explicit: false,

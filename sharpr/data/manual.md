@@ -38,6 +38,8 @@ Visual search needs the EmbeddingGemma 2 model, installed once into the model fo
 
 ## Buckets
 
+When opening an older library, **Preparing library…** may appear while Sharpr backs up and upgrades its buckets in the background. If this fails, a message explains why: folder browsing stays available, and bucket controls remain disabled until the upgrade succeeds. Your originals and legacy tags stay intact.
+
 To keep search results, click **Add to Bucket…** under the search box. With images selected it adds those; otherwise it offers the strong matches or everything shown, then asks for the bucket, where **New Bucket…** makes a new one. A quick way to pick: Shift-click the last good result to select everything above it, then Ctrl-click any you don't want. Several searches can fill the same bucket.
 
 Buckets are hand-picked groups of images; the files stay in their folders. A bucket remembers each image by its content, so it keeps it after the file is moved or renamed outside Sharpr. Add the selected images with Ctrl+B or by dragging them onto a bucket in the sidebar.

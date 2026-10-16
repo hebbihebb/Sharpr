@@ -29,6 +29,7 @@ use crate::ui::state::{AppState, ViewScope};
 use crate::ui::viewer::{ViewerPane, ZoomMode};
 
 mod bucket_repeat;
+mod bucket_startup;
 mod compare_controller;
 mod edit_buckets;
 mod library_root;
@@ -1163,6 +1164,9 @@ impl SharprWindow {
     /// The enabled part of the library changed: running background passes
     /// over the old scope stop, and new ones cover the new scope.
     pub fn library_scope_changed(&self) {
+        if self.app_state().borrow().bucket_migration_pending {
+            return;
+        }
         let job = {
             let st = self.imp().state.borrow();
             st.settings
@@ -1180,6 +1184,9 @@ impl SharprWindow {
     /// Asks for a fingerprint pass over the active library. Passes over the
     /// same library are coalesced and spaced out by the service.
     pub fn request_fingerprints(&self) {
+        if self.app_state().borrow().bucket_migration_pending {
+            return;
+        }
         let Some(service) = self.imp().fingerprints.borrow().clone() else {
             return;
         };
@@ -1572,13 +1579,6 @@ impl SharprWindow {
             toast.set_timeout(0);
             toast_overlay.add_toast(toast);
         }
-        if let Some(error) = self.imp().state.borrow().bucket_migration_error.clone() {
-            let toast = libadwaita::Toast::new(&format!(
-                "Buckets could not be upgraded, so they can’t be changed yet. Nothing was lost: {error}"
-            ));
-            toast.set_timeout(0);
-            toast_overlay.add_toast(toast);
-        }
         let outer_split = libadwaita::OverlaySplitView::new();
         *self.imp().presentation_outer_split.borrow_mut() = Some(outer_split.clone());
         outer_split.set_max_sidebar_width(280.0);
@@ -1598,6 +1598,9 @@ impl SharprWindow {
             let window_weak = self.downgrade();
             let content_stack = content_stack.clone();
             let open_folder_now: Rc<dyn Fn(PathBuf)> = Rc::new(move |path: PathBuf| {
+                if state_c.borrow().bucket_migration_pending {
+                    return;
+                }
                 let disabled_folders = state_c.borrow().disabled_folders.clone();
                 if path_is_disabled(&path, &disabled_folders) {
                     toast_overlay_c.add_toast(libadwaita::Toast::new("Folder is disabled"));
@@ -2045,6 +2048,9 @@ impl SharprWindow {
             let state_c = state.clone();
             let generation = Rc::new(Cell::new(0u64));
             move || {
+                if state_c.borrow().bucket_migration_pending {
+                    return;
+                }
                 let next = generation.get().wrapping_add(1);
                 generation.set(next);
                 let (index, library, root, disabled) = {
@@ -3370,6 +3376,7 @@ impl SharprWindow {
             content_stack.clone(),
         );
         sidebar.refresh_active_library(state.clone());
+        self.start_bucket_upgrade();
 
         // -----------------------------------------------------------------------
         // Restore last folder

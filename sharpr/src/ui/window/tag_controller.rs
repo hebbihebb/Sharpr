@@ -233,6 +233,9 @@ impl SharprWindow {
     /// confirmation and a backup, removes them. Manual tags and every tag a
     /// bucket uses are kept.
     pub(super) fn start_automatic_tag_cleanup(&self) {
+        if self.app_state().borrow().bucket_migration_pending {
+            return;
+        }
         let (index, tags) = {
             let st = self.imp().state.borrow();
             (st.library_index.clone(), st.tags.clone())
@@ -371,6 +374,9 @@ impl SharprWindow {
     /// (`ROADMAP.md` Phase 5). With `once`, it only shows a toast pointing to
     /// the offer, and only the first time there is something to offer.
     pub(super) fn offer_tags_as_buckets(&self, once: bool) {
+        if self.app_state().borrow().bucket_migration_pending {
+            return;
+        }
         const NOTICE: &str = "tag_bucket_offer_shown_at";
         let (index, tags, root, disabled) = {
             let st = self.imp().state.borrow();

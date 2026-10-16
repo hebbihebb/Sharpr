@@ -168,6 +168,11 @@ pub(super) fn is_comparing(widget: &gtk4::Widget) -> bool {
 pub(crate) fn file_actions_blocked(widget: &gtk4::Widget) -> bool {
     (is_comparing(widget) || super::survey_controller::is_surveying(widget))
         || widget.downcast_ref::<SharprWindow>().is_some_and(|win| {
-            win.imp().crop_session.borrow().is_some() || win.imp().crop_preparing.get()
+            win.imp()
+                .state
+                .try_borrow()
+                .map_or(true, |state| state.bucket_migration_pending)
+                || win.imp().crop_session.borrow().is_some()
+                || win.imp().crop_preparing.get()
         })
 }

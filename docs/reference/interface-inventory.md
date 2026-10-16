@@ -20,6 +20,7 @@ removed means the control is absent, with stored user data retained.
 | Window | Search button / Ctrl+F | Changed to the always-placed search entry; typing focuses it | D6, D27 |
 | Window | Close/maximize/minimize | Kept, following the desktop's button layout | D26 |
 | Window | Background indexing ring | Removed; progress remains in Library Overview | D30, D33 |
+| Window | Preparing library state | Added for background bucket upgrades; verified backup/count checks stay; bucket edits wait for success, with persistent failure feedback | D3, D4 |
 | Window | Transient operation indicator | Kept for operations that last; does not navigate | D27 |
 | Window | Presentation menu item | Removed; double-click and F11 retain fullscreen | D11, D27 |
 | Filmstrip | Thumbnail list, labels and index pills | Kept, virtualized; placeholders and hover/press feedback use CSS | D27, D30 |

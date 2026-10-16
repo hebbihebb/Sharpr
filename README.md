@@ -24,7 +24,7 @@ Sharpr is for people with thousands of downloaded images, generated artwork, and
 - **Fast on a graphics card.** With a GPU, a library of 6,000 images is indexed in about 20 minutes, about 17 times faster than on the processor, and with the same results. Without one, indexing runs on the processor in the background at the lowest priority. Either way, it resumes where it stopped.
 - **Private by design.** Sharpr makes no network connections. The model runs in a local process that only Sharpr can reach. Sharpr never downloads anything; you install the model files yourself.
 - **Your files stay yours.** Sharpr never modifies, re-encodes, renames, or moves an original image on its own. Copies are new files that never overwrite anything, and deleting only moves files to the system trash, with Undo. Your folders remain the source of truth.
-- **Your curation survives.** Bucket membership follows each image's content fingerprint, so reorganising folders in your file manager doesn't break your buckets. Files that can't be found are counted, never dropped.
+- **Your curation survives.** Bucket membership follows each image's content fingerprint, so reorganising folders in your file manager doesn't break your buckets. Files that can't be found are counted, never dropped. First-time bucket upgrades run in the background with a verified backup.
 
 ## Requirements
 

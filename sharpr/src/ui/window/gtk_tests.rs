@@ -3871,3 +3871,111 @@ fn clipboard_decode_failure_is_reported_without_changing_the_source() {
     assert_eq!(std::fs::read(good).unwrap(), original);
     window.close();
 }
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn bucket_upgrade_is_deferred_until_after_window_construction_and_preserves_data() {
+    check_bucket_upgrade(false);
+}
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn failed_bucket_upgrade_preserves_data_and_keeps_bucket_controls_disabled() {
+    check_bucket_upgrade(true);
+}
+
+fn check_bucket_upgrade(fail_backup: bool) {
+    let root = isolated_fixture("bucket-upgrade");
+    std::fs::create_dir_all(&root).unwrap();
+    let photo = root.join("a.png");
+    image::RgbImage::from_pixel(32, 18, image::Rgb([20, 40, 60]))
+        .save(&photo)
+        .unwrap();
+    let bytes = std::fs::read(&photo).unwrap();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    let library = settings
+        .add_library("Upgrade", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root));
+    let (index, _) = LibraryIndex::open().unwrap();
+    let tags = crate::tags::TagDatabase::open().unwrap();
+    let bucket = index
+        .create_collection(&library, None, "Keep", &[], None, None)
+        .unwrap();
+    tags.add_tag(&photo, &bucket.primary_tag);
+    let rows = tags.stored_rows().unwrap();
+    assert!(!index.is_membership_migrated().unwrap());
+    let backups = PathBuf::from(std::env::var("XDG_DATA_HOME").unwrap()).join("sharpr/backups");
+    if fail_backup {
+        std::fs::create_dir_all(backups.parent().unwrap()).unwrap();
+        std::fs::write(&backups, b"block backup creation").unwrap();
+    }
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    // Construction must return before migration/backup work starts. A worker
+    // is launched after the window has had an opportunity to be presented.
+    assert!(window.app_state().borrow().bucket_migration_pending);
+    if !fail_backup {
+        assert!(
+            !backups.exists(),
+            "window construction must not perform the bucket upgrade"
+        );
+    }
+    window.present();
+    pump_until(|| {
+        !window.app_state().borrow().bucket_migration_pending
+            && window.app_state().borrow().library.image_count() == 1
+    });
+    assert!(window.is_mapped());
+    assert_eq!(index.is_membership_migrated().unwrap(), !fail_backup);
+    assert_eq!(
+        index.bucket_members(&[bucket.id]).unwrap().len(),
+        usize::from(!fail_backup)
+    );
+    assert_eq!(
+        window
+            .imp()
+            .sidebar
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .imp()
+            .bucket_box
+            .is_sensitive(),
+        !fail_backup
+    );
+    assert_eq!(
+        window.app_state().borrow().bucket_migration_error.is_some(),
+        fail_backup
+    );
+    assert_eq!(tags.stored_rows().unwrap(), rows);
+    assert_eq!(std::fs::read(photo).unwrap(), bytes);
+    if fail_backup {
+        pump_until(|| {
+            find_widgets::<gtk4::Label>(window.upcast_ref())
+                .iter()
+                .any(|label| label.text().contains("Buckets could not be upgraded"))
+        });
+        assert_eq!(std::fs::read(backups).unwrap(), b"block backup creation");
+        assert_eq!(index.list_collections().unwrap().len(), 1);
+        window.close();
+        return;
+    }
+    let backup = std::fs::read_dir(backups)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(backup.join("library-index.sqlite").is_file());
+    assert!(backup.join("tags.sqlite3").is_file());
+    window.close();
+}
