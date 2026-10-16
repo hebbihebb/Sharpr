@@ -53,17 +53,19 @@ Images will be found through visual search and typed filters, not manual tags, a
   - *implemented*: in the working tree
   - *verified*: checks passed
   - *accepted*: the user tested it
-  - *committed*: on `viewer-reset`
+  - *committed*: on the work's own branch
   - *merged*: on `main`
   - *deployed*: built into the binary the user launches
 
 ## Git
 
-- `viewer-reset` is the development line, where work is *committed*. `main` holds *accepted* work. Fast-forward `main` only after the user accepts a milestone, and only with their approval. The archive branches `preserve/october-12-wip` and `visual-search-trial-wip` are kept for reference; never delete them without approval.
+- `main` holds *accepted* work only; nothing is developed on it. Each phase, feature, or fix gets its own branch from `main`, named `feature/<short-name>` or `fix/<short-name>` (Codex: `codex/<short-name>`), and `CURRENT_TASKS.md` names the active one.
+- When the user accepts the work, record that on the branch, then merge it into `main` (fast-forward; rebase the branch on `main` first if needed) and delete the branch. The user's acceptance is the approval to merge. Release tags go on `main`.
+- The archive branches `preserve/october-12-wip`, `visual-search-trial-wip`, and `look-prototype` are kept for reference; never delete them without approval. `viewer-reset`, the old development line, was retired into `main` on October 16, 2026.
 - Commit each user-testable unit, and keep experimental work in separate commits. Never end a session with large uncommitted work. Either commit it or record its state in `CURRENT_TASKS.md`.
 - A fix to an unpushed commit may be amended into that commit.
-- Never push, merge into `main`, deploy, delete branches, or touch user data without explicit user approval.
-- The user has no Git background. Make the Git decisions yourself and explain them in plain language.
+- Never push, deploy, delete unmerged or archive branches, or touch user data without explicit user approval. Recommend a push at natural backup points (a release or an accepted feature) and say what would go up; never force-push.
+- The user has no Git background and runs no Git commands. Make the Git decisions yourself and explain them in plain language.
 
 ## Verification
 

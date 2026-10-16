@@ -8,7 +8,7 @@ user tested `f50cd9f` ("works") and approved pushing; `main` was
 fast-forwarded and `main`, `viewer-reset` and `v0.5.0` were pushed to GitHub.
 Installed natively: `f50cd9f`.
 
-**Next:** nothing active. Candidates: the Backlog in `ROADMAP.md`, condensing the
+**Next:** nothing active; new work starts a branch from `main`. Candidates: the Backlog in `ROADMAP.md`, condensing the
 accepted phase sections into `docs/archive/history.md`, and building the Flatpak
 on the `gigabyte` server.
 
@@ -37,8 +37,10 @@ The accepted phase sections in `ROADMAP.md` can later be condensed into
 
 ## Git, backup and guardrails
 
-- Development: `viewer-reset`; `main` holds accepted work. Pushing is the user's
-  decision (first pushed October 16). Keep all archive/prototype branches (`preserve/october-12-wip`,
+- Branches (October 16): `main` holds accepted work only; each phase, feature or
+  fix gets its own branch from `main`, merged after the user accepts it
+  (`AGENTS.md` → Git). `viewer-reset` was retired into `main`. Active branch:
+  none. Push only with the user's permission. Keep all archive/prototype branches (`preserve/october-12-wip`,
   `visual-search-trial-wip`, `look-prototype`).
 - Verified live backup: `~/.local/share/sharpr.backup-20261015-205204`, including
   settings. All database table counts match: 815 bucket members, 5,899 fingerprints,
