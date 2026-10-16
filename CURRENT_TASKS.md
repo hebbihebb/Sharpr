@@ -1,16 +1,16 @@
 # Current Tasks
 
-## Active: 0.5.0 audit — awaiting user decisions
+## Active: 0.5.0 audit fixes
 
-Branch: `codex/audit-0.5.0`, from `main` at `0d81115`. Stage 1 is complete:
-`AUDIT.md` has 13 proposed findings; no application code changed. Offline
-build and 220 default tests pass; temporary file/database and off-screen GTK
-probes confirmed the key findings. Fixtures stay in `/tmp/sharpr-audit-050/`.
-Next: review every ID with the user (agreed/rejected/deferred), commit the
-decisions, then fix only agreed findings. No fixes before those decisions.
-Do not merge, push, deploy, access real data or build Flatpak for this task;
-Claude handles merging after acceptance. See `AUDIT.md` and the user's staged
-instructions for the remaining workflow, including final report deletion.
+Branch: `codex/audit-0.5.0`. The user authorized all 13 findings, fixed in
+severity order with one commit per finding. Order: A1, A2 (high); A3–A7,
+A13 (medium); A8–A12 (low). A1 is next. Bugs get failing regression tests
+before fixes; each completed finding is committed separately.
+All tests use temporary data and memory GSettings; heavy jobs run one at a
+time, offline. Never build Flatpak, deploy, merge or push. Claude merges
+following user acceptance. Delete `AUDIT.md` in a final commit after fixes;
+run `./check.sh` and `cargo build`. The 16:9 guide stays planned on `main`
+(`494075d`), separate from these fixes. No findings are deferred.
 
 ## Done: Edit buckets (D35) accepted (October 16, 2026)
 

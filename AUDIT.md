@@ -1,6 +1,7 @@
 # Sharpr 0.5.0 audit
 
-Stage 1 complete; Stage 2 decisions pending. No application code has changed.
+Stage 2 complete: the user agreed to fix all 13 findings, in severity order,
+with one commit per finding. Stage 3 is active.
 Branch: `codex/audit-0.5.0`, based on `main` at `0d81115`.
 Do not merge or push this branch. Claude handles merging after acceptance.
 
@@ -45,7 +46,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: choose a free copy name → another program creates a file at that name before copying → Sharpr truncates and replaces that file; alternatively a dangling symlink occupies the candidate name → Duplicate follows it and creates its target, treating an occupied name as free.
 - Evidence: confirmed by the temporary copy probe, including the actual `duplicate_file` helper; crop/export's safer `Pending` path is not affected.
 - Proposed fix: use a shared exclusive copy helper with collision retries and owned-partial cleanup; treat symlinks as occupied names. Keep originals and pre-existing targets byte-identical in regression tests.
-- Status: proposed
+- Status: agreed
 
 ### A2 — Internal Rename/Move can transfer a bucket to an unrelated replacement
 
@@ -56,7 +57,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: add `a.png` to a bucket → rename it inside Sharpr to `b.png` → put an unrelated image at `a.png` → the next fingerprint pass replaces the stored member fingerprint with the new `a.png`'s fingerprint → `b.png` loses its membership and the unrelated image gains it.
 - Evidence: confirmed by the temporary rename probe using the same file/tag helpers as the UI, followed by the real fingerprint and re-link pass; the legacy tag did follow `b.png`. This is distinct from the Backlog's delayed discovery of moves made outside Sharpr.
 - Proposed fix: carry bucket member paths and fresh fingerprints through successful internal moves/renames alongside legacy tags; protect retained destination memberships and report persistence failures. Test filename reuse as well as normal Rename and Move.
-- Status: proposed
+- Status: agreed
 
 ### A3 — Re-linking and Info copy counts bypass library exclusions
 
@@ -67,7 +68,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: index two identical images, then disable the second image's folder and remove the first → an enabled-library fingerprint pass invokes unscoped re-linking → the stored member moves into the disabled folder; before removal, Info still counts that disabled copy. Narrowing the root leaves the same unscoped behavior for cached outside-root copies.
 - Evidence: confirmed by code trace and a temporary fixture: the scoped fingerprint pass skipped the disabled subtree, but `relink` still changed `last_path` to its file; `identical_elsewhere` has no exclusion input. Bucket display resolution itself correctly filters exclusions before probes.
 - Proposed fix: pass the current library scope into re-linking and copy-count queries, filter before filesystem probes or writes, and leave excluded members stored untouched. Add disabled-folder and narrowed-root regressions.
-- Status: proposed
+- Status: agreed
 
 ### A4 — The clipboard menu decodes full images on the GTK thread
 
@@ -78,7 +79,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: right-click a large image → Copy to Clipboard → the GTK event loop waits for full file reading/decoding, so navigation and window interaction stall; load failures are silently ignored.
 - Evidence: confirmed call path; stall duration was not benchmarked. This is the image clipboard decoder, separate from the Backlog's ordinary file copy/move/trash work.
 - Proposed fix: prepare clipboard image data on a bounded decoding worker, publish it on GTK, and report failures. Reuse existing orientation/format handling and test original bytes plus main-loop responsiveness.
-- Status: proposed
+- Status: agreed
 
 ### A5 — The bucket-membership upgrade blocks window construction
 
@@ -89,7 +90,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: launch with an unmigrated database containing many tag-backed bucket members → the first window cannot finish constructing or process UI events until the full backup and migration finishes.
 - Evidence: confirmed call path from application activation through `SharprWindow` construction to `AppState::new`; no large-upgrade timing was attempted. The backup/count checks themselves are present. This is separate from the Backlog's unguarded *legacy collection-to-tag* migration.
 - Proposed fix: run this upgrade on a worker and show an initializing state, keeping bucket edits disabled until success. Preserve the existing backup, count validation and failure behavior.
-- Status: proposed
+- Status: agreed
 
 ### A6 — A late bucket update erases a newer search
 
@@ -100,7 +101,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: while viewing a bucket, start an Add/Remove operation → type a new search before its worker's completion is dispatched → completion sees the same bucket ID, clears the new search and replaces the newer view with the full bucket.
 - Evidence: confirmed in the off-screen GTK probe by delaying main-context delivery of a bucket-write result until a newer query was submitted; the query text was then cleared. Similar scope-only refreshes exist after reparent and rename.
 - Proposed fix: validate the captured view/search generation before applying a refresh; when search has changed, refresh or rerun the current query without clearing it. Test delayed completion against a newer query and navigation.
-- Status: proposed
+- Status: agreed
 
 ### A7 — F11 and double-click enter different fullscreen modes
 
@@ -111,7 +112,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: press F11 while browsing → the window becomes fullscreen without entering presentation mode → close Info if needed and press Escape → it stays fullscreen, unlike fullscreen entered by double-click.
 - Evidence: confirmed in the off-screen GTK probe: `is_fullscreen()` was true while `presentation_mode` was false, and Escape did not exit; the shared presentation path did hide the sidebar. No proposal here changes D11's approved fullscreen feature.
 - Proposed fix: route fullscreen entry/exit through one mode-aware action, preserving the Compare/crop header and Escape's Info-first behavior. Test both entry points and mode transitions.
-- Status: proposed
+- Status: agreed
 
 ### A8 — Bucket/file editing dialogs miss the shared sheet style
 
@@ -122,7 +123,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: open New Bucket, then Preferences or Export → the first dialog bypasses the compact dialog rules applied to the latter surfaces, contrary to the shared-style inventory/D26–D27.
 - Evidence: confirmed by source and the off-screen probe inspecting the presented New Bucket dialog; it has no `sharpr-sheet` class. No replacement of confirmation semantics is proposed.
 - Proposed fix: apply the existing shared dialog styling consistently to these editing surfaces and check minimum-size layout, keyboard dismissal and focus.
-- Status: proposed
+- Status: agreed
 
 ### A9 — Active bucket notifications still call buckets “collections”
 
@@ -133,7 +134,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: create a bucket → the dialog says New Bucket but its notification says “Created collection”; reparenting or failed bucket edits also use the retired term.
 - Evidence: confirmed active string paths, independent of internal Rust/SQL names, which may legitimately retain `collection`.
 - Proposed fix: change active user-facing strings to “bucket” consistently; keep persistence names intact.
-- Status: proposed
+- Status: agreed
 
 ### A10 — GTK rejects the thumbnail placeholder CSS
 
@@ -144,7 +145,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: open a folder, Survey or Compare before its thumbnails finish → GTK emits “Unknown name of pseudo-class” and the intended placeholder rule is discarded.
 - Evidence: confirmed parser warning during the private GTK probe, with the selector and location reported above.
 - Proposed fix: use a supported explicit loading class/state when binding/updating pictures, and validate CSS without parser errors. Leave scheduling and generation logic unchanged.
-- Status: proposed
+- Status: agreed
 
 ### A11 — Retired feature implementations and wiring remain compiled
 
@@ -155,7 +156,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: a maintainer follows these apparently supported handlers while changing bucket/search behavior → they must maintain obsolete paths that the current UI cannot invoke, and the hidden search still describes “Search tags…”.
 - Evidence: confirmed reference tracing: import/export handlers have no callers; the old filmstrip SearchBar is never appended to the visible layout or activated by a caller; quality-view helpers have only internal/test references. The active viewer search has its own implementation.
 - Proposed fix: remove these retired implementations and exclusive wiring/tests, retaining shared metadata/filter helpers and every legacy table/settings key. Do not include the perceptual-hash cleanup already in Backlog.
-- Status: proposed
+- Status: agreed
 
 ### A12 — The guide and setup reference send users to removed menu locations
 
@@ -166,7 +167,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: follow the guide to Library → Turn Tags into Buckets or Remove Old Automatic Tags → neither item is there; follow model setup instructions to Preferences → Visual Search → the documented status section is absent.
 - Evidence: confirmed against `ui/help_window.rs:29`, `ui/preferences.rs` and `ui/library_overview.rs`; the manual's own final paragraph already describes the newer Help location.
 - Proposed fix: point both maintenance actions to Help → Library Maintenance and model/status instructions to Library → Library Overview; keep Preferences' GPU switch location.
-- Status: proposed
+- Status: agreed
 
 ### A13 — The architecture reference misclassifies user data and describes obsolete packaging
 
@@ -177,7 +178,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: use the storage table to decide which index records may be rebuilt → bucket member lists appear disposable even though they are irreplaceable; follow the packaging description → it contradicts the actual committed-source build and Cargo version source.
 - Evidence: confirmed against `library_index/schema.rs:71`, the same reference's membership section, `packaging/sync-flatpak-source.sh`, `app.rs:12`, `Cargo.toml:3` and the current interface inventory.
 - Proposed fix: explicitly classify bucket membership as non-rebuildable user data; correct packaging/version and indexing-status descriptions to the shipped implementation. No data migration is involved.
-- Status: proposed
+- Status: agreed
 
 ## Areas checked with no additional findings
 
