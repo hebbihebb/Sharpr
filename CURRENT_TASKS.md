@@ -1,5 +1,15 @@
 # Current Tasks
 
+## Planned: 16:9 viewer guide (D36)
+
+Added to `ROADMAP.md` on `main` at the user's explicit request: a toggleable
+16:9 border/ruler for judging landscape wallpaper proportions. Planning only;
+implementation starts on its own feature branch.
+
+The 0.5.0 audit remains on `codex/audit-0.5.0` (`eca6019`), with 13 proposed
+findings awaiting user decisions. Its report and fixes stay off `main`; Claude
+handles merging after acceptance. No audit fixes have been authorized yet.
+
 ## Done: Edit buckets (D35) accepted (October 16, 2026)
 
 Crop Copy, WebP export and Duplicate add the original and the copy to Edits ›
@@ -8,7 +18,7 @@ user tested `f50cd9f` ("works") and approved pushing; `main` was
 fast-forwarded and `main`, `viewer-reset` and `v0.5.0` were pushed to GitHub.
 Installed natively: `f50cd9f`.
 
-**Next:** nothing active; new work starts a branch from `main`. Candidates: the Backlog in `ROADMAP.md`, condensing the
+Other candidates: the Backlog in `ROADMAP.md`, condensing the
 accepted phase sections into `docs/archive/history.md`, and building the Flatpak
 on the `gigabyte` server.
 

@@ -721,6 +721,37 @@ If the result reaches the look the user wants, Libadwaita stays and the question
 - A batch export adds every original and copy; the user removes entries or the bucket when done.
 - **Acceptance:** each action puts both images in the right bucket, once, with no duplicate entries; turning the switch off stops it; originals stay byte-identical; Compare from the bucket shows the pair; tests cover crop, batch export and Duplicate.
 
+## Planned: 16:9 Viewer Guide (D36)
+
+**Status: planned**, requested by the user on October 16, 2026. Implementation
+will use its own feature branch.
+
+**Outcome:** Judge at a glance whether an image is wider or taller than a
+16:9 landscape wallpaper, using a toggleable border/ruler in the viewer.
+
+**Scope:**
+
+- Draw a clear 16:9 reference outline over the displayed image, with a simple
+  on/off control. Keep the aid available while browsing images and in fullscreen.
+- Make the comparison clear: a wider image extends beyond the guide at its
+  sides; a taller image extends above and below; an exact 16:9 image aligns.
+  Settle the outline's placement and interaction when implementing the feature.
+- Keep the guide aligned with the displayed image through viewer resizing,
+  zoom and pan. It is a visual aid only; it changes no pixels or files and
+  starts no crop or export operation.
+- Reuse the existing viewer overlay/drawing patterns; toggling and navigation
+  stay responsive, with no new image decoding or thumbnail-scheduler changes.
+
+**Acceptance:**
+
+- Toggle the guide on and off without entering Crop Copy.
+- Wide, taller landscape, square, portrait and exact 16:9 examples are easy to
+  distinguish in the normal viewer and fullscreen.
+- The guide remains geometrically correct across image changes, window sizes,
+  zoom and pan; originals stay byte-identical.
+- Add focused geometry/GTK checks and document the control in the guide,
+  shortcuts (if a key is assigned) and interface inventory when implemented.
+
 ## Backlog
 
 Optional and unordered. Pick something up only when a phase touches that area, or the user asks.
