@@ -2464,7 +2464,7 @@ impl SharprWindow {
                                 refresh();
                             }
                             Err(error) => toast.add_toast(libadwaita::Toast::new(&format!(
-                                "Could not delete collection: {error}"
+                                "Could not delete bucket: {error}"
                             ))),
                         },
                     );
@@ -2511,7 +2511,7 @@ impl SharprWindow {
                     .collect();
                 if options.is_empty() {
                     toast_move.add_toast(libadwaita::Toast::new(
-                        "No target collection is available for reparenting",
+                        "No target bucket is available for reparenting",
                     ));
                     return;
                 }

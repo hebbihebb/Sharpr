@@ -200,12 +200,12 @@ pub(super) fn show_new_collection_dialog<F>(
                         );
                         refresh();
                         toast.add_toast(libadwaita::Toast::new(&format!(
-                            "Created collection {}",
+                            "Created bucket {}",
                             collection.name
                         )));
                     }
                     Err(error) => toast.add_toast(libadwaita::Toast::new(&format!(
-                        "Could not create collection: {error}"
+                        "Could not create bucket: {error}"
                     ))),
                 },
             );
@@ -299,7 +299,7 @@ pub(super) fn show_rename_collection_dialog<F>(
                     }
                 }
                 Err(error) => toast.add_toast(libadwaita::Toast::new(&format!(
-                    "Could not rename collection: {error}"
+                    "Could not rename bucket: {error}"
                 ))),
             }
         });
@@ -372,7 +372,7 @@ pub(super) fn show_change_color_dialog<F>(
                     refresh();
                 }
                 Err(error) => toast.add_toast(libadwaita::Toast::new(&format!(
-                    "Could not change collection color: {error}"
+                    "Could not change bucket color: {error}"
                 ))),
             },
         );

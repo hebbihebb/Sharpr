@@ -769,7 +769,7 @@ impl LibraryIndex {
         let name = name.trim();
         if name.is_empty() {
             return Err(rusqlite::Error::InvalidParameterName(
-                "collection name cannot be empty".into(),
+                "bucket name cannot be empty".into(),
             ));
         }
         if let Some(parent_id) = parent_id {
@@ -788,7 +788,7 @@ impl LibraryIndex {
         let name = name.trim();
         if name.is_empty() {
             return Err(rusqlite::Error::InvalidParameterName(
-                "collection name cannot be empty".into(),
+                "bucket name cannot be empty".into(),
             ));
         }
 
@@ -879,7 +879,7 @@ impl LibraryIndex {
         let name = name.trim();
         if name.is_empty() {
             return Err(rusqlite::Error::InvalidParameterName(
-                "collection name cannot be empty".into(),
+                "bucket name cannot be empty".into(),
             ));
         }
         let now = now_secs();
@@ -934,7 +934,7 @@ impl LibraryIndex {
         if let Some(parent_id) = new_parent_id {
             if id == parent_id {
                 return Err(rusqlite::Error::InvalidParameterName(
-                    "collection cannot be its own parent".into(),
+                    "bucket cannot be its own parent".into(),
                 ));
             }
             if self.collection(parent_id)?.is_none() {
@@ -947,7 +947,7 @@ impl LibraryIndex {
             while let Some(current_id) = current {
                 if current_id == id {
                     return Err(rusqlite::Error::InvalidParameterName(
-                        "collection cannot be moved under its own child".into(),
+                        "bucket cannot be moved under its own child".into(),
                     ));
                 }
                 current = collections

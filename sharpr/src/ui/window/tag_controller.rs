@@ -42,7 +42,7 @@ impl SharprWindow {
                             "collection.create.rollback.fail",
                             serde_json::json!({"error":rollback.to_string()})
                         );
-                        return Err(format!("{error}; collection rollback failed: {rollback}"));
+                        return Err(format!("{error}; bucket rollback failed: {rollback}"));
                     }
                     return Err(error);
                 }
@@ -72,7 +72,7 @@ impl SharprWindow {
                     )));
                 }
                 Err(error) => win.add_toast(libadwaita::Toast::new(&format!(
-                    "Could not create collection: {error}"
+                    "Could not create bucket: {error}"
                 ))),
             }
         });
@@ -111,10 +111,10 @@ impl SharprWindow {
                             win.refresh_current_bucket(active);
                         }
                     }
-                    win.add_toast(libadwaita::Toast::new(&format!("Moved collection {name}")));
+                    win.add_toast(libadwaita::Toast::new(&format!("Moved bucket {name}")));
                 }
                 Err(error) => win.add_toast(libadwaita::Toast::new(&format!(
-                    "Could not move collection: {error}"
+                    "Could not move bucket: {error}"
                 ))),
             }
         });
@@ -169,7 +169,7 @@ impl SharprWindow {
                     .collection(id)
                     .map_err(|e| e.to_string())?
                     .map(|c| c.name)
-                    .unwrap_or_else(|| "collection".into());
+                    .unwrap_or_else(|| "bucket".into());
                 Ok((name, changed))
             })();
             let _ = tx.send_blocking(result);
@@ -203,7 +203,7 @@ impl SharprWindow {
                     )));
                 }
                 Err(error) => win.add_toast(libadwaita::Toast::new(&format!(
-                    "Could not update collection: {error}"
+                    "Could not update bucket: {error}"
                 ))),
             }
         });

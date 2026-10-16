@@ -762,7 +762,7 @@ impl SidebarPane {
             let id = row.collection_id();
             let name = row.collection_name();
             let body = format!(
-                "\u{201c}{name}\u{201d} and any child collections will be removed from the sidebar. The images themselves are not touched."
+                "\u{201c}{name}\u{201d} and any child buckets will be removed from the sidebar. The images themselves are not touched."
             );
             let dialog = libadwaita::AlertDialog::new(Some("Delete Bucket?"), Some(&body));
             dialog.add_response("cancel", "Cancel");

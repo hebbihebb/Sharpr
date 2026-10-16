@@ -133,7 +133,7 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: open New Bucket, then Preferences or Export → the first dialog bypasses the compact dialog rules applied to the latter surfaces, contrary to the shared-style inventory/D26–D27.
 - Evidence: confirmed by source and the off-screen probe inspecting the presented New Bucket dialog; it has no `sharpr-sheet` class. No replacement of confirmation semantics is proposed.
 - Proposed fix: apply the existing shared dialog styling consistently to these editing surfaces and check minimum-size layout, keyboard dismissal and focus.
-- Status: fixed (A8 commit; hash recorded at next checkpoint)
+- Status: fixed (262f34a)
 
 - Verification: shared class applied to all four named dialogs, picker New Bucket and Move into Bucket. Existing GTK tour and Rename data-preservation workflow pass; refreshed New Bucket screenshot inspected with unclipped fields, palette and action. Native response/focus handling is retained; build and diff check pass.
 
@@ -146,7 +146,9 @@ Approved decisions and existing Backlog items are excluded from the findings.
 - Scenario: create a bucket → the dialog says New Bucket but its notification says “Created collection”; reparenting or failed bucket edits also use the retired term.
 - Evidence: confirmed active string paths, independent of internal Rust/SQL names, which may legitimately retain `collection`.
 - Proposed fix: change active user-facing strings to “bucket” consistently; keep persistence names intact.
-- Status: agreed
+- Status: fixed (A9 commit; hash recorded at next checkpoint)
+
+- Verification: active notification/error/confirmation strings traced and changed, including surfaced validation errors. Internal actions, SQL and log event names retained. Existing repeat-bucket/Info and edit-bucket GTK workflows pass; build and diff check pass.
 
 ### A10 — GTK rejects the thumbnail placeholder CSS
 
