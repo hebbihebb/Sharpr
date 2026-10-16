@@ -22,9 +22,10 @@ Committed and verified:
 A11 `ab3e01f`: retired paths removed; 229 default tests, four GTK workflows
 and build pass. A12 `463514c`: menu directions checked against UI definitions.
 All 13 findings fixed; final isolated GTK suite passes all 27 workflows.
-Next: delete AUDIT in final cleanup commit, then required offline check/build.
-Record fixed hashes in `AUDIT.md`; after all fixes, delete it in a final commit,
-run `./check.sh` and `cargo build`. No deferred findings currently.
+The final report and all fix hashes are preserved in commit `5c9dd13`;
+`AUDIT.md` is removed for merge as requested. No deferred findings.
+Next: required final offline `./check.sh` and `cargo build`, then the approved
+Crop Copy source-format follow-up. User acceptance/manual retest still pending.
 
 ## Safety and verification
 
