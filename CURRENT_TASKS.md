@@ -1,11 +1,19 @@
 # Current Tasks
 
-## Next: Edit buckets (D35)
+## Active: Edit buckets (D35)
 
 The user asked for it after 0.5.0: Crop Copy, WebP export and Duplicate add the
 original and the copy to "Cropped" / "Exported" / "Duplicated" under an "Edits"
 parent; on by default with a Preferences switch. Scope and acceptance:
 `ROADMAP.md` → Next: Edit Buckets.
+
+**Implemented and verified, installed for the user's test:** `buckets::add_edit_copies`
+finds or creates Edits and the action's bucket (reusing a same-named bucket in
+the library), then uses the existing writer off the GTK thread. Hooks: crop
+completion, batch export completion (the report now pairs each output with its
+source), Duplicate. GSettings `edit-buckets` (default on) with a Preferences
+switch. A copy saved outside the library root is left out with a notice.
+Waiting on the user's hands-on check.
 
 ## Done: 0.5.0 released (October 15, 2026)
 

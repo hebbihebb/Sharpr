@@ -46,6 +46,8 @@ pub struct AppSettings {
     pub metadata_visible: bool,
     /// Whether visual-search indexing may use the graphics card.
     pub visual_search_gpu: bool,
+    /// Whether copies and their originals join a bucket under Edits (D35).
+    pub edit_buckets: bool,
     /// Restored main window width in logical pixels.
     pub window_width: i32,
     /// Restored main window height in logical pixels.
@@ -94,6 +96,7 @@ impl std::fmt::Debug for AppSettings {
             .field("last_folder", &self.last_folder)
             .field("metadata_visible", &self.metadata_visible)
             .field("visual_search_gpu", &self.visual_search_gpu)
+            .field("edit_buckets", &self.edit_buckets)
             .field("window_width", &self.window_width)
             .field("window_height", &self.window_height)
             .field("library_root", &self.library_root)
@@ -114,6 +117,7 @@ impl Default for AppSettings {
             last_folder: None,
             metadata_visible: true,
             visual_search_gpu: true,
+            edit_buckets: true,
             window_width: 1400,
             window_height: 900,
             library_root: None,
@@ -172,6 +176,7 @@ impl AppSettings {
             last_folder: active_last_folder,
             metadata_visible: settings.boolean("metadata-visible"),
             visual_search_gpu: settings.boolean("visual-search-gpu"),
+            edit_buckets: settings.boolean("edit-buckets"),
             window_width: settings.int("window-width").clamp(400, 7680),
             window_height: settings.int("window-height").clamp(300, 4320),
             library_root,
@@ -306,6 +311,11 @@ impl AppSettings {
     pub fn set_visual_search_gpu(&mut self, enabled: bool) {
         self.visual_search_gpu = enabled;
         let _ = self.settings.set_boolean("visual-search-gpu", enabled);
+    }
+
+    pub fn set_edit_buckets(&mut self, enabled: bool) {
+        self.edit_buckets = enabled;
+        let _ = self.settings.set_boolean("edit-buckets", enabled);
     }
 
     pub fn set_library_root(&mut self, path: Option<PathBuf>) {
@@ -559,6 +569,7 @@ mod tests {
             last_folder: Some(PathBuf::from("/tmp/library/Art")),
             metadata_visible: false,
             visual_search_gpu: true,
+            edit_buckets: true,
             window_width: 10,
             window_height: 50000,
             library_root: Some(PathBuf::from("/tmp/library")),

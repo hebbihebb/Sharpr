@@ -27,6 +27,8 @@ pub struct WebpOptions {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BatchReport {
     pub written: Vec<PathBuf>,
+    /// The source of each `written` file, in the same order.
+    pub written_from: Vec<PathBuf>,
     /// Each source that failed, with the reason.
     pub failed: Vec<(PathBuf, String)>,
     pub canceled: bool,
@@ -67,7 +69,10 @@ pub fn export_webp(
             break;
         }
         match export_one(source, options, canceled) {
-            Ok(Some(output)) => report.written.push(output),
+            Ok(Some(output)) => {
+                report.written.push(output);
+                report.written_from.push(source.clone());
+            }
             Ok(None) => {
                 report.canceled = true;
                 break;

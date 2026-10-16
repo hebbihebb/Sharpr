@@ -713,6 +713,8 @@ If the result reaches the look the user wants, Libadwaita stays and the question
 
 ## Next: Edit Buckets (D35)
 
+**Status (October 16): implemented and verified, installed for the user's test; not accepted.** `./check.sh` (220 tests) and all 20 GTK workflows pass, including a new end-to-end test of crop, batch export, Duplicate, the switch and unchanged originals.
+
 **Added October 15 at the user's request,** after 0.5.0. Editing and Compare work together: when Crop Copy, WebP export or Duplicate creates a copy, the original and the copy both join a bucket for that action ("Cropped", "Exported", "Duplicated", under one "Edits" parent), created when first needed. Comparing a copy with its original is then: open the bucket, select the pair, Compare, wherever the copy was saved.
 - On by default; a Preferences switch turns it off.
 - Uses the existing bucket writer off the GTK thread; files are never moved or changed. A copy saved outside the library root is hidden like any outside member, so say so when that happens.

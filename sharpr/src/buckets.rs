@@ -273,6 +273,71 @@ pub fn add_to_bucket(index: &LibraryIndex, id: i64, paths: &[PathBuf]) -> Result
         .map_err(|e| e.to_string())
 }
 
+/// The parent of the buckets that collect edits (D35).
+pub const EDITS_BUCKET: &str = "Edits";
+
+/// An action that makes a copy; the original and the copy join its bucket
+/// under "Edits" (D35), so they can be compared wherever the copy went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditKind {
+    Cropped,
+    Exported,
+    Duplicated,
+}
+
+impl EditKind {
+    pub fn bucket_name(self) -> &'static str {
+        match self {
+            Self::Cropped => "Cropped",
+            Self::Exported => "Exported",
+            Self::Duplicated => "Duplicated",
+        }
+    }
+}
+
+/// The bucket named `name` in this library, created under `parent` when
+/// missing. A bucket of that name elsewhere in the library is reused, so
+/// moving or making one by hand never splits the collection.
+fn ensure_bucket(
+    index: &LibraryIndex,
+    library_id: &str,
+    parent: Option<i64>,
+    name: &str,
+) -> Result<i64, String> {
+    let find = || -> Result<Option<i64>, String> {
+        let tag = crate::library_index::normalize_collection_tag(name);
+        Ok(index
+            .list_collections_for_library(Some(library_id))
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|bucket| bucket.primary_tag == tag)
+            .map(|bucket| bucket.id))
+    };
+    if let Some(id) = find()? {
+        return Ok(id);
+    }
+    match index.create_collection(library_id, parent, name, &[], None, None) {
+        Ok(bucket) => Ok(bucket.id),
+        // Another writer may have just made it.
+        Err(error) => find()?.ok_or_else(|| format!("Could not create {name}: {error}")),
+    }
+}
+
+/// Adds originals and their copies (`paths`) to `kind`'s bucket under
+/// "Edits", creating both buckets when needed. Returns the bucket's id and
+/// how many members were new; an image already there is not added twice.
+pub fn add_edit_copies(
+    index: &LibraryIndex,
+    library_id: &str,
+    kind: EditKind,
+    paths: &[PathBuf],
+) -> Result<(i64, usize), String> {
+    require_migrated(index)?;
+    let edits = ensure_bucket(index, library_id, None, EDITS_BUCKET)?;
+    let id = ensure_bucket(index, library_id, Some(edits), kind.bucket_name())?;
+    Ok((id, add_to_bucket(index, id, paths)?))
+}
+
 /// Removes `paths`, and identical copies of them, from bucket `id` and its
 /// sub-buckets. Parents keep their own members.
 pub fn remove_from_bucket(
@@ -622,6 +687,65 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn edit_copies_join_their_action_bucket_under_edits_once() {
+        let f = Fixture::migrated("edits");
+        let original = f.image("photo.png");
+        let crop = f.image("elsewhere/photo-cropped.webp");
+        let pair = [original.clone(), crop.clone()];
+        let (cropped, added) = add_edit_copies(&f.index, "test", EditKind::Cropped, &pair).unwrap();
+        assert_eq!(added, 2);
+        let buckets = f.index.list_collections().unwrap();
+        let edits = buckets.iter().find(|b| b.name == EDITS_BUCKET).unwrap();
+        let bucket = buckets.iter().find(|b| b.id == cropped).unwrap();
+        assert_eq!(
+            (bucket.name.as_str(), bucket.parent_id),
+            ("Cropped", Some(edits.id))
+        );
+        let mut shown = f.shows(cropped);
+        shown.sort();
+        let mut expected = vec![original.clone(), crop.clone()];
+        expected.sort();
+        assert_eq!(shown, expected);
+
+        // A second crop of the same original adds only the new copy, and
+        // another action gets its own bucket beside it.
+        let again = f.image("photo-cropped-2.webp");
+        let (same, added) = add_edit_copies(
+            &f.index,
+            "test",
+            EditKind::Cropped,
+            &[original.clone(), again],
+        )
+        .unwrap();
+        assert_eq!((same, added), (cropped, 1));
+        let copy = f.image("photo copy.png");
+        let (duplicated, _) =
+            add_edit_copies(&f.index, "test", EditKind::Duplicated, &[original, copy]).unwrap();
+        let buckets = f.index.list_collections().unwrap();
+        assert_eq!(buckets.iter().filter(|b| b.name == EDITS_BUCKET).count(), 1);
+        assert_eq!(
+            buckets
+                .iter()
+                .find(|b| b.id == duplicated)
+                .unwrap()
+                .parent_id,
+            Some(edits.id)
+        );
+    }
+
+    #[test]
+    fn edit_copies_reuse_a_same_named_bucket_the_user_made() {
+        let f = Fixture::migrated("edits-reuse");
+        let mine = f.bucket("exported", None);
+        let original = f.image("a.png");
+        let copy = f.image("a.webp");
+        let (id, _) =
+            add_edit_copies(&f.index, "test", EditKind::Exported, &[original, copy]).unwrap();
+        assert_eq!(id, mine);
+        assert_eq!(f.shows(mine).len(), 2);
     }
 
     #[test]

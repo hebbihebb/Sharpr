@@ -3577,3 +3577,153 @@ fn small_image_keeps_fitting_when_the_viewer_grows() {
     pump_until(|| fitted(&viewer));
     window.close();
 }
+
+/// D35: Crop Copy, WebP export and Duplicate put the original and the copy
+/// in Edits › Cropped / Exported / Duplicated, once each; the switch stops
+/// it; originals keep their bytes.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn edits_collect_originals_and_copies_in_buckets() {
+    let root = isolated_fixture("edit-buckets");
+    std::fs::create_dir_all(&root).unwrap();
+    let (a, b) = (root.join("a.png"), root.join("b.png"));
+    for (path, colour) in [(&a, [200, 40, 40]), (&b, [40, 40, 200])] {
+        image::RgbImage::from_pixel(160, 90, image::Rgb(colour))
+            .save(path)
+            .unwrap();
+    }
+    let originals = [std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap()];
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    let mut export = settings.webp_export.clone();
+    export.dir = Some(root.join("crops"));
+    settings.set_webp_export(export);
+    settings.libraries.clear();
+    settings
+        .add_library("Edits", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    assert!(settings.edit_buckets, "on by default");
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.app_state().borrow().library.image_count() == 2 && window.is_mapped());
+    let index = window.app_state().borrow().library_index.clone().unwrap();
+    let members = |name: &str| -> Option<Vec<PathBuf>> {
+        let bucket = index
+            .list_collections()
+            .unwrap()
+            .into_iter()
+            .find(|bucket| bucket.name == name)?;
+        let mut paths = crate::buckets::view(&index, bucket.id, Some(&root), &[])
+            .unwrap()
+            .paths;
+        paths.sort();
+        Some(paths)
+    };
+    let in_folder = |folder: &str| -> Vec<PathBuf> {
+        let mut paths: Vec<_> = std::fs::read_dir(root.join(folder))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| !path.file_name().unwrap().to_string_lossy().starts_with('.'))
+                    .collect()
+            })
+            .unwrap_or_default();
+        paths.sort();
+        paths
+    };
+
+    // Crop Copy: the original and its crop, saved in another folder.
+    window.present_copy_dialog(crate::ui::filmstrip::CopyKind::Crop, vec![a.clone()]);
+    pump_until(|| window.crop_session().is_some());
+    // A real crop: a whole-image crop is byte-identical to the export below,
+    // and buckets show identical copies together.
+    let session = window.crop_session().unwrap();
+    session.set_rect(crate::export::CropRect {
+        x: 16,
+        y: 9,
+        width: 128,
+        height: 72,
+    });
+    session.save();
+    pump_until(|| members("Cropped").is_some_and(|m| m.len() == 2));
+    let crop = in_folder("crops");
+    assert_eq!(
+        members("Cropped").unwrap(),
+        vec![a.clone(), crop[0].clone()]
+    );
+
+    // A batch export: every original and its WebP.
+    window.start_webp_export(
+        vec![a.clone(), b.clone()],
+        crate::export::batch::WebpOptions {
+            destination: root.join("export"),
+            lossless: true,
+            quality: 90,
+            fit: None,
+        },
+    );
+    pump_until(|| members("Exported").is_some_and(|m| m.len() == 4));
+    let mut expected = vec![a.clone(), b.clone()];
+    expected.extend(in_folder("export"));
+    expected.sort();
+    assert_eq!(members("Exported").unwrap(), expected);
+
+    // Duplicate, beside the original.
+    let strip = window.imp().filmstrip.borrow().clone().unwrap();
+    strip.emit_duplicate_requested(b.clone());
+    pump_until(|| members("Duplicated").is_some_and(|m| m.len() == 2));
+
+    let buckets = index.list_collections().unwrap();
+    let edits = buckets
+        .iter()
+        .find(|bucket| bucket.name == crate::buckets::EDITS_BUCKET)
+        .unwrap();
+    for name in ["Cropped", "Exported", "Duplicated"] {
+        let bucket = buckets.iter().find(|bucket| bucket.name == name).unwrap();
+        assert_eq!(bucket.parent_id, Some(edits.id), "{name} sits under Edits");
+    }
+    assert_eq!(
+        buckets
+            .iter()
+            .filter(|bucket| bucket.name == crate::buckets::EDITS_BUCKET)
+            .count(),
+        1
+    );
+
+    // Turned off, a further duplicate joins nothing.
+    window
+        .app_state()
+        .borrow_mut()
+        .settings
+        .set_edit_buckets(false);
+    let before = members("Duplicated").unwrap();
+    strip.emit_duplicate_requested(a.clone());
+    let copies = std::fs::read_dir(&root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_file())
+        .count();
+    pump_until(|| {
+        std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_file())
+            .count()
+            >= copies
+    });
+    settle(500);
+    assert_eq!(members("Duplicated").unwrap(), before);
+    assert_eq!(std::fs::read(&a).unwrap(), originals[0]);
+    assert_eq!(std::fs::read(&b).unwrap(), originals[1]);
+    window.close();
+}

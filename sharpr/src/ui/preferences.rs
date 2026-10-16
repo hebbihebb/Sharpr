@@ -54,6 +54,7 @@ pub fn build_preferences_dialog(
     });
 
     library_page.add(&build_visual_search_group(parent));
+    library_page.add(&build_edit_buckets_group(parent));
 
     dialog.add(&library_page);
 
@@ -81,6 +82,31 @@ fn build_visual_search_group(parent: &SharprWindow) -> libadwaita::PreferencesGr
     }
     group.add(&gpu_row);
 
+    group
+}
+
+/// Copies and their originals collected under Edits (D35).
+fn build_edit_buckets_group(parent: &SharprWindow) -> libadwaita::PreferencesGroup {
+    let group = libadwaita::PreferencesGroup::new();
+    group.set_title("Edits");
+    let row = libadwaita::SwitchRow::new();
+    row.set_title("Collect Edits in Buckets");
+    row.set_subtitle(
+        "Crop Copy, WebP export and Duplicate add the original and the copy to \
+         Edits › Cropped, Exported or Duplicated, ready to compare",
+    );
+    row.set_active(parent.app_state().borrow().settings.edit_buckets);
+    {
+        let parent = parent.clone();
+        row.connect_active_notify(move |row| {
+            parent
+                .app_state()
+                .borrow_mut()
+                .settings
+                .set_edit_buckets(row.is_active());
+        });
+    }
+    group.add(&row);
     group
 }
 

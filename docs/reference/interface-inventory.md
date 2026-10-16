@@ -8,7 +8,7 @@ they are not the private artifact's control IDs. Newly added controls are
 included. `interface_tour_screenshots` and the focused GTK workflows supply
 minimum/wide screenshots; screenshots remain local under `.tmp/phase9/`.
 
-Decisions D1–D33 are in `product.md`. Kept means the behavior is retained;
+Decisions D1–D35 are in `product.md`. Kept means the behavior is retained;
 changed means the final entry point below replaces the old presentation;
 removed means the control is absent, with stored user data retained.
 
@@ -57,6 +57,7 @@ removed means the control is absent, with stored user data retained.
 | Buckets | Drag images onto a bucket | Kept; same background writer as picker and repeat | D5, D31 |
 | Buckets | Add to Bucket picker / New Bucket inside picker | Kept as a compact click-away picker | D25, D27 |
 | Buckets | Add to last bucket / Ctrl+Shift+B | Added, named in image menu and persisted with library identity | D31 |
+| Buckets | Edits › Cropped / Exported / Duplicated | Added: Crop Copy, WebP export and Duplicate add the original and the copy; Preferences switch turns it off | D35 |
 | Buckets | Import/export controls | Removed from Preferences; membership data stays intact | D11, D32 |
 | Image menu | Filmstrip right-click / Shift+F10 / Menu key | Kept, compact, with the current image/selection context | D21, D27 |
 | Image menu | Viewer right-click | Added using exactly the filmstrip menu and action group | D30, D33 |
@@ -103,6 +104,7 @@ removed means the control is absent, with stored user data retained.
 | Library Overview | Fingerprints/copies/buckets/missing counts | Kept; moved out of Preferences | D22, D33 |
 | Library Overview | Index progress/device/model/rebuild/open model folder | Kept; rebuild still confirms | D22, D33 |
 | Preferences | Multiple libraries / bucket transfer / overlay / cache rows | Removed; values and user data remain stored | D32, D33 |
+| Preferences | Collect Edits in Buckets | Added; on by default | D35 |
 | Preferences | Library root and Use Graphics Card | Kept, using existing window actions/settings | D32, D33 |
 | Help | Separate Manual/Shortcuts/About main-menu entries | Changed to one Help sheet; existing actions remain shared | D30, D33 |
 | Help | Automatic-tag cleanup / tags-to-buckets entries | Moved from main menu to Help → Library Maintenance; confirmations/backups stay | D17, D33 |

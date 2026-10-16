@@ -30,6 +30,7 @@ use crate::ui::viewer::{ViewerPane, ZoomMode};
 
 mod bucket_repeat;
 mod compare_controller;
+mod edit_buckets;
 mod library_root;
 pub(crate) mod mode_header;
 mod survey_controller;
@@ -1007,6 +1008,15 @@ impl SharprWindow {
             toast.dismiss();
             operation.complete();
             let Some(win) = weak.upgrade() else { return };
+            win.add_edit_copies(
+                crate::buckets::EditKind::Exported,
+                report
+                    .written_from
+                    .iter()
+                    .cloned()
+                    .zip(report.written.iter().cloned())
+                    .collect(),
+            );
             let written = report.written.len();
             let place = destination
                 .file_name()
@@ -4074,6 +4084,12 @@ impl SharprWindow {
             filmstrip.connect_duplicate_requested(move |path| {
                 let msg = match crate::file_ops::duplicate_file(&path) {
                     Ok(dest) => {
+                        if let Some(win) = window_weak.upgrade() {
+                            win.add_edit_copies(
+                                crate::buckets::EditKind::Duplicated,
+                                vec![(path.clone(), dest.clone())],
+                            );
+                        }
                         let name = dest
                             .file_name()
                             .and_then(|n| n.to_str())

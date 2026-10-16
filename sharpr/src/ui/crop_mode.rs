@@ -418,6 +418,7 @@ fn open(
             }
             close();
             let operation = window.app_state().borrow().ops.add("Saving cropped copy…");
+            let source = config.source.clone();
             let (tx, rx) = async_channel::bounded(1);
             std::thread::spawn(move || {
                 let _ = tx.send_blocking(crate::export::crop_copy(&config));
@@ -432,6 +433,10 @@ fn open(
                 match result {
                     Ok(result) => {
                         operation.complete();
+                        window.add_edit_copies(
+                            crate::buckets::EditKind::Cropped,
+                            vec![(source.clone(), result.output.clone())],
+                        );
                         let toast = libadwaita::Toast::new(&format!(
                             "Saved {}",
                             result

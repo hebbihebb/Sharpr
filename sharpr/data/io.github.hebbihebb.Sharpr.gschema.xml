@@ -11,6 +11,11 @@
       <summary>Index visual search on the graphics card</summary>
       <description>Whether visual-search indexing uses an installed GPU build of llama-server, falling back to the processor when no graphics card has room.</description>
     </key>
+    <key name="edit-buckets" type="b">
+      <default>true</default>
+      <summary>Collect edits in buckets</summary>
+      <description>Whether Crop Copy, WebP export and Duplicate add the original and the copy to a bucket under Edits (D35).</description>
+    </key>
     <key name="metadata-visible" type="b">
       <default>true</default>
       <summary>Metadata overlay visible</summary>
