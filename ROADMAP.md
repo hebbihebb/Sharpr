@@ -721,6 +721,22 @@ If the result reaches the look the user wants, Libadwaita stays and the question
 - A batch export adds every original and copy; the user removes entries or the bucket when done.
 - **Acceptance:** each action puts both images in the right bucket, once, with no duplicate entries; turning the switch off stops it; originals stay byte-identical; Compare from the bucket shows the pair; tests cover crop, batch export and Duplicate.
 
+## Crop Copy source format (D37)
+
+Requested October 16, 2026 for cropping before external upscaling. Crop Copy
+keeps the source format, including JPEG; batch Export as WebP stays unchanged.
+JPEG crops are re-encoded at maximum quality (tradeoff accepted by the user).
+PNG/TIFF sample depth and transparency stay intact; WebP/JPEG XL crops are
+lossless. Unsupported encoders report an error instead of silently converting.
+Originals remain byte-identical and output names are exclusive and unique.
+
+**Status:** implemented and verified on `codex/audit-0.5.0`; awaiting user acceptance.
+`./check.sh` passes (236 tests), all 27 isolated GTK workflows pass, and
+regressions cover source formats, 16-bit/float samples, alpha, EXIF orientation,
+unique names, original bytes and unchanged batch WebP export.
+**Acceptance:** crop PNG/JPEG and other supported sources into the same format,
+open the copy in an external tool, and verify batch export still writes WebP.
+
 ## Planned: 16:9 Viewer Guide (D36)
 
 **Status: planned**, requested by the user on October 16, 2026. Implementation

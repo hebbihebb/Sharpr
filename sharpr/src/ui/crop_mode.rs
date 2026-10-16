@@ -1,7 +1,7 @@
 //! Crop Copy in the viewer at full size (`ROADMAP.md` Phase 6): the image
 //! fills the viewer with a selection to move and resize, 16:9 or free, and
-//! saves a new lossless WebP. The side panels make way while cropping; F11
-//! makes it fullscreen. Originals are only read.
+//! saves a new copy in the source format. The side panels make way while
+//! cropping; F11 makes it fullscreen. Originals are only read.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -234,7 +234,9 @@ fn open(
     let cancel = gtk4::Button::with_label("Cancel");
     let save = gtk4::Button::with_label("Save Copy");
     save.add_css_class("suggested-action");
-    save.set_tooltip_text(Some("Save the selection as a new lossless WebP (Enter)"));
+    save.set_tooltip_text(Some(
+        "Save the selection as a new copy in the source format (Enter)",
+    ));
     bar.append(&cancel);
     bar.append(&save);
 

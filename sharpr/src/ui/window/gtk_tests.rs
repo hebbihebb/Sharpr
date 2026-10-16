@@ -745,6 +745,11 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     };
     pump_until(|| finished().is_some());
     let cropped = finished().unwrap();
+    assert_eq!(
+        cropped.extension().unwrap(),
+        "png",
+        "viewer crop keeps the PNG source format"
+    );
     assert_eq!(image::image_dimensions(&cropped).unwrap(), (128, 72));
     let output = crate::export::crop_copy(&crate::export::CropConfig {
         source: sea.clone(),
@@ -2283,12 +2288,12 @@ fn mode_headers_keep_choices_and_restore_search() {
         std::fs::read_dir(&output)
             .unwrap()
             .filter_map(Result::ok)
-            .any(|e| e.path().extension().is_some_and(|e| e == "webp"))
+            .any(|e| e.path().extension().is_some_and(|e| e == "png"))
     });
     let copy = std::fs::read_dir(&output)
         .unwrap()
         .filter_map(Result::ok)
-        .find(|e| e.path().extension().is_some_and(|e| e == "webp"))
+        .find(|e| e.path().extension().is_some_and(|e| e == "png"))
         .unwrap()
         .path();
     assert_eq!(

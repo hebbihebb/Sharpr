@@ -1,6 +1,6 @@
 # Current Tasks
 
-## Active: 0.5.0 audit fixes
+## Awaiting user acceptance: audit fixes and source-format crops
 
 Branch: `codex/audit-0.5.0`. All 13 findings agreed; severity order,
 one commit per finding. No merge, push or deployment; Claude merges after
@@ -20,12 +20,15 @@ Committed and verified:
 - A10 `c72fa97`: valid thumbnail loading CSS; scheduler unchanged.
 
 A11 `ab3e01f`: retired paths removed; 229 default tests, four GTK workflows
-and build pass. A12 `463514c`: menu directions checked against UI definitions.
+and build pass. A12 `463514c`: current maintenance/model-status menu directions.
 All 13 findings fixed; final isolated GTK suite passes all 27 workflows.
 The final report and all fix hashes are preserved in commit `5c9dd13`;
 `AUDIT.md` is removed for merge as requested. No deferred findings.
-Next: required final offline `./check.sh` and `cargo build`, then the approved
-Crop Copy source-format follow-up. User acceptance/manual retest still pending.
+Final audit checks/build passed after report removal (`7ef00a8`).
+Crop Copy source-format follow-up (D37) is implemented and verified: two
+regressions failed first, full offline checks pass (236 tests), all 27 GTK
+workflows pass, including crop/edit buckets and unchanged batch WebP export.
+No dependencies added. Next: user manual retest/acceptance, then Claude merges.
 
 ## Safety and verification
 
@@ -42,8 +45,8 @@ performance claim. Logs: `a4-{before,after}`, `a5-after`, `a6-after`, `a10-after
 
 ## Separate follow-ups
 
-Approved: Crop Copy keeps the source format, including JPEG (recompression
-tradeoff accepted); batch WebP export unchanged. Handle after the audit with
-regressions, docs and a product decision. The 16:9 viewer guide (D36) is planned
-separately on `main` (`494075d`); do not implement it here.
+Crop Copy now retains source format, including JPEG at quality 100 (the user
+accepted recompression). PNG/TIFF sample depth and alpha are retained; WebP/JXL
+crops are lossless. Unsupported sources fail explicitly. The 16:9 viewer guide
+(D36) stays planned separately on `main` (`494075d`); not implemented here.
 Installed native build: `f50cd9f`. Keep archive/prototype branches.

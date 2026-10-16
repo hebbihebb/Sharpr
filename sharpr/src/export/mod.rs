@@ -6,6 +6,7 @@ use image::imageops::FilterType;
 use crate::metadata::orientation::apply_exif_orientation;
 
 pub mod batch;
+mod crop_format;
 
 pub const WEBP_MAX_DIMENSION: u32 = 16_383;
 
@@ -170,17 +171,23 @@ pub struct CropConfig {
     pub rectangle: CropRect,
 }
 
-/// Writes the cropped region as a lossless WebP copy (D13).
+/// Writes the displayed crop as a new copy in the source format.
 pub fn crop_copy(config: &CropConfig) -> Result<ResizeResult, ResizeError> {
+    let format = crop_format::CropFormat::detect(&config.source)?;
+    let extension = format.extension(&config.source);
     let target = CopyTarget {
         source: config.source.clone(),
         destination_dir: config.destination_dir.clone(),
         target_width: config.rectangle.width,
         target_height: config.rectangle.height,
     };
-    copy_with_encoder(&target, Some(config.rectangle), "cropped", |image| {
-        webp_bytes(image, true, 100)
-    })
+    copy_with_encoder(
+        &target,
+        Some(config.rectangle),
+        "cropped",
+        &extension,
+        |image| format.encode(image),
+    )
 }
 
 /// `image` as WebP: lossless, or lossy at `quality` (1–100). Images without
@@ -405,6 +412,7 @@ fn copy_with_encoder<F>(
     config: &CopyTarget,
     crop: Option<CropRect>,
     label: &str,
+    extension: &str,
     encoder: F,
 ) -> Result<ResizeResult, ResizeError>
 where
@@ -413,7 +421,9 @@ where
     if config.target_width == 0 || config.target_height == 0 {
         return Err(ResizeError::InvalidDimensions);
     }
-    if config.target_width > WEBP_MAX_DIMENSION || config.target_height > WEBP_MAX_DIMENSION {
+    if extension == "webp"
+        && (config.target_width > WEBP_MAX_DIMENSION || config.target_height > WEBP_MAX_DIMENSION)
+    {
         return Err(ResizeError::Encode(format!(
             "WebP supports at most {WEBP_MAX_DIMENSION} pixels per side; choose smaller dimensions"
         )));
@@ -458,7 +468,9 @@ where
         };
     let target = config.clone();
     let label = label.to_string();
-    let mut pending = Pending::reserve(move |suffix| copy_candidate(&target, &label, suffix))?;
+    let extension = extension.to_string();
+    let mut pending =
+        Pending::reserve(move |suffix| copy_candidate(&target, &label, &extension, suffix))?;
     let result = encoder(&resized).and_then(|bytes| {
         pending.write(&bytes)?;
         pending.publish()
@@ -516,7 +528,7 @@ pub fn decode_oriented(source: &Path) -> Result<image::DynamicImage, ResizeError
     Ok(apply_exif_orientation(image, source))
 }
 
-fn copy_candidate(config: &CopyTarget, label: &str, suffix: u32) -> PathBuf {
+fn copy_candidate(config: &CopyTarget, label: &str, extension: &str, suffix: u32) -> PathBuf {
     let stem = config
         .source
         .file_stem()
@@ -528,9 +540,9 @@ fn copy_candidate(config: &CopyTarget, label: &str, suffix: u32) -> PathBuf {
         config.target_width, config.target_height
     );
     let filename = if suffix == 0 {
-        format!("{base}.webp")
+        format!("{base}.{extension}")
     } else {
-        format!("{base}-{suffix}.webp")
+        format!("{base}-{suffix}.{extension}")
     };
     config.destination_dir.join(filename)
 }
@@ -611,6 +623,230 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn crop_preserves_source_format_and_original_bytes() {
+        let dir = test_dir("source-format");
+        for (extension, format) in [
+            ("png", image::ImageFormat::Png),
+            ("jpeg", image::ImageFormat::Jpeg),
+            ("tif", image::ImageFormat::Tiff),
+            ("bmp", image::ImageFormat::Bmp),
+            ("gif", image::ImageFormat::Gif),
+            ("ico", image::ImageFormat::Ico),
+            ("webp", image::ImageFormat::WebP),
+        ] {
+            let source = dir.join(format!("source.{extension}"));
+            let pixels = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                32,
+                18,
+                image::Rgb([40, 90, 150]),
+            ));
+            if format == image::ImageFormat::Ico {
+                image::DynamicImage::ImageRgba8(pixels.to_rgba8())
+                    .save(&source)
+                    .unwrap();
+            } else {
+                pixels.save(&source).unwrap();
+            }
+            let original = std::fs::read(&source).unwrap();
+            let config = CropConfig {
+                source: source.clone(),
+                destination_dir: dir.join("out"),
+                rectangle: CropRect {
+                    x: 4,
+                    y: 2,
+                    width: 16,
+                    height: 9,
+                },
+            };
+            let first = crop_copy(&config).unwrap();
+            assert_eq!(
+                image::guess_format(&std::fs::read(&first.output).unwrap()).unwrap(),
+                format,
+                "crop must keep {extension}"
+            );
+            assert_eq!(first.output.extension().unwrap(), extension);
+            assert_eq!(image::image_dimensions(&first.output).unwrap(), (16, 9));
+            let bytes = std::fs::read(&first.output).unwrap();
+            let second = crop_copy(&config).unwrap();
+            assert_ne!(first.output, second.output);
+            assert_eq!(std::fs::read(&first.output).unwrap(), bytes);
+            assert_eq!(std::fs::read(&source).unwrap(), original);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn png_and_tiff_crop_preserve_sixteen_bit_pixels_and_alpha() {
+        let dir = test_dir("crop-sixteen-bit");
+        for extension in ["png", "tiff"] {
+            let source = dir.join(format!("gradient.{extension}"));
+            let pixels = image::ImageBuffer::from_fn(32, 18, |x, y| {
+                image::Rgba([x as u16 * 2000, y as u16 * 3000, 12345, 45678])
+            });
+            image::DynamicImage::ImageRgba16(pixels.clone())
+                .save(&source)
+                .unwrap();
+            let result = crop_copy(&CropConfig {
+                source,
+                destination_dir: dir.clone(),
+                rectangle: CropRect {
+                    x: 3,
+                    y: 2,
+                    width: 16,
+                    height: 9,
+                },
+            })
+            .unwrap();
+            let actual = image::open(result.output).unwrap();
+            assert_eq!(actual.color(), image::ColorType::Rgba16);
+            assert_eq!(
+                actual.to_rgba16(),
+                image::imageops::crop_imm(&pixels, 3, 2, 16, 9).to_image()
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn jpeg_xl_crop_stays_jpeg_xl_with_exact_pixels() {
+        let dir = test_dir("crop-jxl");
+        let source = dir.join("source.jxl");
+        let pixels = image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(32, 18, |x, y| {
+            image::Rgba([x as u8 * 7, y as u8 * 11, 90, 170])
+        }));
+        crate::jxl::encode_path(&pixels, &source, 100, false, 3).unwrap();
+        let original = std::fs::read(&source).unwrap();
+        let expected = decode_oriented(&source).unwrap().crop_imm(3, 2, 16, 9);
+        let result = crop_copy(&CropConfig {
+            source: source.clone(),
+            destination_dir: dir.clone(),
+            rectangle: CropRect {
+                x: 3,
+                y: 2,
+                width: 16,
+                height: 9,
+            },
+        })
+        .unwrap();
+        assert_eq!(result.output.extension().unwrap(), "jxl");
+        assert_eq!(
+            decode_oriented(&result.output).unwrap().to_rgba8(),
+            expected.to_rgba8()
+        );
+        assert_eq!(std::fs::read(source).unwrap(), original);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn png_crop_does_not_inherit_webp_size_limits() {
+        let dir = test_dir("wide-png-crop");
+        let source = source_image(&dir, (WEBP_MAX_DIMENSION + 1, 1));
+        let result = crop_copy(&CropConfig {
+            source,
+            destination_dir: dir.clone(),
+            rectangle: CropRect {
+                x: 0,
+                y: 0,
+                width: WEBP_MAX_DIMENSION + 1,
+                height: 1,
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            image::image_dimensions(result.output).unwrap(),
+            (WEBP_MAX_DIMENSION + 1, 1)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mislabeled_png_crop_uses_the_real_format() {
+        let dir = test_dir("crop-real-format");
+        let source = source_image(&dir, (32, 18));
+        let mislabeled = source.with_extension("jpg");
+        std::fs::rename(&source, &mislabeled).unwrap();
+        let result = crop_copy(&CropConfig {
+            source: mislabeled,
+            destination_dir: dir.clone(),
+            rectangle: SIX_BY_FOUR,
+        })
+        .unwrap();
+        assert_eq!(result.output.extension().unwrap(), "png");
+        assert_eq!(
+            image::guess_format(&std::fs::read(result.output).unwrap()).unwrap(),
+            image::ImageFormat::Png
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unsupported_crop_format_fails_without_outputs_or_source_changes() {
+        let dir = test_dir("crop-unsupported");
+        let source = dir.join("source.pnm");
+        let bytes = b"P6\n2 1\n255\nabcdef";
+        std::fs::write(&source, bytes).unwrap();
+        let destination = dir.join("out");
+        let result = crop_copy(&CropConfig {
+            source: source.clone(),
+            destination_dir: destination.clone(),
+            rectangle: CropRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+        });
+        assert!(
+            matches!(result, Err(ResizeError::Encode(message)) if message.contains("original format"))
+        );
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read(source).unwrap(), bytes);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn jpeg_xl_crop_retains_sixteen_bit_and_float_samples() {
+        let dir = test_dir("crop-jxl-depth");
+        let images = [
+            image::DynamicImage::ImageRgba16(image::ImageBuffer::from_fn(32, 18, |x, y| {
+                image::Rgba([x as u16 * 2000, y as u16 * 3000, 12345, 45678])
+            })),
+            image::DynamicImage::ImageRgb32F(image::ImageBuffer::from_fn(32, 18, |x, y| {
+                image::Rgb([x as f32 / 32.0, y as f32 / 32.0, 0.25])
+            })),
+        ];
+        for (n, pixels) in images.into_iter().enumerate() {
+            let source = dir.join(format!("depth-{n}.jxl"));
+            std::fs::write(
+                &source,
+                crop_format::CropFormat::Jxl.encode(&pixels).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                decode_oriented(&source).unwrap().as_bytes(),
+                pixels.as_bytes(),
+                "fixture samples are unchanged"
+            );
+            let result = crop_copy(&CropConfig {
+                source,
+                destination_dir: dir.clone(),
+                rectangle: CropRect {
+                    x: 3,
+                    y: 2,
+                    width: 16,
+                    height: 9,
+                },
+            })
+            .unwrap();
+            let actual = decode_oriented(&result.output).unwrap();
+            let expected = pixels.crop_imm(3, 2, 16, 9);
+            assert_eq!(actual.color(), expected.color());
+            assert_eq!(actual.as_bytes(), expected.as_bytes());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn crop(dir: &Path, rectangle: CropRect) -> CropConfig {
         CropConfig {
             source: source_image(dir, (12, 8)),
@@ -637,11 +873,11 @@ mod tests {
             target_width: 6,
             target_height: 4,
         };
-        let output = copy_candidate(&target, "cropped", 0);
+        let output = copy_candidate(&target, "cropped", "png", 0);
         let partial = partial_path(&output);
         std::fs::write(&partial, b"existing image bytes").unwrap();
         let result = crop_copy(&config).unwrap();
-        assert!(result.output.ends_with("source-cropped-6x4-1.webp"));
+        assert!(result.output.ends_with("source-cropped-6x4-1.png"));
         assert_eq!(std::fs::read(&partial).unwrap(), b"existing image bytes");
         assert!(!output.exists());
         std::fs::remove_dir_all(dir).unwrap();
@@ -662,7 +898,22 @@ mod tests {
                 height: 1,
             },
         };
-        assert!(matches!(crop_copy(&config), Err(ResizeError::Encode(_))));
+        let target = CopyTarget {
+            source: config.source.clone(),
+            destination_dir: config.destination_dir.clone(),
+            target_width: config.rectangle.width,
+            target_height: config.rectangle.height,
+        };
+        assert!(matches!(
+            copy_with_encoder(
+                &target,
+                Some(config.rectangle),
+                "cropped",
+                "webp",
+                |_| unreachable!()
+            ),
+            Err(ResizeError::Encode(_))
+        ));
         assert_eq!(std::fs::read(&source).unwrap(), before);
         assert!(!config.destination_dir.exists());
         std::fs::remove_dir_all(dir).unwrap();
@@ -831,7 +1082,7 @@ mod tests {
         let first = crop_copy(&config).unwrap();
         let second = crop_copy(&config).unwrap();
         assert_ne!(first.output, second.output);
-        assert!(second.output.ends_with("source-cropped-6x4-1.webp"));
+        assert!(second.output.ends_with("source-cropped-6x4-1.png"));
     }
 
     #[test]
@@ -872,8 +1123,8 @@ mod tests {
             target_width: 6,
             target_height: 4,
         };
-        let output = copy_candidate(&target, "cropped", 0);
-        let result = copy_with_encoder(&target, Some(SIX_BY_FOUR), "cropped", |_| {
+        let output = copy_candidate(&target, "cropped", "png", 0);
+        let result = copy_with_encoder(&target, Some(SIX_BY_FOUR), "cropped", "png", |_| {
             Err(ResizeError::Encode("forced failure".into()))
         });
         assert!(result.is_err());

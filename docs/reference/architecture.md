@@ -27,7 +27,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `image_pipeline/` | Viewer preview, metadata, and a lazy serial clipboard decoder with one coalesced pending request |
 | `library_index/` | SQLite index of folders, images, and buckets (`schema.rs` sets up new databases) |
 | `tags/db.rs` | SQLite manual tags and sharpness store |
-| `export/` | WebP copies (crop and batch export) with safe output reservation, and crop geometry |
+| `export/` | Source-format crop copies and batch WebP export with safe output reservation, and crop geometry |
 | `copies.rs`, `ui/copies_dialog.rs` | Phase 7 "Find Copies…", over the images in view: exact copies by fingerprint, and resized or converted copies by visual-search vectors (cosine ≥ 0.95, the same aspect, and matching 32×32 colour versions, made once per image from the thumbnail cache where possible, in parallel and cancellable; every member is then checked directly against the copy to keep), then review and confirmed trash, which skips files changed since the review (`copies::verify`) |
 | `export/mod.rs` `Pending` | Every new output (crop, batch export): an exclusive hidden partial file written through its own handle, published by `renameat2(RENAME_NOREPLACE)` (or a hard link) under the first free name; it never replaces or removes a file it didn't create |
 | `duplicates/`, `quality/` | Perceptual hashes (still computed by the thumbnail workers, no longer shown) and sharpness |
@@ -113,7 +113,7 @@ Rules:
 
 ## Output Files
 
-- Crop copies and batch WebP exports decode the source in its displayed orientation (a 3 GB decode budget) and write to a new file. Only WebP is written: crops are lossless, and exports are lossless by default or lossy at a chosen quality, optionally fitted within a size that only shrinks. Batch export runs at the lowest priority and checks for cancellation between images and before keeping each output. The output name is reserved with `create_new`, the data is written to a hidden partial file, and the partial is renamed into place. Encoder flushes are checked, and failed outputs are removed.
+- Crop copies and batch WebP exports decode the source in its displayed orientation (a 3 GB decode budget) and write to a new file. Crop Copy retains the source format (D37) using the existing image/libjxl encoders; PNG/TIFF sample depth and alpha are retained, WebP/JPEG XL crops are lossless, and JPEG is re-encoded at quality 100. Unsupported source formats fail explicitly. Batch export writes only WebP, lossless by default or lossy at a chosen quality, optionally fitted within a size that only shrinks. Batch export runs at the lowest priority and checks for cancellation between images and before keeping each output. The output name is reserved with `create_new`, the data is written to a hidden partial file, and the partial is renamed into place. Encoder flushes are checked, and failed outputs are removed.
 - Originals are only ever opened for reading. The exceptions are explicit trash, move, and rename actions. Rename and Move to… go through `file_ops::rename_no_replace`, which never replaces an existing file.
 - Duplicate and Copy to Folder stream bytes into the same exclusive `Pending` output mechanism, preserve source permissions and choose `name (copy)` suffixes on collisions. Destination symlinks count as occupied; failed copies remove only their own partial.
 - Embedded metadata is never written.
