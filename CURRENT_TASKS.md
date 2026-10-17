@@ -1,5 +1,18 @@
 # Current Tasks
 
+## Implemented and verified: the Rename sheet (D40)
+
+Branch: `feature/rename-sheet`, from `main`; awaiting the user's test. Rename…
+(F2, image menu) opens a Sharpr sheet (`ui/window/rename_sheet.rs`): the name
+in a field that has the focus with all of it selected, the extension as a fixed
+chip beside it (click it to edit the extension as text), Enter renames, and an
+empty, invalid or taken name shows why under the field and keeps Rename off.
+Replaces the Libadwaita alert dialog, which put the focus on its Rename button
+when opened from the image menu, so typing missed the field (the user's report
+on Sonnet's `fix/rename-preselect-stem`, which this supersedes). GTK workflow
+`rename_from_the_menu_types_over_the_name_and_keeps_the_extension` goes through
+the real menu; `./check.sh` passes.
+
 ## Accepted: a broad library root such as Home (Work Order item 10)
 
 Deployed in test build `7bb4aa6` (with the Rename fix); accepted by the user
@@ -33,7 +46,7 @@ both merged to `main` by fast-forward (item 7, then item 9); not pushed.
   (audit finding 7), and folder loads hold a token (`LibraryManager::load_token`)
   so A → B → A cannot append two loads into one store.
 - From the user's test: Rename should preselect the file name without its
-  extension (Backlog).
+  extension (done as the Rename sheet, D40).
 
 ## Accepted: Compare decodes (Work Order item 8)
 

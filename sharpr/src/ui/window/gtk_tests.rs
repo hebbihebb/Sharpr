@@ -4157,6 +4157,114 @@ fn edits_collect_originals_and_copies_in_buckets() {
 
 #[test]
 #[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn rename_from_the_menu_types_over_the_name_and_keeps_the_extension() {
+    let root = isolated_fixture("rename-sheet");
+    std::fs::create_dir_all(&root).unwrap();
+    let original = root.join("holiday.photo.png");
+    let neighbour = root.join("taken.png");
+    for path in [&original, &neighbour] {
+        image::RgbImage::from_pixel(160, 90, image::Rgb([200, 40, 40]))
+            .save(path)
+            .unwrap();
+    }
+    let bytes = std::fs::read(&original).unwrap();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Rename sheet", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    pump_until(|| window.is_mapped() && window.app_state().borrow().library.image_count() == 2);
+    // Rename… as a user picks it, from the image's menu (File Actions). The
+    // menu hands the keyboard focus back to the filmstrip as it closes.
+    let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
+    let index = window
+        .app_state()
+        .borrow()
+        .library
+        .index_of_path(&original)
+        .unwrap();
+    filmstrip.navigate_to(index);
+    pump_until(|| filmstrip.open_context_menu_for_current());
+    let rename_item = || {
+        find_widgets::<gtk4::Label>(window.upcast_ref())
+            .into_iter()
+            .filter(|label| label.label() == "Rename\u{2026}")
+            .find_map(|label| {
+                std::iter::successors(label.parent(), |w| w.parent())
+                    .find(|w| w.type_().name() == "GtkModelButton")
+            })
+    };
+    pump_until(|| rename_item().is_some());
+    rename_item().unwrap().emit_by_name::<()>("clicked", &[]);
+    pump_until(|| window.visible_dialog().is_some());
+    let dialog = window.visible_dialog().unwrap();
+    assert!(dialog.has_css_class("sharpr-sheet"));
+    let entry = find_widgets::<gtk4::Entry>(dialog.upcast_ref())
+        .into_iter()
+        .next()
+        .unwrap();
+    let chip = find_widgets::<gtk4::Button>(dialog.upcast_ref())
+        .into_iter()
+        .find(|button| button.has_css_class("sharpr-extension-chip"))
+        .unwrap();
+    let rename = find_widgets::<gtk4::Button>(dialog.upcast_ref())
+        .into_iter()
+        .find(|button| button.label().as_deref() == Some("Rename"))
+        .unwrap();
+    assert_eq!(entry.text(), "holiday.photo");
+    assert_eq!(chip.label().as_deref(), Some(".png"));
+    // The field has the keyboard focus (on its inner text) with the whole
+    // name selected, and keeps both once the menu has gone.
+    let focused = || {
+        gtk4::prelude::GtkWindowExt::focus(&window).is_some_and(|widget| widget.is_ancestor(&entry))
+    };
+    pump_until(|| focused() && entry.selection_bounds() == Some((0, 13)));
+    settle(500);
+    assert!(focused());
+    assert_eq!(entry.selection_bounds(), Some((0, 13)));
+    // Unchanged, empty, or another file's name: Rename stays off.
+    assert!(!rename.is_sensitive());
+    let shots = root.parent().unwrap();
+    screenshot(&window, &shots.join("rename-sheet.png"));
+    entry.set_text("taken");
+    assert!(!rename.is_sensitive());
+    let style = libadwaita::StyleManager::default();
+    style.set_color_scheme(libadwaita::ColorScheme::ForceDark);
+    settle(200);
+    screenshot(&window, &shots.join("rename-sheet-taken-dark.png"));
+    style.set_color_scheme(libadwaita::ColorScheme::Default);
+    entry.set_text("");
+    assert!(!rename.is_sensitive());
+    // The chip turns back into text, selecting the extension to edit.
+    chip.emit_clicked();
+    assert!(!chip.is_visible());
+    assert_eq!(entry.text(), ".png");
+    entry.set_text("trip");
+    assert!(rename.is_sensitive());
+    entry.set_text("trip.png");
+    // Enter in the field renames.
+    find_widgets::<gtk4::Text>(entry.upcast_ref())[0].emit_by_name::<()>("activate", &[]);
+    let renamed = root.join("trip.png");
+    pump_until(|| renamed.exists());
+    assert!(!original.exists());
+    assert_eq!(std::fs::read(&renamed).unwrap(), bytes);
+    assert!(window.visible_dialog().is_none());
+    window.close();
+}
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
 fn internal_rename_keeps_buckets_when_the_old_filename_is_reused() {
     let root = isolated_fixture("audit-rename");
     std::fs::create_dir_all(&root).unwrap();
@@ -4199,14 +4307,12 @@ fn internal_rename_keeps_buckets_when_the_old_filename_is_reused() {
         .as_ref()
         .unwrap()
         .emit_rename_requested(original.clone());
-    let dialog = window
-        .visible_dialog()
-        .unwrap()
-        .downcast::<libadwaita::AlertDialog>()
-        .unwrap();
+    pump_until(|| window.visible_dialog().is_some());
+    let dialog = window.visible_dialog().unwrap();
     let entries = find_widgets::<gtk4::Entry>(dialog.upcast_ref());
     assert_eq!(entries.len(), 1);
-    entries[0].set_text("b.png");
+    // The extension is a chip beside the name, so only the name is typed.
+    entries[0].set_text("b");
     find_widgets::<gtk4::Button>(dialog.upcast_ref())
         .into_iter()
         .find(|button| button.label().as_deref() == Some("Rename"))

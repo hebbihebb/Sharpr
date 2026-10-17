@@ -292,6 +292,22 @@ window.sharpr .sharpr-filter-chip.negative > button {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--error-color) 45%, transparent);
 }
 
+/* Rename: the extension is a fixed chip beside the name, in the chips' face. */
+window.sharpr .sharpr-rename entry {
+  font-family: var(--sharpr-mono);
+}
+window.sharpr .sharpr-rename button.sharpr-extension-chip {
+  min-height: 22px;
+  padding: 0 7px;
+  border-radius: 3px;
+  font-family: var(--sharpr-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--window-fg-color);
+  background: color-mix(in srgb, var(--accent-bg-color) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 45%, transparent);
+}
+
 /* The corner pill: a compact readout, sharp, no glow. */
 window.sharpr .metadata-osd {
   padding: 5px 9px;

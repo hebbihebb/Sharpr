@@ -35,6 +35,7 @@ mod edit_buckets;
 mod file_jobs_controller;
 mod library_root;
 pub(crate) mod mode_header;
+mod rename_sheet;
 mod survey_controller;
 /// Gets Compare's survivors when someone else opened it (Find Copies).
 type CompareDone = Box<dyn FnOnce(Vec<PathBuf>)>;
@@ -3485,45 +3486,13 @@ impl SharprWindow {
             }
         }
 
-        // "Rename…" — show a dialog pre-filled with the current filename, then rename on confirm.
+        // "Rename…": the name in a field, the extension as a chip beside it.
         {
             let window_weak = self.downgrade();
             filmstrip.connect_rename_requested(move |path| {
-                let Some(win) = window_weak.upgrade() else {
-                    return;
-                };
-                let current_name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let dialog = libadwaita::AlertDialog::new(Some("Rename"), None);
-                dialog.add_css_class("sharpr-sheet");
-                dialog.add_response("cancel", "Cancel");
-                dialog.add_response("rename", "Rename");
-                dialog.set_default_response(Some("rename"));
-                dialog.set_close_response("cancel");
-                dialog.set_response_appearance("rename", libadwaita::ResponseAppearance::Suggested);
-                let entry = gtk4::Entry::new();
-                entry.set_text(&current_name);
-                entry.select_region(0, -1);
-                dialog.set_extra_child(Some(&entry));
-
-                let win_weak = win.downgrade();
-                let entry_clone = entry.clone();
-                dialog.connect_response(None, move |_, response| {
-                    if response != "rename" {
-                        return;
-                    }
-                    let new_name = entry_clone.text().to_string();
-                    if new_name == current_name {
-                        return;
-                    }
-                    if let Some(w) = win_weak.upgrade() {
-                        w.rename_file(path.clone(), new_name);
-                    }
-                });
-                dialog.present(Some(&win));
+                if let Some(win) = window_weak.upgrade() {
+                    win.present_rename_sheet(path);
+                }
             });
         }
 
