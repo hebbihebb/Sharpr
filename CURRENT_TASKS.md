@@ -1,30 +1,22 @@
 # Current Tasks
 
-## Verified, awaiting acceptance: file-action results in the open folder (Work Order item 9)
+## Accepted: file-action results and thumbnail generations (Work Order items 9 and 7)
 
-Branch: `feature/file-action-results`, from `fix/thumbnail-generations` (item 7,
-not yet accepted; its folder-load token guards the insert). When a file job
-finishes, its new files (Duplicate, Copy to Folder, Rename, moves into the open
-folder) are read on a worker and added to the open folder's rows in the current
-sort order. No reload: the selection stays on its image, the thumbnail
-generation and scheduler are untouched. Renaming the image in view keeps it in
-view under its new name. With a search or chips active the file waits in the
-kept view and shows when they are cleared. Also fixed on the way: removing a
-row above the selection left `selected_index` one too high (it pointed at the
-next image). GTK workflow `file_actions_add_their_results_to_the_open_folder`
-failed first (3 rows, 4 expected), then passed, with a second for the narrowed
-view and six model tests; `./check.sh` (284 tests) and all 33 GTK workflows
-pass. Not deployed.
-
-## Verified, awaiting acceptance: thumbnail generations and folder-load token (Work Order item 7)
-
-Branch: `fix/thumbnail-generations`, rebased onto `main` after item 8. Every
-thumbnail response carries its generation; the worker sends no failure from a retired generation and the GTK
-side drops stale responses (audit finding 7). Folder loads hold a token
-(`LibraryManager::load_token`), so A → B → A cannot append two loads into one
-store. Four regression tests (three failed first); `./check.sh` and all GTK
-workflows pass. Not deployed. To test: rapid folder switching (especially back
-to the same folder) and rapid scroll in a large folder.
+Deployed as `790e2a4`; accepted by the user October 17 ("everything works"),
+both merged to `main` by fast-forward (item 7, then item 9); not pushed.
+- Item 9: when a file job finishes, its new files (Duplicate, Copy to Folder,
+  Rename, moves into the open folder) are read on a worker and added to the
+  open folder's rows in the current sort order, with no reload; the selection,
+  thumbnail generation and scheduler are untouched. Renaming the image in view
+  keeps it in view. With a search or chips active the file shows when they are
+  cleared. Also fixed: removing a row above the selection left `selected_index`
+  one too high. GTK workflows `file_actions_add_their_results_to_the_open_folder`
+  (failed first) and `file_action_results_wait_for_a_cleared_search`.
+- Item 7: thumbnail responses carry their generation, stale ones are dropped
+  (audit finding 7), and folder loads hold a token (`LibraryManager::load_token`)
+  so A → B → A cannot append two loads into one store.
+- From the user's test: Rename should preselect the file name without its
+  extension (Backlog).
 
 ## Accepted: Compare decodes (Work Order item 8)
 

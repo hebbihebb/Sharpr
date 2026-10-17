@@ -779,9 +779,9 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 4 | ~~16:9 guide follow-ups (D38): corners resize, outline moves, stays put on zoom, Crop Copy starts on the guide.~~ **Done October 17, 2026**, accepted by the user ("it works", build `a795ae1`) | Sonnet medium (done by Opus at the user's request) |
 | 5 | ~~Crop Copy zoom (user, October 17, after D38): open at the viewer's zoom and position so the selection is where the guide was, and zoom/pan in crop with the selection attached to the image.~~ **Done October 17, 2026** (D39), accepted by the user ("it is fixed", build `e04e361`) | Sonnet high |
 | 6 | ~~Move file move, copy, and trash operations off the GTK thread~~ **Done October 17, 2026**, accepted by the user (build `5f8b8d0`; follow-up "Show file-action results in the open folder" in the Backlog) | Opus medium |
-| 7 | Keep thumbnail generations through to completion, together with the folder-load token | Sonnet high |
+| 7 | ~~Keep thumbnail generations through to completion, together with the folder-load token~~ **Done October 17, 2026**, accepted by the user (build `790e2a4`) | Sonnet high |
 | 8 | ~~Compare: bounded decodes and a screen-sized preview~~ **Done October 17, 2026**, accepted by the user ("all tested working", build `6bf37cd`) | Sonnet high |
-| 9 | Show file-action results in the open folder: Duplicate, Copy to Folder, Rename, and moves into the open folder appear in the filmstrip straight away, keeping the selection and the thumbnail scheduler's state (user, October 17; after item 7's folder-load token) | Sonnet high |
+| 9 | ~~Show file-action results in the open folder: Duplicate, Copy to Folder, Rename, and moves into the open folder appear in the filmstrip straight away, keeping the selection and the thumbnail scheduler's state (user, October 17; after item 7's folder-load token)~~ **Done October 17, 2026**, accepted by the user ("everything works", build `790e2a4`) | Sonnet high |
 | 10 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
 | 11 | Re-link a bucket member moved outside Sharpr | Opus medium |
 | 12 | Guard or retire the startup legacy-bucket migration | Sonnet high |
@@ -804,14 +804,12 @@ Optional. Pick something up only when a phase touches that area, or the user ask
 - Split the rest of `SharprWindow::setup` and `filmstrip::build_ui` (about 700 lines), following the architecture decision above.
 - Merge the two near-identical thumbnail worker loops.
 - Use one sort implementation; the SQL and Rust versions currently break ties differently.
-- Add a folder-load token so two loads of the same folder cannot both append.
-- Show file-action results in the open folder (user, October 17, testing `5f8b8d0`): Duplicate, Copy to Folder into the open folder, Rename, and moves into it don't appear in the filmstrip until the user opens another folder and comes back (pressing Duplicate several times shows no new copies). After a file job finishes, add the new files to the view (or refresh the folder) without losing the selection or the thumbnail scheduler's state. This predates item 6; the worker's `Report` already carries each new path.
+- Rename…: preselect the file name without its extension, so the extension is not replaced by accident (user, October 17, testing `790e2a4`).
 - Support non-UTF-8 paths.
 - Guard the startup legacy-bucket migration (`migrate_legacy_collections_to_tags`) with a backup and count check, or retire it, before old databases are treated as a supported upgrade (audit finding 12).
 - Ctrl+Shift+S opened the GTK Inspector instead of Survey on the user's desktop (October 15). Find what claims the key, or choose another.
 - Re-link a bucket member moved outside Sharpr before the user opens its new folder. Today the bucket shows "image not found" until a pass reaches that folder (user, October 15).
 - Tune Find Copies on the real library: the user found it "improved but not perfect" (October 15).
-- Keep thumbnail generations through to completion: a failure or success from an old request must not mark a newer view's row (audit finding 7).
 - Stop computing perceptual hashes in the thumbnail workers, now that "Find Copies…" (Phase 7) uses fingerprints and vectors; remove `duplicates/phash.rs` and `LibraryIndex::duplicate_groups` with it. Wrap or extend the thumbnail scheduler; don't rewrite it.
 - Index AVIF and HEIC/HEIF for visual search, with a bounded decoder on the worker (Phase 5 audit, finding 13). The live library has none; weigh the Flatpak cost before adding decoders.
 - Library Overview: refresh the fingerprint, copy, bucket, and index-file figures while it is open, or label them as a snapshot; show gathering errors instead of "…"; count unsupported formats apart from unreadable files (Phases 6–8 audit, finding 12).
