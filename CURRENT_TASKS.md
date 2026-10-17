@@ -19,7 +19,7 @@ and be draggable.
 `ROADMAP.md` Work Order item 2 is done: `deny.toml` ignores RUSTSEC-2026-0370,
 -0371 and -0372 (zvariant, zbus_names, zvariant_derive), all via glycin only.
 Config only; `./check.sh` and `cargo build` pass. Merged to `main`; not pushed.
-Item 3 (D36) is done; item 4 (file operations off the GTK thread) is next.
+Item 3 (D36) is done; item 4 (the 16:9 guide follow-ups) is next, then item 5 (file operations off the GTK thread).
 
 Committed and verified:
 - A1 `cd32145`: exclusive copies, preserving source bytes and permissions.
