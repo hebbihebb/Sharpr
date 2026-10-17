@@ -8,17 +8,18 @@ one commit per finding. Deployed as `cabda19`. User accepted on October 17, 2026
 originals unchanged). Merged to `main` by fast-forward; not pushed. The
 commit hashes below predate the rebase onto `main`; use `git log` for current ones.
 
-## Active: 16:9 viewer guide (D36), awaiting acceptance
+## Accepted with notes: 16:9 viewer guide (D36)
 
-Branch `feature/viewer-16x9-guide`: Ctrl+G / image menu → 16:9 Guide, inside the
-image with the outside dimmed. Geometry tests and a GTK check pass. Not deployed.
+Ctrl+G / image menu → 16:9 Guide, deployed as `c724bab`, merged to `main`, not
+pushed. Two follow-ups are in the ROADMAP Backlog: the guide should ignore zoom,
+and be draggable.
 
 ## Done: cargo deny advisories
 
 `ROADMAP.md` Work Order item 2 is done: `deny.toml` ignores RUSTSEC-2026-0370,
 -0371 and -0372 (zvariant, zbus_names, zvariant_derive), all via glycin only.
 Config only; `./check.sh` and `cargo build` pass. Merged to `main`; not pushed.
-Item 3 (D36) is in progress on its feature branch.
+Item 3 (D36) is done; item 4 (file operations off the GTK thread) is next.
 
 Committed and verified:
 - A1 `cd32145`: exclusive copies, preserving source bytes and permissions.
@@ -62,5 +63,5 @@ performance claim. Logs: `a4-{before,after}`, `a5-after`, `a6-after`, `a10-after
 Crop Copy now retains source format, including JPEG at quality 100 (the user
 accepted recompression). PNG/TIFF sample depth and alpha are retained; WebP/JXL
 crops are lossless. Unsupported sources fail explicitly. The 16:9 viewer guide
-(D36) stays planned separately on `main` (`494075d`); not implemented here.
+(D36) was built separately and is now merged.
 Installed native build: `f50cd9f`. Keep archive/prototype branches.
