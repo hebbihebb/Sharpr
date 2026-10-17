@@ -20,7 +20,13 @@ Crop Copy of the viewed image (or Ctrl+Shift+G) starts on the guide. A one-tool
 merge of guide and crop is in the Backlog for later. User's first test of `2bd5e4a`:
 works, but dragging felt laggy; the guide now draws with snapshot nodes and
 resizes smoothly along its diagonal. Accepted October 17 ("it works", `a795ae1`),
-merged to `main`. The user asked for the same smoothness in Crop Copy next.
+merged to `main`.
+
+## Awaiting acceptance: smooth Crop Copy selection, `fix/crop-smooth`
+
+At the user's request, Crop Copy's selection draws on the guide's snapshot
+layer (no viewer-sized Cairo repaint per movement), and its 16:9 corner resize
+follows the drag along the diagonal, so straight drags shrink as well as grow.
 
 ## Done: cargo deny advisories
 

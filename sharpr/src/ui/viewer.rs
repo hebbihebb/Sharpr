@@ -338,26 +338,6 @@ pub(crate) fn guide_frame((gx, gy, gw, gh): Rect, (ix, iy, iw, ih): Rect) -> Opt
     })
 }
 
-/// The parts of `image` outside `guide`, as up to four bands (above, below,
-/// left, right), for dimming.
-pub(crate) fn guide_dim_bands((ix, iy, iw, ih): Rect, (gx, gy, gw, gh): Rect) -> Vec<Rect> {
-    let (right, bottom) = (ix + iw, iy + ih);
-    // The guide clipped to the image; the bands surround it.
-    let top = gy.clamp(iy, bottom);
-    let low = (gy + gh).clamp(iy, bottom);
-    let left = gx.clamp(ix, right);
-    let east = (gx + gw).clamp(ix, right);
-    [
-        (ix, iy, iw, top - iy),
-        (ix, low, iw, bottom - low),
-        (ix, top, left - ix, low - top),
-        (east, top, right - east, low - top),
-    ]
-    .into_iter()
-    .filter(|&(_, _, w, h)| w > 0.0 && h > 0.0)
-    .collect()
-}
-
 fn bounds_rect(bounds: &gtk4::graphene::Rect) -> Rect {
     (
         f64::from(bounds.x()),
@@ -487,35 +467,15 @@ impl ViewerPane {
             ) else {
                 return;
             };
-            let graphene = |(x, y, w, h): Rect| {
-                gtk4::graphene::Rect::new(x as f32, y as f32, w as f32, h as f32)
-            };
-            let fill = |ink, rect: Rect| {
-                snapshot.append_color(&super::look::gdk_color(ink), &graphene(rect));
-            };
-            // An outline `width` thick centred on `rect`'s edges.
-            let outline = |ink, (x, y, w, h): Rect, width: f64| {
-                let half = width / 2.0;
-                let rounded = gtk4::gsk::RoundedRect::from_rect(
-                    graphene((x - half, y - half, w + width, h + width)),
-                    0.0,
-                );
-                let color = super::look::gdk_color(ink);
-                snapshot.append_border(&rounded, &[width as f32; 4], &[color; 4]);
-            };
+            use crate::ui::guide_layer as layer;
             // Stay inside the scrolled viewport when the image overflows it.
-            snapshot.push_clip(&graphene(view));
+            snapshot.push_clip(&layer::graphene(view));
             // Dim the part of the image outside the guide, then outline it.
-            for band in guide_dim_bands(bounds_rect(&img), guide) {
-                fill(crate::palette::SCRIM, band);
-            }
-            outline(crate::palette::GUIDE_EDGE_SHADOW, guide, 4.0);
-            outline(crate::palette::CROP_EDGE, guide, 2.0);
+            layer::dim(snapshot, bounds_rect(&img), guide);
+            layer::outline(snapshot, crate::palette::GUIDE_EDGE_SHADOW, guide, 4.0);
+            layer::outline(snapshot, crate::palette::CROP_EDGE, guide, 2.0);
             // Corner squares to grab, as in Crop Copy (D38).
-            let (gx, gy, gw, gh) = guide;
-            for (cx, cy) in [(gx, gy), (gx + gw, gy), (gx, gy + gh), (gx + gw, gy + gh)] {
-                fill(crate::palette::CROP_EDGE, (cx - 5.0, cy - 5.0, 10.0, 10.0));
-            }
+            layer::handles(snapshot, guide);
             snapshot.pop();
         });
 
@@ -1382,8 +1342,7 @@ impl ViewerPane {
 #[cfg(test)]
 mod guide_tests {
     use super::{
-        guide_dim_bands, guide_frame, guide_grab, guide_moved, guide_rect, guide_resized,
-        guide_within, GuideGrab,
+        guide_frame, guide_grab, guide_moved, guide_rect, guide_resized, guide_within, GuideGrab,
     };
     use crate::export::Corner;
 
@@ -1509,22 +1468,6 @@ mod guide_tests {
             assert!((width - last).abs() < 1.0, "{last} -> {width}");
             last = width;
         }
-    }
-
-    #[test]
-    fn dimming_covers_the_image_outside_the_guide() {
-        let image = (0.0, 0.0, 1000.0, 1000.0);
-        let bands = guide_dim_bands(image, (100.0, 200.0, 800.0, 450.0));
-        let area: f64 = bands.iter().map(|b| b.2 * b.3).sum();
-        near_f(area, 1000.0 * 1000.0 - 800.0 * 450.0);
-        // A guide wider than the image leaves only the bands above and below.
-        let bands = guide_dim_bands((0.0, 0.0, 400.0, 900.0), (-100.0, 300.0, 600.0, 337.5));
-        assert_eq!(bands.len(), 2);
-        assert!(guide_dim_bands(image, image).is_empty());
-    }
-
-    fn near_f(a: f64, b: f64) {
-        assert!((a - b).abs() < 1e-6, "{a} != {b}");
     }
 
     #[test]

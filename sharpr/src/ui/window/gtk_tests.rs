@@ -2283,6 +2283,8 @@ fn guide_moves_resizes_and_crops_to_its_frame() {
         CropRect::framed((640, 360), frame, Some((16, 9)))
     );
     assert!(crop.rect().width < 640 && crop.rect().x > 0);
+    settle(200);
+    screenshot(&window, &root.join("crop-from-guide.png"));
     crop.close();
     pump_until(|| window.crop_session().is_none());
 

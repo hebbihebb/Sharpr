@@ -141,8 +141,8 @@ impl CropRect {
     }
 
     /// Resized by dragging `corner` by (`dx`, `dy`); the opposite corner
-    /// stays put. With an `aspect`, the larger change decides the size and
-    /// the ratio holds. The result stays inside `bounds`.
+    /// stays put. With an `aspect`, the drag along the diagonal decides the
+    /// size and the ratio holds. The result stays inside `bounds`.
     pub fn resized(
         self,
         corner: Corner,
@@ -175,13 +175,11 @@ impl CropRect {
         let mut h = (f64::from(self.height) + dy * grow_y).clamp(min.min(room_y), room_y);
         if let Some((a, b)) = aspect {
             let (a, b) = (f64::from(a), f64::from(b));
-            // Follow the drag's larger relative change, in whole a×b units
-            // so the ratio is exact, within the room.
-            let units = if (w / f64::from(self.width)) >= (h / f64::from(self.height)) {
-                w / a
-            } else {
-                h / b
-            };
+            // Follow the drag projected onto the selection's diagonal, as the
+            // viewer's guide does (D38), so straight drags shrink as well as
+            // grow; in whole a×b units so the ratio is exact, within the room.
+            let units =
+                f64::from(self.width) / a + (dx * grow_x * a + dy * grow_y * b) / (a * a + b * b);
             let most = (room_x / a).floor().min((room_y / b).floor()).max(1.0);
             let least = (min / b).ceil().min(most);
             let units = units.round().clamp(least, most);
@@ -1126,9 +1124,18 @@ mod tests {
             }
         );
 
-        // 16:9 holds, and the image edge stops it.
-        let wide = small.resized(Corner::BottomRight, 160.0, 0.0, bounds, Some((16, 9)));
+        // 16:9 holds; a drag along the diagonal moves the corner with it,
+        // and the image edge stops it.
+        let wide = small.resized(Corner::BottomRight, 160.0, 90.0, bounds, Some((16, 9)));
         assert_eq!((wide.width, wide.height), (480, 270));
+        // A straight drag resizes too, growing or shrinking.
+        for (dx, dy, grows) in [(160.0, 0.0, true), (0.0, 90.0, true), (-160.0, 0.0, false)] {
+            let r = small.resized(Corner::BottomRight, dx, dy, bounds, Some((16, 9)));
+            assert_eq!(r.width * 9, r.height * 16);
+            assert_eq!(r.width > 320, grows, "{r:?}");
+            assert_ne!(r.width, 320, "{r:?}");
+            assert_eq!((r.x, r.y), (100, 100));
+        }
         let huge = small.resized(Corner::BottomRight, 9000.0, 9000.0, bounds, Some((16, 9)));
         assert!(huge.fits(bounds), "{huge:?}");
         assert_eq!(huge.width * 9, huge.height * 16);
@@ -1138,6 +1145,31 @@ mod tests {
             (16, 16),
             "never below the minimum"
         );
+    }
+
+    #[test]
+    fn aspect_resizing_never_jumps() {
+        // Growing one way while shrinking the other changes the size a
+        // little for a little movement, never by a leap.
+        let start = CropRect {
+            x: 100,
+            y: 100,
+            width: 320,
+            height: 180,
+        };
+        let mut last = start.width;
+        for step in 1..=200 {
+            let t = f64::from(step);
+            let r = start.resized(
+                Corner::BottomRight,
+                t,
+                -t * 0.9,
+                (1920, 1080),
+                Some((16, 9)),
+            );
+            assert!(r.width.abs_diff(last) <= 16, "{last} -> {}", r.width);
+            last = r.width;
+        }
     }
 
     #[test]

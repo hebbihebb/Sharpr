@@ -172,7 +172,7 @@ fn open(
     picture.set_margin_start(12);
     picture.set_margin_end(12);
     stage.set_child(Some(&picture));
-    let canvas = gtk4::DrawingArea::new();
+    let canvas = crate::ui::guide_layer::GuideLayer::default();
     canvas.set_margin_top(12);
     canvas.set_margin_bottom(12);
     canvas.set_margin_start(12);
@@ -258,9 +258,15 @@ fn open(
 
     {
         let crop = crop.clone();
-        canvas.set_draw_func(move |_, cr, width, height| {
-            let (ox, oy, scale) = placement(crop.dims, f64::from(width), f64::from(height));
-            let (iw, ih) = (
+        let weak = canvas.downgrade();
+        canvas.set_draw(move |snapshot| {
+            use crate::ui::guide_layer as layer;
+            let Some(canvas) = weak.upgrade() else { return };
+            let (width, height) = (f64::from(canvas.width()), f64::from(canvas.height()));
+            let (ox, oy, scale) = placement(crop.dims, width, height);
+            let image = (
+                ox,
+                oy,
                 f64::from(crop.dims.0) * scale,
                 f64::from(crop.dims.1) * scale,
             );
@@ -268,30 +274,23 @@ fn open(
             let (x, y) = (ox + f64::from(r.x) * scale, oy + f64::from(r.y) * scale);
             let (w, h) = (f64::from(r.width) * scale, f64::from(r.height) * scale);
             // Shade everything outside the selection.
-            super::look::cairo_color(cr, crate::palette::SCRIM);
-            cr.set_fill_rule(gtk4::cairo::FillRule::EvenOdd);
-            cr.rectangle(ox, oy, iw, ih);
-            cr.rectangle(x, y, w, h);
-            let _ = cr.fill();
+            layer::dim(snapshot, image, (x, y, w, h));
             // Thirds, then the border and corner handles.
-            super::look::cairo_color(cr, crate::palette::CROP_GRID);
-            cr.set_line_width(1.0);
             for i in 1..3 {
                 let f = f64::from(i) / 3.0;
-                cr.move_to(x + w * f, y);
-                cr.line_to(x + w * f, y + h);
-                cr.move_to(x, y + h * f);
-                cr.line_to(x + w, y + h * f);
+                layer::fill(
+                    snapshot,
+                    crate::palette::CROP_GRID,
+                    (x + w * f - 0.5, y, 1.0, h),
+                );
+                layer::fill(
+                    snapshot,
+                    crate::palette::CROP_GRID,
+                    (x, y + h * f - 0.5, w, 1.0),
+                );
             }
-            let _ = cr.stroke();
-            super::look::cairo_color(cr, crate::palette::CROP_EDGE);
-            cr.set_line_width(2.0);
-            cr.rectangle(x, y, w, h);
-            let _ = cr.stroke();
-            for (cx, cy) in [(x, y), (x + w, y), (x, y + h), (x + w, y + h)] {
-                cr.rectangle(cx - 5.0, cy - 5.0, 10.0, 10.0);
-                let _ = cr.fill();
-            }
+            layer::outline(snapshot, crate::palette::CROP_EDGE, (x, y, w, h), 2.0);
+            layer::handles(snapshot, (x, y, w, h));
         });
     }
 
@@ -515,7 +514,7 @@ fn open(
 #[derive(Clone)]
 pub struct CropSession {
     crop: Rc<Crop>,
-    canvas: gtk4::DrawingArea,
+    canvas: crate::ui::guide_layer::GuideLayer,
     update_size: Rc<dyn Fn()>,
     save: Rc<dyn Fn()>,
     close: Rc<dyn Fn()>,
