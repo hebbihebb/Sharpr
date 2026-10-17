@@ -781,19 +781,20 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 6 | ~~Move file move, copy, and trash operations off the GTK thread~~ **Done October 17, 2026**, accepted by the user (build `5f8b8d0`; follow-up "Show file-action results in the open folder" in the Backlog) | Opus medium |
 | 7 | Keep thumbnail generations through to completion, together with the folder-load token | Sonnet high |
 | 8 | Compare: bounded decodes and a screen-sized preview | Sonnet high |
-| 9 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
-| 10 | Re-link a bucket member moved outside Sharpr | Opus medium |
-| 11 | Guard or retire the startup legacy-bucket migration | Sonnet high |
-| 12 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
-| 13 | Use one sort implementation | Sonnet medium |
-| 14 | Merge the two thumbnail worker loops | Sonnet high |
-| 15 | Library Overview refresh, errors, and unsupported count | Sonnet medium |
-| 16 | Ctrl+Shift+S opens the GTK Inspector | Sonnet low |
-| 17 | Make the flaky GTK navigation test deterministic | Sonnet high |
-| 18 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal | Sonnet high |
-| 19 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
-| 20 | Trash Undo in the Flatpak (needs a Flatpak build to verify) | Sonnet high |
-| 21 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
+| 9 | Show file-action results in the open folder: Duplicate, Copy to Folder, Rename, and moves into the open folder appear in the filmstrip straight away, keeping the selection and the thumbnail scheduler's state (user, October 17; after item 7's folder-load token) | Sonnet high |
+| 10 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
+| 11 | Re-link a bucket member moved outside Sharpr | Opus medium |
+| 12 | Guard or retire the startup legacy-bucket migration | Sonnet high |
+| 13 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
+| 14 | Use one sort implementation | Sonnet medium |
+| 15 | Merge the two thumbnail worker loops | Sonnet high |
+| 16 | Library Overview refresh, errors, and unsupported count | Sonnet medium |
+| 17 | Ctrl+Shift+S opens the GTK Inspector | Sonnet low |
+| 18 | Make the flaky GTK navigation test deterministic | Sonnet high |
+| 19 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal | Sonnet high |
+| 20 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
+| 21 | Trash Undo in the Flatpak (needs a Flatpak build to verify) | Sonnet high |
+| 22 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
 
 ## Backlog
 
