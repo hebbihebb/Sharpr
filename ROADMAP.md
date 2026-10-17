@@ -804,6 +804,7 @@ Optional. Pick something up only when a phase touches that area, or the user ask
 - Merge the two near-identical thumbnail worker loops.
 - Use one sort implementation; the SQL and Rust versions currently break ties differently.
 - Add a folder-load token so two loads of the same folder cannot both append.
+- Show file-action results in the open folder (user, October 17, testing `5f8b8d0`): Duplicate, Copy to Folder into the open folder, Rename, and moves into it don't appear in the filmstrip until the user opens another folder and comes back (pressing Duplicate several times shows no new copies). After a file job finishes, add the new files to the view (or refresh the folder) without losing the selection or the thumbnail scheduler's state. This predates item 6; the worker's `Report` already carries each new path.
 - Support non-UTF-8 paths.
 - Guard the startup legacy-bucket migration (`migrate_legacy_collections_to_tags`) with a backup and count check, or retire it, before old databases are treated as a supported upgrade (audit finding 12).
 - Ctrl+Shift+S opened the GTK Inspector instead of Survey on the user's desktop (October 15). Find what claims the key, or choose another.
