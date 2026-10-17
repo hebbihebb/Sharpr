@@ -16,9 +16,9 @@ use crate::export::{Corner, CropConfig, CropRect};
 use crate::ui::crop_view::{self, CropView};
 use crate::ui::window::SharprWindow;
 
-/// The longest edge of a preview decoded on a worker; zooming in past what it
-/// holds loads the full image.
-const PREVIEW_EDGE: u32 = 2560;
+/// The longest edge of a preview decoded on a worker (Compare's too); zooming
+/// in past what it holds loads the full image.
+pub(crate) const PREVIEW_EDGE: u32 = 2560;
 /// One scroll step's zoom, as in the viewer.
 const ZOOM_STEP: f64 = 1.1;
 /// How close to a corner, in screen pixels, a drag resizes.

@@ -1930,6 +1930,74 @@ fn compare_narrows_five_images_to_one() {
     window.close();
 }
 
+/// Item 8: Compare decodes at most one image per side at a time, drops the
+/// ones a quick choice supersedes, and holds a screen-sized preview at Fit
+/// that becomes the full image only once zoomed in.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn compare_bounds_decodes_and_previews_at_fit() {
+    use crate::ui::compare_item::Side;
+    let root = isolated_fixture("compare-decodes");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut paths = Vec::new();
+    for i in 0..8u8 {
+        let path = root.join(format!("{i}.png"));
+        image::RgbImage::from_pixel(64, 48, image::Rgb([i * 30, 80, 200]))
+            .save(&path)
+            .unwrap();
+        paths.push(path);
+    }
+    let big = root.join("big.png");
+    image::RgbImage::from_pixel(5000, 1000, image::Rgb([30, 140, 90]))
+        .save(&big)
+        .unwrap();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+
+    let page = crate::ui::compare_page::ComparePage::new();
+    let host = gtk4::Window::new();
+    host.set_default_size(1024, 600);
+    host.set_child(Some(&page));
+    host.present();
+    pump_until(|| page.view().width() > 0);
+    crate::ui::compare_page::probe::reset();
+    page.start(paths.clone());
+    // Seven quick choices before any decode can finish.
+    for number in 2..8 {
+        page.choose(Side::Right, number);
+    }
+    pump_until(|| {
+        let view = page.view();
+        view.texture_size(0).is_some() && view.texture_size(1).is_some()
+    });
+    settle(600);
+    let (peak, started) = crate::ui::compare_page::probe::counts();
+    assert!(peak <= 2, "one decode per side at most, saw {peak} at once");
+    assert!(
+        started <= 4,
+        "superseded decodes are dropped, {started} started"
+    );
+    assert!(page.imp().shown.borrow()[1]
+        .as_ref()
+        .unwrap()
+        .ends_with("7.png"));
+
+    // Fit holds a preview; the full pixels arrive only once zoomed in.
+    page.start(vec![big.clone(), paths[0].clone()]);
+    pump_until(|| page.view().texture_size(0).is_some());
+    let (width, _) = page.view().texture_size(0).unwrap();
+    assert!(
+        width <= 2560,
+        "Fit shows a preview, got {width} pixels wide"
+    );
+    page.view().set_zoom(Some(2.0));
+    pump_until(|| page.view().texture_size(0) == Some((5000, 1000)));
+    // Back at Fit the full pixels are given up for the preview.
+    page.view().set_zoom(None);
+    pump_until(|| page.view().texture_size(0).is_some_and(|(w, _)| w <= 2560));
+}
+
 /// A minus word typed last becomes a chip when Enter is pressed, as it
 /// does after a space.
 #[test]

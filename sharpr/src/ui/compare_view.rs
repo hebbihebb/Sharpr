@@ -3,6 +3,7 @@
 //! be locked so both images show the same region.
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -107,7 +108,7 @@ mod imp {
 
     #[derive(Default)]
     pub struct CompareView {
-        pub textures: RefCell<[Option<gdk4::Texture>; 2]>,
+        pub pictures: RefCell<[Option<Picture>; 2]>,
         pub mode: Cell<Mode>,
         pub locked: Cell<bool>,
         /// One view when locked; one per image otherwise.
@@ -117,6 +118,15 @@ mod imp {
         /// In flip mode, whether the right image is the one shown.
         pub flipped: Cell<bool>,
         pub drag: Cell<Option<DragStart>>,
+        pub on_view_changed: RefCell<Option<Rc<dyn Fn()>>>,
+        pub view_change_queued: Cell<bool>,
+    }
+
+    /// An image on screen: its texture may hold fewer pixels than the image
+    /// (a preview), so zoom and placement go by the image's own size.
+    pub struct Picture {
+        pub texture: gdk4::Texture,
+        pub size: (f64, f64),
     }
 
     #[derive(Clone, Copy)]
@@ -145,6 +155,11 @@ mod imp {
     }
 
     impl WidgetImpl for CompareView {
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            self.parent_size_allocate(width, height, baseline);
+            self.obj().queue_view_changed();
+        }
+
         fn snapshot(&self, snapshot: &gtk4::Snapshot) {
             super::draw(&self.obj(), snapshot);
         }
@@ -163,19 +178,83 @@ impl Default for CompareView {
     }
 }
 
-fn size_of(texture: &gdk4::Texture) -> (f64, f64) {
-    (f64::from(texture.width()), f64::from(texture.height()))
-}
-
 impl CompareView {
-    pub fn set_texture(&self, side: usize, texture: Option<gdk4::Texture>) {
-        self.imp().textures.borrow_mut()[side] = texture;
+    /// Shows `texture` for `side`, standing for an image of `image` pixels
+    /// (the texture may be a smaller preview of it).
+    pub fn set_texture(&self, side: usize, texture: gdk4::Texture, image: (u32, u32)) {
+        self.imp().pictures.borrow_mut()[side] = Some(imp::Picture {
+            texture,
+            size: (f64::from(image.0), f64::from(image.1)),
+        });
         self.queue_draw();
+    }
+
+    pub fn clear_texture(&self, side: usize) {
+        self.imp().pictures.borrow_mut()[side] = None;
+        self.queue_draw();
+    }
+
+    /// Pixel size of the texture held for `side`.
+    pub fn texture_size(&self, side: usize) -> Option<(i32, i32)> {
+        self.imp().pictures.borrow()[side]
+            .as_ref()
+            .map(|p| (p.texture.width(), p.texture.height()))
+    }
+
+    /// Pixel size of the image `side` stands for.
+    pub fn image_size(&self, side: usize) -> Option<(u32, u32)> {
+        self.imp().pictures.borrow()[side]
+            .as_ref()
+            .map(|p| (p.size.0 as u32, p.size.1 as u32))
+    }
+
+    /// Screen pixels per image pixel as `side` is drawn now; `None` before
+    /// the canvas has a size, with no image, or when the side is out of sight
+    /// (the other image in Flip mode).
+    pub fn drawn_scale(&self, side: usize) -> Option<f64> {
+        let size = self.imp().pictures.borrow()[side].as_ref()?.size;
+        if self.width() <= 0
+            || self.height() <= 0
+            || (self.mode() == Mode::Flip && side != usize::from(self.flipped()))
+        {
+            return None;
+        }
+        let pane = self.panes()[side];
+        let drawn = placement(
+            (pane.2, pane.3),
+            size,
+            self.view_for(side),
+            self.reference_width(side),
+        );
+        Some(drawn.2 / size.0)
+    }
+
+    /// `callback` runs, on the main loop and never inside a call that changed
+    /// the view, after the zoom, pan, mode or size changes.
+    pub fn connect_view_changed(&self, callback: impl Fn() + 'static) {
+        *self.imp().on_view_changed.borrow_mut() = Some(Rc::new(callback));
+    }
+
+    fn queue_view_changed(&self) {
+        let imp = self.imp();
+        if imp.view_change_queued.replace(true) {
+            return;
+        }
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(view) = weak.upgrade() else { return };
+            view.imp().view_change_queued.set(false);
+            let callback = view.imp().on_view_changed.borrow().clone();
+            if let Some(callback) = callback {
+                callback();
+            }
+        });
     }
 
     pub fn set_mode(&self, mode: Mode) {
         self.imp().mode.set(mode);
         self.queue_draw();
+        self.queue_view_changed();
     }
 
     pub fn mode(&self) -> Mode {
@@ -191,6 +270,7 @@ impl CompareView {
             imp.views.set([views[0], views[0]]);
         }
         self.queue_draw();
+        self.queue_view_changed();
     }
 
     pub fn locked(&self) -> bool {
@@ -202,6 +282,7 @@ impl CompareView {
         let imp = self.imp();
         imp.flipped.set(!imp.flipped.get());
         self.queue_draw();
+        self.queue_view_changed();
     }
 
     pub fn flipped(&self) -> bool {
@@ -214,6 +295,7 @@ impl CompareView {
         let views = imp.views.get().map(|view| View { zoom, ..view });
         imp.views.set(views);
         self.queue_draw();
+        self.queue_view_changed();
     }
 
     pub fn views(&self) -> [View; 2] {
@@ -243,10 +325,10 @@ impl CompareView {
     /// views are locked or the images share a pane, so both show the same
     /// region; otherwise the image's own.
     fn reference_width(&self, side: usize) -> f64 {
-        let textures = self.imp().textures.borrow();
-        let own = textures[side].as_ref().map(|t| size_of(t).0).unwrap_or(1.0);
+        let pictures = self.imp().pictures.borrow();
+        let own = pictures[side].as_ref().map(|p| p.size.0).unwrap_or(1.0);
         if self.locked() || self.mode() != Mode::SideBySide {
-            textures[0].as_ref().map(|t| size_of(t).0).unwrap_or(own)
+            pictures[0].as_ref().map(|p| p.size.0).unwrap_or(own)
         } else {
             own
         }
@@ -280,11 +362,12 @@ impl CompareView {
         }
         imp.views.set(views);
         self.queue_draw();
+        self.queue_view_changed();
     }
 
     fn zoom_at(&self, factor: f64, x: f64, y: f64) {
         let side = self.side_at(x);
-        let Some(size) = self.imp().textures.borrow()[side].as_ref().map(size_of) else {
+        let Some(size) = self.imp().pictures.borrow()[side].as_ref().map(|p| p.size) else {
             return;
         };
         let pane = self.panes()[side];
@@ -302,21 +385,21 @@ impl CompareView {
 
 fn draw(view: &CompareView, snapshot: &gtk4::Snapshot) {
     let imp = view.imp();
-    let textures = imp.textures.borrow();
+    let pictures = imp.pictures.borrow();
     let panes = view.panes();
     let (w, h) = (f64::from(view.width()), f64::from(view.height()));
     let draw_side = |side: usize, clip: (f64, f64, f64, f64)| {
-        let Some(texture) = textures[side].as_ref() else {
+        let Some(picture) = pictures[side].as_ref() else {
             return;
         };
         let pane = panes[side];
         let (x, y, dw, dh) = placement(
             (pane.2, pane.3),
-            size_of(texture),
+            picture.size,
             view.view_for(side),
             view.reference_width(side),
         );
-        let scale = dw / size_of(texture).0;
+        let scale = dw / picture.size.0;
         // Inspecting pixels: no smoothing past 2×.
         let filter = if scale >= 2.0 {
             gsk::ScalingFilter::Nearest
@@ -330,7 +413,7 @@ fn draw(view: &CompareView, snapshot: &gtk4::Snapshot) {
             clip.3 as f32,
         ));
         snapshot.append_scaled_texture(
-            texture,
+            &picture.texture,
             filter,
             &graphene::Rect::new(
                 (pane.0 + x) as f32,
@@ -414,7 +497,7 @@ fn install_controllers(view: &CompareView) {
                     view.set_split(start + dx / f64::from(view.width().max(1)));
                 }
                 Some(imp::DragStart::Pan(views, side)) => {
-                    let Some(size) = view.imp().textures.borrow()[side].as_ref().map(size_of)
+                    let Some(size) = view.imp().pictures.borrow()[side].as_ref().map(|p| p.size)
                     else {
                         return;
                     };
@@ -456,8 +539,9 @@ fn install_controllers(view: &CompareView) {
                 view.set_zoom(None);
                 view.imp().views.set([View::default(); 2]);
                 view.queue_draw();
+                view.queue_view_changed();
             } else {
-                let Some(size) = view.imp().textures.borrow()[side].as_ref().map(size_of) else {
+                let Some(size) = view.imp().pictures.borrow()[side].as_ref().map(|p| p.size) else {
                     return;
                 };
                 let pane = view.panes()[side];

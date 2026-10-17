@@ -16,6 +16,8 @@ use crate::ui::window::mode_header::ModeControls;
 
 mod candidates;
 use candidates::CandidateStrip;
+mod decodes;
+use decodes::{Gate, Held, Job, Step, Tier};
 
 type CloseCallback = Box<dyn Fn(Vec<PathBuf>)>;
 
@@ -167,13 +169,25 @@ impl ComparePage {
 
     pub fn clear(&self) {
         let imp = self.imp();
-        imp.load_generation
-            .set(imp.load_generation.get().wrapping_add(1));
         imp.candidates.clear();
         imp.knockout.replace(None);
         imp.shown.replace([None, None]);
-        imp.view.set_texture(0, None);
-        imp.view.set_texture(1, None);
+        for side in 0..2 {
+            self.forget(side);
+        }
+    }
+
+    /// `side` no longer shows what it did: results still coming for it are
+    /// stale, and the decode waiting for it is dropped.
+    fn forget(&self, side: usize) {
+        let imp = self.imp();
+        let mut epochs = imp.epochs.get();
+        epochs[side] = epochs[side].wrapping_add(1);
+        imp.epochs.set(epochs);
+        imp.gates.borrow_mut()[side].clear();
+        imp.previews.borrow_mut()[side] = None;
+        imp.held.borrow_mut()[side] = Held::Preview;
+        imp.view.clear_texture(side);
     }
 
     /// Shows the current pair, decoding whichever image is new.
@@ -218,9 +232,16 @@ impl ComparePage {
                 continue;
             }
             imp.shown.borrow_mut()[side] = pair[side].clone();
-            imp.view.set_texture(side, None);
+            self.forget(side);
             if let Some(path) = pair[side].clone() {
-                self.load(side, path);
+                self.submit(
+                    side,
+                    Job {
+                        epoch: imp.epochs.get()[side],
+                        path,
+                        tier: Tier::Preview,
+                    },
+                );
             }
         }
         if let Some(knockout) = imp.knockout.borrow().as_ref() {
@@ -246,13 +267,25 @@ impl ComparePage {
         }
     }
 
-    fn load(&self, side: usize, path: PathBuf) {
-        let generation = self.imp().load_generation.get();
+    /// Decodes `job` for `side` now, or after the one running there; a job
+    /// already waiting is dropped for it.
+    fn submit(&self, side: usize, job: Job) {
+        let start = self.imp().gates.borrow_mut()[side].submit(job);
+        if let Some(job) = start {
+            self.run(side, job);
+        }
+    }
+
+    fn run(&self, side: usize, job: Job) {
         let (tx, rx) = async_channel::bounded(1);
-        let worker_path = path.clone();
+        let worker_path = job.path.clone();
+        let tier = job.tier;
         std::thread::spawn(move || {
+            #[cfg(test)]
+            let _probe = probe::enter();
             // The summary reads the header and EXIF: off the GTK thread too.
-            let _ = tx.send_blocking((summary(&worker_path), decode_image(&worker_path)));
+            let text = (tier == Tier::Preview).then(|| summary(&worker_path));
+            let _ = tx.send_blocking((text, decode_image(&worker_path, tier)));
         });
         let weak = self.downgrade();
         glib::MainContext::default().spawn_local(async move {
@@ -261,27 +294,88 @@ impl ComparePage {
             };
             let Some(page) = weak.upgrade() else { return };
             let imp = page.imp();
-            if imp.load_generation.get() != generation
-                || imp.shown.borrow()[side].as_ref() != Some(&path)
-            {
+            // This side is free again: the newest waiting job starts.
+            let next = imp.gates.borrow_mut()[side].finish();
+            if let Some(next) = next {
+                page.run(side, next);
+            }
+            if imp.epochs.get()[side] != job.epoch {
                 return;
             }
-            imp.labels[side].set_text(&text);
-            match result {
-                Ok(decoded) => {
-                    let texture: gdk4::Texture = gdk4::MemoryTexture::new(
-                        decoded.width,
-                        decoded.height,
-                        gdk4::MemoryFormat::R8g8b8a8,
-                        &glib::Bytes::from_owned(decoded.pixels),
-                        decoded.width as usize * 4,
-                    )
-                    .upcast();
-                    imp.view.set_texture(side, Some(texture));
+            if let Some(text) = text {
+                imp.labels[side].set_text(&text);
+            }
+            match (result, job.tier) {
+                (Ok(decoded), tier) => page.show(side, decoded, tier),
+                (Err(message), Tier::Preview) => {
+                    imp.labels[side].set_text(&message);
+                    imp.held.borrow_mut()[side] = Held::Failed;
                 }
-                Err(message) => imp.labels[side].set_text(&message),
+                // The preview stays, and the full image is not asked for again.
+                (Err(_), Tier::Full) => imp.held.borrow_mut()[side] = Held::Failed,
             }
         });
+    }
+
+    fn show(&self, side: usize, decoded: DecodedImage, tier: Tier) {
+        let imp = self.imp();
+        let texture: gdk4::Texture = gdk4::MemoryTexture::new(
+            decoded.width,
+            decoded.height,
+            gdk4::MemoryFormat::R8g8b8a8,
+            &glib::Bytes::from_owned(decoded.pixels),
+            decoded.width as usize * 4,
+        )
+        .upcast();
+        if tier == Tier::Preview {
+            imp.previews.borrow_mut()[side] = Some(texture.clone());
+        }
+        imp.held.borrow_mut()[side] = match tier {
+            Tier::Preview => Held::Preview,
+            Tier::Full => Held::Full,
+        };
+        imp.view.set_texture(side, texture, decoded.image);
+        self.check_resolution();
+    }
+
+    /// Asks for the full image of a side zoomed past its preview, and gives
+    /// it up again once the view is back out.
+    fn check_resolution(&self) {
+        let imp = self.imp();
+        let device_scale = f64::from(imp.view.scale_factor());
+        for side in 0..2 {
+            let (Some(image), Some(scale)) =
+                (imp.view.image_size(side), imp.view.drawn_scale(side))
+            else {
+                continue;
+            };
+            let held = imp.held.borrow()[side];
+            match decodes::next_step(held, image, scale, device_scale) {
+                Step::Nothing => {}
+                Step::LoadFull => {
+                    let Some(path) = imp.shown.borrow()[side].clone() else {
+                        continue;
+                    };
+                    imp.held.borrow_mut()[side] = Held::Loading;
+                    let epoch = imp.epochs.get()[side];
+                    self.submit(
+                        side,
+                        Job {
+                            epoch,
+                            path,
+                            tier: Tier::Full,
+                        },
+                    );
+                }
+                Step::DropFull => {
+                    let preview = imp.previews.borrow()[side].clone();
+                    if let Some(preview) = preview {
+                        imp.held.borrow_mut()[side] = Held::Preview;
+                        imp.view.set_texture(side, preview, image);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -301,20 +395,73 @@ fn summary(path: &Path) -> String {
 
 struct DecodedImage {
     pixels: Vec<u8>,
+    /// The texture's size.
     width: i32,
     height: i32,
+    /// The whole image's size, which a preview is smaller than.
+    image: (u32, u32),
 }
 
-/// Decodes upright, within the export decoder's memory limits.
-fn decode_image(path: &Path) -> Result<DecodedImage, String> {
+/// Decodes upright, within the export decoder's memory limits. A preview
+/// holds at most `PREVIEW_EDGE` pixels on its long edge.
+fn decode_image(path: &Path, tier: Tier) -> Result<DecodedImage, String> {
     let image = crate::export::decode_oriented(path)
         .map_err(|error| format!("Could not load {}: {error}", path.display()))?;
-    let rgba = image.to_rgba8();
+    let whole = (image.width(), image.height());
+    let (width, height) = match tier {
+        Tier::Full => whole,
+        Tier::Preview => decodes::preview_size(whole),
+    };
+    let rgba = if (width, height) == whole {
+        image.to_rgba8()
+    } else {
+        image
+            .resize_exact(width, height, image::imageops::FilterType::Triangle)
+            .to_rgba8()
+    };
     Ok(DecodedImage {
         width: rgba.width() as i32,
         height: rgba.height() as i32,
         pixels: rgba.into_raw(),
+        image: whole,
     })
+}
+
+/// Test-only count of the decodes running at once.
+#[cfg(test)]
+pub(crate) mod probe {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+    static PEAK: AtomicUsize = AtomicUsize::new(0);
+    static STARTED: AtomicUsize = AtomicUsize::new(0);
+
+    pub struct Probe;
+
+    /// Holds the decode open for a moment so overlapping ones are seen.
+    pub fn enter() -> Probe {
+        STARTED.fetch_add(1, Ordering::SeqCst);
+        let live = LIVE.fetch_add(1, Ordering::SeqCst) + 1;
+        PEAK.fetch_max(live, Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        Probe
+    }
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            LIVE.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    pub fn reset() {
+        PEAK.store(0, Ordering::SeqCst);
+        STARTED.store(0, Ordering::SeqCst);
+    }
+
+    /// (most decodes running at once, decodes started) since `reset`.
+    pub fn counts() -> (usize, usize) {
+        (PEAK.load(Ordering::SeqCst), STARTED.load(Ordering::SeqCst))
+    }
 }
 
 mod imp {
@@ -334,7 +481,15 @@ mod imp {
         pub undo: gtk4::Button,
         pub mode_buttons: RefCell<Vec<gtk4::ToggleButton>>,
         pub close_cb: RefCell<Option<CloseCallback>>,
-        pub load_generation: Cell<u64>,
+        /// Per side: counts what the side has shown, so results for an
+        /// earlier image are recognised and dropped.
+        pub epochs: Cell<[u64; 2]>,
+        /// Per side: one decode at a time, the newest request waiting.
+        pub gates: RefCell<[Gate<Job>; 2]>,
+        /// Per side: what the texture holds.
+        pub held: RefCell<[Held; 2]>,
+        /// Per side: the screen-sized preview, kept to return to.
+        pub previews: RefCell<[Option<gdk4::Texture>; 2]>,
         pub(crate) candidates: CandidateStrip,
         pub filenames: [gtk4::Label; 2],
     }
@@ -360,7 +515,10 @@ mod imp {
                 undo: gtk4::Button::from_icon_name("edit-undo-symbolic"),
                 mode_buttons: RefCell::new(Vec::new()),
                 close_cb: RefCell::new(None),
-                load_generation: Cell::new(0),
+                epochs: Cell::new([0; 2]),
+                gates: RefCell::new(Default::default()),
+                held: RefCell::new([Held::Preview; 2]),
+                previews: RefCell::new([None, None]),
                 candidates: CandidateStrip::default(),
                 filenames: [gtk4::Label::new(None), gtk4::Label::new(None)],
             }
@@ -397,6 +555,14 @@ fn build(page: &ComparePage) {
     imp.root.set_parent(page);
     imp.view.set_vexpand(true);
     imp.root.append(&imp.view);
+    {
+        let weak = page.downgrade();
+        imp.view.connect_view_changed(move || {
+            if let Some(page) = weak.upgrade() {
+                page.check_resolution();
+            }
+        });
+    }
     // Look prototype: a neutral canvas in both themes (I14).
     imp.view.add_css_class("sharpr-canvas");
     imp.root.add_css_class("background");
@@ -578,7 +744,7 @@ mod tests {
     #[test]
     fn missing_file_returns_visible_error_text() {
         let path = test_path("missing.png");
-        let error = decode_image(&path).err().unwrap();
+        let error = decode_image(&path, Tier::Full).err().unwrap();
         assert!(error.contains("Could not load"));
         assert!(error.contains("missing.png"));
     }
@@ -587,7 +753,7 @@ mod tests {
     fn corrupt_file_returns_visible_error_text() {
         let path = test_path("corrupt.png");
         std::fs::write(&path, b"not an image").unwrap();
-        let error = decode_image(&path).err().unwrap();
+        let error = decode_image(&path, Tier::Full).err().unwrap();
         assert!(error.contains("Could not load"));
         std::fs::remove_file(path).unwrap();
     }
