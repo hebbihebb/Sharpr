@@ -730,7 +730,7 @@ PNG/TIFF sample depth and transparency stay intact; WebP/JPEG XL crops are
 lossless. Unsupported encoders report an error instead of silently converting.
 Originals remain byte-identical and output names are exclusive and unique.
 
-**Status:** implemented and verified on `codex/audit-0.5.0`; awaiting user acceptance.
+**Status:** accepted by the user on October 17, 2026 (deployed as `cabda19`) and merged to `main`.
 `./check.sh` passes (236 tests), all 27 isolated GTK workflows pass, and
 regressions cover source formats, 16-bit/float samples, alpha, EXIF orientation,
 unique names, original bytes and unchanged batch WebP export.
@@ -774,7 +774,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 
 | # | Task | Model, effort |
 | --- | --- | --- |
-| 1 | Crop Copy source format (D37): user acceptance, then merge `codex/audit-0.5.0` (rebase onto `main` first) | Sonnet medium |
+| 1 | ~~Crop Copy source format (D37): user acceptance, then merge `codex/audit-0.5.0`~~ **Done October 17, 2026** | Sonnet medium |
 | 2 | 16:9 viewer guide (D36) | Sonnet medium |
 | 3 | Move file move, copy, and trash operations off the GTK thread | Opus medium |
 | 4 | Keep thumbnail generations through to completion, together with the folder-load token | Sonnet high |

@@ -5,7 +5,13 @@
 Branch: `codex/audit-0.5.0`. All 13 findings agreed; severity order,
 one commit per finding. Deployed as `cabda19`. User accepted on October 17, 2026
 (PNG and JPEG crops keep format and open elsewhere; batch export still WebP;
-originals unchanged). Claude merges; no push.
+originals unchanged). Merged to `main` by fast-forward; not pushed. The
+commit hashes below predate the rebase onto `main`; use `git log` for current ones.
+
+## Planned next: 16:9 viewer guide (D36)
+
+In `ROADMAP.md` (Work Order item 2). Implementation starts on its own feature
+branch from `main`.
 
 Committed and verified:
 - A1 `cd32145`: exclusive copies, preserving source bytes and permissions.
