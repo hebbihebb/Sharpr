@@ -782,23 +782,26 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 7 | ~~Keep thumbnail generations through to completion, together with the folder-load token~~ **Done October 17, 2026**, accepted by the user (build `790e2a4`) | Sonnet high |
 | 8 | ~~Compare: bounded decodes and a screen-sized preview~~ **Done October 17, 2026**, accepted by the user ("all tested working", build `6bf37cd`) | Sonnet high |
 | 9 | ~~Show file-action results in the open folder: Duplicate, Copy to Folder, Rename, and moves into the open folder appear in the filmstrip straight away, keeping the selection and the thumbnail scheduler's state (user, October 17; after item 7's folder-load token)~~ **Done October 17, 2026**, accepted by the user ("everything works", build `790e2a4`) | Sonnet high |
-| 10 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
-| 11 | Re-link a bucket member moved outside Sharpr | Opus medium |
-| 12 | Guard or retire the startup legacy-bucket migration | Sonnet high |
-| 13 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
-| 14 | Use one sort implementation | Sonnet medium |
-| 15 | Merge the two thumbnail worker loops | Sonnet high |
-| 16 | Library Overview refresh, errors, and unsupported count | Sonnet medium |
-| 17 | Ctrl+Shift+S opens the GTK Inspector | Sonnet low |
-| 18 | Make the flaky GTK navigation test deterministic | Sonnet high |
-| 19 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal | Sonnet high |
-| 20 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
-| 21 | Trash Undo in the Flatpak (needs a Flatpak build to verify) | Sonnet high |
-| 22 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
+| 10 | A broad library root such as Home: the folder walks (sidebar tree and library-wide paths) stay on the root's own drive, skip hidden folders, and the sidebar fills in as it scans (user, October 17: Home as root showed nothing, because the walk crawled the NAS mounts under `~/Network`) | Sonnet high |
+| 11 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
+| 12 | Re-link a bucket member moved outside Sharpr | Opus medium |
+| 13 | Guard or retire the startup legacy-bucket migration | Sonnet high |
+| 14 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
+| 15 | Use one sort implementation | Sonnet medium |
+| 16 | Merge the two thumbnail worker loops | Sonnet high |
+| 17 | Library Overview refresh, errors, and unsupported count | Sonnet medium |
+| 18 | Ctrl+Shift+S opens the GTK Inspector | Sonnet low |
+| 19 | Make the flaky GTK navigation test deterministic | Sonnet high |
+| 20 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal | Sonnet high |
+| 21 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
+| 22 | Trash Undo in the Flatpak (needs a Flatpak build to verify) | Sonnet high |
+| 23 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
 
 ## Backlog
 
 Optional. Pick something up only when a phase touches that area, or the user asks. The suggested order and model are in the table above.
+
+- A broad library root (Work Order item 10, user, October 17): choosing Home as the root left the sidebar empty. `build_folder_tree` (`ui/sidebar.rs`) and `collect_library_image_paths_cancellable` (`model/library.rs`) walk every folder under the root, including hidden ones (`.cache`, `.steam`, `.cargo`) and the NFS shares mounted under `~/Network/Gigabyte`, and the sidebar shows nothing until the whole walk ends. Stay on the root's filesystem (a mount inside it is added on purpose by choosing it, or as its own root), skip hidden folders, publish the tree progressively, and consider a note when the root is a home folder. The indexer must not crawl the NAS either.
 
 - One guide-and-crop tool (user idea, October 17; D38): whether the 16:9 guide and Crop Copy become a single tool, perhaps with other ratios such as 21:9 or 4:3. Decide after the user has used D38's Crop Copy from the guide for a while.
 - Split the rest of `SharprWindow::setup` and `filmstrip::build_ui` (about 700 lines), following the architecture decision above.
