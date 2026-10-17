@@ -1,5 +1,15 @@
 # Current Tasks
 
+## Verified, awaiting acceptance: thumbnail generations and folder-load token (Work Order item 7)
+
+Branch: `fix/thumbnail-generations`, rebased onto `main` after item 8. Every
+thumbnail response carries its generation; the worker sends no failure from a retired generation and the GTK
+side drops stale responses (audit finding 7). Folder loads hold a token
+(`LibraryManager::load_token`), so A → B → A cannot append two loads into one
+store. Four regression tests (three failed first); `./check.sh` and all GTK
+workflows pass. Not deployed. To test: rapid folder switching (especially back
+to the same folder) and rapid scroll in a large folder.
+
 ## Accepted: Compare decodes (Work Order item 8)
 
 Deployed as `6bf37cd`; accepted by the user October 17 ("all tested working"),
@@ -10,8 +20,6 @@ full image loads on a worker only when zooming needs it, and is given up again
 once back out. `CompareView` now sizes and zooms by the image, not the texture.
 GTK workflow `compare_bounds_decodes_and_previews_at_fit` failed first (8
 decodes at once), then passed; `./check.sh` and all 31 GTK workflows pass.
-`fix/thumbnail-generations` (item 7) is built but not merged, awaiting the user's
-test; item 9 builds on it.
 
 ## Accepted: file actions off the GTK thread (Work Order item 6)
 

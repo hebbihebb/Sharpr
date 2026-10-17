@@ -75,9 +75,11 @@ pub(super) fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
     }
 }
 
-fn is_active_folder_load(state: &AppState, path: &Path) -> bool {
+/// True while the folder load that took `token` still owns the view. The path
+/// alone is not enough: opening A, B, then A again leaves two loads of A.
+fn is_active_folder_load(state: &AppState, path: &Path, token: u64) -> bool {
     matches!(&state.scope, ViewScope::Folder(scope_path) if scope_path == path)
-        && state.library.current_folder.as_deref() == Some(path)
+        && state.library.is_current_load(path, token)
 }
 
 fn remove_path_from_action_selection(state: &mut AppState, path: &Path) {
@@ -1293,10 +1295,12 @@ impl SharprWindow {
                     content_stack.set_visible_child_name("viewer");
                 }
                 let cache_max = AppSettings::load().thumbnail_cache_max as usize;
+                let load_token;
                 {
                     let mut st = state_c.borrow_mut();
                     st.library.set_thumbnail_cache_max(cache_max);
                     st.library.reset_for_folder(&path);
+                    load_token = st.library.load_token();
                     st.settings
                         .set_active_library_last_folder(Some(path.clone()));
                     st.selected_paths.clear();
@@ -1424,7 +1428,7 @@ impl SharprWindow {
                         return;
                     };
 
-                    if !is_active_folder_load(&state_rx.borrow(), path_rx.as_path()) {
+                    if !is_active_folder_load(&state_rx.borrow(), path_rx.as_path(), load_token) {
                         crate::bench_event!(
                             "folder.open.stale_result",
                             serde_json::json!({ "path": path_rx.display().to_string() }),
@@ -1488,7 +1492,7 @@ impl SharprWindow {
                         let total_rows = rows.len();
                         {
                             let mut st = state_rx.borrow_mut();
-                            if !is_active_folder_load(&st, path_rx.as_path()) {
+                            if !is_active_folder_load(&st, path_rx.as_path(), load_token) {
                                 return;
                             }
                             st.library.start_load_folder(&path_rx);
@@ -1504,7 +1508,7 @@ impl SharprWindow {
                             {
                                 let mut st = state_rx.borrow_mut();
                                 // Check if we are still on the same folder before applying chunk.
-                                if is_active_folder_load(&st, path_rx.as_path()) {
+                                if is_active_folder_load(&st, path_rx.as_path(), load_token) {
                                     st.library.append_indexed_rows(chunk);
                                 } else {
                                     return; // Stale folder open.
@@ -1523,7 +1527,7 @@ impl SharprWindow {
 
                         {
                             let mut st = state_rx.borrow_mut();
-                            if !is_active_folder_load(&st, path_rx.as_path()) {
+                            if !is_active_folder_load(&st, path_rx.as_path(), load_token) {
                                 return;
                             }
                             st.library.finish_load_folder();
@@ -1539,7 +1543,7 @@ impl SharprWindow {
                         );
                     }
 
-                    if !is_active_folder_load(&state_rx.borrow(), path_rx.as_path()) {
+                    if !is_active_folder_load(&state_rx.borrow(), path_rx.as_path(), load_token) {
                         return;
                     }
 
@@ -1598,7 +1602,7 @@ impl SharprWindow {
                             basic_count,
                         }) = rx.recv().await
                         {
-                            if is_active_folder_load(&state_rx.borrow(), path_rx.as_path()) {
+                            if is_active_folder_load(&state_rx.borrow(), path_rx.as_path(), load_token) {
                                 metadata_pending = pending;
 
                                 let cached_paths: std::collections::HashSet<PathBuf> = {
@@ -3627,9 +3631,31 @@ impl SharprWindow {
                 use gdk4::{MemoryFormat, MemoryTexture};
                 use glib::Bytes;
 
+                // A response queued before a folder switch can arrive after it.
+                let current_gen = window_weak.upgrade().and_then(|window| {
+                    window
+                        .imp()
+                        .thumbnail_worker
+                        .borrow()
+                        .as_ref()
+                        .map(|worker| worker.current_generation())
+                });
+                if current_gen.is_some_and(|current| current != response.gen()) {
+                    crate::bench_event!(
+                        "thumbnail.apply_skipped",
+                        serde_json::json!({
+                            "gen": response.gen(),
+                            "reason": "stale_generation",
+                        }),
+                    );
+                    continue;
+                }
+
                 let (result_path, result_data) = match response {
-                    ThumbnailWorkerResponse::Success(res) => (res.path.clone(), Some(res)),
-                    ThumbnailWorkerResponse::Failed { path } => (path, None),
+                    ThumbnailWorkerResponse::Success { result, .. } => {
+                        (result.path.clone(), Some(result))
+                    }
+                    ThumbnailWorkerResponse::Failed { path, .. } => (path, None),
                 };
 
                 if let Some(result) = result_data {

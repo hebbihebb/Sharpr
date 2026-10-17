@@ -31,9 +31,20 @@ pub enum WorkerRequest {
 }
 
 /// Message sent back from a worker thread to the GTK main thread.
+///
+/// `gen` is the generation the request was queued under. The receiver drops a
+/// response whose `gen` is no longer current.
 pub enum ThumbnailWorkerResponse {
-    Success(ThumbnailResult),
-    Failed { path: PathBuf },
+    Success { result: ThumbnailResult, gen: u64 },
+    Failed { path: PathBuf, gen: u64 },
+}
+
+impl ThumbnailWorkerResponse {
+    pub fn gen(&self) -> u64 {
+        match self {
+            Self::Success { gen, .. } | Self::Failed { gen, .. } => *gen,
+        }
+    }
 }
 
 pub struct ThumbnailResult {
@@ -216,8 +227,10 @@ impl ThumbnailWorker {
                                     }),
                                 );
                                 let sharpness = maybe_score_sharpness(&path, &result, &db);
-                                let _ = result_tx
-                                    .send_blocking(ThumbnailWorkerResponse::Success(result));
+                                let _ = result_tx.send_blocking(ThumbnailWorkerResponse::Success {
+                                    result,
+                                    gen,
+                                });
                                 if let Some(sr) = sharpness {
                                     let _ = sharpness_tx.send_blocking(sr);
                                 }
@@ -231,9 +244,7 @@ impl ThumbnailWorker {
                                         "error": "decode_failed",
                                     }),
                                 );
-                                let _ = result_tx.send_blocking(ThumbnailWorkerResponse::Failed {
-                                    path: path.clone(),
-                                });
+                                report_failure(&result_tx, &gen_arc, &path, gen, "visible");
                             }
 
                             // Chain hashing to the same pool, even when the thumbnail was cached.
@@ -351,8 +362,8 @@ impl ThumbnailWorker {
                                 }),
                             );
                             let sharpness = maybe_score_sharpness(&path, &result, &db);
-                            let _ =
-                                result_tx.send_blocking(ThumbnailWorkerResponse::Success(result));
+                            let _ = result_tx
+                                .send_blocking(ThumbnailWorkerResponse::Success { result, gen });
                             if let Some(sr) = sharpness {
                                 let _ = sharpness_tx.send_blocking(sr);
                             }
@@ -366,9 +377,7 @@ impl ThumbnailWorker {
                                     "error": "decode_failed",
                                 }),
                             );
-                            let _ = result_tx.send_blocking(ThumbnailWorkerResponse::Failed {
-                                path: path.clone(),
-                            });
+                            report_failure(&result_tx, &gen_arc, &path, gen, "preload");
                         }
 
                         // Hashing is low priority, so we chain it here.
@@ -499,6 +508,32 @@ fn queue_hash(request_tx: &Sender<WorkerRequest>, path: &Path, gen: u64, pool: &
             serde_json::json!({"path": path.display().to_string(), "pool": pool}),
         );
     }
+}
+
+/// Reports a decode failure unless the request's generation has been retired
+/// since it was queued; a failure from an old view must not mark a new one.
+fn report_failure(
+    result_tx: &Sender<ThumbnailWorkerResponse>,
+    current: &AtomicU64,
+    path: &Path,
+    gen: u64,
+    pool: &str,
+) {
+    if gen != current.load(Ordering::Relaxed) {
+        crate::bench_event!(
+            "thumbnail.stale_failure",
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "pool": pool,
+                "gen": gen,
+            }),
+        );
+        return;
+    }
+    let _ = result_tx.send_blocking(ThumbnailWorkerResponse::Failed {
+        path: path.to_path_buf(),
+        gen,
+    });
 }
 
 /// Outcome of skipping past queued stale thumbnail requests.
@@ -1007,6 +1042,54 @@ mod tests {
     }
 
     #[test]
+    fn decode_failure_after_a_generation_bump_is_not_reported() {
+        // A FIFO holds the decode open, so the generation can be bumped while
+        // the worker is mid-request. The empty file then fails to decode.
+        let dir = std::env::temp_dir().join(format!("sharpr-fifo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("held.png");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+
+        let (worker, result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let gen = worker.current_generation();
+        worker
+            .visible_sender()
+            .send_blocking(WorkerRequest::Thumbnail {
+                path: fifo.clone(),
+                gen,
+            })
+            .unwrap();
+
+        // Opening for write returns once the worker has opened it to read, so
+        // the request is past its start-of-request staleness check.
+        let release = |fifo: PathBuf| {
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                drop(std::fs::OpenOptions::new().write(true).open(&fifo));
+                let _ = done_tx.send(());
+            });
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("worker never opened the file");
+        };
+        release(fifo.clone()); // the WebP header sniff reads nothing
+        worker.bump_generation();
+        release(fifo.clone()); // the decoder gets an empty file and fails
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let response = result_rx.try_recv();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            response.is_err(),
+            "a failure from a retired generation must not reach the view"
+        );
+    }
+
+    #[test]
     fn rapid_generation_bumps_are_monotonic_and_clear_pending() {
         let worker = make_worker();
         let mut previous = worker.current_generation();
@@ -1079,8 +1162,8 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(100));
         match result_rx.try_recv() {
-            Ok(ThumbnailWorkerResponse::Failed { path }) => assert_eq!(path, fresh_path),
-            Ok(ThumbnailWorkerResponse::Success(result)) => {
+            Ok(ThumbnailWorkerResponse::Failed { path, .. }) => assert_eq!(path, fresh_path),
+            Ok(ThumbnailWorkerResponse::Success { result, .. }) => {
                 panic!(
                     "nonexistent fresh path unexpectedly succeeded: {:?}",
                     result.path
@@ -1192,11 +1275,13 @@ mod tests {
         loop {
             if let Ok(response) = result_rx.try_recv() {
                 match response {
-                    ThumbnailWorkerResponse::Success(result) => {
+                    ThumbnailWorkerResponse::Success { result, .. } => {
                         assert_eq!(result.path, path);
                         assert!(result.width > 0 && result.height > 0);
                     }
-                    ThumbnailWorkerResponse::Failed { path: failed_path } => {
+                    ThumbnailWorkerResponse::Failed {
+                        path: failed_path, ..
+                    } => {
                         panic!("thumbnail failed for {:?}", failed_path);
                     }
                 }

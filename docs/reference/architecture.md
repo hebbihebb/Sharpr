@@ -69,7 +69,8 @@ The filmstrip is Sharpr's most performance-sensitive surface. Keep these rules:
 3. The GTK side never blocks on a worker channel, and workers never block on their own bounded queue. Follow-up hash requests use `queue_hash` (non-blocking), and stale requests are skipped with `drain_stale`; reuse both.
 4. Factory bind callbacks do no database or filesystem I/O.
 5. Large store mutations are chunked.
-6. A result is applied only after both its generation and its path lookup still match.
+6. A result is applied only after both its generation and its path lookup still match. This holds for failures as well as successes: every `ThumbnailWorkerResponse` carries the generation it was requested under, the worker sends no failure from a retired generation, and the GTK side drops any response whose generation is no longer current.
+   A folder load likewise holds a token (`LibraryManager::load_token`, new with every `reset_for_folder`, `load_virtual` and `restore_view`) and appends only while `is_current_load` still matches, so two loads of the same folder cannot both fill the store.
 7. Visible requests take priority over preload. Extend the scheduler; do not rewrite it.
 
 The thumbnail caches are an unbounded per-view memory cache, a global memory cache (500 entries by default), and a disk cache under `~/.cache/sharpr/` keyed by path hash, size, and mtime. Virtual sort/filter reloads carry the active textures for retained paths into the new rows, even when they have left the global cache; excluded paths leave the active cache.

@@ -113,6 +113,8 @@ pub struct LibraryManager {
     pub current_folder: Option<PathBuf>,
     pub selected_index: Option<u32>,
     pub virtual_generation: u64,
+    /// Identifies the load that last filled the store; see `is_current_load`.
+    load_token: u64,
     folder_history: FxHashMap<PathBuf, u32>,
     /// O(1) path → list index lookup, kept in sync with `store`.
     pub(crate) path_to_index: FxHashMap<PathBuf, u32>,
@@ -139,6 +141,7 @@ impl LibraryManager {
             current_folder: None,
             selected_index: None,
             virtual_generation: 0,
+            load_token: 0,
             folder_history: FxHashMap::default(),
             path_to_index: FxHashMap::default(),
             virtual_has_repeated_paths: false,
@@ -169,7 +172,24 @@ impl LibraryManager {
         }
     }
 
+    /// Token of the load that currently owns the store.
+    pub fn load_token(&self) -> u64 {
+        self.load_token
+    }
+
+    /// True while `token`, taken from `load_token()` when a load began, still
+    /// owns the store and `folder` is the open folder.
+    pub fn is_current_load(&self, folder: &Path, token: u64) -> bool {
+        self.current_folder.as_deref() == Some(folder) && self.load_token == token
+    }
+
+    /// Empties the store for `folder` and retires every load already in flight.
     pub fn reset_for_folder(&mut self, folder: &Path) {
+        self.load_token = self.load_token.wrapping_add(1);
+        self.clear_for_folder(folder);
+    }
+
+    fn clear_for_folder(&mut self, folder: &Path) {
         self.removed_paths.clear();
         self.store.remove_all();
         self.path_to_index.clear();
@@ -252,8 +272,9 @@ impl LibraryManager {
 
     /// Start loading a folder by clearing the store and setting up metadata.
     /// Follow with calls to `append_indexed_rows` to populate the store.
+    /// Keeps the load token: the caller already holds the token of this load.
     pub fn start_load_folder(&mut self, folder: &Path) {
-        self.reset_for_folder(folder);
+        self.clear_for_folder(folder);
     }
 
     /// Append a chunk of indexed rows to the store.
@@ -516,6 +537,7 @@ impl LibraryManager {
     pub fn load_virtual(&mut self, paths: &[PathBuf]) -> (u64, Vec<PathBuf>) {
         let generation = next_virtual_generation();
         self.virtual_generation = generation;
+        self.load_token = self.load_token.wrapping_add(1);
         self.path_to_index.clear();
         // A sort/filter rebuild must not lose textures evicted from the global
         // cache. Carry only thumbnails belonging to the new view forward.
@@ -557,6 +579,7 @@ impl LibraryManager {
     /// Restore a captured view without rescanning or decoding on the GTK thread.
     pub fn restore_view(&mut self, entries: &[ImageEntry], folder: Option<PathBuf>) {
         self.virtual_generation = next_virtual_generation();
+        self.load_token = self.load_token.wrapping_add(1);
         self.path_to_index.clear();
         self.active_thumbnail_cache.clear();
         self.current_folder = folder;
@@ -922,6 +945,55 @@ mod tests {
         assert_ne!(generation, 0);
         assert_eq!(pending, vec![path.clone()]);
         assert_eq!(library.all_hashes_snapshot(), vec![(path, 0xabcd)]);
+    }
+
+    #[test]
+    fn reopening_a_folder_retires_the_earlier_load() {
+        let a = PathBuf::from("/photos/a");
+        let b = PathBuf::from("/photos/b");
+        let mut library = LibraryManager::new();
+
+        library.reset_for_folder(&a);
+        let first_load = library.load_token();
+        library.reset_for_folder(&b);
+        library.reset_for_folder(&a);
+
+        assert!(
+            !library.is_current_load(&a, first_load),
+            "the first load of A must not append once A was opened again"
+        );
+        assert!(library.is_current_load(&a, library.load_token()));
+    }
+
+    #[test]
+    fn replacing_the_view_retires_the_earlier_load() {
+        let a = PathBuf::from("/photos/a");
+        let mut library = LibraryManager::new();
+
+        library.reset_for_folder(&a);
+        let load = library.load_token();
+        library.load_virtual(&[]);
+        library.restore_view(&[], Some(a.clone()));
+
+        assert!(
+            !library.is_current_load(&a, load),
+            "a view restored over the store must not receive an old load's rows"
+        );
+    }
+
+    #[test]
+    fn a_load_keeps_its_token_while_it_fills_the_store() {
+        let a = PathBuf::from("/photos/a");
+        let mut library = LibraryManager::new();
+
+        library.reset_for_folder(&a);
+        let load = library.load_token();
+        library.start_load_folder(&a);
+        library.append_indexed_rows(Vec::new());
+        library.finish_load_folder();
+        library.load_indexed_folder(&a, Vec::new());
+
+        assert!(library.is_current_load(&a, load));
     }
 
     #[test]
