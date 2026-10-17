@@ -1,8 +1,9 @@
 # Current Tasks
 
-## Implemented: a broad library root such as Home (Work Order item 10)
+## Accepted: a broad library root such as Home (Work Order item 10)
 
-Branch: `fix/broad-library-root` (from `main`). Not deployed, not yet accepted.
+Deployed in test build `7bb4aa6` (with the Rename fix); accepted by the user
+October 17 ("changing root works"), merged to `main` by fast-forward; not pushed.
 - One walk rule (`model/walk.rs`): stay on the root's filesystem (device-id
   check) and skip hidden folders. Used by the sidebar scan and by
   `collect_library_image_paths_cancellable`, so the indexer, fingerprints,

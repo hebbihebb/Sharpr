@@ -782,7 +782,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 7 | ~~Keep thumbnail generations through to completion, together with the folder-load token~~ **Done October 17, 2026**, accepted by the user (build `790e2a4`) | Sonnet high |
 | 8 | ~~Compare: bounded decodes and a screen-sized preview~~ **Done October 17, 2026**, accepted by the user ("all tested working", build `6bf37cd`) | Sonnet high |
 | 9 | ~~Show file-action results in the open folder: Duplicate, Copy to Folder, Rename, and moves into the open folder appear in the filmstrip straight away, keeping the selection and the thumbnail scheduler's state (user, October 17; after item 7's folder-load token)~~ **Done October 17, 2026**, accepted by the user ("everything works", build `790e2a4`) | Sonnet high |
-| 10 | A broad library root such as Home: the folder walks (sidebar tree and library-wide paths) stay on the root's own drive, skip hidden folders, and the sidebar fills in as it scans (user, October 17: Home as root showed nothing, because the walk crawled the NAS mounts under `~/Network`) | Sonnet high |
+| 10 | ~~A broad library root such as Home: the folder walks (sidebar tree and library-wide paths) stay on the root's own drive, skip hidden folders, and the sidebar fills in as it scans (user, October 17: Home as root showed nothing, because the walk crawled the NAS mounts under `~/Network`)~~ **Done October 17, 2026**, accepted by the user ("changing root works", test build `7bb4aa6`) | Sonnet high |
 | 11 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
 | 12 | Re-link a bucket member moved outside Sharpr | Opus medium |
 | 13 | Guard or retire the startup legacy-bucket migration | Sonnet high |
