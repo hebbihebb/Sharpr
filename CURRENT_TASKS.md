@@ -1,8 +1,10 @@
 # Current Tasks
 
-## Implemented and verified: the Rename sheet (D40)
+## Accepted: the Rename sheet (D40)
 
-Branch: `feature/rename-sheet`, from `main`; awaiting the user's test. Rename…
+Deployed as `127287c`; accepted by the user October 17 ("it works, i like it";
+it looks like the WebP export sheet), merged to `main` by fast-forward; not
+pushed. Rename…
 (F2, image menu) opens a Sharpr sheet (`ui/window/rename_sheet.rs`): the name
 in a field that has the focus with all of it selected, the extension as a fixed
 chip beside it (click it to edit the extension as text), Enter renames, and an
