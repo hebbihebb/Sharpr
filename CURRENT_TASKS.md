@@ -1,10 +1,11 @@
 # Current Tasks
 
-## Awaiting user acceptance: audit fixes and source-format crops
+## Accepted: audit fixes and source-format crops
 
 Branch: `codex/audit-0.5.0`. All 13 findings agreed; severity order,
-one commit per finding. No merge, push or deployment; Claude merges after
-user acceptance. No acceptance has been claimed.
+one commit per finding. Deployed as `cabda19`. User accepted on October 17, 2026
+(PNG and JPEG crops keep format and open elsewhere; batch export still WebP;
+originals unchanged). Claude merges; no push.
 
 Committed and verified:
 - A1 `cd32145`: exclusive copies, preserving source bytes and permissions.
@@ -28,7 +29,7 @@ Final audit checks/build passed after report removal (`7ef00a8`).
 Crop Copy source-format follow-up (D37) is implemented and verified: two
 regressions failed first, full offline checks pass (236 tests), all 27 GTK
 workflows pass, including crop/edit buckets and unchanged batch WebP export.
-No dependencies added. Next: user manual retest/acceptance, then Claude merges.
+No dependencies added. Accepted; merging.
 
 ## Safety and verification
 
