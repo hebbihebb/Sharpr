@@ -7,8 +7,8 @@ one ordered worker, queue rather than refuse, closing waits for the current
 file. Trash, Undo, Move/Copy to Folder, Rename, Duplicate and Find Copies'
 trash run on `file_jobs.rs`; GTK side in `ui/window/file_jobs_controller.rs`.
 Implemented, verified (`./check.sh`, 268 tests incl. 6 new worker tests, all
-30 GTK workflows in isolated dirs), committed. Not deployed; awaiting the
-user's test.
+30 GTK workflows in isolated dirs), committed, deployed as `5f8b8d0`;
+awaiting the user's test.
 
 ## Accepted: audit fixes and source-format crops
 
