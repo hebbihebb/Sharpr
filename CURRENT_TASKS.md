@@ -1,15 +1,17 @@
 # Current Tasks
 
-## Implemented and verified: Compare decodes (Work Order item 8)
+## Accepted: Compare decodes (Work Order item 8)
 
-Branch: `fix/compare-bounded-decodes`, from `main`; awaiting the user's test. Each
+Deployed as `6bf37cd`; accepted by the user October 17 ("all tested working"),
+merged to `main` by fast-forward; not pushed. Each
 Compare side decodes one image at a time and keeps only the newest request
 waiting (`ui/compare_page/decodes.rs`); Fit shows a 2560-pixel preview and the
 full image loads on a worker only when zooming needs it, and is given up again
 once back out. `CompareView` now sizes and zooms by the image, not the texture.
 GTK workflow `compare_bounds_decodes_and_previews_at_fit` failed first (8
-decodes at once), then passed; `./check.sh` and all 31 GTK workflows pass. Not
-deployed. `fix/thumbnail-generations` (item 7) is untouched, awaiting its test.
+decodes at once), then passed; `./check.sh` and all 31 GTK workflows pass.
+`fix/thumbnail-generations` (item 7) is built but not merged, awaiting the user's
+test; item 9 builds on it.
 
 ## Accepted: file actions off the GTK thread (Work Order item 6)
 

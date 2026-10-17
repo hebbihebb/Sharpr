@@ -780,7 +780,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 5 | ~~Crop Copy zoom (user, October 17, after D38): open at the viewer's zoom and position so the selection is where the guide was, and zoom/pan in crop with the selection attached to the image.~~ **Done October 17, 2026** (D39), accepted by the user ("it is fixed", build `e04e361`) | Sonnet high |
 | 6 | ~~Move file move, copy, and trash operations off the GTK thread~~ **Done October 17, 2026**, accepted by the user (build `5f8b8d0`; follow-up "Show file-action results in the open folder" in the Backlog) | Opus medium |
 | 7 | Keep thumbnail generations through to completion, together with the folder-load token | Sonnet high |
-| 8 | Compare: bounded decodes and a screen-sized preview | Sonnet high |
+| 8 | ~~Compare: bounded decodes and a screen-sized preview~~ **Done October 17, 2026**, accepted by the user ("all tested working", build `6bf37cd`) | Sonnet high |
 | 9 | Show file-action results in the open folder: Duplicate, Copy to Folder, Rename, and moves into the open folder appear in the filmstrip straight away, keeping the selection and the thumbnail scheduler's state (user, October 17; after item 7's folder-load token) | Sonnet high |
 | 10 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
 | 11 | Re-link a bucket member moved outside Sharpr | Opus medium |
