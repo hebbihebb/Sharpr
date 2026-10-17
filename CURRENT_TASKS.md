@@ -8,9 +8,10 @@ one commit per finding. Deployed as `cabda19`. User accepted on October 17, 2026
 originals unchanged). Merged to `main` by fast-forward; not pushed. The
 commit hashes below predate the rebase onto `main`; use `git log` for current ones.
 
-## Planned next: 16:9 viewer guide (D36)
+## Planned next: cargo deny advisories, then the 16:9 viewer guide (D36)
 
-In `ROADMAP.md` (Work Order item 2). Implementation starts on its own feature
+`ROADMAP.md` Work Order item 2: `./check.sh` fails on new unmaintained
+advisories (zbus crates via glycin). Then item 3, D36, on its own feature
 branch from `main`.
 
 Committed and verified:

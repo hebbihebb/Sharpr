@@ -775,23 +775,24 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | # | Task | Model, effort |
 | --- | --- | --- |
 | 1 | ~~Crop Copy source format (D37): user acceptance, then merge `codex/audit-0.5.0`~~ **Done October 17, 2026** | Sonnet medium |
-| 2 | 16:9 viewer guide (D36) | Sonnet medium |
-| 3 | Move file move, copy, and trash operations off the GTK thread | Opus medium |
-| 4 | Keep thumbnail generations through to completion, together with the folder-load token | Sonnet high |
-| 5 | Compare: bounded decodes and a screen-sized preview | Sonnet high |
-| 6 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
-| 7 | Re-link a bucket member moved outside Sharpr | Opus medium |
-| 8 | Guard or retire the startup legacy-bucket migration | Sonnet high |
-| 9 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
-| 10 | Use one sort implementation | Sonnet medium |
-| 11 | Merge the two thumbnail worker loops | Sonnet high |
-| 12 | Library Overview refresh, errors, and unsupported count | Sonnet medium |
-| 13 | Ctrl+Shift+S opens the GTK Inspector | Sonnet low |
-| 14 | Make the flaky GTK navigation test deterministic | Sonnet high |
-| 15 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal | Sonnet high |
-| 16 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
-| 17 | Trash Undo in the Flatpak (needs a Flatpak build to verify) | Sonnet high |
-| 18 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
+| 2 | `cargo deny` fails on new "unmaintained" advisories for zbus, zvariant, zvariant_derive and zbus_names (via glycin): ignore them in `deny.toml` with a reason, as for `paste`, so `./check.sh` passes again | Sonnet low |
+| 3 | 16:9 viewer guide (D36) | Sonnet medium |
+| 4 | Move file move, copy, and trash operations off the GTK thread | Opus medium |
+| 5 | Keep thumbnail generations through to completion, together with the folder-load token | Sonnet high |
+| 6 | Compare: bounded decodes and a screen-sized preview | Sonnet high |
+| 7 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
+| 8 | Re-link a bucket member moved outside Sharpr | Opus medium |
+| 9 | Guard or retire the startup legacy-bucket migration | Sonnet high |
+| 10 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
+| 11 | Use one sort implementation | Sonnet medium |
+| 12 | Merge the two thumbnail worker loops | Sonnet high |
+| 13 | Library Overview refresh, errors, and unsupported count | Sonnet medium |
+| 14 | Ctrl+Shift+S opens the GTK Inspector | Sonnet low |
+| 15 | Make the flaky GTK navigation test deterministic | Sonnet high |
+| 16 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal | Sonnet high |
+| 17 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
+| 18 | Trash Undo in the Flatpak (needs a Flatpak build to verify) | Sonnet high |
+| 19 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
 
 ## Backlog
 
