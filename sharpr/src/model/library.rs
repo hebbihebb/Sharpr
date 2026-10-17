@@ -8,6 +8,7 @@ use rustc_hash::FxHashMap;
 use crate::config::FolderMode;
 use crate::library_index::{basic_info_from_path, BasicImageInfo, IndexedImage};
 use crate::model::image_entry::ImageEntry;
+use crate::model::walk;
 use crate::quality::QualityScore;
 
 /// Process-wide, so a stale virtual load never matches a newer one.
@@ -835,6 +836,8 @@ impl Default for LibraryManager {
 }
 
 /// Cancellation is cooperative between filesystem operations; no GTK work is done here.
+/// Each start (a root, or the open folder) is walked on its own filesystem and
+/// without hidden folders, like the sidebar tree (`model::walk`).
 pub(crate) fn collect_library_image_paths_cancellable(
     library_root: Option<PathBuf>,
     folder_mode: FolderMode,
@@ -851,13 +854,20 @@ pub(crate) fn collect_library_image_paths_cancellable(
     } else {
         1
     };
-    let mut pending: Vec<_> = roots.into_iter().map(|p| (p, 0)).collect();
+    let mut pending: Vec<_> = roots
+        .into_iter()
+        .map(|p| {
+            let device = walk::device_of(&p);
+            (p, 0, device)
+        })
+        .collect();
     if let Some(folder) = current_folder {
-        pending.insert(0, (folder.to_path_buf(), maximum_depth));
+        let device = walk::device_of(folder);
+        pending.insert(0, (folder.to_path_buf(), maximum_depth, device));
     }
     let mut seen = HashSet::new();
     let mut paths = Vec::new();
-    while let Some((folder, depth)) = pending.pop() {
+    while let Some((folder, depth, device)) = pending.pop() {
         if canceled() {
             return Vec::new();
         }
@@ -879,7 +889,9 @@ pub(crate) fn collect_library_image_paths_cancellable(
                 continue;
             };
             if kind.is_dir() && depth < maximum_depth {
-                pending.push((path, depth + 1));
+                if walk::may_descend_into(&entry, device) {
+                    pending.push((path, depth + 1, device));
+                }
             } else if kind.is_file() && LibraryManager::is_image(&path) {
                 paths.push(path);
             }
@@ -1094,6 +1106,41 @@ mod tests {
         assert!(paths.contains(&enabled.join("new.bmp")));
         assert!(paths.contains(&root.join("root.bmp")));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn whole_library_scan_skips_hidden_folders_but_not_a_hidden_start() {
+        let root = temp_path("hidden-tree");
+        let nested = root.join("art/deep");
+        let hidden = root.join(".cache/thumbs");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&hidden).unwrap();
+        write_bmp(&nested.join("kept.bmp"), 16, 9);
+        write_bmp(&hidden.join("cached.bmp"), 16, 9);
+        write_bmp(&root.join(".cache/direct.bmp"), 16, 9);
+        let paths = collect_library_image_paths_cancellable(
+            Some(root.clone()),
+            FolderMode::DrillDown,
+            None,
+            &[],
+            &|| false,
+        );
+        assert_eq!(paths, vec![nested.join("kept.bmp")]);
+
+        // Choosing a hidden folder on purpose still lists it.
+        let paths = collect_library_image_paths_cancellable(
+            Some(root.clone()),
+            FolderMode::DrillDown,
+            Some(&root.join(".cache")),
+            &[],
+            &|| false,
+        );
+        assert!(paths.contains(&root.join(".cache/direct.bmp")));
+        assert!(
+            !paths.contains(&hidden.join("cached.bmp")),
+            "its subfolders stay hidden"
+        );
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
     #[test]

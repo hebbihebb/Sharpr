@@ -4845,3 +4845,71 @@ fn file_action_results_wait_for_a_cleared_search() {
     );
     window.close();
 }
+
+/// Work Order item 10: a broad root such as Home lists its image folders,
+/// skips hidden ones such as `.cache`, and opens the first folder once the
+/// scan is done.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn a_broad_root_lists_image_folders_without_hidden_ones() {
+    let root = isolated_fixture("broad-root");
+    let picture = |path: &str| {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        image::RgbImage::from_pixel(160, 90, image::Rgb([90, 120, 200]))
+            .save(&path)
+            .unwrap();
+    };
+    picture("Pictures/a.png");
+    picture("Pictures/Trips/b.png");
+    picture(".cache/thumbs/c.png");
+    std::fs::create_dir_all(root.join("Documents")).unwrap();
+    std::fs::write(root.join("Documents/readme.txt"), b"").unwrap();
+
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Broad root", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    // The first folder opens when the scan has finished.
+    pump_until(|| window.is_mapped() && window.app_state().borrow().library.image_count() == 1);
+    assert_eq!(
+        window.app_state().borrow().scope,
+        ViewScope::Folder(root.join("Pictures"))
+    );
+    let sidebar = window.imp().sidebar.borrow().clone().unwrap();
+    let rows = || {
+        find_widgets::<crate::ui::sidebar::FolderRow>(sidebar.upcast_ref())
+            .iter()
+            .map(|row| row.path())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(rows(), vec![root.clone(), root.join("Pictures")]);
+
+    let pictures = find_widgets::<crate::ui::sidebar::FolderRow>(sidebar.upcast_ref())
+        .into_iter()
+        .find(|row| row.path() == root.join("Pictures"))
+        .unwrap();
+    pictures.disclosure_button().unwrap().emit_clicked();
+    pump_until(|| rows().contains(&root.join("Pictures/Trips")));
+    assert_eq!(
+        rows(),
+        vec![
+            root.clone(),
+            root.join("Pictures"),
+            root.join("Pictures/Trips")
+        ],
+        "no .cache and no Documents"
+    );
+    window.close();
+}

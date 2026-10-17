@@ -1,2 +1,2 @@
 pub mod settings;
-pub use settings::{AppSettings, FolderMode, LibraryConfig};
+pub use settings::{AppSettings, FolderMode};

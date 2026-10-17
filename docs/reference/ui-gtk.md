@@ -72,7 +72,7 @@ See `architecture.md`. In UI code this means:
 
 ## One library root (D32)
 
-- Main menu → Library → Open Library Root and Preferences → Library Root activate the same window action. The native folder chooser checks directory availability on a worker. Applying the choice retains the active identity and saved disabled paths, retires browse/thumbnail generations, clears the old view, refreshes the sidebar, and restarts scoped indexing/fingerprints. The folder tree has its own generation so retired scans cannot reopen an old root.
+- Main menu → Library → Open Library Root and Preferences → Library Root activate the same window action. The native folder chooser checks directory availability on a worker. Applying the choice retains the active identity and saved disabled paths, retires browse/thumbnail generations, clears the old view, refreshes the sidebar, and restarts scoped indexing/fingerprints. The folder tree has its own generation so retired scans cannot reopen an old root, and the scan itself is told to stop.
 - Folder browsing is recursive regardless of the stored legacy folder mode. Disabled rows remain available for enabling, without scanning their children. Inactive library settings remain serialized, without switch/create controls. Buckets and fingerprint/vector rows are not migrated or deleted by changing the root.
 
 ## Shared style, image actions and Help (D33)

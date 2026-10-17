@@ -2,14 +2,17 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gtk4::gio;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 
-use crate::config::LibraryConfig;
 use crate::library_index::Collection;
+use crate::model::walk;
 use crate::ui::state::AppState;
 
 type FolderSelectedCallback = Box<dyn Fn(PathBuf) + 'static>;
@@ -23,6 +26,9 @@ type CollectionMoveRequestedCallback = Box<dyn Fn(i64) + 'static>;
 type CollectionReparentRequestedCallback = Box<dyn Fn(i64, i64) + 'static>;
 type CollectionDeleteRequestedCallback = Box<dyn Fn(i64) + 'static>;
 type DropPathsToCollectionCallback = Box<dyn Fn(i64, Vec<std::path::PathBuf>) + 'static>;
+
+/// How often a running folder scan hands what it found to the sidebar.
+const FOLDER_SCAN_BATCH: Duration = Duration::from_millis(200);
 
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "jxl", "png", "gif", "webp", "tiff", "tif", "bmp", "ico", "avif", "heic", "heif",
@@ -69,6 +75,9 @@ mod imp {
         pub collapsed_folder_paths: RefCell<HashSet<PathBuf>>,
         pub(super) folder_entries: RefCell<Vec<FolderListEntry>>,
         pub(super) folder_tree: RefCell<Vec<FolderNode>>,
+        /// Folders listed since the last refresh, so only new ones start collapsed.
+        pub(super) known_folder_paths: RefCell<HashSet<PathBuf>>,
+        pub(super) folder_scan_canceled: RefCell<Option<Arc<AtomicBool>>>,
         pub ignored_folders: RefCell<Vec<PathBuf>>,
         pub collapsed_collection_ids: RefCell<HashSet<i64>>,
         pub collections: RefCell<Vec<Collection>>,
@@ -100,6 +109,8 @@ mod imp {
                 collapsed_folder_paths: RefCell::new(HashSet::new()),
                 folder_entries: RefCell::new(Vec::new()),
                 folder_tree: RefCell::new(Vec::new()),
+                known_folder_paths: RefCell::new(HashSet::new()),
+                folder_scan_canceled: RefCell::new(None),
                 ignored_folders: RefCell::new(Vec::new()),
                 collapsed_collection_ids: RefCell::new(HashSet::new()),
                 collections: RefCell::new(Vec::new()),
@@ -273,77 +284,160 @@ impl SidebarPane {
         imp.toolbar_view.set_parent(self);
     }
 
+    /// Scans the library root on a worker and lists folders as it finds them,
+    /// so a large root such as Home fills in instead of showing nothing until
+    /// the walk ends. The first folder is chosen once the scan is done.
     fn populate_default_folders(&self, state: Rc<RefCell<AppState>>) {
         let generation = self.imp().folder_generation.get().wrapping_add(1);
         self.imp().folder_generation.set(generation);
-        let (tx, rx) = async_channel::bounded::<Vec<FolderNode>>(1);
+        let canceled = Arc::new(AtomicBool::new(false));
+        if let Some(previous) = self
+            .imp()
+            .folder_scan_canceled
+            .replace(Some(canceled.clone()))
+        {
+            previous.store(true, Ordering::Relaxed);
+        }
+        let (tx, rx) = async_channel::unbounded::<Vec<PathBuf>>();
         let active_library = state.borrow().settings.active_library().cloned();
+        let root = active_library.as_ref().map(|library| library.root.clone());
         std::thread::spawn(move || {
-            let tree = active_library
-                .as_ref()
-                .map(build_folder_tree)
-                .unwrap_or_default();
-            let _ = tx.send_blocking(tree);
+            let Some(library) = active_library else {
+                return;
+            };
+            let pending = RefCell::new((Vec::<PathBuf>::new(), Instant::now()));
+            let flush = |force: bool| {
+                let mut pending = pending.borrow_mut();
+                if !pending.0.is_empty() && (force || pending.1.elapsed() >= FOLDER_SCAN_BATCH) {
+                    let _ = tx.send_blocking(std::mem::take(&mut pending.0));
+                    pending.1 = Instant::now();
+                }
+            };
+            scan_image_folders(
+                &library.root,
+                &library.ignored_folders,
+                &|| {
+                    flush(false);
+                    canceled.load(Ordering::Relaxed) || tx.is_closed()
+                },
+                &mut |path| pending.borrow_mut().0.push(path.to_path_buf()),
+            );
+            flush(true);
         });
 
         let widget_weak = self.downgrade();
         glib::MainContext::default().spawn_local(async move {
-            let Ok(tree) = rx.recv().await else {
-                return;
-            };
+            let mut found = HashSet::new();
+            while let Ok(batch) = rx.recv().await {
+                let Some(widget) = widget_weak.upgrade() else {
+                    return;
+                };
+                if widget.imp().folder_generation.get() != generation {
+                    return;
+                }
+                let Some(root) = root.as_ref() else {
+                    return;
+                };
+                found.extend(batch);
+                let tree = folder_tree_from(root, &found);
+                let ignored_folders = state.borrow().disabled_folders.clone();
+                widget.set_folder_tree(&tree, &ignored_folders);
+
+                // Open the folder the view was on as soon as its row exists,
+                // unless the user has picked another in the meantime.
+                if let crate::ui::state::ViewScope::Folder(path) = state.borrow().scope.clone() {
+                    if widget.imp().list_box.selected_row().is_none() {
+                        widget.select_folder(&path);
+                    }
+                }
+            }
             let Some(widget) = widget_weak.upgrade() else {
                 return;
             };
-
             if widget.imp().folder_generation.get() != generation {
                 return;
             }
-            let ignored_folders = state.borrow().disabled_folders.clone();
-            widget.set_folder_tree(&tree, &ignored_folders);
-
-            if let crate::ui::state::ViewScope::Folder(path) = state.borrow().scope.clone() {
-                widget.select_folder(&path);
-            } else if let Some(path) = widget.preferred_initial_folder_path() {
-                widget.select_folder(&path);
-                widget.emit_folder_selected(path);
+            let on_a_folder =
+                matches!(state.borrow().scope, crate::ui::state::ViewScope::Folder(_));
+            if !on_a_folder && widget.imp().list_box.selected_row().is_none() {
+                if let Some(path) = widget.preferred_initial_folder_path() {
+                    widget.select_folder(&path);
+                    widget.emit_folder_selected(path);
+                }
             }
         });
     }
 
-    fn replace_folder_rows(&self, entries: &[FolderListEntry], ignored_folders: &[PathBuf]) {
-        *self.imp().folder_entries.borrow_mut() = entries.to_vec();
+    /// Shows `entries`. With `grow_in_place`, rows that were only added since
+    /// the last call are inserted where they belong, keeping the selection and
+    /// scroll position while a scan fills the list; otherwise, or when rows
+    /// went away, the list is rebuilt.
+    fn replace_folder_rows(
+        &self,
+        entries: &[FolderListEntry],
+        ignored_folders: &[PathBuf],
+        grow_in_place: bool,
+    ) {
+        let previous = self.imp().folder_entries.replace(entries.to_vec());
         *self.imp().ignored_folders.borrow_mut() = ignored_folders.to_vec();
-        while let Some(child) = self.imp().list_box.first_child() {
-            self.imp().list_box.remove(&child);
+        let added = rows_added(&previous, entries).filter(|_| grow_in_place);
+        let in_place = added.is_some();
+        if !in_place {
+            while let Some(child) = self.imp().list_box.first_child() {
+                self.imp().list_box.remove(&child);
+            }
         }
+        let added: HashSet<usize> = added.into_iter().flatten().collect();
+        let mut existing = self.imp().list_box.first_child();
 
-        for entry in entries {
+        for (index, entry) in entries.iter().enumerate() {
+            let collapsed = self
+                .imp()
+                .collapsed_folder_paths
+                .borrow()
+                .contains(&entry.path);
+            if in_place && !added.contains(&index) {
+                if let Some(row) = existing.take() {
+                    existing = row.next_sibling();
+                    if let Ok(row) = row.downcast::<FolderRow>() {
+                        row.set_has_children(entry.has_children, collapsed);
+                    }
+                }
+                continue;
+            }
             let row = FolderRow::new(
                 entry.path.clone(),
                 &entry.label,
                 entry.depth,
                 entry.has_children,
-                self.imp()
-                    .collapsed_folder_paths
-                    .borrow()
-                    .contains(&entry.path),
+                collapsed,
             );
             row.set_ignored(row_is_ignored(&row.path(), ignored_folders));
             self.attach_folder_row_menu(&row);
-            self.imp().list_box.append(&row);
+            self.imp().list_box.insert(&row, index as i32);
         }
     }
 
     fn set_folder_tree(&self, tree: &[FolderNode], ignored_folders: &[PathBuf]) {
+        self.show_folder_tree(tree, ignored_folders, true);
+    }
+
+    fn show_folder_tree(&self, tree: &[FolderNode], ignored_folders: &[PathBuf], grow: bool) {
         {
+            // Folders seen for the first time start collapsed (below the
+            // root); ones the user has already opened or closed keep their state.
+            let mut known = self.imp().known_folder_paths.borrow_mut();
             let mut collapsed = self.imp().collapsed_folder_paths.borrow_mut();
-            if collapsed.is_empty() {
-                *collapsed = default_collapsed_folder_paths(tree);
-            }
+            collapsed.extend(
+                default_collapsed_folder_paths(tree)
+                    .into_iter()
+                    .filter(|path| !known.contains(path)),
+            );
+            collect_folder_paths(tree, &mut known);
         }
         *self.imp().folder_tree.borrow_mut() = tree.to_vec();
         let entries = visible_folder_entries(tree, &self.imp().collapsed_folder_paths.borrow());
-        self.replace_folder_rows(&entries, ignored_folders);
+        self.replace_folder_rows(&entries, ignored_folders, grow);
     }
 
     pub fn refresh_active_library(&self, state: Rc<RefCell<AppState>>) {
@@ -355,6 +449,8 @@ impl SidebarPane {
                 .map(|library| library.root.display().to_string())
                 .as_deref(),
         );
+        // A new scan lists folders afresh: below the root they start collapsed.
+        self.imp().known_folder_paths.borrow_mut().clear();
         self.set_folder_tree(&[], &state.borrow().disabled_folders);
         self.populate_default_folders(state);
     }
@@ -980,7 +1076,7 @@ impl SidebarPane {
         );
         let tree = imp.folder_tree.borrow().clone();
         let ignored_folders = imp.ignored_folders.borrow().clone();
-        self.set_folder_tree(&tree, &ignored_folders);
+        self.show_folder_tree(&tree, &ignored_folders, false);
         self.select_folder(&path);
     }
 }
@@ -1089,24 +1185,38 @@ fn apply_icon_color(image: &gtk4::Image, color: &str) {
     image.add_css_class(&super::look::color_class(color, false));
 }
 
-fn build_folder_tree(library: &LibraryConfig) -> Vec<FolderNode> {
-    let root = library.root.clone();
-    build_folder_node_recursive(&root, &library.ignored_folders)
-        .map(|node| vec![node])
-        .unwrap_or_default()
+/// Walks the library root and reports each folder the sidebar should list: one
+/// with images of its own, or a disabled one (shown dimmed, not entered). The
+/// walk stays on the root's filesystem and skips hidden folders (`model::walk`),
+/// so a root such as Home does not crawl network shares or `.cache`. Ancestors of
+/// a reported folder are listed too; `folder_tree_from` adds them.
+fn scan_image_folders(
+    root: &Path,
+    disabled: &[PathBuf],
+    canceled: &dyn Fn() -> bool,
+    found: &mut dyn FnMut(&Path),
+) {
+    let device = walk::device_of(root);
+    scan_image_folders_below(root, device, disabled, canceled, found);
 }
 
-fn build_folder_node_recursive(path: &Path, disabled: &[PathBuf]) -> Option<FolderNode> {
+fn scan_image_folders_below(
+    path: &Path,
+    device: Option<u64>,
+    disabled: &[PathBuf],
+    canceled: &dyn Fn() -> bool,
+    found: &mut dyn FnMut(&Path),
+) {
+    if canceled() {
+        return;
+    }
     if row_is_ignored(path, disabled) {
-        return Some(FolderNode {
-            path: path.to_path_buf(),
-            children: Vec::new(),
-        });
+        found(path);
+        return;
     }
     let Ok(entries) = std::fs::read_dir(path) else {
-        return None;
+        return;
     };
-    let mut children = Vec::new();
     let mut has_images = false;
     for entry in entries.filter_map(Result::ok) {
         let Ok(file_type) = entry.file_type() else {
@@ -1114,24 +1224,67 @@ fn build_folder_node_recursive(path: &Path, disabled: &[PathBuf]) -> Option<Fold
         };
         if file_type.is_file() && is_image_file(&entry.path()) {
             has_images = true;
-            continue;
-        }
-        if !file_type.is_dir() {
-            continue;
-        }
-        if let Some(child) = build_folder_node_recursive(&entry.path(), disabled) {
-            children.push(child);
+        } else if file_type.is_dir() && walk::may_descend_into(&entry, device) {
+            scan_image_folders_below(&entry.path(), device, disabled, canceled, found);
         }
     }
-    children.sort_by(|a, b| path_sort_key(a.path.as_path(), b.path.as_path()));
-    if has_images || !children.is_empty() {
-        Some(FolderNode {
+    if has_images {
+        found(path);
+    }
+}
+
+/// The sidebar tree for the folders found so far: each one under `root`, with
+/// the folders between it and the root, children in path order.
+fn folder_tree_from(root: &Path, found: &HashSet<PathBuf>) -> Vec<FolderNode> {
+    let mut children: HashMap<&Path, HashSet<&Path>> = HashMap::new();
+    let mut listed: HashSet<&Path> = HashSet::new();
+    for folder in found.iter().filter(|folder| folder.starts_with(root)) {
+        let mut current = folder.as_path();
+        while listed.insert(current) {
+            if current == root {
+                break;
+            }
+            let Some(parent) = current.parent() else {
+                break;
+            };
+            children.entry(parent).or_default().insert(current);
+            current = parent;
+        }
+    }
+    if !listed.contains(root) {
+        return Vec::new();
+    }
+    fn node(path: &Path, children: &HashMap<&Path, HashSet<&Path>>) -> FolderNode {
+        let mut below: Vec<FolderNode> = children
+            .get(path)
+            .into_iter()
+            .flatten()
+            .map(|child| node(child, children))
+            .collect();
+        below.sort_by(|a, b| path_sort_key(&a.path, &b.path));
+        FolderNode {
             path: path.to_path_buf(),
-            children,
-        })
-    } else {
-        None
+            children: below,
+        }
     }
+    vec![node(root, &children)]
+}
+
+/// Which rows of `new` are not in `old`, if `new` is `old` with rows added
+/// (same order and depths), so the list can grow in place and keep its
+/// selection and scroll position. `None` means the rows must be rebuilt.
+fn rows_added(old: &[FolderListEntry], new: &[FolderListEntry]) -> Option<Vec<usize>> {
+    let mut kept = old.iter().peekable();
+    let mut added = Vec::new();
+    for (index, entry) in new.iter().enumerate() {
+        match kept.peek() {
+            Some(row) if row.path == entry.path && row.depth == entry.depth => {
+                kept.next();
+            }
+            _ => added.push(index),
+        }
+    }
+    kept.peek().is_none().then_some(added)
 }
 
 fn visible_folder_entries(
@@ -1160,6 +1313,13 @@ fn append_visible_folder_nodes(
         if !collapsed.contains(&node.path) {
             append_visible_folder_nodes(&node.children, depth + 1, collapsed, out);
         }
+    }
+}
+
+fn collect_folder_paths(nodes: &[FolderNode], out: &mut HashSet<PathBuf>) {
+    for node in nodes {
+        out.insert(node.path.clone());
+        collect_folder_paths(&node.children, out);
     }
 }
 
@@ -1339,6 +1499,19 @@ impl FolderRow {
 
     pub fn disclosure_button(&self) -> Option<gtk4::Button> {
         self.imp().disclosure_button.borrow().clone()
+    }
+
+    /// A folder that gains its first subfolder (or loses its last) gets its
+    /// disclosure arrow without the row being rebuilt.
+    pub fn set_has_children(&self, has_children: bool, is_collapsed: bool) {
+        if self.imp().has_children.replace(has_children) == has_children {
+            return;
+        }
+        if let Some(disclosure) = self.disclosure_button() {
+            disclosure.set_icon_name(folder_disclosure_icon_name(is_collapsed));
+            disclosure.set_sensitive(has_children);
+            disclosure.set_opacity(if has_children { 1.0 } else { 0.0 });
+        }
     }
 
     pub fn set_ignored(&self, ignored: bool) {
@@ -1573,6 +1746,121 @@ mod tests {
         let selected = preferred_initial_folder_path(&tree, &entries, &ignored).unwrap();
 
         assert_eq!(selected, PathBuf::from("/Pictures/Backup"));
+    }
+
+    fn scratch_folder(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("sharpr-sidebar-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"").unwrap();
+    }
+
+    fn scanned(root: &Path, disabled: &[PathBuf]) -> HashSet<PathBuf> {
+        let mut found = HashSet::new();
+        scan_image_folders(root, disabled, &|| false, &mut |path| {
+            found.insert(path.to_path_buf());
+        });
+        found
+    }
+
+    #[test]
+    fn scan_lists_nested_image_folders_and_skips_hidden_ones() {
+        let root = scratch_folder("scan");
+        touch(&root.join("Pictures/a.jpg"));
+        touch(&root.join("Pictures/Trips/Rome/b.png"));
+        touch(&root.join("Documents/notes.txt"));
+        touch(&root.join(".cache/thumbs/c.jpg"));
+        touch(&root.join("Pictures/.thumbnails/d.jpg"));
+
+        let found = scanned(&root, &[]);
+
+        assert_eq!(
+            found,
+            HashSet::from([root.join("Pictures"), root.join("Pictures/Trips/Rome")])
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_lists_a_disabled_folder_without_entering_it() {
+        let root = scratch_folder("disabled");
+        touch(&root.join("Art/a.jpg"));
+        touch(&root.join("Art/Old/b.jpg"));
+
+        let found = scanned(&root, &[root.join("Art/Old")]);
+
+        assert_eq!(
+            found,
+            HashSet::from([root.join("Art"), root.join("Art/Old")])
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_stops_when_canceled() {
+        let root = scratch_folder("canceled");
+        touch(&root.join("Art/a.jpg"));
+        let mut found = HashSet::new();
+        scan_image_folders(&root, &[], &|| true, &mut |path| {
+            found.insert(path.to_path_buf());
+        });
+        assert!(found.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tree_from_found_folders_adds_the_folders_between() {
+        let root = PathBuf::from("/home/u");
+        let found = HashSet::from([
+            PathBuf::from("/home/u/Pictures/Trips/Rome"),
+            PathBuf::from("/home/u/Art"),
+            PathBuf::from("/home/u/Pictures"),
+            PathBuf::from("/elsewhere/Stray"),
+        ]);
+
+        let tree = folder_tree_from(&root, &found);
+
+        let entries = visible_folder_entries(&tree, &HashSet::new());
+        let listed: Vec<_> = entries.iter().map(|e| (e.path.clone(), e.depth)).collect();
+        assert_eq!(
+            listed,
+            vec![
+                (PathBuf::from("/home/u"), 0),
+                (PathBuf::from("/home/u/Art"), 1),
+                (PathBuf::from("/home/u/Pictures"), 1),
+                (PathBuf::from("/home/u/Pictures/Trips"), 2),
+                (PathBuf::from("/home/u/Pictures/Trips/Rome"), 3),
+            ]
+        );
+        assert!(folder_tree_from(&root, &HashSet::new()).is_empty());
+        assert!(folder_tree_from(&root, &HashSet::from([PathBuf::from("/other/x")])).is_empty());
+    }
+
+    #[test]
+    fn rows_added_recognises_a_list_that_only_grew() {
+        let row = |path: &str, depth: u32| FolderListEntry {
+            path: PathBuf::from(path),
+            label: String::new(),
+            depth,
+            has_children: false,
+        };
+        let old = [row("/r", 0), row("/r/b", 1)];
+
+        let grown = [row("/r", 0), row("/r/a", 1), row("/r/b", 1), row("/r/c", 1)];
+        assert_eq!(rows_added(&old, &grown), Some(vec![1, 3]));
+        assert_eq!(rows_added(&[], &grown), Some(vec![0, 1, 2, 3]));
+        assert_eq!(rows_added(&old, &old), Some(vec![]));
+
+        let shrunk = [row("/r", 0)];
+        assert_eq!(rows_added(&old, &shrunk), None, "a row went away");
+        let moved = [row("/r", 0), row("/r/b", 2)];
+        assert_eq!(rows_added(&old, &moved), None, "a row changed depth");
     }
 
     #[test]

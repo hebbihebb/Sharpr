@@ -1,5 +1,21 @@
 # Current Tasks
 
+## Implemented: a broad library root such as Home (Work Order item 10)
+
+Branch: `fix/broad-library-root` (from `main`). Not deployed, not yet accepted.
+- One walk rule (`model/walk.rs`): stay on the root's filesystem (device-id
+  check) and skip hidden folders. Used by the sidebar scan and by
+  `collect_library_image_paths_cancellable`, so the indexer, fingerprints,
+  search and Overview no longer crawl `~/Network` or `.cache` either.
+- The sidebar scans on a worker and lists folders as it finds them (batches
+  every 200 ms, rows inserted in place so selection and scroll survive); the
+  first folder opens when the scan ends, unless one was already picked. A new
+  scan cancels the old one. Folders seen for the first time start collapsed.
+- Unit tests (hidden, nested, disabled, canceled, device rule, tree and row
+  merge) and GTK workflow `a_broad_root_lists_image_folders_without_hidden_ones`.
+  `./check.sh` parts and all 34 GTK workflows pass.
+- The user's test with Home as the root decides acceptance.
+
 ## Accepted: file-action results and thumbnail generations (Work Order items 9 and 7)
 
 Deployed as `790e2a4`; accepted by the user October 17 ("everything works"),
