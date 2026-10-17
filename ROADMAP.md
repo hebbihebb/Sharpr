@@ -752,9 +752,34 @@ will use its own feature branch.
 - Add focused geometry/GTK checks and document the control in the guide,
   shortcuts (if a key is assigned) and interface inventory when implemented.
 
+## Work Order And Claude Model
+
+Rated October 17, 2026 at the user's request. The user launches a fresh Claude session per task with the listed model and effort. Asked "what's next?", an agent names the first open row. Scale: Sonnet medium for bounded work with a clear spec; Sonnet high for threading, persistence or thumbnail-scheduler work; Opus where an open design question meets a data-safety or concurrency risk; Haiku for docs only. One model per task. Update this table when a task finishes or the order changes.
+
+| # | Task | Model, effort |
+| --- | --- | --- |
+| 1 | Crop Copy source format (D37): user acceptance, then merge `codex/audit-0.5.0` (rebase onto `main` first) | Sonnet medium |
+| 2 | 16:9 viewer guide (D36) | Sonnet medium |
+| 3 | Move file move, copy, and trash operations off the GTK thread | Opus medium |
+| 4 | Keep thumbnail generations through to completion, together with the folder-load token | Sonnet high |
+| 5 | Compare: bounded decodes and a screen-sized preview | Sonnet high |
+| 6 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
+| 7 | Re-link a bucket member moved outside Sharpr | Opus medium |
+| 8 | Guard or retire the startup legacy-bucket migration | Sonnet high |
+| 9 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
+| 10 | Use one sort implementation | Sonnet medium |
+| 11 | Merge the two thumbnail worker loops | Sonnet high |
+| 12 | Library Overview refresh, errors, and unsupported count | Sonnet medium |
+| 13 | Ctrl+Shift+S opens the GTK Inspector | Sonnet low |
+| 14 | Make the flaky GTK navigation test deterministic | Sonnet high |
+| 15 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal | Sonnet high |
+| 16 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
+| 17 | Trash Undo in the Flatpak (needs a Flatpak build to verify) | Sonnet high |
+| 18 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
+
 ## Backlog
 
-Optional and unordered. Pick something up only when a phase touches that area, or the user asks.
+Optional. Pick something up only when a phase touches that area, or the user asks. The suggested order and model are in the table above.
 
 - Split the rest of `SharprWindow::setup` and `filmstrip::build_ui` (about 700 lines), following the architecture decision above.
 - Merge the two near-identical thumbnail worker loops.
@@ -762,7 +787,6 @@ Optional and unordered. Pick something up only when a phase touches that area, o
 - Move file move, copy, and trash operations off the GTK thread.
 - Add a folder-load token so two loads of the same folder cannot both append.
 - Support non-UTF-8 paths.
-- Make Flatpak `home` access writable for move and rename, if the user needs it.
 - Guard the startup legacy-bucket migration (`migrate_legacy_collections_to_tags`) with a backup and count check, or retire it, before old databases are treated as a supported upgrade (audit finding 12).
 - Ctrl+Shift+S opened the GTK Inspector instead of Survey on the user's desktop (October 15). Find what claims the key, or choose another.
 - Re-link a bucket member moved outside Sharpr before the user opens its new folder. Today the bucket shows "image not found" until a pass reaches that folder (user, October 15).
