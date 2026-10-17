@@ -40,6 +40,12 @@
         </child>
         <child>
           <object class="AdwShortcutsItem">
+            <property name="title">Show or hide the 16:9 guide</property>
+            <property name="accelerator">&lt;Control&gt;g</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
             <property name="title">Image menu (copies, compare, file actions)</property>
             <property name="accelerator">&lt;Shift&gt;F10 Menu</property>
           </object>

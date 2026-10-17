@@ -78,6 +78,11 @@ fn build_context_menu_model(
         sec1.append_item(&menu_item("Info", "filmstrip.info", Some("<Control>i")));
     }
     sec1.append_item(&menu_item(
+        "16:9 Guide",
+        "win.toggle-guide",
+        Some("<Control>g"),
+    ));
+    sec1.append_item(&menu_item(
         "Open in Default Viewer",
         "filmstrip.open",
         Some("Return"),

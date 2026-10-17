@@ -8,12 +8,17 @@ one commit per finding. Deployed as `cabda19`. User accepted on October 17, 2026
 originals unchanged). Merged to `main` by fast-forward; not pushed. The
 commit hashes below predate the rebase onto `main`; use `git log` for current ones.
 
-## Done: cargo deny advisories. Planned next: 16:9 viewer guide (D36)
+## Active: 16:9 viewer guide (D36), awaiting acceptance
+
+Branch `feature/viewer-16x9-guide`: Ctrl+G / image menu → 16:9 Guide, inside the
+image with the outside dimmed. Geometry tests and a GTK check pass. Not deployed.
+
+## Done: cargo deny advisories
 
 `ROADMAP.md` Work Order item 2 is done: `deny.toml` ignores RUSTSEC-2026-0370,
 -0371 and -0372 (zvariant, zbus_names, zvariant_derive), all via glycin only.
 Config only; `./check.sh` and `cargo build` pass. Merged to `main`; not pushed.
-Next is item 3, D36, on its own feature branch from `main`.
+Item 3 (D36) is in progress on its feature branch.
 
 Committed and verified:
 - A1 `cd32145`: exclusive copies, preserving source bytes and permissions.

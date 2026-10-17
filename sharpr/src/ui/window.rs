@@ -3512,6 +3512,21 @@ impl SharprWindow {
             ));
         }
 
+        // Ctrl+G — the 16:9 viewer guide (decision D36).
+        {
+            let viewer_g = viewer.clone();
+            shortcuts.add_shortcut(gtk4::Shortcut::new(
+                Some(gtk4::ShortcutTrigger::parse_string("<Control>g").unwrap()),
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if text_input_has_focus(widget) || file_actions_blocked(widget) {
+                        return glib::Propagation::Proceed;
+                    }
+                    viewer_g.toggle_guide();
+                    glib::Propagation::Stop
+                })),
+            ));
+        }
+
         // Ctrl+B — add the selected images to a bucket (decision D5).
         {
             let filmstrip_b = filmstrip.clone();
@@ -4166,6 +4181,17 @@ impl SharprWindow {
             }
         });
         self.add_action(&toggle_presentation_action);
+
+        let guide_action = gio::SimpleAction::new("toggle-guide", None);
+        {
+            let viewer_weak = viewer.downgrade();
+            guide_action.connect_activate(move |_, _| {
+                if let Some(viewer) = viewer_weak.upgrade() {
+                    viewer.toggle_guide();
+                }
+            });
+        }
+        self.add_action(&guide_action);
 
         let zoom_initial = match viewer.zoom_mode() {
             ZoomMode::Fit => "fit",

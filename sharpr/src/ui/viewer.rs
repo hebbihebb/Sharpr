@@ -33,6 +33,9 @@ mod imp {
         /// Shown briefly when a decode error prevents the image from loading.
         pub error_label: gtk4::Label,
         pub zoom_label: gtk4::Label,
+        /// D36: non-interactive 16:9 guide drawn over the displayed image.
+        pub guide: gtk4::DrawingArea,
+        pub guide_on: Cell<bool>,
         pub zoom_hide_source: RefCell<Option<glib::SourceId>>,
         /// Path of the image currently displayed — set by load_image(), cleared by clear().
         pub current_path: RefCell<Option<PathBuf>>,
@@ -114,8 +117,13 @@ mod imp {
             zoom_label.set_margin_bottom(16);
             zoom_label.set_visible(false);
 
+            let guide = gtk4::DrawingArea::new();
+            guide.set_can_target(false);
+            guide.set_visible(false);
+
             let overlay = gtk4::Overlay::new();
             overlay.set_child(Some(&scrolled_window));
+            overlay.add_overlay(&guide);
             overlay.add_overlay(&metadata_chip);
             overlay.add_overlay(&spinner);
             overlay.add_overlay(&error_label);
@@ -133,6 +141,8 @@ mod imp {
                 spinner,
                 error_label,
                 zoom_label,
+                guide,
+                guide_on: Cell::new(false),
                 zoom_hide_source: RefCell::new(None),
                 current_path: RefCell::new(None),
                 zoom_btn: std::cell::RefCell::new(None),
@@ -178,6 +188,21 @@ mod imp {
     impl WidgetImpl for ViewerPane {}
 }
 
+/// The largest 16:9 rectangle centred inside an image occupying
+/// `x, y, width, height` (D36). A wider image overhangs the result at its
+/// sides, a taller one above and below; an exact 16:9 image matches it.
+pub(crate) fn guide_rect(x: f64, y: f64, width: f64, height: f64) -> Option<(f64, f64, f64, f64)> {
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let (w, h) = if width * 9.0 > height * 16.0 {
+        (height * 16.0 / 9.0, height)
+    } else {
+        (width, width * 9.0 / 16.0)
+    };
+    Some((x + (width - w) / 2.0, y + (height - h) / 2.0, w, h))
+}
+
 glib::wrapper! {
     pub struct ViewerPane(ObjectSubclass<imp::ViewerPane>)
         @extends gtk4::Widget,
@@ -216,6 +241,98 @@ impl ViewerPane {
         *imp.chip_idle_source.borrow_mut() = Some(source);
     }
 
+    /// D36: shows or hides the 16:9 guide; it changes no pixels or files.
+    pub fn toggle_guide(&self) {
+        let imp = self.imp();
+        let on = !imp.guide_on.get();
+        imp.guide_on.set(on);
+        imp.guide.set_visible(on);
+        imp.guide.queue_draw();
+    }
+
+    pub fn guide_visible(&self) -> bool {
+        self.imp().guide_on.get()
+    }
+
+    fn setup_guide(&self) {
+        let imp = self.imp();
+        let w = self.downgrade();
+        imp.guide.set_draw_func(move |_, cr, _, _| {
+            let Some(viewer) = w.upgrade() else { return };
+            let imp = viewer.imp();
+            if imp.picture.paintable().is_none() {
+                return;
+            }
+            let (Some(img), Some(view)) = (
+                imp.picture.compute_bounds(&imp.overlay),
+                imp.scrolled_window.compute_bounds(&imp.overlay),
+            ) else {
+                return;
+            };
+            let (ix, iy, iw, ih) = (
+                f64::from(img.x()),
+                f64::from(img.y()),
+                f64::from(img.width()),
+                f64::from(img.height()),
+            );
+            let Some((gx, gy, gw, gh)) = guide_rect(ix, iy, iw, ih) else {
+                return;
+            };
+            // Stay inside the scrolled viewport when the image overflows it.
+            cr.rectangle(
+                f64::from(view.x()),
+                f64::from(view.y()),
+                f64::from(view.width()),
+                f64::from(view.height()),
+            );
+            cr.clip();
+            // Dim the part of the image outside the guide, then outline it.
+            super::look::cairo_color(cr, crate::palette::SCRIM);
+            cr.set_fill_rule(gtk4::cairo::FillRule::EvenOdd);
+            cr.rectangle(ix, iy, iw, ih);
+            cr.rectangle(gx, gy, gw, gh);
+            let _ = cr.fill();
+            super::look::cairo_color(cr, crate::palette::GUIDE_EDGE_SHADOW);
+            cr.set_line_width(4.0);
+            cr.rectangle(gx, gy, gw, gh);
+            let _ = cr.stroke();
+            super::look::cairo_color(cr, crate::palette::CROP_EDGE);
+            cr.set_line_width(2.0);
+            cr.rectangle(gx, gy, gw, gh);
+            let _ = cr.stroke();
+        });
+
+        // Follow zoom, pan, resize and image changes: redraw only when the
+        // picture or viewport geometry moved, and only while the guide is on.
+        let last = Cell::new(None::<[i32; 6]>);
+        let w = self.downgrade();
+        imp.guide.add_tick_callback(move |guide, _| {
+            let Some(viewer) = w.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let imp = viewer.imp();
+            if !imp.guide_on.get() {
+                last.set(None);
+                return glib::ControlFlow::Continue;
+            }
+            let key = imp.picture.compute_bounds(&imp.overlay).map(|r| {
+                [
+                    r.x() as i32,
+                    r.y() as i32,
+                    r.width() as i32,
+                    r.height() as i32,
+                    imp.scrolled_window.width(),
+                    imp.scrolled_window.height(),
+                ]
+            });
+            if key != last.get() {
+                last.set(key);
+                guide.queue_draw();
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
     pub fn current_path(&self) -> Option<PathBuf> {
         self.imp().current_path.borrow().clone()
     }
@@ -223,6 +340,7 @@ impl ViewerPane {
     fn build_ui(&self) {
         let imp = self.imp();
         imp.content_box.set_parent(self);
+        self.setup_guide();
 
         let motion = gtk4::EventControllerMotion::new();
         let w = self.downgrade();
@@ -976,5 +1094,63 @@ impl ViewerPane {
     fn set_adjustment_value(&self, adjustment: &gtk4::Adjustment, value: f64) {
         let max_value = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
         adjustment.set_value(value.clamp(adjustment.lower(), max_value));
+    }
+}
+
+#[cfg(test)]
+mod guide_tests {
+    use super::guide_rect;
+
+    fn near(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) {
+        assert!(
+            (a.0 - b.0).abs() < 1e-9
+                && (a.1 - b.1).abs() < 1e-9
+                && (a.2 - b.2).abs() < 1e-9
+                && (a.3 - b.3).abs() < 1e-9,
+            "{a:?} != {b:?}"
+        );
+    }
+
+    #[test]
+    fn exact_16_9_matches_the_image() {
+        near(
+            guide_rect(10.0, 20.0, 1600.0, 900.0).unwrap(),
+            (10.0, 20.0, 1600.0, 900.0),
+        );
+    }
+
+    #[test]
+    fn wider_image_overhangs_at_the_sides() {
+        let w = 500.0 * 16.0 / 9.0;
+        near(
+            guide_rect(0.0, 0.0, 2000.0, 500.0).unwrap(),
+            ((2000.0 - w) / 2.0, 0.0, w, 500.0),
+        );
+    }
+
+    #[test]
+    fn taller_landscape_overhangs_above_and_below() {
+        near(
+            guide_rect(0.0, 0.0, 1600.0, 1200.0).unwrap(),
+            (0.0, 150.0, 1600.0, 900.0),
+        );
+    }
+
+    #[test]
+    fn square_and_portrait_get_a_centred_band() {
+        near(
+            guide_rect(0.0, 0.0, 800.0, 800.0).unwrap(),
+            (0.0, 175.0, 800.0, 450.0),
+        );
+        near(
+            guide_rect(5.0, 0.0, 900.0, 1600.0).unwrap(),
+            (5.0, 546.875, 900.0, 506.25),
+        );
+    }
+
+    #[test]
+    fn empty_image_has_no_guide() {
+        assert!(guide_rect(0.0, 0.0, 0.0, 10.0).is_none());
+        assert!(guide_rect(0.0, 0.0, 10.0, -1.0).is_none());
     }
 }

@@ -2108,6 +2108,88 @@ fn settle(ms: u64) {
     pump_until(|| std::time::Instant::now() > until);
 }
 
+/// D36: Ctrl+G toggles the 16:9 guide without touching files, and the guide
+/// stays 16:9 and inside the displayed image across images, window sizes and
+/// zoom modes.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn guide_toggles_and_tracks_the_displayed_image() {
+    let root = isolated_fixture("guide");
+    std::fs::create_dir_all(&root).unwrap();
+    let sizes = [(320, 90), (320, 240), (180, 320), (320, 180), (200, 200)];
+    let mut paths = Vec::new();
+    for (i, (w, h)) in sizes.iter().enumerate() {
+        let path = root.join(format!("{i}.png"));
+        image::RgbImage::from_pixel(*w, *h, image::Rgb([90, 120, 200]))
+            .save(&path)
+            .unwrap();
+        paths.push(path);
+    }
+    let originals: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 5 && window.is_mapped());
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+
+    assert!(!viewer.guide_visible());
+    assert!(window_shortcut(&window, "<Control>g"));
+    assert!(viewer.guide_visible());
+
+    for (path, (w, h)) in paths.iter().zip(sizes) {
+        for (win_w, win_h) in [(1024, 600), (1280, 720), (1024, 600)] {
+            window.set_default_size(win_w, win_h);
+            viewer.load_image(path.clone());
+            pump_until(|| viewer.imp().picture.paintable().is_some());
+            settle(300);
+            for mode in [ZoomMode::Fit, ZoomMode::OneToOne, ZoomMode::Fit] {
+                viewer.set_zoom_mode(mode);
+                settle(150);
+                let imp = viewer.imp();
+                let img = imp.picture.compute_bounds(&imp.overlay).unwrap();
+                let (x, y, gw, gh) = crate::ui::viewer::guide_rect(
+                    f64::from(img.x()),
+                    f64::from(img.y()),
+                    f64::from(img.width()),
+                    f64::from(img.height()),
+                )
+                .unwrap();
+                assert!((gw * 9.0 - gh * 16.0).abs() < 1e-6);
+                assert!(x >= f64::from(img.x()) - 1e-6 && y >= f64::from(img.y()) - 1e-6);
+                assert!(x + gw <= f64::from(img.x() + img.width()) + 1e-6);
+                assert!(y + gh <= f64::from(img.y() + img.height()) + 1e-6);
+                // The displayed picture keeps the image's own aspect ratio.
+                let shown = f64::from(img.width()) / f64::from(img.height());
+                assert!(
+                    (shown - f64::from(w) / f64::from(h)).abs() < 0.05,
+                    "{shown}"
+                );
+            }
+        }
+    }
+
+    assert!(window_shortcut(&window, "<Control>g"));
+    assert!(!viewer.guide_visible());
+    for (path, bytes) in paths.iter().zip(&originals) {
+        assert_eq!(&std::fs::read(path).unwrap(), bytes);
+    }
+    window.close();
+}
+
 /// Contextual controls preserve browsing state and reach the same actions
 /// from the keyboard, including when a header button has focus.
 #[test]

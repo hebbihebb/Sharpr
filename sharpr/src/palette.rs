@@ -7,4 +7,6 @@ pub const SCRIM: Ink = (0.0, 0.0, 0.0, 0.6);
 pub const WHITE: Ink = (1.0, 1.0, 1.0, 1.0);
 pub const DIVIDER: Ink = (1.0, 1.0, 1.0, 0.9);
 pub const CROP_GRID: Ink = (1.0, 1.0, 1.0, 0.35);
+/// Dark outline under the 16:9 guide so it reads on light images (D36).
+pub const GUIDE_EDGE_SHADOW: Ink = (0.0, 0.0, 0.0, 0.5);
 pub const CROP_EDGE: Ink = (1.0, 1.0, 1.0, 0.95);

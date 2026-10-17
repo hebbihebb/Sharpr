@@ -739,8 +739,8 @@ open the copy in an external tool, and verify batch export still writes WebP.
 
 ## Planned: 16:9 Viewer Guide (D36)
 
-**Status: planned**, requested by the user on October 16, 2026. Implementation
-will use its own feature branch.
+**Status: implemented and verified** on `feature/viewer-16x9-guide`, awaiting user
+acceptance. Ctrl+G or image menu → 16:9 Guide; inside the image, outside dimmed.
 
 **Outcome:** Judge at a glance whether an image is wider or taller than a
 16:9 landscape wallpaper, using a toggleable border/ruler in the viewer.
