@@ -2301,6 +2301,164 @@ fn guide_moves_resizes_and_crops_to_its_frame() {
     window.close();
 }
 
+/// Crop Copy opens on the viewer's zoom and position, the selection stays on
+/// the same pixels as it zooms, the viewer is left as it was, and zooming past
+/// the preview loads the full image.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn crop_zooms_with_the_selection_attached() {
+    let root = isolated_fixture("crop-zoom");
+    std::fs::create_dir_all(&root).unwrap();
+    let small = root.join("a-small.png");
+    image::RgbImage::from_pixel(640, 360, image::Rgb([90, 120, 200]))
+        .save(&small)
+        .unwrap();
+    let big = root.join("b-big.png");
+    image::RgbImage::from_pixel(4000, 2250, image::Rgb([200, 120, 90]))
+        .save(&big)
+        .unwrap();
+    let originals: Vec<Vec<u8>> = [&small, &big]
+        .iter()
+        .map(|p| std::fs::read(p).unwrap())
+        .collect();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 2 && window.is_mapped());
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+    viewer.load_image(small.clone());
+    pump_until(|| viewer.imp().picture.paintable().is_some());
+    settle(300);
+
+    // With the side panels already away, the viewer is as large as Crop
+    // Copy's canvas, so the view carries over to the pixel. Zoom the viewer
+    // in at a point, with the guide shown.
+    let panels = window.hide_side_panels();
+    settle(300);
+    assert!(window_shortcut(&window, "<Control>g"));
+    viewer.imp().pointer_pos.set((300.0, 200.0));
+    for _ in 0..10 {
+        viewer.apply_zoom(1.1);
+        settle(40);
+    }
+    // Let the picture reach the size the zoom asked for.
+    pump_until(|| {
+        let picture = &viewer.imp().picture;
+        picture.width() == picture.size_request().0
+    });
+    settle(300);
+    let zoom = viewer.imp().zoom.get();
+    assert!(zoom > 2.0, "the viewer is zoomed: {zoom}");
+    let overlay = viewer.imp().overlay.clone();
+    let shown = viewer.imp().picture.compute_bounds(&overlay).unwrap();
+    let (guide, _) = viewer.guide_geometry().unwrap();
+
+    // Crop opens on the same view: the image is where it was, and the
+    // selection is inside the guide.
+    assert!(window_shortcut(&window, "<Control><Shift>g"));
+    pump_until(|| window.crop_session().is_some());
+    let crop = window.crop_session().unwrap();
+    settle(300);
+    let canvas = crop.canvas().compute_bounds(&overlay).unwrap();
+    assert!(
+        canvas.x().abs() < 1.0 && canvas.y().abs() < 1.0,
+        "{canvas:?}"
+    );
+    let (ox, oy, scale) = crop.image_on_canvas();
+    let near = |a: f64, b: f64| (a - b).abs() < 2.0;
+    assert!(near(ox, f64::from(shown.x())), "{ox} vs {}", shown.x());
+    assert!(near(oy, f64::from(shown.y())), "{oy} vs {}", shown.y());
+    assert!(near(scale * 640.0, f64::from(shown.width())));
+    let (x, y, w, h) = crop.selection_on_canvas();
+    assert!(x >= guide.0 - 1.0 && y >= guide.1 - 1.0);
+    assert!(x + w <= guide.0 + guide.2 + 1.0 && y + h <= guide.1 + guide.3 + 1.0);
+    assert!(near(x + w / 2.0, guide.0 + guide.2 / 2.0));
+    assert!(near(y + h / 2.0, guide.1 + guide.3 / 2.0));
+
+    // Scrolling zooms at the pointer: the image pixel under it stays, and
+    // the selection stays on the same pixels.
+    let rect = crop.rect();
+    let at = (400.0, 250.0);
+    let under = ((at.0 - ox) / scale, (at.1 - oy) / scale);
+    crop.zoom_at(1.1f64.powi(4), at);
+    let (nx, ny, nscale) = crop.image_on_canvas();
+    assert!(nscale > scale);
+    assert!(near(under.0 * nscale + nx, at.0) && near(under.1 * nscale + ny, at.1));
+    assert_eq!(crop.rect(), rect, "zooming leaves the selection alone");
+    let (sx, sy, sw, _) = crop.selection_on_canvas();
+    assert!(near(sx, nx + f64::from(rect.x) * nscale));
+    assert!(near(sy, ny + f64::from(rect.y) * nscale));
+    assert!(near(sw, f64::from(rect.width) * nscale));
+    // Zooming out reaches the whole image, centred, and no further.
+    crop.zoom_at(1e-6, at);
+    assert_eq!(crop.view(), crate::ui::crop_view::CropView::fit((640, 360)));
+
+    // Leaving puts the viewer back as it was.
+    crop.close();
+    pump_until(|| window.crop_session().is_none());
+    settle(100);
+    assert_eq!(viewer.imp().zoom.get(), zoom);
+    assert_eq!(
+        viewer.imp().picture.compute_bounds(&overlay).unwrap(),
+        shown
+    );
+
+    // With the panels showing, opening Crop Copy hides them and widens the
+    // canvas; the image keeps its scale and its centre.
+    window.restore_side_panels(panels);
+    settle(300);
+    let (scale_before, (fx, fy)) = viewer.view_state().unwrap();
+    assert!(window_shortcut(&window, "<Control><Shift>g"));
+    pump_until(|| window.crop_session().is_some());
+    let crop = window.crop_session().unwrap();
+    settle(300);
+    let (_, _, scale) = crop.image_on_canvas();
+    assert!((scale - scale_before).abs() < 0.01 * scale_before);
+    let centre = crop.view().centre;
+    assert!((centre.0 - fx * 640.0).abs() < 2.0 && (centre.1 - fy * 360.0).abs() < 2.0);
+    let (x, y, w, h) = crop.selection_on_canvas();
+    let canvas = crop.canvas();
+    assert!(x >= 0.0 && y >= 0.0);
+    assert!(x + w <= f64::from(canvas.width()) && y + h <= f64::from(canvas.height()));
+    crop.close();
+    pump_until(|| window.crop_session().is_none());
+
+    // An image the viewer isn't showing opens on a 2560 pixel preview, and
+    // zooming past it loads the full image.
+    crate::ui::crop_mode::start(&window, big.clone(), None);
+    pump_until(|| window.crop_session().is_some());
+    let crop = window.crop_session().unwrap();
+    assert_eq!(crop.picture_width(), 2560);
+    assert_eq!(
+        crop.view(),
+        crate::ui::crop_view::CropView::fit((4000, 2250))
+    );
+    crop.zoom_at(6.0, (400.0, 250.0));
+    pump_until(|| crop.picture_width() == 4000);
+    assert_eq!(crop.rect().width % 16, 0, "the selection is untouched");
+    crop.close();
+    pump_until(|| window.crop_session().is_none());
+
+    for (path, bytes) in [&small, &big].into_iter().zip(&originals) {
+        assert_eq!(&std::fs::read(path).unwrap(), bytes);
+    }
+    window.close();
+}
+
 /// Contextual controls preserve browsing state and reach the same actions
 /// from the keyboard, including when a header button has focus.
 #[test]

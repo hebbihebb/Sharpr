@@ -4,6 +4,7 @@ pub mod compare_page;
 pub mod compare_view;
 pub mod copies_dialog;
 pub mod crop_mode;
+pub mod crop_view;
 pub mod export_dialog;
 pub mod filmstrip;
 mod fonts;

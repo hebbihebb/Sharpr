@@ -19,7 +19,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `fingerprint.rs` | Content fingerprints (xxh3-128) and the background pass service (GTK-free) |
 | `ui/look.rs`, `palette.rs`, `data/style.css`, `ui/fonts.rs` | One stylesheet/provider, shared palette/drawing tokens and the embedded JetBrains Mono fonts. Fonts are registered once on GTK's Pango font map from anonymous `memfd` files; their handles stay alive on the UI thread, with `CLOEXEC` so inference children do not inherit them. |
 | `ui/sidebar.rs` | Folder tree and buckets (the Tags page was removed on 2026-10-13, D20) |
-| `ui/export_dialog.rs`, `ui/crop_mode.rs`, `export/batch.rs` | Phase 6 output: the "Export as WebP…" dialog and its background batch job, and Crop Copy in the viewer at full size |
+| `ui/export_dialog.rs`, `ui/crop_mode.rs`, `ui/crop_view.rs`, `export/batch.rs` | Phase 6 output: the "Export as WebP…" dialog and its background batch job, and Crop Copy in the viewer at full size, with zoom and pan (`crop_view.rs` is the pure view geometry; a full-resolution decode for zooming in runs on a worker) |
 | `ui/state.rs` | `AppState` (`Rc<RefCell<_>>`, GTK thread only) and `ViewScope` |
 | `model/library.rs` | `LibraryManager`: list store, path index, selection, and metadata caches |
 | `model/browse.rs` | Pure aspect, resolution, and orientation filter and sort logic |

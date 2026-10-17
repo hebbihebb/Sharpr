@@ -37,6 +37,8 @@ mod imp {
         /// input itself; a capture gesture on the overlay grabs it (D38).
         pub guide: crate::ui::guide_layer::GuideLayer,
         pub guide_on: Cell<bool>,
+        /// Crop Copy covers the viewer; scrolling is its to use.
+        pub crop_open: Cell<bool>,
         /// Where the user moved or resized the guide, in overlay coordinates;
         /// `None` fits it to the image as shown at Fit.
         pub(crate) guide_manual: Cell<Option<super::Rect>>,
@@ -148,6 +150,7 @@ mod imp {
                 zoom_label,
                 guide,
                 guide_on: Cell::new(false),
+                crop_open: Cell::new(false),
                 guide_manual: Cell::new(None),
                 guide_drag: Cell::new(None),
                 zoom_hide_source: RefCell::new(None),
@@ -448,6 +451,30 @@ impl ViewerPane {
         guide_frame(guide, image)
     }
 
+    /// The image's scale on screen (pixels per image pixel) and the image
+    /// point at the middle of the viewport as fractions of the image, for
+    /// Crop Copy to open on the same view (the selection then lands where
+    /// the guide was). Read from the picture's actual size and place, so it
+    /// holds even while the scroll adjustments catch up with a zoom.
+    pub fn view_state(&self) -> Option<(f64, (f64, f64))> {
+        let imp = self.imp();
+        let paintable = imp.picture.paintable()?;
+        let (vx, vy, vw, vh) = bounds_rect(&imp.scrolled_window.compute_bounds(&imp.overlay)?);
+        let (ix, iy, iw, ih) = bounds_rect(&imp.picture.compute_bounds(&imp.overlay)?);
+        let (width, _) = self.image_size(&paintable);
+        (iw > 0.0 && ih > 0.0).then(|| {
+            (
+                iw / width,
+                ((vx + vw / 2.0 - ix) / iw, (vy + vh / 2.0 - iy) / ih),
+            )
+        })
+    }
+
+    /// Crop Copy takes over scrolling while it covers the viewer.
+    pub fn set_crop_open(&self, open: bool) {
+        self.imp().crop_open.set(open);
+    }
+
     pub fn guide_visible(&self) -> bool {
         self.imp().guide_on.get()
     }
@@ -693,6 +720,9 @@ impl ViewerPane {
         let w = self.downgrade();
         scroll.connect_scroll(move |ctrl, _dx, dy| {
             if let Some(viewer) = w.upgrade() {
+                if viewer.imp().crop_open.get() {
+                    return glib::Propagation::Proceed;
+                }
                 if let Some((x, y)) = ctrl.current_event().and_then(|event| event.position()) {
                     viewer.imp().pointer_pos.set((x, y));
                 }
@@ -910,7 +940,7 @@ impl ViewerPane {
     // Zoom
     // -----------------------------------------------------------------------------------
 
-    fn apply_zoom(&self, factor: f64) {
+    pub(crate) fn apply_zoom(&self, factor: f64) {
         let imp = self.imp();
         let old_zoom = imp.zoom.get();
         let Some(paintable) = imp.picture.paintable() else {

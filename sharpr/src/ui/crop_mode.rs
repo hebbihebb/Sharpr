@@ -1,7 +1,9 @@
 //! Crop Copy in the viewer at full size (`ROADMAP.md` Phase 6): the image
 //! fills the viewer with a selection to move and resize, 16:9 or free, and
-//! saves a new copy in the source format. The side panels make way while
-//! cropping; F11 makes it fullscreen. Originals are only read.
+//! saves a new copy in the source format. It opens on the viewer's zoom and
+//! position, and scrolling zooms at the pointer while the selection stays on
+//! the same pixels. The side panels make way while cropping; F11 makes it
+//! fullscreen. Originals are only read.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -11,10 +13,14 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
 use crate::export::{Corner, CropConfig, CropRect};
+use crate::ui::crop_view::{self, CropView};
 use crate::ui::window::SharprWindow;
 
-/// The longest edge of a preview decoded on a worker.
+/// The longest edge of a preview decoded on a worker; zooming in past what it
+/// holds loads the full image.
 const PREVIEW_EDGE: u32 = 2560;
+/// One scroll step's zoom, as in the viewer.
+const ZOOM_STEP: f64 = 1.1;
 /// How close to a corner, in screen pixels, a drag resizes.
 const HANDLE: f64 = 18.0;
 
@@ -22,26 +28,67 @@ const HANDLE: f64 = 18.0;
 enum Drag {
     Move(CropRect),
     Resize(Corner, CropRect),
+    /// Dragging the image itself, from this view.
+    Pan(CropView),
 }
+
+/// The viewer's scale (screen pixels per image pixel) and centre (fractions
+/// of the image).
+type ViewerView = (f64, (f64, f64));
 
 struct Crop {
     source: PathBuf,
     /// The source's size and modification time when cropping started.
     stamp: (u64, i64),
     dims: (u32, u32),
+    /// The selection, in image pixels, so it stays on the same pixels
+    /// whatever the zoom and pan do.
     rect: Cell<CropRect>,
     aspect: Cell<Option<(u32, u32)>>,
     drag: Cell<Option<Drag>>,
+    view: Cell<CropView>,
+    /// The viewer's view to open on, taken once the canvas has a size.
+    opening: Cell<Option<ViewerView>>,
+    /// What the canvas shows: the viewer's picture or a preview, then the
+    /// full image once zooming needs it.
+    image: RefCell<gdk4::Paintable>,
+    full_requested: Cell<bool>,
+    /// Crop mode has been left; late results are dropped.
+    closed: Cell<bool>,
+    /// The pointer on the canvas, where scrolling zooms.
+    pointer: Cell<Option<(f64, f64)>>,
 }
 
-/// Where the image sits on a `width`×`height` canvas: offset and scale.
-fn placement(dims: (u32, u32), width: f64, height: f64) -> (f64, f64, f64) {
-    let scale = (width / f64::from(dims.0)).min(height / f64::from(dims.1));
-    (
-        (width - f64::from(dims.0) * scale) / 2.0,
-        (height - f64::from(dims.1) * scale) / 2.0,
-        scale,
-    )
+impl Crop {
+    /// The view for a canvas of `size`: the viewer's view on the first
+    /// call, otherwise the current one kept valid for the canvas.
+    fn view(&self, size: (f64, f64)) -> CropView {
+        if size.0 <= 0.0 || size.1 <= 0.0 {
+            return self.view.get();
+        }
+        let view = match self.opening.take() {
+            Some((scale, fraction)) => CropView::from_scale(scale, fraction, self.dims, size),
+            None => self.view.get().clamped(self.dims, size),
+        };
+        self.view.set(view);
+        view
+    }
+
+    /// The selection on a canvas of `size`: x, y, width, height.
+    fn selection(&self, size: (f64, f64)) -> (f64, f64, f64, f64) {
+        let (ox, oy, scale) = self.view(size).placement(self.dims, size);
+        let r = self.rect.get();
+        (
+            ox + f64::from(r.x) * scale,
+            oy + f64::from(r.y) * scale,
+            f64::from(r.width) * scale,
+            f64::from(r.height) * scale,
+        )
+    }
+}
+
+fn canvas_size(canvas: &crate::ui::guide_layer::GuideLayer) -> (f64, f64) {
+    (f64::from(canvas.width()), f64::from(canvas.height()))
 }
 
 /// Starts cropping `source`: reads its displayed size and a preview on a
@@ -57,6 +104,8 @@ pub fn start(window: &SharprWindow, source: PathBuf, frame: Option<(f64, f64, f6
         .then(|| viewer.imp().picture.paintable())
         .flatten();
     let need_preview = shown.is_none();
+    // Open on the viewer's zoom and position when it shows this image.
+    let viewer_view = shown.as_ref().and_then(|_| viewer.view_state());
     // A later request, or moving to another image, makes this one stale.
     let request = window.imp().crop_request.get().wrapping_add(1);
     window.imp().crop_request.set(request);
@@ -123,7 +172,7 @@ pub fn start(window: &SharprWindow, source: PathBuf, frame: Option<(f64, f64, f6
                     })
                 });
                 if let Some(paintable) = paintable {
-                    open(&window, source, dims, stamp, frame, &paintable);
+                    open(&window, source, dims, stamp, frame, viewer_view, paintable);
                 }
             }
             Err(error) => {
@@ -139,7 +188,8 @@ fn open(
     dims: (u32, u32),
     stamp: (u64, i64),
     frame: Option<(f64, f64, f64, f64)>,
-    paintable: &gdk4::Paintable,
+    viewer_view: Option<ViewerView>,
+    paintable: gdk4::Paintable,
 ) {
     let Some(viewer) = window.imp_viewer() else {
         return;
@@ -155,6 +205,12 @@ fn open(
         }),
         aspect: Cell::new(aspect),
         drag: Cell::new(None),
+        view: Cell::new(CropView::fit(dims)),
+        opening: Cell::new(viewer_view),
+        image: RefCell::new(paintable),
+        full_requested: Cell::new(false),
+        closed: Cell::new(false),
+        pointer: Cell::new(None),
     });
 
     let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -164,20 +220,10 @@ fn open(
     stage.set_vexpand(true);
     // Look prototype: a neutral canvas in both themes (I14).
     stage.add_css_class("sharpr-canvas");
-    let picture = gtk4::Picture::for_paintable(paintable);
-    picture.set_can_shrink(true);
-    picture.set_content_fit(gtk4::ContentFit::Contain);
-    picture.set_margin_top(12);
-    picture.set_margin_bottom(12);
-    picture.set_margin_start(12);
-    picture.set_margin_end(12);
-    stage.set_child(Some(&picture));
+    // The canvas draws the image as well as the selection, and covers the
+    // whole viewer, so the image starts exactly where the viewer had it.
     let canvas = crate::ui::guide_layer::GuideLayer::default();
-    canvas.set_margin_top(12);
-    canvas.set_margin_bottom(12);
-    canvas.set_margin_start(12);
-    canvas.set_margin_end(12);
-    stage.add_overlay(&canvas);
+    stage.set_child(Some(&canvas));
     root.append(&stage);
 
     let controls = crate::ui::window::mode_header::ModeControls::new();
@@ -197,15 +243,22 @@ fn open(
     size.add_css_class("dim-label");
     size.add_css_class("numeric");
     controls.center.append(&size);
-    // Look prototype: the keys that work here, in one quiet line (D26).
-    let spacer = gtk4::Label::new(None);
-    spacer.set_markup(
-        "drag to move · drag a corner to resize   <b>Enter</b> save   <b>Esc</b> cancel",
+    // Look prototype: the keys that work here, in one quiet line (D26),
+    // over the canvas so the canvas keeps the viewer's size.
+    let hints = gtk4::Label::new(None);
+    hints.set_markup(
+        "scroll to zoom · drag the picture to pan · drag the box to move · drag a corner to resize   <b>Enter</b> save   <b>Esc</b> cancel",
     );
-    spacer.add_css_class("sharpr-keys");
-    spacer.set_wrap(true);
-    spacer.set_margin_bottom(6);
-    root.append(&spacer);
+    hints.add_css_class("sharpr-keys");
+    hints.add_css_class("sharpr-keys-osd");
+    hints.set_wrap(true);
+    hints.set_halign(gtk4::Align::Center);
+    hints.set_valign(gtk4::Align::End);
+    hints.set_margin_bottom(12);
+    hints.set_margin_start(12);
+    hints.set_margin_end(12);
+    hints.set_can_target(false);
+    stage.add_overlay(&hints);
     let bar = &controls.end;
     let destination = Rc::new(RefCell::new(
         window
@@ -256,25 +309,61 @@ fn open(
     };
     update_size();
 
+    // Zooming past what the picture holds loads the full image once, off the
+    // GTK thread; it is asked for from the draw, which sees every view change.
+    let want_full: Rc<dyn Fn()> = {
+        let crop = crop.clone();
+        let canvas = canvas.downgrade();
+        let window = window.downgrade();
+        Rc::new(move || {
+            if crop.full_requested.get() || crop.closed.get() {
+                return;
+            }
+            let (Some(canvas), Some(window)) = (canvas.upgrade(), window.upgrade()) else {
+                return;
+            };
+            let size = canvas_size(&canvas);
+            if size.0 <= 0.0 || size.1 <= 0.0 {
+                return;
+            }
+            let scale = crop.view(size).scale(crop.dims, size);
+            let held = crop.image.borrow().intrinsic_width().max(1) as u32;
+            if crop_view::needs_full_resolution(
+                held,
+                crop.dims.0,
+                scale,
+                f64::from(canvas.scale_factor().max(1)),
+            ) {
+                load_full(&window, &crop, &canvas);
+            }
+        })
+    };
+
     {
         let crop = crop.clone();
         let weak = canvas.downgrade();
+        let want_full = want_full.clone();
         canvas.set_draw(move |snapshot| {
             use crate::ui::guide_layer as layer;
             let Some(canvas) = weak.upgrade() else { return };
-            let (width, height) = (f64::from(canvas.width()), f64::from(canvas.height()));
-            let (ox, oy, scale) = placement(crop.dims, width, height);
+            let size = canvas_size(&canvas);
+            let (ox, oy, scale) = crop.view(size).placement(crop.dims, size);
             let image = (
                 ox,
                 oy,
                 f64::from(crop.dims.0) * scale,
                 f64::from(crop.dims.1) * scale,
             );
-            let r = crop.rect.get();
-            let (x, y) = (ox + f64::from(r.x) * scale, oy + f64::from(r.y) * scale);
-            let (w, h) = (f64::from(r.width) * scale, f64::from(r.height) * scale);
-            // Shade everything outside the selection.
-            layer::dim(snapshot, image, (x, y, w, h));
+            let (x, y, w, h) = crop.selection(size);
+            // Nothing is drawn outside the canvas.
+            snapshot.push_clip(&layer::graphene((0.0, 0.0, size.0, size.1)));
+            draw_image(snapshot, &crop.image.borrow(), image);
+            // Shade the visible image outside the selection.
+            layer::dim(
+                snapshot,
+                intersection(image, (0.0, 0.0, size.0, size.1)),
+                (x, y, w, h),
+            );
             // Thirds, then the border and corner handles.
             for i in 1..3 {
                 let f = f64::from(i) / 3.0;
@@ -291,22 +380,21 @@ fn open(
             }
             layer::outline(snapshot, crate::palette::CROP_EDGE, (x, y, w, h), 2.0);
             layer::handles(snapshot, (x, y, w, h));
+            snapshot.pop();
+            want_full();
         });
     }
 
+    // Drag a corner to resize, inside the box to move it, elsewhere to pan
+    // the picture; the middle button pans from anywhere.
     let drag = gtk4::GestureDrag::new();
     {
         let crop = crop.clone();
         let canvas = canvas.clone();
         drag.connect_drag_begin(move |_, sx, sy| {
-            let (ox, oy, scale) = placement(
-                crop.dims,
-                f64::from(canvas.width()),
-                f64::from(canvas.height()),
-            );
+            let size = canvas_size(&canvas);
+            let (x, y, w, h) = crop.selection(size);
             let r = crop.rect.get();
-            let (x, y) = (ox + f64::from(r.x) * scale, oy + f64::from(r.y) * scale);
-            let (w, h) = (f64::from(r.width) * scale, f64::from(r.height) * scale);
             let corners = [
                 (Corner::TopLeft, x, y),
                 (Corner::TopRight, x + w, y),
@@ -321,41 +409,89 @@ fn open(
             } else if (x..=x + w).contains(&sx) && (y..=y + h).contains(&sy) {
                 Some(Drag::Move(r))
             } else {
-                None
+                Some(Drag::Pan(crop.view(size)))
             });
         });
     }
-    {
+    let drag_update: Rc<dyn Fn(f64, f64)> = {
         let crop = crop.clone();
         let canvas = canvas.clone();
         let update_size = update_size.clone();
-        drag.connect_drag_update(move |_, dx, dy| {
-            let (_, _, scale) = placement(
-                crop.dims,
-                f64::from(canvas.width()),
-                f64::from(canvas.height()),
-            );
+        Rc::new(move |dx, dy| {
+            let size = canvas_size(&canvas);
+            let scale = crop.view(size).scale(crop.dims, size);
             if scale <= 0.0 {
                 return;
             }
-            let (dx, dy) = (dx / scale, dy / scale);
+            let (ix, iy) = (dx / scale, dy / scale);
             let rect = match crop.drag.get() {
-                Some(Drag::Move(start)) => start.moved(dx, dy, crop.dims),
+                Some(Drag::Move(start)) => start.moved(ix, iy, crop.dims),
                 Some(Drag::Resize(corner, start)) => {
-                    start.resized(corner, dx, dy, crop.dims, crop.aspect.get())
+                    start.resized(corner, ix, iy, crop.dims, crop.aspect.get())
+                }
+                Some(Drag::Pan(start)) => {
+                    crop.view.set(start.panned(dx, dy, crop.dims, size));
+                    canvas.queue_draw();
+                    return;
                 }
                 None => return,
             };
             crop.rect.set(rect);
             update_size();
             canvas.queue_draw();
-        });
+        })
+    };
+    {
+        let drag_update = drag_update.clone();
+        drag.connect_drag_update(move |_, dx, dy| drag_update(dx, dy));
     }
     {
         let crop = crop.clone();
         drag.connect_drag_end(move |_, _, _| crop.drag.set(None));
     }
     canvas.add_controller(drag);
+
+    let pan = gtk4::GestureDrag::new();
+    pan.set_button(gdk4::BUTTON_MIDDLE);
+    {
+        let crop = crop.clone();
+        let canvas = canvas.clone();
+        pan.connect_drag_begin(move |_, _, _| {
+            crop.drag
+                .set(Some(Drag::Pan(crop.view(canvas_size(&canvas)))));
+        });
+    }
+    pan.connect_drag_update(move |_, dx, dy| drag_update(dx, dy));
+    {
+        let crop = crop.clone();
+        pan.connect_drag_end(move |_, _, _| crop.drag.set(None));
+    }
+    canvas.add_controller(pan);
+
+    // Scrolling zooms at the pointer (the viewer steps by the same amount).
+    let motion = gtk4::EventControllerMotion::new();
+    {
+        let crop = crop.clone();
+        motion.connect_motion(move |_, x, y| crop.pointer.set(Some((x, y))));
+    }
+    {
+        let crop = crop.clone();
+        motion.connect_leave(move |_| crop.pointer.set(None));
+    }
+    canvas.add_controller(motion);
+    let scroll = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
+    {
+        let crop = crop.clone();
+        let canvas = canvas.clone();
+        scroll.connect_scroll(move |_, _, dy| {
+            let size = canvas_size(&canvas);
+            let at = crop.pointer.get().unwrap_or((size.0 / 2.0, size.1 / 2.0));
+            let factor = if dy < 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+            zoom_at(&crop, &canvas, factor, at);
+            glib::Propagation::Stop
+        });
+    }
+    canvas.add_controller(scroll);
 
     {
         let crop = crop.clone();
@@ -378,10 +514,13 @@ fn open(
         let window = window.downgrade();
         let root = root.clone();
         let viewer = viewer.clone();
+        let crop = crop.clone();
         Rc::new(move || {
             if root.parent().is_none() {
                 return;
             }
+            crop.closed.set(true);
+            viewer.set_crop_open(false);
             viewer.imp().overlay.remove_overlay(&root);
             if let Some(window) = window.upgrade() {
                 window.set_crop_session(None);
@@ -498,6 +637,7 @@ fn open(
             });
         });
     }
+    viewer.set_crop_open(true);
     viewer.imp().overlay.add_overlay(&root);
     window.set_mode_header(Some(&controls));
     root.grab_focus();
@@ -508,6 +648,87 @@ fn open(
         save: save_crop,
         close,
     }));
+}
+
+/// Zooms by `factor` with the image pixel under `at` staying under it.
+fn zoom_at(crop: &Crop, canvas: &crate::ui::guide_layer::GuideLayer, factor: f64, at: (f64, f64)) {
+    let size = canvas_size(canvas);
+    crop.view
+        .set(crop.view(size).zoomed_at(factor, at, crop.dims, size));
+    canvas.queue_draw();
+}
+
+/// The part of `a` inside `b`, or an empty rectangle.
+fn intersection(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    let (left, top) = (a.0.max(b.0), a.1.max(b.1));
+    let (right, bottom) = ((a.0 + a.2).min(b.0 + b.2), (a.1 + a.3).min(b.1 + b.3));
+    (left, top, (right - left).max(0.0), (bottom - top).max(0.0))
+}
+
+/// Draws `paintable` filling `rect`, smoothing when it shrinks it.
+fn draw_image(snapshot: &gtk4::Snapshot, paintable: &gdk4::Paintable, rect: (f64, f64, f64, f64)) {
+    use crate::ui::guide_layer as layer;
+    if let Some(texture) = paintable.downcast_ref::<gdk4::Texture>() {
+        let filter = if f64::from(texture.width()) > rect.2 {
+            gtk4::gsk::ScalingFilter::Trilinear
+        } else {
+            gtk4::gsk::ScalingFilter::Linear
+        };
+        snapshot.append_scaled_texture(texture, filter, &layer::graphene(rect));
+    } else {
+        snapshot.save();
+        snapshot.translate(&gtk4::graphene::Point::new(rect.0 as f32, rect.1 as f32));
+        paintable.snapshot(snapshot, rect.2, rect.3);
+        snapshot.restore();
+    }
+}
+
+/// Decodes the whole image on a worker and swaps it in for the preview, for
+/// zooming in. One request per crop; a failure keeps the preview.
+fn load_full(window: &SharprWindow, crop: &Rc<Crop>, canvas: &crate::ui::guide_layer::GuideLayer) {
+    crop.full_requested.set(true);
+    let (tx, rx) = async_channel::bounded(1);
+    let source = crop.source.clone();
+    std::thread::spawn(move || {
+        let result = crate::export::decode_oriented(&source)
+            .map(|image| {
+                let rgba = image.into_rgba8();
+                (rgba.width(), rgba.height(), rgba.into_raw())
+            })
+            .map_err(|e| e.to_string());
+        let _ = tx.send_blocking(result);
+    });
+    let crop = crop.clone();
+    let canvas = canvas.downgrade();
+    let window = window.downgrade();
+    glib::MainContext::default().spawn_local(async move {
+        let Ok(result) = rx.recv().await else { return };
+        if crop.closed.get() {
+            return;
+        }
+        match result {
+            Ok((w, h, rgba)) => {
+                let texture = gdk4::MemoryTexture::new(
+                    w as i32,
+                    h as i32,
+                    gdk4::MemoryFormat::R8g8b8a8,
+                    &glib::Bytes::from_owned(rgba),
+                    w as usize * 4,
+                );
+                *crop.image.borrow_mut() = texture.upcast();
+                if let Some(canvas) = canvas.upgrade() {
+                    canvas.queue_draw();
+                }
+            }
+            Err(error) => {
+                if let Some(window) = window.upgrade() {
+                    window.add_toast(libadwaita::Toast::new(&format!(
+                        "Could not load the full image to zoom: {error}"
+                    )));
+                }
+            }
+        }
+    });
 }
 
 /// A crop in progress, reachable from tests and the window.
@@ -523,6 +744,37 @@ pub struct CropSession {
 impl CropSession {
     pub fn rect(&self) -> CropRect {
         self.crop.rect.get()
+    }
+
+    /// The zoom (times fit) and the image point at the canvas centre.
+    pub fn view(&self) -> CropView {
+        self.crop.view(canvas_size(&self.canvas))
+    }
+
+    /// Zooms by `factor` at the canvas point `at`, as scrolling does.
+    pub fn zoom_at(&self, factor: f64, at: (f64, f64)) {
+        zoom_at(&self.crop, &self.canvas, factor, at);
+    }
+
+    /// Where the image's top-left corner lands on the canvas, and the scale.
+    pub fn image_on_canvas(&self) -> (f64, f64, f64) {
+        self.view()
+            .placement(self.crop.dims, canvas_size(&self.canvas))
+    }
+
+    /// The selection on the canvas, in canvas pixels: x, y, width, height.
+    pub fn selection_on_canvas(&self) -> (f64, f64, f64, f64) {
+        self.crop.selection(canvas_size(&self.canvas))
+    }
+
+    /// The canvas, to place it against the viewer's overlay.
+    pub fn canvas(&self) -> gtk4::Widget {
+        self.canvas.clone().upcast()
+    }
+
+    /// The width in pixels of the picture now drawn.
+    pub fn picture_width(&self) -> i32 {
+        self.crop.image.borrow().intrinsic_width()
     }
 
     pub fn set_rect(&self, rect: CropRect) {
