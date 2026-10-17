@@ -33,9 +33,14 @@ mod imp {
         /// Shown briefly when a decode error prevents the image from loading.
         pub error_label: gtk4::Label,
         pub zoom_label: gtk4::Label,
-        /// D36: non-interactive 16:9 guide drawn over the displayed image.
+        /// D36: 16:9 guide drawn over the displayed image. It takes no
+        /// input itself; a capture gesture on the overlay grabs it (D38).
         pub guide: gtk4::DrawingArea,
         pub guide_on: Cell<bool>,
+        /// Where the user moved or resized the guide, in overlay coordinates;
+        /// `None` fits it to the image as shown at Fit.
+        pub(crate) guide_manual: Cell<Option<super::Rect>>,
+        pub(crate) guide_drag: Cell<Option<(super::GuideGrab, super::Rect)>>,
         pub zoom_hide_source: RefCell<Option<glib::SourceId>>,
         /// Path of the image currently displayed — set by load_image(), cleared by clear().
         pub current_path: RefCell<Option<PathBuf>>,
@@ -143,6 +148,8 @@ mod imp {
                 zoom_label,
                 guide,
                 guide_on: Cell::new(false),
+                guide_manual: Cell::new(None),
+                guide_drag: Cell::new(None),
                 zoom_hide_source: RefCell::new(None),
                 current_path: RefCell::new(None),
                 zoom_btn: std::cell::RefCell::new(None),
@@ -203,6 +210,147 @@ pub(crate) fn guide_rect(x: f64, y: f64, width: f64, height: f64) -> Option<(f64
     Some((x + (width - w) / 2.0, y + (height - h) / 2.0, w, h))
 }
 
+/// A rectangle: x, y, width, height.
+pub(crate) type Rect = (f64, f64, f64, f64);
+
+/// How close to the guide's corner or outline, in screen pixels, a press
+/// grabs it (D38).
+const GUIDE_GRAB: f64 = 12.0;
+/// The narrowest the guide can be resized to.
+const GUIDE_MIN_WIDTH: f64 = 96.0;
+
+/// What a press on the guide grabbed: a corner resizes, the outline moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GuideGrab {
+    Corner(crate::export::Corner),
+    Edge,
+}
+
+/// The part of the guide a press at (`px`, `py`) grabs, if any. Presses
+/// inside, away from the outline, are left to panning.
+pub(crate) fn guide_grab((x, y, w, h): Rect, px: f64, py: f64) -> Option<GuideGrab> {
+    use crate::export::Corner;
+    let near = |a: f64, b: f64| (a - b).abs() <= GUIDE_GRAB;
+    let corner = match (near(px, x), near(px, x + w), near(py, y), near(py, y + h)) {
+        (true, _, true, _) => Some(Corner::TopLeft),
+        (_, true, true, _) => Some(Corner::TopRight),
+        (true, _, _, true) => Some(Corner::BottomLeft),
+        (_, true, _, true) => Some(Corner::BottomRight),
+        _ => None,
+    };
+    if let Some(corner) = corner {
+        return Some(GuideGrab::Corner(corner));
+    }
+    let within =
+        |p: f64, start: f64, len: f64| p >= start - GUIDE_GRAB && p <= start + len + GUIDE_GRAB;
+    let on_edge = (within(px, x, w) && (near(py, y) || near(py, y + h)))
+        || (within(py, y, h) && (near(px, x) || near(px, x + w)));
+    on_edge.then_some(GuideGrab::Edge)
+}
+
+/// `rect` kept inside `view`: shrunk about its centre (still 16:9) when too
+/// big, then shifted in.
+pub(crate) fn guide_within((x, y, w, h): Rect, (vx, vy, vw, vh): Rect) -> Rect {
+    let nw = w.min(vw).min(vh * 16.0 / 9.0).max(0.0);
+    let nh = if nw < w { nw * 9.0 / 16.0 } else { h };
+    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+    let clamp = |v: f64, lo: f64, hi: f64| v.max(lo).min(hi.max(lo));
+    (
+        clamp(cx - nw / 2.0, vx, vx + vw - nw),
+        clamp(cy - nh / 2.0, vy, vy + vh - nh),
+        nw,
+        nh,
+    )
+}
+
+/// `rect` moved by (`dx`, `dy`), kept inside `view`.
+pub(crate) fn guide_moved((x, y, w, h): Rect, dx: f64, dy: f64, view: Rect) -> Rect {
+    guide_within((x + dx, y + dy, w, h), view)
+}
+
+/// `rect` resized by dragging `corner` by (`dx`, `dy`): the opposite corner
+/// stays put, the larger change decides the size, 16:9 holds, and the
+/// result stays inside `view`.
+pub(crate) fn guide_resized(
+    (x, y, w, h): Rect,
+    corner: crate::export::Corner,
+    dx: f64,
+    dy: f64,
+    (vx, vy, vw, vh): Rect,
+) -> Rect {
+    use crate::export::Corner;
+    let (anchor_x, anchor_y, grow_x, grow_y) = match corner {
+        Corner::TopLeft => (x + w, y + h, -1.0, -1.0),
+        Corner::TopRight => (x, y + h, 1.0, -1.0),
+        Corner::BottomLeft => (x + w, y, -1.0, 1.0),
+        Corner::BottomRight => (x, y, 1.0, 1.0),
+    };
+    let room_x = if grow_x > 0.0 {
+        vx + vw - anchor_x
+    } else {
+        anchor_x - vx
+    };
+    let room_y = if grow_y > 0.0 {
+        vy + vh - anchor_y
+    } else {
+        anchor_y - vy
+    };
+    let most = room_x.min(room_y * 16.0 / 9.0).max(0.0);
+    let wide = w + dx * grow_x;
+    let tall = h + dy * grow_y;
+    // Growing or shrinking, the side that changed more decides.
+    let width = if ((wide - w) / w).abs() >= ((tall - h) / h).abs() {
+        wide
+    } else {
+        tall * 16.0 / 9.0
+    };
+    let width = width.clamp(GUIDE_MIN_WIDTH.min(most), most);
+    let height = width * 9.0 / 16.0;
+    (
+        if grow_x > 0.0 {
+            anchor_x
+        } else {
+            anchor_x - width
+        },
+        if grow_y > 0.0 {
+            anchor_y
+        } else {
+            anchor_y - height
+        },
+        width,
+        height,
+    )
+}
+
+/// The guide's share of the displayed `image`, as fractions of its width
+/// and height (x, y, width, height), or `None` when they don't overlap.
+pub(crate) fn guide_frame((gx, gy, gw, gh): Rect, (ix, iy, iw, ih): Rect) -> Option<Rect> {
+    if iw <= 0.0 || ih <= 0.0 {
+        return None;
+    }
+    let left = gx.max(ix);
+    let top = gy.max(iy);
+    let right = (gx + gw).min(ix + iw);
+    let bottom = (gy + gh).min(iy + ih);
+    (right > left && bottom > top).then(|| {
+        (
+            (left - ix) / iw,
+            (top - iy) / ih,
+            (right - left) / iw,
+            (bottom - top) / ih,
+        )
+    })
+}
+
+fn bounds_rect(bounds: &gtk4::graphene::Rect) -> Rect {
+    (
+        f64::from(bounds.x()),
+        f64::from(bounds.y()),
+        f64::from(bounds.width()),
+        f64::from(bounds.height()),
+    )
+}
+
 glib::wrapper! {
     pub struct ViewerPane(ObjectSubclass<imp::ViewerPane>)
         @extends gtk4::Widget,
@@ -242,12 +390,66 @@ impl ViewerPane {
     }
 
     /// D36: shows or hides the 16:9 guide; it changes no pixels or files.
+    /// Showing it again fits it to the image, undoing any move (D38).
     pub fn toggle_guide(&self) {
         let imp = self.imp();
         let on = !imp.guide_on.get();
         imp.guide_on.set(on);
+        imp.guide_manual.set(None);
+        imp.guide_drag.set(None);
         imp.guide.set_visible(on);
         imp.guide.queue_draw();
+    }
+
+    /// The guide and the viewport, in overlay coordinates. Until the user
+    /// moves it, the guide fits the image as shown at Fit, so zooming and
+    /// panning leave it in place on screen (D38).
+    pub(crate) fn guide_geometry(&self) -> Option<(Rect, Rect)> {
+        let imp = self.imp();
+        let paintable = imp.picture.paintable()?;
+        let view = bounds_rect(&imp.scrolled_window.compute_bounds(&imp.overlay)?);
+        let guide = match imp.guide_manual.get() {
+            Some(rect) => guide_within(rect, view),
+            None => {
+                let (vx, vy, vw, vh) = view;
+                let (bw, bh) = self.image_size(&paintable);
+                let scale = (vw / bw).min(vh / bh);
+                let (fw, fh) = (bw * scale, bh * scale);
+                guide_rect(vx + (vw - fw) / 2.0, vy + (vh - fh) / 2.0, fw, fh)?
+            }
+        };
+        Some((guide, view))
+    }
+
+    /// The part of the guide a press at overlay point (`x`, `y`) grabs.
+    pub(crate) fn guide_grab_at(&self, x: f64, y: f64) -> Option<(GuideGrab, Rect)> {
+        let imp = self.imp();
+        if !imp.guide_on.get() {
+            return None;
+        }
+        // The corner chip stays clickable where it covers the guide.
+        let chip = imp.metadata_chip.upcast_ref::<gtk4::Widget>();
+        if imp
+            .overlay
+            .pick(x, y, gtk4::PickFlags::DEFAULT)
+            .is_some_and(|w| &w == chip || w.is_ancestor(chip))
+        {
+            return None;
+        }
+        let (guide, _) = self.guide_geometry()?;
+        guide_grab(guide, x, y).map(|grab| (grab, guide))
+    }
+
+    /// The guide's share of the displayed image while it is shown, for
+    /// Crop Copy to start from (D38).
+    pub fn guide_frame(&self) -> Option<Rect> {
+        let imp = self.imp();
+        if !imp.guide_on.get() {
+            return None;
+        }
+        let (guide, _) = self.guide_geometry()?;
+        let image = bounds_rect(&imp.picture.compute_bounds(&imp.overlay)?);
+        guide_frame(guide, image)
     }
 
     pub fn guide_visible(&self) -> bool {
@@ -263,28 +465,15 @@ impl ViewerPane {
             if imp.picture.paintable().is_none() {
                 return;
             }
-            let (Some(img), Some(view)) = (
+            let (Some(img), Some(((gx, gy, gw, gh), (vx, vy, vw, vh)))) = (
                 imp.picture.compute_bounds(&imp.overlay),
-                imp.scrolled_window.compute_bounds(&imp.overlay),
+                viewer.guide_geometry(),
             ) else {
                 return;
             };
-            let (ix, iy, iw, ih) = (
-                f64::from(img.x()),
-                f64::from(img.y()),
-                f64::from(img.width()),
-                f64::from(img.height()),
-            );
-            let Some((gx, gy, gw, gh)) = guide_rect(ix, iy, iw, ih) else {
-                return;
-            };
+            let (ix, iy, iw, ih) = bounds_rect(&img);
             // Stay inside the scrolled viewport when the image overflows it.
-            cr.rectangle(
-                f64::from(view.x()),
-                f64::from(view.y()),
-                f64::from(view.width()),
-                f64::from(view.height()),
-            );
+            cr.rectangle(vx, vy, vw, vh);
             cr.clip();
             // Dim the part of the image outside the guide, then outline it.
             super::look::cairo_color(cr, crate::palette::SCRIM);
@@ -300,10 +489,80 @@ impl ViewerPane {
             cr.set_line_width(2.0);
             cr.rectangle(gx, gy, gw, gh);
             let _ = cr.stroke();
+            // Corner squares to grab, as in Crop Copy (D38).
+            for (cx, cy) in [(gx, gy), (gx + gw, gy), (gx, gy + gh), (gx + gw, gy + gh)] {
+                cr.rectangle(cx - 5.0, cy - 5.0, 10.0, 10.0);
+                let _ = cr.fill();
+            }
         });
 
-        // Follow zoom, pan, resize and image changes: redraw only when the
-        // picture or viewport geometry moved, and only while the guide is on.
+        // D38: corners resize the guide and its outline moves it; presses
+        // elsewhere fall through to panning. Capture runs before the
+        // scrolled window's pan gesture, so a claimed press never pans.
+        let grab = gtk4::GestureDrag::new();
+        grab.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let w = self.downgrade();
+        grab.connect_drag_begin(move |gesture, x, y| {
+            let Some(viewer) = w.upgrade() else { return };
+            match viewer.guide_grab_at(x, y) {
+                Some(start) => {
+                    viewer.imp().guide_drag.set(Some(start));
+                    let _ = gesture.set_state(gtk4::EventSequenceState::Claimed);
+                }
+                None => {
+                    let _ = gesture.set_state(gtk4::EventSequenceState::Denied);
+                }
+            }
+        });
+        let w = self.downgrade();
+        grab.connect_drag_update(move |_, dx, dy| {
+            let Some(viewer) = w.upgrade() else { return };
+            let imp = viewer.imp();
+            let (Some((grab, start)), Some((_, view))) =
+                (imp.guide_drag.get(), viewer.guide_geometry())
+            else {
+                return;
+            };
+            imp.guide_manual.set(Some(match grab {
+                GuideGrab::Edge => guide_moved(start, dx, dy, view),
+                GuideGrab::Corner(corner) => guide_resized(start, corner, dx, dy, view),
+            }));
+            imp.guide.queue_draw();
+        });
+        let w = self.downgrade();
+        grab.connect_drag_end(move |_, _, _| {
+            if let Some(viewer) = w.upgrade() {
+                viewer.imp().guide_drag.set(None);
+            }
+        });
+        imp.overlay.add_controller(grab);
+
+        // Show what a press would grab.
+        let hover = gtk4::EventControllerMotion::new();
+        let shown = Cell::new(None::<&'static str>);
+        let w = self.downgrade();
+        hover.connect_motion(move |_, x, y| {
+            let Some(viewer) = w.upgrade() else { return };
+            let imp = viewer.imp();
+            let grabbed = imp.guide_drag.get().or_else(|| viewer.guide_grab_at(x, y));
+            let name = grabbed.map(|(grab, _)| {
+                use crate::export::Corner;
+                match grab {
+                    GuideGrab::Corner(Corner::TopLeft | Corner::BottomRight) => "nwse-resize",
+                    GuideGrab::Corner(_) => "nesw-resize",
+                    GuideGrab::Edge => "move",
+                }
+            });
+            if name != shown.get() {
+                shown.set(name);
+                imp.overlay.set_cursor_from_name(name);
+            }
+        });
+        imp.overlay.add_controller(hover);
+
+        // The shading follows zoom, pan, resize and image changes: redraw
+        // only when the picture or viewport geometry moved, and only while
+        // the guide is on.
         let last = Cell::new(None::<[i32; 6]>);
         let w = self.downgrade();
         imp.guide.add_tick_callback(move |guide, _| {
@@ -1099,7 +1358,10 @@ impl ViewerPane {
 
 #[cfg(test)]
 mod guide_tests {
-    use super::guide_rect;
+    use super::{
+        guide_frame, guide_grab, guide_moved, guide_rect, guide_resized, guide_within, GuideGrab,
+    };
+    use crate::export::Corner;
 
     fn near(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) {
         assert!(
@@ -1152,5 +1414,82 @@ mod guide_tests {
     fn empty_image_has_no_guide() {
         assert!(guide_rect(0.0, 0.0, 0.0, 10.0).is_none());
         assert!(guide_rect(0.0, 0.0, 10.0, -1.0).is_none());
+    }
+
+    const VIEW: (f64, f64, f64, f64) = (0.0, 0.0, 1000.0, 600.0);
+    const GUIDE: (f64, f64, f64, f64) = (100.0, 100.0, 320.0, 180.0);
+
+    #[test]
+    fn corners_resize_the_outline_moves_and_inside_pans() {
+        assert_eq!(
+            guide_grab(GUIDE, 104.0, 96.0),
+            Some(GuideGrab::Corner(Corner::TopLeft))
+        );
+        assert_eq!(
+            guide_grab(GUIDE, 420.0, 280.0),
+            Some(GuideGrab::Corner(Corner::BottomRight))
+        );
+        assert_eq!(guide_grab(GUIDE, 250.0, 102.0), Some(GuideGrab::Edge));
+        assert_eq!(guide_grab(GUIDE, 425.0, 190.0), Some(GuideGrab::Edge));
+        // Inside, away from the outline, and well outside: left to panning.
+        assert_eq!(guide_grab(GUIDE, 250.0, 190.0), None);
+        assert_eq!(guide_grab(GUIDE, 600.0, 500.0), None);
+    }
+
+    #[test]
+    fn moving_keeps_the_guide_on_screen() {
+        near(
+            guide_moved(GUIDE, 50.0, -20.0, VIEW),
+            (150.0, 80.0, 320.0, 180.0),
+        );
+        near(
+            guide_moved(GUIDE, 5000.0, 5000.0, VIEW),
+            (680.0, 420.0, 320.0, 180.0),
+        );
+        near(
+            guide_moved(GUIDE, -500.0, 0.0, VIEW),
+            (0.0, 100.0, 320.0, 180.0),
+        );
+    }
+
+    #[test]
+    fn resizing_holds_16_9_and_the_opposite_corner() {
+        let r = guide_resized(GUIDE, Corner::BottomRight, 160.0, 0.0, VIEW);
+        near(r, (100.0, 100.0, 480.0, 270.0));
+        // The larger change decides: a mostly vertical drag.
+        let r = guide_resized(GUIDE, Corner::BottomRight, 0.0, 90.0, VIEW);
+        near(r, (100.0, 100.0, 480.0, 270.0));
+        // From the top left, the bottom right stays put.
+        let r = guide_resized(GUIDE, Corner::TopLeft, 160.0, 90.0, VIEW);
+        near(r, (260.0, 190.0, 160.0, 90.0));
+        // Never past the screen, nor below the smallest size.
+        let r = guide_resized(GUIDE, Corner::BottomRight, 5000.0, 0.0, VIEW);
+        assert!(r.0 + r.2 <= 1000.0 + 1e-9 && r.1 + r.3 <= 600.0 + 1e-9);
+        assert!((r.2 * 9.0 - r.3 * 16.0).abs() < 1e-9);
+        let r = guide_resized(GUIDE, Corner::BottomRight, -5000.0, 0.0, VIEW);
+        near(r, (100.0, 100.0, 96.0, 54.0));
+    }
+
+    #[test]
+    fn a_smaller_window_shrinks_the_guide_about_its_centre() {
+        near(guide_within(GUIDE, VIEW), GUIDE);
+        let big = (0.0, 0.0, 1600.0, 900.0);
+        // 1000 wide is all the room there is; centred, then shifted on screen.
+        near(guide_within(big, VIEW), (0.0, 37.5, 1000.0, 562.5));
+    }
+
+    #[test]
+    fn the_frame_is_the_guide_s_share_of_the_image() {
+        let image = (0.0, 0.0, 1000.0, 500.0);
+        near(
+            guide_frame((250.0, 125.0, 500.0, 250.0), image).unwrap(),
+            (0.25, 0.25, 0.5, 0.5),
+        );
+        // Overhanging the image: only the overlap.
+        near(
+            guide_frame((750.0, 0.0, 500.0, 500.0), image).unwrap(),
+            (0.75, 0.0, 0.25, 1.0),
+        );
+        assert!(guide_frame((2000.0, 0.0, 10.0, 10.0), image).is_none());
     }
 }

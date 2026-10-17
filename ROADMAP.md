@@ -776,7 +776,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 1 | ~~Crop Copy source format (D37): user acceptance, then merge `codex/audit-0.5.0`~~ **Done October 17, 2026** | Sonnet medium |
 | 2 | ~~`cargo deny` fails on new "unmaintained" advisories for zbus, zvariant, zvariant_derive and zbus_names (via glycin): ignore them in `deny.toml` with a reason, as for `paste`, so `./check.sh` passes again~~ **Done October 17, 2026** (RUSTSEC-2026-0370/0371/0372 ignored; `zbus` itself had no advisory) | Sonnet low |
 | 3 | ~~16:9 viewer guide (D36)~~ **Done October 17, 2026**, accepted with notes (see Backlog) | Sonnet medium |
-| 4 | 16:9 guide follow-ups (Backlog, user, October 17): stays put on screen while zooming, and can be dragged. Reverses part of D36, so it needs a decision-log entry | Sonnet medium |
+| 4 | 16:9 guide follow-ups (D38): corners resize, outline moves, stays put on zoom, Crop Copy starts on the guide. **Implemented on `feature/guide-grab`, awaiting user acceptance** | Sonnet medium (done by Opus at the user's request) |
 | 5 | Move file move, copy, and trash operations off the GTK thread | Opus medium |
 | 6 | Keep thumbnail generations through to completion, together with the folder-load token | Sonnet high |
 | 7 | Compare: bounded decodes and a screen-sized preview | Sonnet high |
@@ -798,7 +798,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 
 Optional. Pick something up only when a phase touches that area, or the user asks. The suggested order and model are in the table above.
 
-- 16:9 guide follow-ups (D36, user, October 17): zooming moves the guide with the image, but it should ignore zoom and stay put on screen; and it should be draggable rather than only centred. Not yet designed.
+- One guide-and-crop tool (user idea, October 17; D38): whether the 16:9 guide and Crop Copy become a single tool, perhaps with other ratios such as 21:9 or 4:3. Decide after the user has used D38's Crop Copy from the guide for a while.
 - Split the rest of `SharprWindow::setup` and `filmstrip::build_ui` (about 700 lines), following the architecture decision above.
 - Merge the two near-identical thumbnail worker loops.
 - Use one sort implementation; the SQL and Rust versions currently break ties differently.

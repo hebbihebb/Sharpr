@@ -46,8 +46,10 @@ fn placement(dims: (u32, u32), width: f64, height: f64) -> (f64, f64, f64) {
 
 /// Starts cropping `source`: reads its displayed size and a preview on a
 /// worker (reusing the viewer's picture when it shows this image), then
-/// covers the viewer.
-pub fn start(window: &SharprWindow, source: PathBuf) {
+/// covers the viewer. The selection starts on `frame` (fractions of the
+/// image: x, y, width, height) when given, such as the viewer's 16:9 guide
+/// (D38), or centred.
+pub fn start(window: &SharprWindow, source: PathBuf, frame: Option<(f64, f64, f64, f64)>) {
     let Some(viewer) = window.imp_viewer() else {
         return;
     };
@@ -121,7 +123,7 @@ pub fn start(window: &SharprWindow, source: PathBuf) {
                     })
                 });
                 if let Some(paintable) = paintable {
-                    open(&window, source, dims, stamp, &paintable);
+                    open(&window, source, dims, stamp, frame, &paintable);
                 }
             }
             Err(error) => {
@@ -136,6 +138,7 @@ fn open(
     source: PathBuf,
     dims: (u32, u32),
     stamp: (u64, i64),
+    frame: Option<(f64, f64, f64, f64)>,
     paintable: &gdk4::Paintable,
 ) {
     let Some(viewer) = window.imp_viewer() else {
@@ -146,7 +149,10 @@ fn open(
         source,
         stamp,
         dims,
-        rect: Cell::new(CropRect::centered(dims, aspect)),
+        rect: Cell::new(match frame {
+            Some(frame) => CropRect::framed(dims, frame, aspect),
+            None => CropRect::centered(dims, aspect),
+        }),
         aspect: Cell::new(aspect),
         drag: Cell::new(None),
     });

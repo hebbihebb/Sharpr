@@ -10,16 +10,21 @@ commit hashes below predate the rebase onto `main`; use `git log` for current on
 
 ## Accepted with notes: 16:9 viewer guide (D36)
 
-Ctrl+G / image menu → 16:9 Guide, deployed as `c724bab`, merged to `main`, not
-pushed. Two follow-ups are in the ROADMAP Backlog: the guide should ignore zoom,
-and be draggable.
+Ctrl+G / image menu → 16:9 Guide, deployed as `c724bab`, merged to `main`.
+
+## Awaiting acceptance: guide follow-ups (D38), `feature/guide-grab`
+
+Corner squares resize the guide (16:9 kept), its outline moves it, inside still
+pans; it stays put through zoom and image changes; Ctrl+G twice refits it.
+Crop Copy of the viewed image (or Ctrl+Shift+G) starts on the guide. A one-tool
+merge of guide and crop is in the Backlog for later.
 
 ## Done: cargo deny advisories
 
 `ROADMAP.md` Work Order item 2 is done: `deny.toml` ignores RUSTSEC-2026-0370,
 -0371 and -0372 (zvariant, zbus_names, zvariant_derive), all via glycin only.
 Config only; `./check.sh` and `cargo build` pass. Merged to `main`; not pushed.
-Item 3 (D36) is done; item 4 (the 16:9 guide follow-ups) is next, then item 5 (file operations off the GTK thread).
+Item 3 (D36) is done; item 4 (D38) awaits acceptance; item 5 (file operations off the GTK thread) is next.
 
 Committed and verified:
 - A1 `cd32145`: exclusive copies, preserving source bytes and permissions.

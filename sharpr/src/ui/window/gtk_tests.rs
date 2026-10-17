@@ -2109,8 +2109,8 @@ fn settle(ms: u64) {
 }
 
 /// D36: Ctrl+G toggles the 16:9 guide without touching files, and the guide
-/// stays 16:9 and inside the displayed image across images, window sizes and
-/// zoom modes.
+/// stays 16:9 and inside the image at Fit across images and window sizes.
+/// D38: zooming leaves it where it is on screen.
 #[test]
 #[ignore = "requires isolated GSettings/data directories and a graphical session"]
 fn guide_toggles_and_tracks_the_displayed_image() {
@@ -2156,34 +2156,141 @@ fn guide_toggles_and_tracks_the_displayed_image() {
             viewer.load_image(path.clone());
             pump_until(|| viewer.imp().picture.paintable().is_some());
             settle(300);
+            let mut at_fit = None;
             for mode in [ZoomMode::Fit, ZoomMode::OneToOne, ZoomMode::Fit] {
                 viewer.set_zoom_mode(mode);
                 settle(150);
                 let imp = viewer.imp();
                 let img = imp.picture.compute_bounds(&imp.overlay).unwrap();
-                let (x, y, gw, gh) = crate::ui::viewer::guide_rect(
-                    f64::from(img.x()),
-                    f64::from(img.y()),
-                    f64::from(img.width()),
-                    f64::from(img.height()),
-                )
-                .unwrap();
+                let (guide, _) = viewer.guide_geometry().unwrap();
+                let (x, y, gw, gh) = guide;
                 assert!((gw * 9.0 - gh * 16.0).abs() < 1e-6);
-                assert!(x >= f64::from(img.x()) - 1e-6 && y >= f64::from(img.y()) - 1e-6);
-                assert!(x + gw <= f64::from(img.x() + img.width()) + 1e-6);
-                assert!(y + gh <= f64::from(img.y() + img.height()) + 1e-6);
-                // The displayed picture keeps the image's own aspect ratio.
-                let shown = f64::from(img.width()) / f64::from(img.height());
-                assert!(
-                    (shown - f64::from(w) / f64::from(h)).abs() < 0.05,
-                    "{shown}"
-                );
+                match at_fit {
+                    None => {
+                        // At Fit the guide sits inside the displayed image.
+                        let tol = 1.0;
+                        assert!(x >= f64::from(img.x()) - tol && y >= f64::from(img.y()) - tol);
+                        assert!(x + gw <= f64::from(img.x() + img.width()) + tol);
+                        assert!(y + gh <= f64::from(img.y() + img.height()) + tol);
+                        // The displayed picture keeps the image's own aspect ratio.
+                        let shown = f64::from(img.width()) / f64::from(img.height());
+                        assert!(
+                            (shown - f64::from(w) / f64::from(h)).abs() < 0.05,
+                            "{shown}"
+                        );
+                        at_fit = Some(guide);
+                    }
+                    // Zoomed or back at Fit, it hasn't moved on screen.
+                    Some(fit) => assert_eq!(guide, fit),
+                }
             }
         }
     }
 
     assert!(window_shortcut(&window, "<Control>g"));
     assert!(!viewer.guide_visible());
+    for (path, bytes) in paths.iter().zip(&originals) {
+        assert_eq!(&std::fs::read(path).unwrap(), bytes);
+    }
+    window.close();
+}
+
+/// D38: corners resize the guide and its outline moves it, presses inside
+/// still pan, a moved guide stays put through zoom and image changes, showing
+/// it again refits it, and Ctrl+Shift+G opens Crop Copy on the guide.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn guide_moves_resizes_and_crops_to_its_frame() {
+    use crate::export::{Corner, CropRect};
+    use crate::ui::viewer::{guide_moved, guide_resized, GuideGrab};
+    let root = isolated_fixture("guide-grab");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut paths = Vec::new();
+    for (i, (w, h)) in [(640, 360), (640, 480)].into_iter().enumerate() {
+        let path = root.join(format!("{i}.png"));
+        image::RgbImage::from_pixel(w, h, image::Rgb([90, 120, 200]))
+            .save(&path)
+            .unwrap();
+        paths.push(path);
+    }
+    let originals: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 2 && window.is_mapped());
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+    viewer.load_image(paths[0].clone());
+    pump_until(|| viewer.imp().picture.paintable().is_some());
+    settle(300);
+
+    // Hidden, the guide neither grabs presses nor crops.
+    assert!(!window_shortcut(&window, "<Control><Shift>g"));
+    assert!(window_shortcut(&window, "<Control>g"));
+    settle(100);
+    let ((x, y, w, h), view) = viewer.guide_geometry().unwrap();
+    assert_eq!(
+        viewer.guide_grab_at(x + w, y + h).map(|g| g.0),
+        Some(GuideGrab::Corner(Corner::BottomRight))
+    );
+    assert_eq!(
+        viewer.guide_grab_at(x + w / 2.0, y).map(|g| g.0),
+        Some(GuideGrab::Edge)
+    );
+    assert!(viewer.guide_grab_at(x + w / 2.0, y + h / 2.0).is_none());
+
+    // What a corner drag and then an outline drag set.
+    let resized = guide_resized((x, y, w, h), Corner::BottomRight, -w / 2.0, 0.0, view);
+    let moved = guide_moved(resized, 40.0, 30.0, view);
+    viewer.imp().guide_manual.set(Some(moved));
+    let shown = viewer.guide_geometry().unwrap().0;
+    assert_eq!(shown, moved);
+    for mode in [ZoomMode::OneToOne, ZoomMode::Fit] {
+        viewer.set_zoom_mode(mode);
+        settle(150);
+        assert_eq!(viewer.guide_geometry().unwrap().0, moved);
+    }
+    viewer.load_image(paths[1].clone());
+    pump_until(|| viewer.imp().picture.paintable().is_some());
+    settle(300);
+    assert_eq!(viewer.guide_geometry().unwrap().0, moved);
+    viewer.load_image(paths[0].clone());
+    pump_until(|| viewer.imp().picture.paintable().is_some());
+    settle(300);
+
+    // Crop Copy starts on the guide's share of the image.
+    let frame = viewer.guide_frame().unwrap();
+    assert!(window_shortcut(&window, "<Control><Shift>g"));
+    pump_until(|| window.crop_session().is_some());
+    let crop = window.crop_session().unwrap();
+    assert_eq!(
+        crop.rect(),
+        CropRect::framed((640, 360), frame, Some((16, 9)))
+    );
+    assert!(crop.rect().width < 640 && crop.rect().x > 0);
+    crop.close();
+    pump_until(|| window.crop_session().is_none());
+
+    // Showing it again fits it to the image.
+    assert!(window_shortcut(&window, "<Control>g"));
+    assert!(window_shortcut(&window, "<Control>g"));
+    settle(100);
+    assert!(viewer.imp().guide_manual.get().is_none());
+    assert_eq!(viewer.guide_geometry().unwrap().0, (x, y, w, h));
+
     for (path, bytes) in paths.iter().zip(&originals) {
         assert_eq!(&std::fs::read(path).unwrap(), bytes);
     }
@@ -2334,7 +2441,7 @@ fn mode_headers_keep_choices_and_restore_search() {
             pump_until(|| entry.is_mapped());
             assert_eq!(entry.text(), query);
             assert_eq!(window.imp().browse_options.borrow().chips, chips);
-            crate::ui::crop_mode::start(&window, paths[0].clone());
+            crate::ui::crop_mode::start(&window, paths[0].clone(), None);
             pump_until(|| window.crop_session().is_some());
             settle(500);
             assert!(!entry.is_mapped());
@@ -2355,7 +2462,7 @@ fn mode_headers_keep_choices_and_restore_search() {
             assert_eq!(window.imp().browse_options.borrow().chips, chips);
         }
     }
-    crate::ui::crop_mode::start(&window, paths[0].clone());
+    crate::ui::crop_mode::start(&window, paths[0].clone(), None);
     pump_until(|| window.crop_session().is_some());
     let save = find_widgets::<gtk4::Button>(header.upcast_ref())
         .into_iter()

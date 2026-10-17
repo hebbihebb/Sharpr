@@ -62,7 +62,8 @@ removed means the control is absent, with stored user data retained.
 | Buckets | Import/export controls | Removed from Preferences; membership data stays intact | D11, D32 |
 | Image menu | Filmstrip right-click / Shift+F10 / Menu key | Kept, compact, with the current image/selection context | D21, D27 |
 | Image menu | Viewer right-click | Added using exactly the filmstrip menu and action group | D30, D33 |
-| Image menu | 16:9 Guide / Ctrl+G | Added: toggles a dimmed-outside 16:9 outline over the displayed image; off at start, view-only | D36 |
+| Image menu | 16:9 Guide / Ctrl+G | Added: toggles a dimmed-outside 16:9 outline over the displayed image; off at start, view-only. Corners resize, outline moves, stays put on zoom | D36, D38 |
+| Viewer | Crop Copy from the guide / Ctrl+Shift+G | Added: while the guide is shown, Crop Copy of the viewed image starts on it | D38 |
 | Image menu | Info / Ctrl+I | Kept; expands/pins the same readout card | D31 |
 | Image menu | Open in default viewer / Return | Kept | D21 |
 | Image menu | Show in File Manager | Kept | D21 |

@@ -90,6 +90,42 @@ impl CropRect {
         }
     }
 
+    /// The selection for a `frame` given as fractions of the image (x, y,
+    /// width, height), such as the viewer's 16:9 guide (D38): the part of
+    /// the frame inside the image, or with an `aspect` the largest whole a×b
+    /// rectangle centred in that part. Falls back to [`Self::centered`] when
+    /// too little of the frame is inside.
+    pub fn framed(
+        bounds: (u32, u32),
+        frame: (f64, f64, f64, f64),
+        aspect: Option<(u32, u32)>,
+    ) -> Self {
+        let (bw, bh) = (f64::from(bounds.0), f64::from(bounds.1));
+        let left = (frame.0 * bw).clamp(0.0, bw);
+        let top = (frame.1 * bh).clamp(0.0, bh);
+        let right = ((frame.0 + frame.2) * bw).clamp(0.0, bw);
+        let bottom = ((frame.1 + frame.3) * bh).clamp(0.0, bh);
+        let (room_w, room_h) = (right - left, bottom - top);
+        let (w, h) = match aspect {
+            Some((a, b)) => {
+                let units = (room_w / f64::from(a)).min(room_h / f64::from(b)).floor();
+                (units * f64::from(a), units * f64::from(b))
+            }
+            None => (room_w.round(), room_h.round()),
+        };
+        if w < 1.0 || h < 1.0 {
+            return Self::centered(bounds, aspect);
+        }
+        let x = (left + (room_w - w) / 2.0).round().clamp(0.0, bw - w);
+        let y = (top + (room_h - h) / 2.0).round().clamp(0.0, bh - h);
+        Self {
+            x: x as u32,
+            y: y as u32,
+            width: w as u32,
+            height: h as u32,
+        }
+    }
+
     /// Moved by (`dx`, `dy`) image pixels, kept inside `bounds`.
     pub fn moved(self, dx: f64, dy: f64, bounds: (u32, u32)) -> Self {
         let clamp = |start: u32, delta: f64, size: u32, limit: u32| {
@@ -1000,6 +1036,42 @@ mod tests {
         );
         assert_eq!(std::fs::read(&jpeg).unwrap(), oriented, "source untouched");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn framed_selections_follow_the_guide() {
+        let bounds = (3200, 1800);
+        // A guide wholly inside the image becomes that 16:9 selection.
+        assert_eq!(
+            CropRect::framed(bounds, (0.25, 0.25, 0.5, 0.5), Some((16, 9))),
+            CropRect {
+                x: 800,
+                y: 450,
+                width: 1600,
+                height: 900
+            }
+        );
+        // Overhanging the image's right side: the largest 16:9 inside the
+        // overlap, centred on it.
+        let r = CropRect::framed(bounds, (0.75, 0.0, 0.5, 1.0), Some((16, 9)));
+        assert!(r.fits(bounds));
+        assert_eq!((r.width * 9, r.y + r.height / 2), (r.height * 16, 900));
+        assert_eq!(r.x + r.width / 2, 2800);
+        // A free aspect keeps the overlap as it is.
+        assert_eq!(
+            CropRect::framed((1000, 1000), (-0.5, 0.1, 1.0, 0.5), None),
+            CropRect {
+                x: 0,
+                y: 100,
+                width: 500,
+                height: 500
+            }
+        );
+        // Nothing inside: the usual centred selection.
+        assert_eq!(
+            CropRect::framed(bounds, (2.0, 2.0, 0.5, 0.5), Some((16, 9))),
+            CropRect::centered(bounds, Some((16, 9)))
+        );
     }
 
     #[test]

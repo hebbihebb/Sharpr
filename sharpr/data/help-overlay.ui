@@ -46,6 +46,12 @@
         </child>
         <child>
           <object class="AdwShortcutsItem">
+            <property name="title">Crop Copy from the 16:9 guide</property>
+            <property name="accelerator">&lt;Control&gt;&lt;Shift&gt;g</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
             <property name="title">Image menu (copies, compare, file actions)</property>
             <property name="accelerator">&lt;Shift&gt;F10 Menu</property>
           </object>

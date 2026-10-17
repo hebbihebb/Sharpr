@@ -1081,13 +1081,18 @@ impl SharprWindow {
     }
 
     /// Opens Crop Copy for the image the user right-clicked, or WebP
-    /// export for the images the action covers (decision D21).
+    /// export for the images the action covers (decision D21). Cropping the
+    /// viewed image while the 16:9 guide is shown starts on the guide (D38).
     pub fn present_copy_dialog(&self, kind: crate::ui::filmstrip::CopyKind, sources: Vec<PathBuf>) {
         use crate::ui::filmstrip::CopyKind;
         match kind {
             CopyKind::Crop => {
                 if let Some(source) = sources.into_iter().next() {
-                    crate::ui::crop_mode::start(self, source);
+                    let frame = self
+                        .imp_viewer()
+                        .filter(|viewer| viewer.current_path().as_ref() == Some(&source))
+                        .and_then(|viewer| viewer.guide_frame());
+                    crate::ui::crop_mode::start(self, source, frame);
                 }
             }
             CopyKind::Export => crate::ui::export_dialog::present(self, sources),
@@ -3522,6 +3527,30 @@ impl SharprWindow {
                         return glib::Propagation::Proceed;
                     }
                     viewer_g.toggle_guide();
+                    glib::Propagation::Stop
+                })),
+            ));
+        }
+
+        // Ctrl+Shift+G — Crop Copy of the viewed image, starting on the
+        // guide; only while the guide is shown (decision D38).
+        {
+            let viewer_g = viewer.clone();
+            let window_g = self.downgrade();
+            shortcuts.add_shortcut(gtk4::Shortcut::new(
+                Some(gtk4::ShortcutTrigger::parse_string("<Control><Shift>g").unwrap()),
+                Some(gtk4::CallbackAction::new(move |widget, _| {
+                    if text_input_has_focus(widget)
+                        || file_actions_blocked(widget)
+                        || !viewer_g.guide_visible()
+                    {
+                        return glib::Propagation::Proceed;
+                    }
+                    let (Some(window), Some(path)) = (window_g.upgrade(), viewer_g.current_path())
+                    else {
+                        return glib::Propagation::Proceed;
+                    };
+                    window.present_copy_dialog(crate::ui::filmstrip::CopyKind::Crop, vec![path]);
                     glib::Propagation::Stop
                 })),
             ));
