@@ -1,14 +1,12 @@
 # Current Tasks
 
-## Active: file actions off the GTK thread (Work Order item 6)
+## Accepted: file actions off the GTK thread (Work Order item 6)
 
-Branch: `feature/file-ops-worker`. Design agreed with the user on October 17:
-one ordered worker, queue rather than refuse, closing waits for the current
-file. Trash, Undo, Move/Copy to Folder, Rename, Duplicate and Find Copies'
-trash run on `file_jobs.rs`; GTK side in `ui/window/file_jobs_controller.rs`.
-Implemented, verified (`./check.sh`, 268 tests incl. 6 new worker tests, all
-30 GTK workflows in isolated dirs), committed, deployed as `5f8b8d0`;
-awaiting the user's test.
+Trash, Undo, Move/Copy to Folder, Rename, Duplicate and Find Copies' trash run
+on one ordered worker (`file_jobs.rs`, `ui/window/file_jobs_controller.rs`).
+Deployed as `5f8b8d0`; accepted by the user October 17, merged to `main` by
+fast-forward; not pushed. Follow-up in the Backlog: show new files from file
+actions in the open folder. Item 7 is next.
 
 ## Accepted: audit fixes and source-format crops
 
@@ -55,7 +53,7 @@ found the opening zoom jumped in; fixed in `e04e361`. Accepted October 17
 `ROADMAP.md` Work Order item 2 is done: `deny.toml` ignores RUSTSEC-2026-0370,
 -0371 and -0372 (zvariant, zbus_names, zvariant_derive), all via glycin only.
 Config only; `./check.sh` and `cargo build` pass. Merged to `main`; not pushed.
-Items 3 (D36), 4 (D38) and 5 (Crop Copy zoom, D39) are done; item 6 (file operations off the GTK thread) is in progress above.
+Items 3 (D36), 4 (D38) and 5 (Crop Copy zoom, D39) are done; item 6 (file operations off the GTK thread) is done too.
 
 Committed and verified:
 - A1 `cd32145`: exclusive copies, preserving source bytes and permissions.

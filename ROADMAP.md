@@ -778,7 +778,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 3 | ~~16:9 viewer guide (D36)~~ **Done October 17, 2026**, accepted with notes (see Backlog) | Sonnet medium |
 | 4 | ~~16:9 guide follow-ups (D38): corners resize, outline moves, stays put on zoom, Crop Copy starts on the guide.~~ **Done October 17, 2026**, accepted by the user ("it works", build `a795ae1`) | Sonnet medium (done by Opus at the user's request) |
 | 5 | ~~Crop Copy zoom (user, October 17, after D38): open at the viewer's zoom and position so the selection is where the guide was, and zoom/pan in crop with the selection attached to the image.~~ **Done October 17, 2026** (D39), accepted by the user ("it is fixed", build `e04e361`) | Sonnet high |
-| 6 | Move file move, copy, and trash operations off the GTK thread | Opus medium |
+| 6 | ~~Move file move, copy, and trash operations off the GTK thread~~ **Done October 17, 2026**, accepted by the user (build `5f8b8d0`; follow-up "Show file-action results in the open folder" in the Backlog) | Opus medium |
 | 7 | Keep thumbnail generations through to completion, together with the folder-load token | Sonnet high |
 | 8 | Compare: bounded decodes and a screen-sized preview | Sonnet high |
 | 9 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
