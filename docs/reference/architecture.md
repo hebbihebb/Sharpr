@@ -54,8 +54,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 - Folder open runs scanning and reconciliation on a worker. The GTK side fills the store in chunks of 100 rows and yields to the main loop between chunks.
 - Search and browse use a single coalescing worker that keeps only the newest job, with a 150 ms entry delay and a cancellable library walk.
 
-Known exceptions that still block the GTK thread are tracked in `ROADMAP.md`:
-- synchronous trash, move, copy, and rename (Backlog)
+- File actions (trash and its Undo, Move to Folder, Rename, Copy to Folder, Duplicate, and Find Copies' trash) run on one `file-jobs` thread (`file_jobs.rs`, GTK side in `ui/window/file_jobs_controller.rs`), one job at a time in the order asked, so an Undo never overtakes its trash. Files in a queued or running job are pending, and repeating an action on them does nothing. Each file finishes or fails on its own; cancel (a toast for jobs of more than one file) stops between files. The view drops files only once the worker confirms them, and the selection moves on only if the image in view was among them. Closing the window lets the current file finish and skips the rest.
 
 Bucket and search results replace the filmstrip's rows in one `splice`, so the sorted model and list view update once per view, not once per row. Creating the row objects stays on the GTK thread: about 11 ms for 6,000 rows in a debug build.
 

@@ -2012,18 +2012,10 @@ fn filmstrip_trash_can_be_undone() {
     let count = || window.imp().state.borrow().library.image_count();
     pump_until(|| count() == 3 && window.is_mapped());
     let state = window.app_state();
-    let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
-    let viewer = window.imp().viewer.borrow().clone().unwrap();
 
-    super::trash_paths(
-        Some(&window),
-        &state,
-        &filmstrip,
-        &viewer,
-        std::slice::from_ref(&a),
-    );
-    assert!(!a.exists());
-    assert_eq!(count(), 2);
+    window.trash_paths(vec![a.clone()]);
+    // The worker trashes; the view drops the image once it reports.
+    pump_until(|| !a.exists() && count() == 2);
     window.restore_trashed(vec![a.clone()]);
     pump_until(|| {
         a.exists()
@@ -2033,14 +2025,8 @@ fn filmstrip_trash_can_be_undone() {
     assert_eq!(std::fs::read(&a).unwrap(), a_bytes, "back unchanged");
 
     // A new file at the name stays; the trashed one waits in the trash.
-    super::trash_paths(
-        Some(&window),
-        &state,
-        &filmstrip,
-        &viewer,
-        std::slice::from_ref(&b),
-    );
-    assert!(!b.exists());
+    window.trash_paths(vec![b.clone()]);
+    pump_until(|| !b.exists() && count() == 2);
     std::fs::write(&b, b"a new file").unwrap();
     assert_eq!(
         crate::file_ops::restore_from_trash(&b).unwrap_err(),

@@ -32,6 +32,7 @@ mod bucket_repeat;
 mod bucket_startup;
 mod compare_controller;
 mod edit_buckets;
+mod file_jobs_controller;
 mod library_root;
 pub(crate) mod mode_header;
 mod survey_controller;
@@ -148,86 +149,6 @@ fn text_input_has_focus(widget: &gtk4::Widget) -> bool {
         .downcast_ref::<gtk4::Window>()
         .and_then(gtk4::prelude::GtkWindowExt::focus)
         .is_some_and(|focus| focus.is::<gtk4::Text>() || focus.is::<gtk4::SearchEntry>())
-}
-
-/// Moves `paths` to the system trash and drops them from the view, then
-/// offers Undo (D25). Tags are kept, so restoring a file from the trash
-/// restores its buckets. Files that cannot be trashed are reported instead of
-/// being skipped silently.
-fn trash_paths(
-    window: Option<&SharprWindow>,
-    state: &Rc<RefCell<AppState>>,
-    filmstrip: &FilmstripPane,
-    viewer: &ViewerPane,
-    paths: &[PathBuf],
-) {
-    let mut failures = Vec::new();
-    let mut trashed = Vec::new();
-    for path in paths {
-        match gio::File::for_path(path).trash(None::<&gio::Cancellable>) {
-            Ok(()) => {
-                trashed.push(path.clone());
-                let mut state = state.borrow_mut();
-                state.library.remove_path(path);
-                remove_path_from_action_selection(&mut state, path);
-            }
-            Err(error) => failures.push((path.clone(), error.to_string())),
-        }
-    }
-    let new_count = state.borrow().library.image_count();
-    if new_count == 0 {
-        viewer.clear();
-        filmstrip.refresh_multi_selection_visuals();
-    } else {
-        let index = state.borrow().library.selected_index.unwrap_or(0);
-        let new_index = index.min(new_count - 1);
-        filmstrip.navigate_to(new_index);
-        let next_path = state
-            .borrow()
-            .library
-            .entry_at(new_index)
-            .map(|e: ImageEntry| e.path());
-        if let Some(next_path) = next_path {
-            filmstrip.set_action_selection_to_path(&next_path);
-        }
-    }
-    if let (Some(window), false) = (window, trashed.is_empty()) {
-        let toast = libadwaita::Toast::new(&format!(
-            "Moved {} to the trash",
-            crate::ui::copies_dialog::images_text(trashed.len())
-        ));
-        toast.set_button_label(Some("Undo"));
-        toast.set_timeout(10);
-        let weak = window.downgrade();
-        toast.connect_button_clicked(move |_| {
-            if let Some(window) = weak.upgrade() {
-                window.restore_trashed(trashed.clone());
-            }
-        });
-        window.add_toast(toast);
-    }
-    if let Some((path, error)) = failures.first() {
-        crate::bench_warn!(
-            "file.trash.fail",
-            serde_json::json!({
-                "count": failures.len(),
-                "path": path.display().to_string(),
-                "error": error,
-            })
-        );
-        if let Some(window) = window {
-            let message = if failures.len() == 1 {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                format!("Could not move “{name}” to the trash: {error}")
-            } else {
-                format!(
-                    "Could not move {} files to the trash: {error}",
-                    failures.len()
-                )
-            };
-            window.add_toast(libadwaita::Toast::new(&message));
-        }
-    }
 }
 
 fn search_terms(query: &str) -> Vec<String> {
@@ -590,6 +511,10 @@ mod imp {
         pub crop_request: Cell<u64>,
         /// A crop's preview is being prepared.
         pub crop_preparing: Cell<bool>,
+        /// The file-operations worker, started by the first file action.
+        pub(super) file_jobs: RefCell<Option<crate::file_jobs::Worker>>,
+        /// Files in a queued or running file job.
+        pub(super) file_jobs_pending: RefCell<std::collections::HashSet<PathBuf>>,
         /// Which side panels Compare hid, to show them again.
         pub(super) review_panels: Cell<Option<SidePanels>>,
         /// Who opened Compare and gets the survivors back instead of the
@@ -651,6 +576,8 @@ mod imp {
                 crop_session: RefCell::new(None),
                 crop_request: Cell::new(0),
                 crop_preparing: Cell::new(false),
+                file_jobs: RefCell::new(None),
+                file_jobs_pending: RefCell::new(Default::default()),
                 review_panels: Cell::new(None),
                 compare_done: RefCell::new(None),
             }
@@ -809,136 +736,6 @@ impl SharprWindow {
         } else {
             self.remove_css_class("sharpr-mono-all");
         }
-    }
-
-    /// Undo for the filmstrip's trash (D25): puts `paths` back on a worker,
-    /// never over a file now at the same name, and reopens their folder if
-    /// it is the one in view. Those that can't return stay in the trash.
-    pub(crate) fn restore_trashed(&self, paths: Vec<PathBuf>) {
-        let (tx, rx) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let mut restored = Vec::new();
-            let mut failed = Vec::new();
-            for path in paths {
-                match crate::file_ops::restore_from_trash(&path) {
-                    Ok(()) => restored.push(path),
-                    Err(error) => failed.push((path, error)),
-                }
-            }
-            let _ = tx.send_blocking((restored, failed));
-        });
-        let weak = self.downgrade();
-        glib::MainContext::default().spawn_local(async move {
-            let Ok((restored, failed)) = rx.recv().await else {
-                return;
-            };
-            let Some(win) = weak.upgrade() else { return };
-            crate::bench_event!(
-                "file.trash.undo",
-                serde_json::json!({"restored": restored.len(), "failed": failed.len()})
-            );
-            let in_view = {
-                let st = win.imp().state.borrow();
-                match &st.scope {
-                    ViewScope::Folder(folder) => restored
-                        .iter()
-                        .find(|p| p.parent() == Some(folder.as_path()))
-                        .cloned(),
-                    _ => None,
-                }
-            };
-            if let Some(path) = in_view {
-                // Reopens the folder with the restored image selected.
-                win.show_created_copy(path);
-            }
-            let message = match failed.first() {
-                None => format!(
-                    "Restored {}",
-                    crate::ui::copies_dialog::images_text(restored.len())
-                ),
-                Some((path, error)) => {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy();
-                    let mut message = format!("Couldn’t restore “{name}”: {error}");
-                    if failed.len() > 1 {
-                        message.push_str(&format!(" ({} not restored)", failed.len()));
-                    }
-                    message.push_str(". Find it in the system trash.");
-                    message
-                }
-            };
-            win.add_toast(libadwaita::Toast::new(&message));
-        });
-    }
-
-    /// Moves copies chosen in "Find Copies…" to the trash on a worker, drops
-    /// them from the view, and reports what happened (Phase 7).
-    /// Trashes the confirmed copies, after checking each against what was
-    /// reviewed (`copies::verify`).
-    pub(crate) fn trash_copies(&self, groups: Vec<crate::copies::TrashGroup>) {
-        let operation = self
-            .imp()
-            .state
-            .borrow()
-            .ops
-            .add("Moving copies to the trash…");
-        let (tx, rx) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let mut trashed = Vec::new();
-            let mut failed = Vec::new();
-            for group in &groups {
-                for verdict in crate::copies::verify(group) {
-                    match verdict {
-                        crate::copies::Verdict::Trash(path) => {
-                            match gio::File::for_path(&path).trash(None::<&gio::Cancellable>) {
-                                Ok(()) => trashed.push(path),
-                                Err(error) => failed.push((path, error.to_string())),
-                            }
-                        }
-                        crate::copies::Verdict::Skip(path, reason) => {
-                            failed.push((path, reason.to_string()))
-                        }
-                    }
-                }
-            }
-            let _ = tx.send_blocking((trashed, failed));
-        });
-        let weak = self.downgrade();
-        glib::MainContext::default().spawn_local(async move {
-            let Ok((trashed, failed)) = rx.recv().await else {
-                operation.fail("Trash worker stopped");
-                return;
-            };
-            operation.complete();
-            let Some(win) = weak.upgrade() else { return };
-            {
-                let mut st = win.imp().state.borrow_mut();
-                for path in &trashed {
-                    st.library.remove_path(path);
-                    remove_path_from_action_selection(&mut st, path);
-                }
-            }
-            if let Some(filmstrip) = win.imp().filmstrip.borrow().as_ref() {
-                filmstrip.refresh_virtual();
-                filmstrip.refresh_multi_selection_visuals();
-            }
-            crate::bench_event!(
-                "copies.trash",
-                serde_json::json!({"trashed": trashed.len(), "failed": failed.len()})
-            );
-            let mut message = format!(
-                "Moved {} {} to the trash",
-                trashed.len(),
-                if trashed.len() == 1 { "file" } else { "files" }
-            );
-            if let Some((path, error)) = failed.first() {
-                message.push_str(&format!(
-                    "; {} couldn't be moved ({}: {error})",
-                    failed.len(),
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                ));
-            }
-            win.add_toast(libadwaita::Toast::new(&message));
-        });
     }
 
     /// Exports `sources` as WebP in the background (ROADMAP Phase 6). A toast
@@ -1385,6 +1182,8 @@ impl SharprWindow {
             st.settings.window_width = w;
             st.settings.window_height = h;
             st.settings.save();
+            drop(st);
+            win.stop_file_jobs();
             glib::Propagation::Proceed
         });
 
@@ -3456,9 +3255,7 @@ impl SharprWindow {
 
         // Del — Move selected image(s) to trash (respects multi-selection).
         {
-            let state_d = state.clone();
             let filmstrip_d = filmstrip.clone();
-            let viewer_d = viewer.clone();
             shortcuts.add_shortcut(gtk4::Shortcut::new(
                 Some(gtk4::ShortcutTrigger::parse_string("Delete").unwrap()),
                 Some(gtk4::CallbackAction::new(move |widget, _| {
@@ -3469,13 +3266,10 @@ impl SharprWindow {
                     if paths.is_empty() {
                         return glib::Propagation::Proceed;
                     }
-                    trash_paths(
-                        widget.downcast_ref::<SharprWindow>(),
-                        &state_d,
-                        &filmstrip_d,
-                        &viewer_d,
-                        &paths,
-                    );
+                    let Some(window) = widget.downcast_ref::<SharprWindow>() else {
+                        return glib::Propagation::Proceed;
+                    };
+                    window.trash_paths(paths);
                     glib::Propagation::Stop
                 })),
             ));
@@ -3644,191 +3438,52 @@ impl SharprWindow {
 
         // Context-menu "Move to Trash" from filmstrip.
         {
-            let state_tr = state.clone();
-            let filmstrip_tr = filmstrip.clone();
-            let viewer_tr = viewer.clone();
             let window_weak = self.downgrade();
             filmstrip.connect_trash_requested(move |paths| {
-                let window = window_weak.upgrade();
-                trash_paths(
-                    window.as_ref(),
-                    &state_tr,
-                    &filmstrip_tr,
-                    &viewer_tr,
-                    &paths,
-                );
+                if let Some(window) = window_weak.upgrade() {
+                    window.trash_paths(paths);
+                }
             });
         }
 
-        // "Copy to Folder…" — pick a destination folder and copy selected files there.
-        {
+        // "Copy to Folder…" and "Move to Folder…": pick a destination folder,
+        // then copy or move the selected files there on the file worker.
+        for moving in [false, true] {
             let window_weak = self.downgrade();
-            filmstrip.connect_copy_to_folder_requested(move |paths| {
+            let on_request = move |paths: Vec<PathBuf>| {
                 let Some(win) = window_weak.upgrade() else {
                     return;
                 };
-                let window_ptr = win.clone().upcast::<gtk4::Window>();
                 let win_weak = win.downgrade();
                 let dialog = gtk4::FileDialog::new();
-                dialog.set_title("Copy to Folder");
-                dialog.select_folder(
-                    Some(&window_ptr),
-                    None::<&gio::Cancellable>,
-                    move |result| {
-                        let Ok(file) = result else { return };
-                        let Some(dest_dir) = file.path() else { return };
-                        let mut copied = 0usize;
-                        let mut errors = 0usize;
-                        for src in &paths {
-                            match crate::file_ops::copy_to_folder(src, &dest_dir) {
-                                Ok(_) => copied += 1,
-                                Err(_) => errors += 1,
-                            }
-                        }
-                        let msg = if errors == 0 {
-                            format!(
-                                "Copied {} file{}",
-                                copied,
-                                if copied == 1 { "" } else { "s" }
-                            )
-                        } else {
-                            format!(
-                                "Copied {} file{}, {} failed",
-                                copied,
-                                if copied == 1 { "" } else { "s" },
-                                errors
-                            )
-                        };
-                        if let Some(w) = win_weak.upgrade() {
-                            w.add_toast(libadwaita::Toast::new(&msg));
-                        }
-                    },
-                );
-            });
-        }
-
-        // "Move to Folder…" — pick a destination folder and move selected files there.
-        {
-            let state_mv = state.clone();
-            let window_weak = self.downgrade();
-            let filmstrip_mv = filmstrip.clone();
-            let viewer_mv = viewer.clone();
-            filmstrip.connect_move_to_folder_requested(move |paths| {
-                let Some(win) = window_weak.upgrade() else {
-                    return;
-                };
-                let window_ptr = win.clone().upcast::<gtk4::Window>();
-                let state_c = state_mv.clone();
-                let filmstrip_c = filmstrip_mv.clone();
-                let viewer_c = viewer_mv.clone();
-                let win_weak = win.downgrade();
-                let dialog = gtk4::FileDialog::new();
-                dialog.set_title("Move to Folder");
-                dialog.select_folder(
-                    Some(&window_ptr),
-                    None::<&gio::Cancellable>,
-                    move |result| {
-                        let Ok(file) = result else { return };
-                        let Some(dest_dir) = file.path() else { return };
-                        let mut moved = 0usize;
-                        let mut errors = 0usize;
-                        let mut first_error = None;
-                        let (Some(index), Some(tags_db)) = (
-                            state_c.borrow().library_index.clone(),
-                            state_c.borrow().tags.clone(),
-                        ) else {
-                            if let Some(w) = win_weak.upgrade() {
-                                w.add_toast(libadwaita::Toast::new(
-                                    "Cannot move files: bucket or tag database is unavailable",
-                                ));
-                            }
-                            return;
-                        };
-                        // A name whose missing file still has tags counts as taken.
-                        let taken = |p: &std::path::Path| {
-                            p.symlink_metadata().is_ok()
-                                || !tags_db.tags_for_path(p).is_empty()
-                                || index.retains_bucket_path(p).unwrap_or(false)
-                        };
-                        for src in &paths {
-                            let stem = src
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or_default()
-                                .to_string();
-                            let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
-                            // Re-pick a free name if one appears between choosing and moving.
-                            let mut result = Err("No unused name available".to_string());
-                            for _ in 0..5 {
-                                let dest = crate::file_ops::next_available_path(
-                                    &dest_dir, &stem, ext, taken,
-                                );
-                                result = index.relocate_file(src, &dest, &tags_db);
-                                if result.is_ok() || !taken(&dest) {
-                                    break;
-                                }
-                            }
-                            match result {
-                                Ok(()) => {
-                                    {
-                                        let mut state = state_c.borrow_mut();
-                                        state.library.remove_path(src);
-                                        remove_path_from_action_selection(&mut state, src);
-                                    }
-                                    moved += 1;
-                                }
-                                Err(error) => {
-                                    errors += 1;
-                                    first_error.get_or_insert(error);
-                                }
-                            }
-                        }
-                        if moved > 0 {
-                            let new_count = state_c.borrow().library.image_count();
-                            if new_count == 0 {
-                                viewer_c.clear();
-                                filmstrip_c.refresh_multi_selection_visuals();
-                            } else {
-                                let index = state_c.borrow().library.selected_index.unwrap_or(0);
-                                let new_index = index.min(new_count - 1);
-                                filmstrip_c.navigate_to(new_index);
-                                let next_path = state_c
-                                    .borrow()
-                                    .library
-                                    .entry_at(new_index)
-                                    .map(|e: ImageEntry| e.path());
-                                if let Some(p) = next_path {
-                                    filmstrip_c.set_action_selection_to_path(&p);
-                                }
-                            }
-                        }
-                        let mut msg = if errors == 0 {
-                            format!("Moved {} file{}", moved, if moved == 1 { "" } else { "s" })
-                        } else {
-                            format!(
-                                "Moved {} file{}, {} failed",
-                                moved,
-                                if moved == 1 { "" } else { "s" },
-                                errors
-                            )
-                        };
-                        if let Some(error) = first_error {
-                            msg.push_str(&format!(": {error}"));
-                        }
-                        if let Some(w) = win_weak.upgrade() {
-                            w.add_toast(libadwaita::Toast::new(&msg));
-                        }
-                    },
-                );
-            });
+                dialog.set_title(if moving {
+                    "Move to Folder"
+                } else {
+                    "Copy to Folder"
+                });
+                dialog.select_folder(Some(&win), None::<&gio::Cancellable>, move |result| {
+                    let Ok(file) = result else { return };
+                    let Some(dest_dir) = file.path() else { return };
+                    let Some(win) = win_weak.upgrade() else {
+                        return;
+                    };
+                    if moving {
+                        win.move_to_folder(paths, dest_dir);
+                    } else {
+                        win.copy_to_folder(paths, dest_dir);
+                    }
+                });
+            };
+            if moving {
+                filmstrip.connect_move_to_folder_requested(on_request);
+            } else {
+                filmstrip.connect_copy_to_folder_requested(on_request);
+            }
         }
 
         // "Rename…" — show a dialog pre-filled with the current filename, then rename on confirm.
         {
-            let state_rn = state.clone();
             let window_weak = self.downgrade();
-            let filmstrip_rn = filmstrip.clone();
-            let viewer_rn = viewer.clone();
             filmstrip.connect_rename_requested(move |path| {
                 let Some(win) = window_weak.upgrade() else {
                     return;
@@ -3850,9 +3505,6 @@ impl SharprWindow {
                 entry.select_region(0, -1);
                 dialog.set_extra_child(Some(&entry));
 
-                let state_d = state_rn.clone();
-                let filmstrip_d = filmstrip_rn.clone();
-                let viewer_d = viewer_rn.clone();
                 let win_weak = win.downgrade();
                 let entry_clone = entry.clone();
                 dialog.connect_response(None, move |_, response| {
@@ -3863,50 +3515,8 @@ impl SharprWindow {
                     if new_name == current_name {
                         return;
                     }
-                    let result = (|| -> Result<PathBuf, String> {
-                        let dest = crate::file_ops::rename_destination(&path, &new_name)?;
-                        let (index, tags) = {
-                            let state = state_d.borrow();
-                            (state.library_index.clone(), state.tags.clone())
-                        };
-                        let (Some(index), Some(tags)) = (index, tags) else {
-                            return Err(
-                                "Cannot rename: bucket or tag database is unavailable".into()
-                            );
-                        };
-                        index.relocate_file(&path, &dest, &tags)?;
-                        Ok(dest)
-                    })();
-                    let msg = match result {
-                        Ok(_new_path) => {
-                            {
-                                let mut state = state_d.borrow_mut();
-                                state.library.remove_path(&path);
-                                remove_path_from_action_selection(&mut state, &path);
-                            }
-                            let new_count = state_d.borrow().library.image_count();
-                            if new_count == 0 {
-                                viewer_d.clear();
-                                filmstrip_d.refresh_multi_selection_visuals();
-                            } else {
-                                let index = state_d.borrow().library.selected_index.unwrap_or(0);
-                                let new_index = index.min(new_count - 1);
-                                filmstrip_d.navigate_to(new_index);
-                                let next_path = state_d
-                                    .borrow()
-                                    .library
-                                    .entry_at(new_index)
-                                    .map(|e: ImageEntry| e.path());
-                                if let Some(p) = next_path {
-                                    filmstrip_d.set_action_selection_to_path(&p);
-                                }
-                            }
-                            "File renamed".to_string()
-                        }
-                        Err(error) => error,
-                    };
                     if let Some(w) = win_weak.upgrade() {
-                        w.add_toast(libadwaita::Toast::new(&msg));
+                        w.rename_file(path.clone(), new_name);
                     }
                 });
                 dialog.present(Some(&win));
@@ -3917,25 +3527,8 @@ impl SharprWindow {
         {
             let window_weak = self.downgrade();
             filmstrip.connect_duplicate_requested(move |path| {
-                let msg = match crate::file_ops::duplicate_file(&path) {
-                    Ok(dest) => {
-                        if let Some(win) = window_weak.upgrade() {
-                            win.add_edit_copies(
-                                crate::buckets::EditKind::Duplicated,
-                                vec![(path.clone(), dest.clone())],
-                            );
-                        }
-                        let name = dest
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("copy")
-                            .to_string();
-                        format!("Duplicated as \"{name}\"")
-                    }
-                    Err(e) => format!("Duplicate failed: {e}"),
-                };
                 if let Some(win) = window_weak.upgrade() {
-                    win.add_toast(libadwaita::Toast::new(&msg));
+                    win.duplicate_file(path);
                 }
             });
         }

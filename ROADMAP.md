@@ -803,7 +803,6 @@ Optional. Pick something up only when a phase touches that area, or the user ask
 - Split the rest of `SharprWindow::setup` and `filmstrip::build_ui` (about 700 lines), following the architecture decision above.
 - Merge the two near-identical thumbnail worker loops.
 - Use one sort implementation; the SQL and Rust versions currently break ties differently.
-- Move file move, copy, and trash operations off the GTK thread.
 - Add a folder-load token so two loads of the same folder cannot both append.
 - Support non-UTF-8 paths.
 - Guard the startup legacy-bucket migration (`migrate_legacy_collections_to_tags`) with a backup and count check, or retire it, before old databases are treated as a supported upgrade (audit finding 12).
