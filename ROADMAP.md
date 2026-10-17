@@ -775,7 +775,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | # | Task | Model, effort |
 | --- | --- | --- |
 | 1 | ~~Crop Copy source format (D37): user acceptance, then merge `codex/audit-0.5.0`~~ **Done October 17, 2026** | Sonnet medium |
-| 2 | `cargo deny` fails on new "unmaintained" advisories for zbus, zvariant, zvariant_derive and zbus_names (via glycin): ignore them in `deny.toml` with a reason, as for `paste`, so `./check.sh` passes again | Sonnet low |
+| 2 | ~~`cargo deny` fails on new "unmaintained" advisories for zbus, zvariant, zvariant_derive and zbus_names (via glycin): ignore them in `deny.toml` with a reason, as for `paste`, so `./check.sh` passes again~~ **Done October 17, 2026** (RUSTSEC-2026-0370/0371/0372 ignored; `zbus` itself had no advisory) | Sonnet low |
 | 3 | 16:9 viewer guide (D36) | Sonnet medium |
 | 4 | Move file move, copy, and trash operations off the GTK thread | Opus medium |
 | 5 | Keep thumbnail generations through to completion, together with the folder-load token | Sonnet high |

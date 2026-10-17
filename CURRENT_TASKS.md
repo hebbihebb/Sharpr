@@ -8,11 +8,12 @@ one commit per finding. Deployed as `cabda19`. User accepted on October 17, 2026
 originals unchanged). Merged to `main` by fast-forward; not pushed. The
 commit hashes below predate the rebase onto `main`; use `git log` for current ones.
 
-## Planned next: cargo deny advisories, then the 16:9 viewer guide (D36)
+## Done: cargo deny advisories. Planned next: 16:9 viewer guide (D36)
 
-`ROADMAP.md` Work Order item 2: `./check.sh` fails on new unmaintained
-advisories (zbus crates via glycin). Then item 3, D36, on its own feature
-branch from `main`.
+`ROADMAP.md` Work Order item 2 is done: `deny.toml` ignores RUSTSEC-2026-0370,
+-0371 and -0372 (zvariant, zbus_names, zvariant_derive), all via glycin only.
+Config only; `./check.sh` and `cargo build` pass. Merged to `main`; not pushed.
+Next is item 3, D36, on its own feature branch from `main`.
 
 Committed and verified:
 - A1 `cd32145`: exclusive copies, preserving source bytes and permissions.

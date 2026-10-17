@@ -6,6 +6,11 @@ ignore = [
     # paste (unmaintained) is a build-time proc-macro of glycin's common crates;
     # upstream has no replacement yet.
     { id = "RUSTSEC-2024-0436", reason = "proc-macro via glycin-common/gufo-common; upstream has no fix" },
+    # The zbus family is pulled in only by glycin (glycin, glycin-common, glycin-utils,
+    # gufo-common); Sharpr has no direct dependency and glycin owns the upgrade.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant via glycin only; unmaintained, no fix available to us" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names via glycin/zbus only; unmaintained, no fix available to us" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive via glycin/zvariant only; unmaintained, no fix available to us" },
 ]
 
 [licenses]
