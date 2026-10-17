@@ -776,7 +776,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 1 | ~~Crop Copy source format (D37): user acceptance, then merge `codex/audit-0.5.0`~~ **Done October 17, 2026** | Sonnet medium |
 | 2 | ~~`cargo deny` fails on new "unmaintained" advisories for zbus, zvariant, zvariant_derive and zbus_names (via glycin): ignore them in `deny.toml` with a reason, as for `paste`, so `./check.sh` passes again~~ **Done October 17, 2026** (RUSTSEC-2026-0370/0371/0372 ignored; `zbus` itself had no advisory) | Sonnet low |
 | 3 | ~~16:9 viewer guide (D36)~~ **Done October 17, 2026**, accepted with notes (see Backlog) | Sonnet medium |
-| 4 | 16:9 guide follow-ups (D38): corners resize, outline moves, stays put on zoom, Crop Copy starts on the guide. **Implemented on `feature/guide-grab`, awaiting user acceptance** | Sonnet medium (done by Opus at the user's request) |
+| 4 | ~~16:9 guide follow-ups (D38): corners resize, outline moves, stays put on zoom, Crop Copy starts on the guide.~~ **Done October 17, 2026**, accepted by the user ("it works", build `a795ae1`) | Sonnet medium (done by Opus at the user's request) |
 | 5 | Crop Copy zoom (user, October 17, after D38): open at the viewer's zoom and position so the selection is where the guide was, and zoom/pan in crop with the selection attached to the image. Also move crop's drawing to snapshot nodes and fix its aspect resize, which jumps when one axis grows while the other shrinks (D38 fixed both for the guide) | Sonnet high |
 | 6 | Move file move, copy, and trash operations off the GTK thread | Opus medium |
 | 7 | Keep thumbnail generations through to completion, together with the folder-load token | Sonnet high |

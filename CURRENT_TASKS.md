@@ -12,21 +12,22 @@ commit hashes below predate the rebase onto `main`; use `git log` for current on
 
 Ctrl+G / image menu → 16:9 Guide, deployed as `c724bab`, merged to `main`.
 
-## Awaiting acceptance: guide follow-ups (D38), `feature/guide-grab`
+## Accepted: guide follow-ups (D38)
 
 Corner squares resize the guide (16:9 kept), its outline moves it, inside still
 pans; it stays put through zoom and image changes; Ctrl+G twice refits it.
 Crop Copy of the viewed image (or Ctrl+Shift+G) starts on the guide. A one-tool
 merge of guide and crop is in the Backlog for later. User's first test of `2bd5e4a`:
 works, but dragging felt laggy; the guide now draws with snapshot nodes and
-resizes smoothly along its diagonal.
+resizes smoothly along its diagonal. Accepted October 17 ("it works", `a795ae1`),
+merged to `main`. The user asked for the same smoothness in Crop Copy next.
 
 ## Done: cargo deny advisories
 
 `ROADMAP.md` Work Order item 2 is done: `deny.toml` ignores RUSTSEC-2026-0370,
 -0371 and -0372 (zvariant, zbus_names, zvariant_derive), all via glycin only.
 Config only; `./check.sh` and `cargo build` pass. Merged to `main`; not pushed.
-Item 3 (D36) is done; item 4 (D38) awaits acceptance; item 5 (Crop Copy zoom) is next, then item 6 (file operations off the GTK thread).
+Item 3 (D36) is done; item 4 (D38) is done; item 5 (Crop Copy zoom) is next, then item 6 (file operations off the GTK thread).
 
 Committed and verified:
 - A1 `cd32145`: exclusive copies, preserving source bytes and permissions.
