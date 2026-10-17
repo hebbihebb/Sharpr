@@ -26,6 +26,9 @@ mod imp {
         pub height: Cell<u32>,
         /// File size in bytes, populated lazily.
         pub file_size: Cell<u64>,
+        /// Modification time in seconds since the epoch, as the library index
+        /// stores it; `None` when unknown.
+        pub modified_secs: Cell<Option<i64>>,
         /// Raw Laplacian variance from the sharpness scorer.
         /// `f64::NAN` means not yet computed.
         pub sharpness_score: Cell<f64>,
@@ -41,6 +44,7 @@ mod imp {
                 width: Cell::new(0),
                 height: Cell::new(0),
                 file_size: Cell::new(0),
+                modified_secs: Cell::new(None),
                 sharpness_score: Cell::new(f64::NAN),
             }
         }
@@ -110,6 +114,14 @@ impl ImageEntry {
 
     pub fn set_file_size(&self, size: u64) {
         self.imp().file_size.set(size);
+    }
+
+    pub fn modified_secs(&self) -> Option<i64> {
+        self.imp().modified_secs.get()
+    }
+
+    pub fn set_modified_secs(&self, secs: Option<i64>) {
+        self.imp().modified_secs.set(secs);
     }
 
     /// Returns the raw Laplacian variance if it has been computed, or `None`.

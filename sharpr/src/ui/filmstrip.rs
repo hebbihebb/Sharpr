@@ -194,6 +194,9 @@ mod imp {
         pub empty_status: libadwaita::StatusPage,
         pub selection_model: gtk4::SingleSelection,
         pub image_selected_cb: RefCell<Option<ImageSelectedCallback>>,
+        /// Above zero while rows are added or removed on purpose, so the
+        /// selection moving with them is not announced as a new choice.
+        pub quiet_selection: Cell<u32>,
         pub trash_requested_cb: RefCell<Option<TrashRequestedCallback>>,
         pub add_to_collection_requested_cb: RefCell<Option<AddToCollectionRequestedCallback>>,
         pub copy_requested_cb: RefCell<Option<CopyRequestedCallback>>,
@@ -260,6 +263,7 @@ mod imp {
                     .build(),
                 selection_model,
                 image_selected_cb: RefCell::new(None),
+                quiet_selection: Cell::new(0),
                 trash_requested_cb: RefCell::new(None),
                 add_to_collection_requested_cb: RefCell::new(None),
                 copy_requested_cb: RefCell::new(None),
@@ -830,6 +834,9 @@ impl FilmstripPane {
                     return;
                 }
                 if let Some(widget) = widget_weak.upgrade() {
+                    if widget.imp().quiet_selection.get() > 0 {
+                        return;
+                    }
                     widget.emit_image_selected(index);
                 }
             });
@@ -1143,6 +1150,29 @@ impl FilmstripPane {
 
     pub fn refresh_virtual(&self) {
         self.refresh();
+    }
+
+    /// Runs `change`, which adds rows to the store, without announcing the
+    /// selection's new position: it is the same image, so the viewer must not
+    /// reload it. Unlike `refresh`, it keeps the selection and the scroll
+    /// position, and leaves the thumbnail scheduler alone.
+    pub fn with_quiet_selection<R>(&self, change: impl FnOnce() -> R) -> R {
+        let quiet = &self.imp().quiet_selection;
+        quiet.set(quiet.get() + 1);
+        let result = change();
+        quiet.set(quiet.get() - 1);
+        result
+    }
+
+    /// Call after rows were added to the store: shows the list in place of
+    /// the empty state, and asks the scheduler, as it stands, for any new
+    /// row in view.
+    pub fn rows_added(&self) {
+        let imp = self.imp();
+        if imp.content_stack.visible_child_name().as_deref() == Some("empty") {
+            imp.content_stack.set_visible_child_name("list");
+        }
+        self.schedule_visible_thumbnails();
     }
 
     pub fn clear_model(&self) {

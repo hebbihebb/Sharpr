@@ -115,6 +115,9 @@ pub struct LibraryManager {
     pub virtual_generation: u64,
     /// Identifies the load that last filled the store; see `is_current_load`.
     load_token: u64,
+    /// True from the moment a folder load empties the store until it has
+    /// filled it; rows added meanwhile could be listed twice.
+    folder_loading: bool,
     folder_history: FxHashMap<PathBuf, u32>,
     /// O(1) path → list index lookup, kept in sync with `store`.
     pub(crate) path_to_index: FxHashMap<PathBuf, u32>,
@@ -142,6 +145,7 @@ impl LibraryManager {
             selected_index: None,
             virtual_generation: 0,
             load_token: 0,
+            folder_loading: false,
             folder_history: FxHashMap::default(),
             path_to_index: FxHashMap::default(),
             virtual_has_repeated_paths: false,
@@ -183,6 +187,11 @@ impl LibraryManager {
         self.current_folder.as_deref() == Some(folder) && self.load_token == token
     }
 
+    /// True while a folder load is still filling the store.
+    pub fn is_loading_folder(&self) -> bool {
+        self.folder_loading
+    }
+
     /// Empties the store for `folder` and retires every load already in flight.
     pub fn reset_for_folder(&mut self, folder: &Path) {
         self.load_token = self.load_token.wrapping_add(1);
@@ -190,6 +199,7 @@ impl LibraryManager {
     }
 
     fn clear_for_folder(&mut self, folder: &Path) {
+        self.folder_loading = true;
         self.removed_paths.clear();
         self.store.remove_all();
         self.path_to_index.clear();
@@ -286,14 +296,7 @@ impl LibraryManager {
 
         for (i, row) in rows.into_iter().enumerate() {
             let index = start_index + i as u32;
-            let entry = ImageEntry::new(row.path.clone());
-            entry.set_file_size(row.file_size);
-            if let (Some(width), Some(height)) = (row.width, row.height) {
-                entry.set_dimensions(width, height);
-            }
-            if let Some(texture) = self.cached_thumbnail(&row.path) {
-                entry.set_thumbnail(Some(texture));
-            }
+            let entry = self.entry_from_row(&row);
             self.path_to_index.insert(row.path.clone(), index);
             self.all_known_paths.insert(row.path.clone());
 
@@ -305,8 +308,22 @@ impl LibraryManager {
         self.store.splice(start_index, 0, &new_entries);
     }
 
+    fn entry_from_row(&self, row: &IndexedImage) -> ImageEntry {
+        let entry = ImageEntry::new(row.path.clone());
+        entry.set_file_size(row.file_size);
+        entry.set_modified_secs(row.modified_secs);
+        if let (Some(width), Some(height)) = (row.width, row.height) {
+            entry.set_dimensions(width, height);
+        }
+        if let Some(texture) = self.cached_thumbnail(&row.path) {
+            entry.set_thumbnail(Some(texture));
+        }
+        entry
+    }
+
     /// Finalize folder loading by sorting the indexed paths.
     pub fn finish_load_folder(&mut self) {
+        self.folder_loading = false;
         self.indexed_library_paths
             .sort_by(|a, b| path_sort_key(a, b));
     }
@@ -324,6 +341,97 @@ impl LibraryManager {
                 entry.set_dimensions(width, height);
             }
         }
+    }
+
+    /// Reads what the filmstrip shows of a file made in `folder` after it was
+    /// listed: size, modification time, and header dimensions. Blocking, so
+    /// call it off the GTK thread. `None` if the file is gone.
+    pub fn read_new_file_row(folder: &Path, path: PathBuf) -> Option<IndexedImage> {
+        if !path.is_file() {
+            return None;
+        }
+        let info = basic_info_from_path(folder, path);
+        let dimensions = crate::metadata::exif::display_dimensions(&info.path);
+        Some(IndexedImage {
+            path: info.path,
+            filename: info.filename,
+            extension: info.extension,
+            file_size: info.file_size,
+            modified_secs: info.modified_secs,
+            width: dimensions.map(|d| d.0),
+            height: dimensions.map(|d| d.1),
+            metadata_status: if dimensions.is_some() {
+                "ready"
+            } else {
+                "missing"
+            }
+            .to_string(),
+        })
+    }
+
+    /// Builds the row for a file made in `folder` after it was listed, or
+    /// `None` if it is not a supported image directly in `folder`. Seeds the
+    /// metadata cache from `row` so nothing reads the file again, and forgets
+    /// an earlier removal of the same path.
+    pub fn entry_for_new_file(&mut self, folder: &Path, row: &IndexedImage) -> Option<ImageEntry> {
+        if !Self::is_image(&row.path) || row.path.parent() != Some(folder) {
+            return None;
+        }
+        let dimensions = row.width.zip(row.height);
+        self.metadata_cache.insert(
+            row.path.clone(),
+            CachedImageData {
+                file_size: row.file_size,
+                dimensions,
+                quality: crate::quality::scorer::score_file_info(dimensions),
+            },
+        );
+        self.removed_paths.remove(&row.path);
+        Some(self.entry_from_row(row))
+    }
+
+    /// Adds files made in the open folder after it was listed (a copy, a
+    /// duplicate, a rename, or a move into it), each where a reload sorted by
+    /// `order` would put it. Rows already shown are left alone. The selected
+    /// row stays selected, and nothing else in the store is touched. Returns
+    /// how many rows were added: none if `folder` is not the open folder or
+    /// its load has not finished (the load lists whatever is on disk).
+    pub fn insert_new_files(
+        &mut self,
+        folder: &Path,
+        rows: &[IndexedImage],
+        order: SortOrder,
+    ) -> usize {
+        if self.current_folder.as_deref() != Some(folder) || self.folder_loading {
+            return 0;
+        }
+        let mut added = 0;
+        for row in rows {
+            if self.path_to_index.contains_key(&row.path) {
+                continue;
+            }
+            let Some(entry) = self.entry_for_new_file(folder, row) else {
+                continue;
+            };
+            let at = insertion_point(self.store.n_items(), order, &entry, |index| {
+                self.entry_at(index)
+            });
+            self.store.insert(at, &entry);
+            self.reindex_from(at);
+            if self.selected_index.is_some_and(|selected| selected >= at) {
+                self.selected_index = self.selected_index.map(|selected| selected + 1);
+            }
+            self.all_known_paths.insert(row.path.clone());
+            if let Err(position) = self
+                .indexed_library_paths
+                .binary_search_by(|known| path_sort_key(known, &row.path))
+            {
+                self.indexed_library_paths
+                    .insert(position, row.path.clone());
+            }
+            added += 1;
+        }
+        added
     }
 
     /// Insert `path` into the current folder's store in filename order.
@@ -442,8 +550,11 @@ impl LibraryManager {
         }
         self.metadata_cache.remove(path);
         self.indexed_library_paths.retain(|p| p != path);
-        if self.selected_index == Some(index) {
-            self.selected_index = None;
+        match self.selected_index {
+            Some(selected) if selected == index => self.selected_index = None,
+            // The list closes up, so the selected image moves up with it.
+            Some(selected) if selected > index => self.selected_index = Some(selected - 1),
+            _ => {}
         }
         self.reindex_from(index);
     }
@@ -538,6 +649,7 @@ impl LibraryManager {
         let generation = next_virtual_generation();
         self.virtual_generation = generation;
         self.load_token = self.load_token.wrapping_add(1);
+        self.folder_loading = false;
         self.path_to_index.clear();
         // A sort/filter rebuild must not lose textures evicted from the global
         // cache. Carry only thumbnails belonging to the new view forward.
@@ -580,6 +692,7 @@ impl LibraryManager {
     pub fn restore_view(&mut self, entries: &[ImageEntry], folder: Option<PathBuf>) {
         self.virtual_generation = next_virtual_generation();
         self.load_token = self.load_token.wrapping_add(1);
+        self.folder_loading = false;
         self.path_to_index.clear();
         self.active_thumbnail_cache.clear();
         self.current_folder = folder;
@@ -787,6 +900,80 @@ fn path_sort_key(a: &Path, b: &Path) -> std::cmp::Ordering {
         .cmp(&b.to_string_lossy().to_lowercase())
 }
 
+/// Orders two rows as a folder listing does for `order` (the ORDER BY in
+/// `LibraryIndex::images_in_folder`), so a row added later lands where a
+/// reload would put it.
+pub fn compare_entries(order: SortOrder, a: &ImageEntry, b: &ImageEntry) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let by_name = || {
+        a.filename()
+            .to_lowercase()
+            .cmp(&b.filename().to_lowercase())
+    };
+    let extension = |entry: &ImageEntry| {
+        entry
+            .path()
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default()
+            .to_lowercase()
+    };
+    match order {
+        SortOrder::NameAsc => by_name().then_with(|| a.path().cmp(&b.path())),
+        SortOrder::NameDesc => by_name().reverse().then_with(|| a.path().cmp(&b.path())),
+        SortOrder::DateModifiedAsc | SortOrder::DateModifiedDesc => {
+            // Files with no known time come last either way.
+            let times = match (a.modified_secs(), b.modified_secs()) {
+                (Some(a), Some(b)) if order.descending() => b.cmp(&a),
+                (Some(a), Some(b)) => a.cmp(&b),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            };
+            times.then_with(by_name)
+        }
+        SortOrder::FileTypeAsc => extension(a).cmp(&extension(b)).then_with(by_name),
+        SortOrder::FileTypeDesc => extension(b).cmp(&extension(a)).then_with(by_name),
+        SortOrder::AspectAsc
+        | SortOrder::AspectDesc
+        | SortOrder::WideScreenAsc
+        | SortOrder::WideScreenDesc => crate::model::browse::compare_aspects(
+            a.dimensions(),
+            b.dimensions(),
+            order.field() == SortField::WideScreen,
+            order.descending(),
+        )
+        .then_with(|| a.path().cmp(&b.path())),
+    }
+}
+
+/// Where `new` goes among `len` rows already in `order`: after any that
+/// compare equal.
+fn insertion_point(
+    len: u32,
+    order: SortOrder,
+    new: &ImageEntry,
+    at: impl Fn(u32) -> Option<ImageEntry>,
+) -> u32 {
+    let (mut low, mut high) = (0, len);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        match at(middle) {
+            Some(existing) if compare_entries(order, &existing, new).is_gt() => high = middle,
+            _ => low = middle + 1,
+        }
+    }
+    low
+}
+
+/// Puts `entry` into `entries`, already in `order`, at its place.
+pub fn insert_in_order(entries: &mut Vec<ImageEntry>, entry: ImageEntry, order: SortOrder) {
+    let at = insertion_point(entries.len() as u32, order, &entry, |index| {
+        entries.get(index as usize).cloned()
+    });
+    entries.insert(at as usize, entry);
+}
+
 pub fn sort_raw_entries(entries: &mut [RawImageEntry], order: SortOrder) {
     match order {
         SortOrder::AspectAsc
@@ -945,6 +1132,244 @@ mod tests {
         assert_ne!(generation, 0);
         assert_eq!(pending, vec![path.clone()]);
         assert_eq!(library.all_hashes_snapshot(), vec![(path, 0xabcd)]);
+    }
+
+    fn row(name: &str, modified: Option<i64>, size: Option<(u32, u32)>) -> IndexedImage {
+        IndexedImage {
+            path: PathBuf::from("/photos").join(name),
+            filename: name.to_string(),
+            extension: name.rsplit('.').next().unwrap_or_default().to_lowercase(),
+            file_size: 1000,
+            modified_secs: modified,
+            width: size.map(|s| s.0),
+            height: size.map(|s| s.1),
+            metadata_status: "ready".to_string(),
+        }
+    }
+
+    fn names(library: &LibraryManager) -> Vec<String> {
+        (0..library.image_count())
+            .map(|i| library.entry_at(i).unwrap().filename())
+            .collect()
+    }
+
+    /// An open, fully loaded folder holding `rows`, already in `order`.
+    fn loaded(rows: Vec<IndexedImage>) -> LibraryManager {
+        let folder = PathBuf::from("/photos");
+        let mut library = LibraryManager::new();
+        library.reset_for_folder(&folder);
+        library.load_indexed_folder(&folder, rows);
+        library
+    }
+
+    #[test]
+    fn new_files_land_where_each_sort_order_would_list_them() {
+        let folder = Path::new("/photos");
+        let cases: [(SortOrder, Vec<IndexedImage>, IndexedImage, [&str; 4]); 6] = [
+            (
+                SortOrder::NameAsc,
+                vec![
+                    row("a.png", None, None),
+                    row("c.png", None, None),
+                    row("d.png", None, None),
+                ],
+                row("B.png", None, None),
+                ["a.png", "B.png", "c.png", "d.png"],
+            ),
+            (
+                SortOrder::NameDesc,
+                vec![
+                    row("d.png", None, None),
+                    row("c.png", None, None),
+                    row("a.png", None, None),
+                ],
+                row("B.png", None, None),
+                ["d.png", "c.png", "B.png", "a.png"],
+            ),
+            (
+                SortOrder::DateModifiedDesc,
+                vec![
+                    row("a.png", Some(300), None),
+                    row("b.png", Some(200), None),
+                    row("c.png", Some(100), None),
+                ],
+                row("new.png", Some(250), None),
+                ["a.png", "new.png", "b.png", "c.png"],
+            ),
+            (
+                SortOrder::DateModifiedAsc,
+                vec![
+                    row("c.png", Some(100), None),
+                    row("b.png", Some(200), None),
+                    row("a.png", None, None),
+                ],
+                row("new.png", Some(250), None),
+                ["c.png", "b.png", "new.png", "a.png"],
+            ),
+            (
+                SortOrder::FileTypeAsc,
+                vec![
+                    row("a.jpg", None, None),
+                    row("b.png", None, None),
+                    row("c.webp", None, None),
+                ],
+                row("z.png", None, None),
+                ["a.jpg", "b.png", "z.png", "c.webp"],
+            ),
+            (
+                SortOrder::AspectAsc,
+                vec![
+                    row("tall.png", None, Some((90, 160))),
+                    row("wide.png", None, Some((160, 90))),
+                    row("unknown.png", None, None),
+                ],
+                row("square.png", None, Some((100, 100))),
+                ["tall.png", "square.png", "wide.png", "unknown.png"],
+            ),
+        ];
+        for (order, rows, new, expected) in cases {
+            let mut library = loaded(rows);
+            let added = library.insert_new_files(folder, std::slice::from_ref(&new), order);
+            assert_eq!(added, 1, "{order:?}");
+            assert_eq!(names(&library), expected, "{order:?}");
+            for (index, name) in expected.iter().enumerate() {
+                let path = folder.join(name);
+                assert_eq!(
+                    library.index_of_path(&path),
+                    Some(index as u32),
+                    "{order:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_row_above_the_selection_keeps_the_selection_on_its_image() {
+        let folder = Path::new("/photos");
+        let mut library = loaded(vec![
+            row("a.png", Some(300), None),
+            row("b.png", Some(200), None),
+            row("c.png", Some(100), None),
+        ]);
+        library.selected_index = Some(1);
+
+        library.insert_new_files(
+            folder,
+            &[
+                row("new.png", Some(400), None),
+                row("late.png", Some(50), None),
+            ],
+            SortOrder::DateModifiedDesc,
+        );
+
+        assert_eq!(
+            names(&library),
+            ["new.png", "a.png", "b.png", "c.png", "late.png"]
+        );
+        assert_eq!(library.selected_index, Some(2));
+        assert_eq!(library.selected_entry().unwrap().filename(), "b.png");
+    }
+
+    #[test]
+    fn new_files_are_not_added_twice_or_while_the_folder_loads() {
+        let folder = Path::new("/photos");
+        let mut library = loaded(vec![row("a.png", Some(300), None)]);
+        let new = row("b.png", Some(200), None);
+        let order = SortOrder::DateModifiedDesc;
+
+        assert_eq!(
+            library.insert_new_files(folder, std::slice::from_ref(&new), order),
+            1
+        );
+        assert_eq!(
+            library.insert_new_files(folder, std::slice::from_ref(&new), order),
+            0
+        );
+        assert_eq!(library.image_count(), 2);
+
+        // Not the open folder, not an image, not directly in the folder.
+        let elsewhere = IndexedImage {
+            path: PathBuf::from("/other/c.png"),
+            ..row("c.png", None, None)
+        };
+        let nested = IndexedImage {
+            path: PathBuf::from("/photos/sub/d.png"),
+            ..row("d.png", None, None)
+        };
+        let text = row("notes.txt", None, None);
+        assert_eq!(
+            library.insert_new_files(folder, &[elsewhere, nested, text], order),
+            0
+        );
+        assert_eq!(
+            library.insert_new_files(Path::new("/other"), &[row("e.png", None, None)], order),
+            0
+        );
+
+        // A load still filling the store will list the file itself.
+        library.reset_for_folder(folder);
+        assert!(library.is_loading_folder());
+        assert_eq!(
+            library.insert_new_files(folder, &[row("f.png", None, None)], order),
+            0
+        );
+        library.finish_load_folder();
+        assert!(!library.is_loading_folder());
+        assert_eq!(
+            library.insert_new_files(folder, &[row("f.png", None, None)], order),
+            1
+        );
+    }
+
+    #[test]
+    fn a_path_removed_earlier_can_be_added_back() {
+        let folder = Path::new("/photos");
+        let mut library = loaded(vec![
+            row("a.png", Some(300), None),
+            row("b.png", Some(200), None),
+        ]);
+        let a = folder.join("a.png");
+        library.remove_path(&a);
+        assert!(library.removed_paths.contains(&a));
+
+        library.insert_new_files(
+            folder,
+            &[row("a.png", Some(300), None)],
+            SortOrder::DateModifiedDesc,
+        );
+
+        assert_eq!(names(&library), ["a.png", "b.png"]);
+        assert!(!library.removed_paths.contains(&a));
+    }
+
+    #[test]
+    fn removing_a_row_above_the_selection_keeps_the_selection_on_its_image() {
+        let mut library = loaded(vec![
+            row("a.png", Some(300), None),
+            row("b.png", Some(200), None),
+            row("c.png", Some(100), None),
+        ]);
+        library.selected_index = Some(2);
+
+        library.remove_path(Path::new("/photos/a.png"));
+
+        assert_eq!(library.selected_index, Some(1));
+        assert_eq!(library.selected_entry().unwrap().filename(), "c.png");
+    }
+
+    #[test]
+    fn insert_in_order_places_a_kept_view_entry() {
+        let mut entries: Vec<ImageEntry> = ["a.png", "c.png"]
+            .iter()
+            .map(|name| ImageEntry::new(PathBuf::from("/photos").join(name)))
+            .collect();
+        insert_in_order(
+            &mut entries,
+            ImageEntry::new(PathBuf::from("/photos/b.png")),
+            SortOrder::NameAsc,
+        );
+        let names: Vec<_> = entries.iter().map(|e| e.filename()).collect();
+        assert_eq!(names, ["a.png", "b.png", "c.png"]);
     }
 
     #[test]

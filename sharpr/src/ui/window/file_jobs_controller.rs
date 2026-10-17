@@ -4,6 +4,7 @@
 //! them does nothing; actions on other files wait their turn.
 use super::*;
 use crate::file_jobs::{Event, Job, Report};
+use crate::library_index::IndexedImage;
 use crate::ui::copies_dialog::images_text;
 
 fn files_text(count: usize) -> String {
@@ -34,6 +35,24 @@ fn summary(verb: &str, report: &Report, total: usize) -> String {
         ));
     }
     message
+}
+
+/// Where a job's new files can be shown.
+enum NewFileTarget {
+    /// The open folder's own rows, as loaded by the load with this token.
+    Rows { token: u64 },
+    /// The unfiltered folder view kept aside while a search or chips narrow
+    /// what is shown; the new files appear when they are cleared.
+    Kept { session: u64 },
+}
+
+/// The files a finished job made: where each finished source went.
+fn new_paths(report: &Report) -> Vec<PathBuf> {
+    report
+        .done
+        .iter()
+        .filter_map(|(_, dest)| dest.clone())
+        .collect()
 }
 
 impl SharprWindow {
@@ -162,6 +181,169 @@ impl SharprWindow {
             if let Some(next_path) = next_path {
                 filmstrip.set_action_selection_to_path(&next_path);
             }
+        }
+    }
+
+    /// Shows `created`, the files a job just made, in the open folder when
+    /// they sit in it. Each goes where a reload would list it; the selection,
+    /// the scroll position and the thumbnail scheduler are left as they are,
+    /// and the folder is not reloaded. The files are read on a worker, then
+    /// added if that folder's load still owns the view. `after` runs on the
+    /// GTK thread once they are in, or at once when none can be shown.
+    fn show_new_files(&self, created: Vec<PathBuf>, after: impl FnOnce(&SharprWindow) + 'static) {
+        let target = {
+            let st = self.imp().state.borrow();
+            let ViewScope::Folder(folder) = &st.scope else {
+                drop(st);
+                after(self);
+                return;
+            };
+            let kept = self.imp().browse_snapshot.borrow();
+            if st.library.current_folder.as_deref() == Some(folder.as_path()) {
+                // A load that is still filling the store lists whatever is on
+                // disk, these files included.
+                (!st.library.is_loading_folder()).then(|| {
+                    (
+                        folder.clone(),
+                        NewFileTarget::Rows {
+                            token: st.library.load_token(),
+                        },
+                    )
+                })
+            } else if kept
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.folder.as_deref() == Some(folder.as_path()))
+            {
+                Some((
+                    folder.clone(),
+                    NewFileTarget::Kept {
+                        session: self.imp().browse_session.get(),
+                    },
+                ))
+            } else {
+                None
+            }
+        };
+        let Some((folder, target)) = target else {
+            after(self);
+            return;
+        };
+        let created: Vec<PathBuf> = created
+            .into_iter()
+            .filter(|path| path.parent() == Some(folder.as_path()))
+            .collect();
+        if created.is_empty() {
+            after(self);
+            return;
+        }
+        let (tx, rx) = async_channel::bounded(1);
+        let reading = folder.clone();
+        let spawned = std::thread::Builder::new()
+            .name("new-file-rows".into())
+            .spawn(move || {
+                let rows: Vec<IndexedImage> = created
+                    .into_iter()
+                    .filter_map(|path| LibraryManager::read_new_file_row(&reading, path))
+                    .collect();
+                let _ = tx.send_blocking(rows);
+            });
+        if spawned.is_err() {
+            after(self);
+            return;
+        }
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let rows = rx.recv().await.unwrap_or_default();
+            let Some(win) = weak.upgrade() else { return };
+            win.add_new_rows(&folder, target, &rows);
+            after(&win);
+        });
+    }
+
+    fn add_new_rows(&self, folder: &Path, target: NewFileTarget, rows: &[IndexedImage]) {
+        let (Some(filmstrip), Some(viewer)) = (
+            self.imp().filmstrip.borrow().clone(),
+            self.imp().viewer.borrow().clone(),
+        ) else {
+            return;
+        };
+        let state = self.imp().state.clone();
+        match target {
+            NewFileTarget::Rows { token } => {
+                let (added, was_empty) = {
+                    let mut st = state.borrow_mut();
+                    if st.scope != ViewScope::Folder(folder.to_path_buf())
+                        || !st.library.is_current_load(folder, token)
+                    {
+                        return;
+                    }
+                    let order = st.sort_order;
+                    let was_empty = st.library.image_count() == 0;
+                    let added = filmstrip
+                        .with_quiet_selection(|| st.library.insert_new_files(folder, rows, order));
+                    (added, was_empty)
+                };
+                if added == 0 {
+                    return;
+                }
+                filmstrip.rows_added();
+                if was_empty {
+                    // The first image in an empty folder: show it.
+                    let first = {
+                        let mut st = state.borrow_mut();
+                        st.library.selected_index = Some(0);
+                        st.library.entry_at(0).map(|entry| entry.path())
+                    };
+                    filmstrip.navigate_to(0);
+                    if let Some(path) = first {
+                        viewer.load_image(path);
+                    }
+                }
+            }
+            NewFileTarget::Kept { session } => {
+                if self.imp().browse_session.get() != session {
+                    return;
+                }
+                let mut kept = self.imp().browse_snapshot.borrow_mut();
+                let Some(snapshot) = kept.as_mut() else {
+                    return;
+                };
+                if snapshot.folder.as_deref() != Some(folder) {
+                    return;
+                }
+                let mut st = state.borrow_mut();
+                for row in rows {
+                    if snapshot
+                        .entries
+                        .iter()
+                        .any(|entry| entry.path() == row.path)
+                    {
+                        continue;
+                    }
+                    if let Some(entry) = st.library.entry_for_new_file(folder, row) {
+                        crate::model::library::insert_in_order(
+                            &mut snapshot.entries,
+                            entry,
+                            snapshot.sort_order,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Selects `path` in the view and shows it in the viewer, if it is a row.
+    fn select_path(&self, path: &Path) {
+        let Some(filmstrip) = self.imp().filmstrip.borrow().clone() else {
+            return;
+        };
+        let index = self.imp().state.borrow().library.index_of_path(path);
+        if let Some(index) = index {
+            // Selecting first: scrolling to a row selects it only once the
+            // row exists, and callers read the selection straight away.
+            filmstrip.select_index(index);
+            filmstrip.navigate_to(index);
+            filmstrip.set_action_selection_to_path(path);
         }
     }
 
@@ -315,6 +497,7 @@ impl SharprWindow {
         self.queue_file_job(Job::Move { paths, dest_dir }, title, move |win, report| {
             let moved: Vec<PathBuf> = report.done.iter().map(|(p, _)| p.clone()).collect();
             win.drop_paths_from_view(&moved);
+            win.show_new_files(new_paths(&report), |_| {});
             win.add_toast(libadwaita::Toast::new(&summary("Moved", &report, total)));
         });
     }
@@ -328,6 +511,7 @@ impl SharprWindow {
         let total = paths.len();
         let title = format!("Copying {}…", files_text(total));
         self.queue_file_job(Job::Copy { paths, dest_dir }, title, move |win, report| {
+            win.show_new_files(new_paths(&report), |_| {});
             win.add_toast(libadwaita::Toast::new(&summary("Copied", &report, total)));
         });
     }
@@ -340,7 +524,27 @@ impl SharprWindow {
         let title = format!("Renaming “{}”…", file_name(&path));
         self.queue_file_job(Job::Rename { path, new_name }, title, |win, report| {
             let renamed: Vec<PathBuf> = report.done.iter().map(|(p, _)| p.clone()).collect();
-            win.drop_paths_from_view(&renamed);
+            let created = new_paths(&report);
+            let viewed = win
+                .imp()
+                .state
+                .borrow()
+                .library
+                .selected_entry()
+                .map(|entry| entry.path());
+            let follow = renamed
+                .first()
+                .zip(created.first())
+                .filter(|(old, _)| viewed.as_ref() == Some(*old))
+                .map(|(_, new)| new.clone());
+            // The new row goes in before the old one leaves, so the image in
+            // view stays in view under its new name.
+            win.show_new_files(created, move |win| {
+                if let Some(new) = follow {
+                    win.select_path(&new);
+                }
+                win.drop_paths_from_view(&renamed);
+            });
             let message = match report.failed.first() {
                 Some((_, error)) => error.clone(),
                 None if report.cancelled => "Rename stopped".to_string(),
@@ -360,6 +564,7 @@ impl SharprWindow {
         self.queue_file_job(Job::Duplicate(path), title, |win, report| {
             let message = match (report.done.first(), report.failed.first()) {
                 (Some((source, Some(dest))), _) => {
+                    win.show_new_files(vec![dest.clone()], |_| {});
                     win.add_edit_copies(
                         crate::buckets::EditKind::Duplicated,
                         vec![(source.clone(), dest.clone())],

@@ -1,5 +1,21 @@
 # Current Tasks
 
+## Verified, awaiting acceptance: file-action results in the open folder (Work Order item 9)
+
+Branch: `feature/file-action-results`, from `fix/thumbnail-generations` (item 7,
+not yet accepted; its folder-load token guards the insert). When a file job
+finishes, its new files (Duplicate, Copy to Folder, Rename, moves into the open
+folder) are read on a worker and added to the open folder's rows in the current
+sort order. No reload: the selection stays on its image, the thumbnail
+generation and scheduler are untouched. Renaming the image in view keeps it in
+view under its new name. With a search or chips active the file waits in the
+kept view and shows when they are cleared. Also fixed on the way: removing a
+row above the selection left `selected_index` one too high (it pointed at the
+next image). GTK workflow `file_actions_add_their_results_to_the_open_folder`
+failed first (3 rows, 4 expected), then passed, with a second for the narrowed
+view and six model tests; `./check.sh` (284 tests) and all 33 GTK workflows
+pass. Not deployed.
+
 ## Verified, awaiting acceptance: thumbnail generations and folder-load token (Work Order item 7)
 
 Branch: `fix/thumbnail-generations`, rebased onto `main` after item 8. Every

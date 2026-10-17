@@ -4603,3 +4603,245 @@ fn application_stylesheet_parses_without_errors() {
         errors.borrow()
     );
 }
+
+/// Work Order item 9: the files a file action makes appear in the open
+/// folder straight away, in the folder's sort order, without a reload: the
+/// selection stays on the same image and the thumbnail generation stays put.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn file_actions_add_their_results_to_the_open_folder() {
+    let root = isolated_fixture("file-action-rows");
+    let other = root.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    // Old modification times, so files made now sort ahead of them (newest
+    // first), and so each copy lands before the selected image.
+    let set_age = |path: &Path, secs: u64| {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+            .unwrap();
+    };
+    let make = |path: &Path, width: u32, secs: u64| {
+        image::RgbImage::from_pixel(width, 90, image::Rgb([90, 120, 200]))
+            .save(path)
+            .unwrap();
+        set_age(path, secs);
+    };
+    let (a, b, c) = (root.join("a.png"), root.join("b.png"), root.join("c.png"));
+    make(&a, 160, 1_000_000);
+    make(&b, 168, 2_000_000);
+    make(&c, 176, 3_000_000);
+    let outside = other.join("m.png");
+    make(&outside, 184, 4_000_000);
+    let originals: Vec<Vec<u8>> = [&a, &b, &c, &outside]
+        .iter()
+        .map(|p| std::fs::read(p).unwrap())
+        .collect();
+
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("File action rows", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    pump_until(|| window.is_mapped() && window.app_state().borrow().library.image_count() == 3);
+    let state = window.app_state();
+    let strip = window.imp().filmstrip.borrow().clone().unwrap();
+
+    // The rows as the folder would list them: newest first, then by name.
+    let on_disk = || -> Vec<PathBuf> {
+        let mut files: Vec<(i64, String, PathBuf)> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .map(|path| {
+                let info = crate::library_index::basic_info_from_path(&root, path.clone());
+                (
+                    -info.modified_secs.unwrap_or(0),
+                    info.filename.to_lowercase(),
+                    path,
+                )
+            })
+            .collect();
+        files.sort();
+        files.into_iter().map(|(_, _, path)| path).collect()
+    };
+    let shown = || -> Vec<PathBuf> {
+        let st = state.borrow();
+        (0..st.library.image_count())
+            .map(|i| st.library.entry_at(i).unwrap().path())
+            .collect()
+    };
+    let generation = || {
+        window
+            .imp()
+            .thumbnail_worker
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .current_generation()
+    };
+    let selected_path = || state.borrow().library.selected_entry().map(|e| e.path());
+
+    // Look at b, which every copy below sorts ahead of.
+    let b_index = state.borrow().library.index_of_path(&b).unwrap();
+    strip.navigate_to(b_index);
+    pump_until(|| selected_path().as_deref() == Some(b.as_path()));
+    let generation_before = generation();
+
+    // Duplicate three times: three new rows, one per press.
+    for expected in 4..=6 {
+        strip.emit_duplicate_requested(b.clone());
+        pump_until(|| on_disk().len() == expected);
+        settle(300);
+        assert_eq!(
+            state.borrow().library.image_count() as usize,
+            expected,
+            "each duplicate adds a row without reopening the folder"
+        );
+        assert_eq!(shown(), on_disk(), "rows stay in the folder's sort order");
+        assert_eq!(selected_path().as_deref(), Some(b.as_path()));
+        let index = state.borrow().library.selected_index.unwrap();
+        assert_eq!(
+            state.borrow().library.index_of_path(&b),
+            Some(index),
+            "the selected index follows the image as rows go in above it"
+        );
+    }
+    assert_eq!(generation(), generation_before, "no thumbnail restart");
+
+    // Copy to Folder into the open folder.
+    window.copy_to_folder(vec![a.clone()], root.clone());
+    pump_until(|| on_disk().len() == 7);
+    settle(300);
+    assert_eq!(shown(), on_disk());
+    assert_eq!(
+        selected_path().as_deref(),
+        Some(b.as_path()),
+        "after the copy"
+    );
+
+    // A move from another folder into the open one.
+    window.move_to_folder(vec![outside.clone()], root.clone());
+    pump_until(|| !outside.exists());
+    settle(300);
+    let moved = root.join("m.png");
+    assert!(moved.exists());
+    assert_eq!(shown(), on_disk());
+    assert!(shown().contains(&moved));
+    assert_eq!(
+        selected_path().as_deref(),
+        Some(b.as_path()),
+        "after the move"
+    );
+
+    // Renaming the image in view keeps it in view under its new name.
+    let renamed = root.join("renamed.png");
+    window.rename_file(b.clone(), "renamed.png".to_string());
+    pump_until(|| renamed.exists());
+    settle(300);
+    assert_eq!(shown(), on_disk());
+    assert!(!shown().contains(&b), "the old name is gone");
+    assert_eq!(selected_path().as_deref(), Some(renamed.as_path()));
+    assert_eq!(generation(), generation_before, "no thumbnail restart");
+
+    // The new rows get thumbnails from the running scheduler.
+    pump_until(|| {
+        let st = state.borrow();
+        (0..st.library.image_count()).all(|i| st.library.entry_at(i).unwrap().thumbnail().is_some())
+    });
+
+    // A copy into an empty open folder: the first row, selected and shown.
+    let open = window.imp().open_folder_cb.borrow().clone().unwrap();
+    open(other.clone());
+    pump_until(|| {
+        let st = state.borrow();
+        st.scope == ViewScope::Folder(other.clone()) && !st.library.is_loading_folder()
+    });
+    settle(300);
+    assert_eq!(state.borrow().library.image_count(), 0);
+    window.copy_to_folder(vec![a.clone()], other.clone());
+    pump_until(|| state.borrow().library.image_count() == 1);
+    let first = state.borrow().library.entry_at(0).unwrap().path();
+    assert_eq!(first.parent(), Some(other.as_path()));
+    pump_until(|| window.imp_viewer().unwrap().current_path().as_deref() == Some(first.as_path()));
+    assert_eq!(selected_path().as_deref(), Some(first.as_path()));
+
+    assert_eq!(std::fs::read(&a).unwrap(), originals[0]);
+    assert_eq!(std::fs::read(&c).unwrap(), originals[2]);
+    assert_eq!(std::fs::read(&renamed).unwrap(), originals[1]);
+    assert_eq!(std::fs::read(&moved).unwrap(), originals[3]);
+    window.close();
+}
+
+/// Work Order item 9: with a search narrowing the view, a new file does not
+/// jump into the results, but it is in the folder when the search is cleared.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn file_action_results_wait_for_a_cleared_search() {
+    let root = isolated_fixture("file-action-search");
+    std::fs::create_dir_all(&root).unwrap();
+    for name in ["mountain.png", "sea.png"] {
+        image::RgbImage::from_pixel(160, 90, image::Rgb([90, 120, 200]))
+            .save(root.join(name))
+            .unwrap();
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("File action search", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.is_mapped() && window.app_state().borrow().library.image_count() == 2);
+    let state = window.app_state();
+    let count = || state.borrow().library.image_count();
+
+    let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
+    window.show_inline_search();
+    entry.set_text("sea");
+    pump_until(|| count() == 1);
+    let shown = state.borrow().library.entry_at(0).unwrap().path();
+
+    window.copy_to_folder(vec![root.join("mountain.png")], root.clone());
+    pump_until(|| std::fs::read_dir(&root).unwrap().count() == 3);
+    settle(300);
+    assert_eq!(count(), 1, "the narrowed view keeps showing its results");
+    assert_eq!(
+        state.borrow().library.entry_at(0).unwrap().path(),
+        shown,
+        "and does not move"
+    );
+
+    entry.set_text("");
+    pump_until(|| count() == 3);
+    assert_eq!(
+        state.borrow().scope,
+        ViewScope::Folder(root.clone()),
+        "back in the folder, with the copy listed"
+    );
+    window.close();
+}
