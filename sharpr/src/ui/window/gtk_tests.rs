@@ -2256,12 +2256,14 @@ fn guide_moves_resizes_and_crops_to_its_frame() {
     let resized = guide_resized((x, y, w, h), Corner::BottomRight, -w / 2.0, 0.0, view);
     let moved = guide_moved(resized, 40.0, 30.0, view);
     viewer.imp().guide_manual.set(Some(moved));
+    viewer.imp().guide.queue_draw();
     let shown = viewer.guide_geometry().unwrap().0;
     assert_eq!(shown, moved);
-    for mode in [ZoomMode::OneToOne, ZoomMode::Fit] {
+    for (mode, name) in [(ZoomMode::OneToOne, "zoomed"), (ZoomMode::Fit, "fit")] {
         viewer.set_zoom_mode(mode);
         settle(150);
         assert_eq!(viewer.guide_geometry().unwrap().0, moved);
+        screenshot(&window, &root.join(format!("guide-moved-{name}.png")));
     }
     viewer.load_image(paths[1].clone());
     pump_until(|| viewer.imp().picture.paintable().is_some());

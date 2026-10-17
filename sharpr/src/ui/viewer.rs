@@ -35,7 +35,7 @@ mod imp {
         pub zoom_label: gtk4::Label,
         /// D36: 16:9 guide drawn over the displayed image. It takes no
         /// input itself; a capture gesture on the overlay grabs it (D38).
-        pub guide: gtk4::DrawingArea,
+        pub guide: crate::ui::guide_layer::GuideLayer,
         pub guide_on: Cell<bool>,
         /// Where the user moved or resized the guide, in overlay coordinates;
         /// `None` fits it to the image as shown at Fit.
@@ -122,7 +122,7 @@ mod imp {
             zoom_label.set_margin_bottom(16);
             zoom_label.set_visible(false);
 
-            let guide = gtk4::DrawingArea::new();
+            let guide = crate::ui::guide_layer::GuideLayer::default();
             guide.set_can_target(false);
             guide.set_visible(false);
 
@@ -269,8 +269,8 @@ pub(crate) fn guide_moved((x, y, w, h): Rect, dx: f64, dy: f64, view: Rect) -> R
 }
 
 /// `rect` resized by dragging `corner` by (`dx`, `dy`): the opposite corner
-/// stays put, the larger change decides the size, 16:9 holds, and the
-/// result stays inside `view`.
+/// stays put, the drag along the guide's diagonal decides the size, 16:9
+/// holds, and the result stays inside `view`.
 pub(crate) fn guide_resized(
     (x, y, w, h): Rect,
     corner: crate::export::Corner,
@@ -296,14 +296,10 @@ pub(crate) fn guide_resized(
         anchor_y - vy
     };
     let most = room_x.min(room_y * 16.0 / 9.0).max(0.0);
-    let wide = w + dx * grow_x;
-    let tall = h + dy * grow_y;
-    // Growing or shrinking, the side that changed more decides.
-    let width = if ((wide - w) / w).abs() >= ((tall - h) / h).abs() {
-        wide
-    } else {
-        tall * 16.0 / 9.0
-    };
+    // Follow the drag projected onto the guide's diagonal, so the size
+    // changes smoothly in every direction.
+    let units = (dx * grow_x * 16.0 + dy * grow_y * 9.0) / (16.0 * 16.0 + 9.0 * 9.0);
+    let width = w + units * 16.0;
     let width = width.clamp(GUIDE_MIN_WIDTH.min(most), most);
     let height = width * 9.0 / 16.0;
     (
@@ -340,6 +336,26 @@ pub(crate) fn guide_frame((gx, gy, gw, gh): Rect, (ix, iy, iw, ih): Rect) -> Opt
             (bottom - top) / ih,
         )
     })
+}
+
+/// The parts of `image` outside `guide`, as up to four bands (above, below,
+/// left, right), for dimming.
+pub(crate) fn guide_dim_bands((ix, iy, iw, ih): Rect, (gx, gy, gw, gh): Rect) -> Vec<Rect> {
+    let (right, bottom) = (ix + iw, iy + ih);
+    // The guide clipped to the image; the bands surround it.
+    let top = gy.clamp(iy, bottom);
+    let low = (gy + gh).clamp(iy, bottom);
+    let left = gx.clamp(ix, right);
+    let east = (gx + gw).clamp(ix, right);
+    [
+        (ix, iy, iw, top - iy),
+        (ix, low, iw, bottom - low),
+        (ix, top, left - ix, low - top),
+        (east, top, right - east, low - top),
+    ]
+    .into_iter()
+    .filter(|&(_, _, w, h)| w > 0.0 && h > 0.0)
+    .collect()
 }
 
 fn bounds_rect(bounds: &gtk4::graphene::Rect) -> Rect {
@@ -459,41 +475,48 @@ impl ViewerPane {
     fn setup_guide(&self) {
         let imp = self.imp();
         let w = self.downgrade();
-        imp.guide.set_draw_func(move |_, cr, _, _| {
+        imp.guide.set_draw(move |snapshot| {
             let Some(viewer) = w.upgrade() else { return };
             let imp = viewer.imp();
             if imp.picture.paintable().is_none() {
                 return;
             }
-            let (Some(img), Some(((gx, gy, gw, gh), (vx, vy, vw, vh)))) = (
+            let (Some(img), Some((guide, view))) = (
                 imp.picture.compute_bounds(&imp.overlay),
                 viewer.guide_geometry(),
             ) else {
                 return;
             };
-            let (ix, iy, iw, ih) = bounds_rect(&img);
+            let graphene = |(x, y, w, h): Rect| {
+                gtk4::graphene::Rect::new(x as f32, y as f32, w as f32, h as f32)
+            };
+            let fill = |ink, rect: Rect| {
+                snapshot.append_color(&super::look::gdk_color(ink), &graphene(rect));
+            };
+            // An outline `width` thick centred on `rect`'s edges.
+            let outline = |ink, (x, y, w, h): Rect, width: f64| {
+                let half = width / 2.0;
+                let rounded = gtk4::gsk::RoundedRect::from_rect(
+                    graphene((x - half, y - half, w + width, h + width)),
+                    0.0,
+                );
+                let color = super::look::gdk_color(ink);
+                snapshot.append_border(&rounded, &[width as f32; 4], &[color; 4]);
+            };
             // Stay inside the scrolled viewport when the image overflows it.
-            cr.rectangle(vx, vy, vw, vh);
-            cr.clip();
+            snapshot.push_clip(&graphene(view));
             // Dim the part of the image outside the guide, then outline it.
-            super::look::cairo_color(cr, crate::palette::SCRIM);
-            cr.set_fill_rule(gtk4::cairo::FillRule::EvenOdd);
-            cr.rectangle(ix, iy, iw, ih);
-            cr.rectangle(gx, gy, gw, gh);
-            let _ = cr.fill();
-            super::look::cairo_color(cr, crate::palette::GUIDE_EDGE_SHADOW);
-            cr.set_line_width(4.0);
-            cr.rectangle(gx, gy, gw, gh);
-            let _ = cr.stroke();
-            super::look::cairo_color(cr, crate::palette::CROP_EDGE);
-            cr.set_line_width(2.0);
-            cr.rectangle(gx, gy, gw, gh);
-            let _ = cr.stroke();
-            // Corner squares to grab, as in Crop Copy (D38).
-            for (cx, cy) in [(gx, gy), (gx + gw, gy), (gx, gy + gh), (gx + gw, gy + gh)] {
-                cr.rectangle(cx - 5.0, cy - 5.0, 10.0, 10.0);
-                let _ = cr.fill();
+            for band in guide_dim_bands(bounds_rect(&img), guide) {
+                fill(crate::palette::SCRIM, band);
             }
+            outline(crate::palette::GUIDE_EDGE_SHADOW, guide, 4.0);
+            outline(crate::palette::CROP_EDGE, guide, 2.0);
+            // Corner squares to grab, as in Crop Copy (D38).
+            let (gx, gy, gw, gh) = guide;
+            for (cx, cy) in [(gx, gy), (gx + gw, gy), (gx, gy + gh), (gx + gw, gy + gh)] {
+                fill(crate::palette::CROP_EDGE, (cx - 5.0, cy - 5.0, 10.0, 10.0));
+            }
+            snapshot.pop();
         });
 
         // D38: corners resize the guide and its outline moves it; presses
@@ -1359,7 +1382,8 @@ impl ViewerPane {
 #[cfg(test)]
 mod guide_tests {
     use super::{
-        guide_frame, guide_grab, guide_moved, guide_rect, guide_resized, guide_within, GuideGrab,
+        guide_dim_bands, guide_frame, guide_grab, guide_moved, guide_rect, guide_resized,
+        guide_within, GuideGrab,
     };
     use crate::export::Corner;
 
@@ -1454,20 +1478,53 @@ mod guide_tests {
 
     #[test]
     fn resizing_holds_16_9_and_the_opposite_corner() {
-        let r = guide_resized(GUIDE, Corner::BottomRight, 160.0, 0.0, VIEW);
-        near(r, (100.0, 100.0, 480.0, 270.0));
-        // The larger change decides: a mostly vertical drag.
-        let r = guide_resized(GUIDE, Corner::BottomRight, 0.0, 90.0, VIEW);
+        // A drag along the diagonal moves the corner with the pointer.
+        let r = guide_resized(GUIDE, Corner::BottomRight, 160.0, 90.0, VIEW);
         near(r, (100.0, 100.0, 480.0, 270.0));
         // From the top left, the bottom right stays put.
         let r = guide_resized(GUIDE, Corner::TopLeft, 160.0, 90.0, VIEW);
         near(r, (260.0, 190.0, 160.0, 90.0));
+        // A straight drag still resizes, from either axis.
+        for (dx, dy) in [(160.0, 0.0), (0.0, 90.0)] {
+            let r = guide_resized(GUIDE, Corner::BottomRight, dx, dy, VIEW);
+            assert!(r.2 > 320.0 && (r.2 * 9.0 - r.3 * 16.0).abs() < 1e-9);
+            assert_eq!((r.0, r.1), (100.0, 100.0));
+        }
         // Never past the screen, nor below the smallest size.
         let r = guide_resized(GUIDE, Corner::BottomRight, 5000.0, 0.0, VIEW);
         assert!(r.0 + r.2 <= 1000.0 + 1e-9 && r.1 + r.3 <= 600.0 + 1e-9);
         assert!((r.2 * 9.0 - r.3 * 16.0).abs() < 1e-9);
         let r = guide_resized(GUIDE, Corner::BottomRight, -5000.0, 0.0, VIEW);
         near(r, (100.0, 100.0, 96.0, 54.0));
+    }
+
+    #[test]
+    fn resizing_never_jumps() {
+        // Growing one way while shrinking the other changes the size a
+        // little for a little movement, never by a leap.
+        let mut last = guide_resized(GUIDE, Corner::BottomRight, 0.0, 0.0, VIEW).2;
+        for step in 1..=200 {
+            let t = f64::from(step);
+            let width = guide_resized(GUIDE, Corner::BottomRight, t, -t * 0.9, VIEW).2;
+            assert!((width - last).abs() < 1.0, "{last} -> {width}");
+            last = width;
+        }
+    }
+
+    #[test]
+    fn dimming_covers_the_image_outside_the_guide() {
+        let image = (0.0, 0.0, 1000.0, 1000.0);
+        let bands = guide_dim_bands(image, (100.0, 200.0, 800.0, 450.0));
+        let area: f64 = bands.iter().map(|b| b.2 * b.3).sum();
+        near_f(area, 1000.0 * 1000.0 - 800.0 * 450.0);
+        // A guide wider than the image leaves only the bands above and below.
+        let bands = guide_dim_bands((0.0, 0.0, 400.0, 900.0), (-100.0, 300.0, 600.0, 337.5));
+        assert_eq!(bands.len(), 2);
+        assert!(guide_dim_bands(image, image).is_empty());
+    }
+
+    fn near_f(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-6, "{a} != {b}");
     }
 
     #[test]
