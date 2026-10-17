@@ -29,23 +29,23 @@ layer (no viewer-sized Cairo repaint per movement), and its 16:9 corner resize
 follows the drag along the diagonal, so straight drags shrink as well as grow.
 Accepted October 17 ("works", `95da20a`), merged to `main` and pushed.
 
-## Implemented and verified: Crop Copy zoom (D39)
+## Accepted: Crop Copy zoom (D39)
 
-Branch `feature/crop-copy-zoom`; waiting for the user's test. Crop opens on the
-viewer's scale and centre; scroll zooms at the pointer, dragging outside the box
-(or the middle button) pans, the selection stays on its image pixels, and the
-full image loads on a worker when zooming outgrows the preview. Pure geometry
-in `ui/crop_view.rs` (10 tests, written first); GTK workflow
-`crop_zooms_with_the_selection_attached`; all 30 GTK workflows, `./check.sh` and
-`cargo build` pass. Not deployed. On acceptance: merge to `main`, mark Work
-Order item 5 done.
+Crop opens on the viewer's scale and centre (held until the first zoom or pan,
+because the side panels slide away as it opens); scroll zooms at the pointer,
+dragging outside the box (or the middle button) pans, the selection stays on its
+image pixels, and the full image loads on a worker when zooming outgrows the
+preview. Pure geometry in `ui/crop_view.rs`; GTK workflow
+`crop_zooms_with_the_selection_attached`. The user's first test of `9d8c664`
+found the opening zoom jumped in; fixed in `e04e361`. Accepted October 17
+("it is fixed"), merged to `main` by fast-forward; not pushed.
 
 ## Done: cargo deny advisories
 
 `ROADMAP.md` Work Order item 2 is done: `deny.toml` ignores RUSTSEC-2026-0370,
 -0371 and -0372 (zvariant, zbus_names, zvariant_derive), all via glycin only.
 Config only; `./check.sh` and `cargo build` pass. Merged to `main`; not pushed.
-Item 3 (D36) is done; item 4 (D38) is done; item 5 (Crop Copy zoom) is next, then item 6 (file operations off the GTK thread).
+Items 3 (D36), 4 (D38) and 5 (Crop Copy zoom, D39) are done; item 6 (file operations off the GTK thread) is next.
 
 Committed and verified:
 - A1 `cd32145`: exclusive copies, preserving source bytes and permissions.
