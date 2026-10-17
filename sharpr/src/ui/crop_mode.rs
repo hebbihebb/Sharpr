@@ -47,7 +47,9 @@ struct Crop {
     aspect: Cell<Option<(u32, u32)>>,
     drag: Cell<Option<Drag>>,
     view: Cell<CropView>,
-    /// The viewer's view to open on, taken once the canvas has a size.
+    /// The viewer's view to open on. It holds, as a scale and a centre,
+    /// through the canvas settling (the side panels slide away as crop
+    /// opens) until the user first zooms or pans; then the view is theirs.
     opening: Cell<Option<ViewerView>>,
     /// What the canvas shows: the viewer's picture or a preview, then the
     /// full image once zooming needs it.
@@ -60,18 +62,27 @@ struct Crop {
 }
 
 impl Crop {
-    /// The view for a canvas of `size`: the viewer's view on the first
-    /// call, otherwise the current one kept valid for the canvas.
+    /// The view for a canvas of `size`: the viewer's view while it is held,
+    /// otherwise the current one kept valid for the canvas.
     fn view(&self, size: (f64, f64)) -> CropView {
         if size.0 <= 0.0 || size.1 <= 0.0 {
             return self.view.get();
         }
-        let view = match self.opening.take() {
+        let view = match self.opening.get() {
             Some((scale, fraction)) => CropView::from_scale(scale, fraction, self.dims, size),
             None => self.view.get().clamped(self.dims, size),
         };
         self.view.set(view);
         view
+    }
+
+    /// The user zooms or pans: stop holding the viewer's view.
+    fn release_opening(&self, size: (f64, f64)) {
+        if self.opening.get().is_some() {
+            let view = self.view(size);
+            self.opening.set(None);
+            self.view.set(view);
+        }
     }
 
     /// The selection on a canvas of `size`: x, y, width, height.
@@ -409,6 +420,7 @@ fn open(
             } else if (x..=x + w).contains(&sx) && (y..=y + h).contains(&sy) {
                 Some(Drag::Move(r))
             } else {
+                crop.release_opening(size);
                 Some(Drag::Pan(crop.view(size)))
             });
         });
@@ -457,8 +469,9 @@ fn open(
         let crop = crop.clone();
         let canvas = canvas.clone();
         pan.connect_drag_begin(move |_, _, _| {
-            crop.drag
-                .set(Some(Drag::Pan(crop.view(canvas_size(&canvas)))));
+            let size = canvas_size(&canvas);
+            crop.release_opening(size);
+            crop.drag.set(Some(Drag::Pan(crop.view(size))));
         });
     }
     pan.connect_drag_update(move |_, dx, dy| drag_update(dx, dy));
@@ -653,6 +666,7 @@ fn open(
 /// Zooms by `factor` with the image pixel under `at` staying under it.
 fn zoom_at(crop: &Crop, canvas: &crate::ui::guide_layer::GuideLayer, factor: f64, at: (f64, f64)) {
     let size = canvas_size(canvas);
+    crop.release_opening(size);
     crop.view
         .set(crop.view(size).zoomed_at(factor, at, crop.dims, size));
     canvas.queue_draw();
@@ -791,5 +805,66 @@ impl CropSession {
 
     pub fn close(&self) {
         (self.close)();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn crop(opening: Option<ViewerView>) -> Crop {
+        let texture = gdk4::MemoryTexture::new(
+            1,
+            1,
+            gdk4::MemoryFormat::R8g8b8a8,
+            &glib::Bytes::from_owned(vec![0u8; 4]),
+            4,
+        );
+        Crop {
+            source: PathBuf::new(),
+            stamp: (0, 0),
+            dims: (4000, 2000),
+            rect: Cell::new(CropRect::centered((4000, 2000), Some((16, 9)))),
+            aspect: Cell::new(Some((16, 9))),
+            drag: Cell::new(None),
+            view: Cell::new(CropView::fit((4000, 2000))),
+            opening: Cell::new(opening),
+            image: RefCell::new(texture.upcast()),
+            full_requested: Cell::new(false),
+            closed: Cell::new(false),
+            pointer: Cell::new(None),
+        }
+    }
+
+    fn scale(crop: &Crop, size: (f64, f64)) -> f64 {
+        crop.view(size).scale(crop.dims, size)
+    }
+
+    #[test]
+    fn the_viewer_s_scale_holds_while_the_canvas_settles() {
+        // The side panels slide away, so the first draws see a narrower
+        // canvas than the last: the scale must not follow it.
+        let crop = crop(Some((1.0, (0.5, 0.5))));
+        for width in [900.0, 1000.0, 1300.0, 1700.0] {
+            assert!((scale(&crop, (width, 600.0)) - 1.0).abs() < 1e-9, "{width}");
+        }
+    }
+
+    #[test]
+    fn once_the_user_zooms_the_view_is_theirs() {
+        let crop = crop(Some((1.0, (0.5, 0.5))));
+        let size = (1000.0, 600.0);
+        let held = scale(&crop, size);
+        crop.release_opening(size);
+        crop.view.set(
+            crop.view(size)
+                .zoomed_at(2.0, (500.0, 300.0), crop.dims, size),
+        );
+        let zoomed = scale(&crop, size);
+        assert!((zoomed - held * 2.0).abs() < 1e-9);
+        // A later resize now keeps the zoom relative to fit.
+        let wider = (2000.0, 600.0);
+        let fit = crop_view::fit_scale(crop.dims, wider);
+        assert!((scale(&crop, wider) - fit * crop.view.get().zoom).abs() < 1e-9);
     }
 }

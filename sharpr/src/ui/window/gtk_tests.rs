@@ -2336,7 +2336,7 @@ fn crop_zooms_with_the_selection_attached() {
         .build();
     app.register(None::<&gio::Cancellable>).unwrap();
     let window = SharprWindow::new(&app);
-    window.set_default_size(1024, 600);
+    window.set_default_size(1700, 700);
     window.present();
     pump_until(|| window.imp().state.borrow().library.image_count() == 2 && window.is_mapped());
     let viewer = window.imp().viewer.borrow().clone().unwrap();
@@ -2347,7 +2347,7 @@ fn crop_zooms_with_the_selection_attached() {
     // With the side panels already away, the viewer is as large as Crop
     // Copy's canvas, so the view carries over to the pixel. Zoom the viewer
     // in at a point, with the guide shown.
-    let panels = window.hide_side_panels();
+    let _panels = window.hide_side_panels();
     settle(300);
     assert!(window_shortcut(&window, "<Control>g"));
     viewer.imp().pointer_pos.set((300.0, 200.0));
@@ -2417,10 +2417,19 @@ fn crop_zooms_with_the_selection_attached() {
         shown
     );
 
-    // With the panels showing, opening Crop Copy hides them and widens the
-    // canvas; the image keeps its scale and its centre.
-    window.restore_side_panels(panels);
-    settle(300);
+    // With the panels showing (and taking room: the window is wide), opening
+    // Crop Copy hides them and widens the canvas; the image keeps its scale.
+    let showing = super::SidePanels {
+        outer_shown: true,
+        inner_shown: true,
+        outer_collapsed: false,
+        inner_collapsed: false,
+        width: window.width(),
+    };
+    window.restore_side_panels(showing);
+    settle(500);
+    let narrow = viewer.imp().scrolled_window.width();
+    assert!(narrow < 1700, "the panels take room: {narrow}");
     let (scale_before, (fx, fy)) = viewer.view_state().unwrap();
     assert!(window_shortcut(&window, "<Control><Shift>g"));
     pump_until(|| window.crop_session().is_some());
@@ -2428,8 +2437,16 @@ fn crop_zooms_with_the_selection_attached() {
     settle(300);
     let (_, _, scale) = crop.image_on_canvas();
     assert!((scale - scale_before).abs() < 0.01 * scale_before);
-    let centre = crop.view().centre;
-    assert!((centre.0 - fx * 640.0).abs() < 2.0 && (centre.1 - fy * 360.0).abs() < 2.0);
+    // The centre carries over, as far as the wider canvas allows.
+    let canvas_size = (
+        f64::from(crop.canvas().width()),
+        f64::from(crop.canvas().height()),
+    );
+    assert!(canvas_size.0 > f64::from(narrow));
+    assert_eq!(
+        crop.view(),
+        crate::ui::crop_view::CropView::from_scale(scale_before, (fx, fy), (640, 360), canvas_size)
+    );
     let (x, y, w, h) = crop.selection_on_canvas();
     let canvas = crop.canvas();
     assert!(x >= 0.0 && y >= 0.0);
