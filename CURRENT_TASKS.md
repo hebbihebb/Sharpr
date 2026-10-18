@@ -1,8 +1,9 @@
 # Current Tasks
 
-## Awaiting acceptance: missing bucket members leave their buckets (Work Order item 27, D42)
+## Accepted: missing bucket members leave their buckets (Work Order item 27, D42)
 
-Branch `fix/missing-bucket-members`. Opening a bucket no longer toasts "N
+Deployed as `bf351ab`; accepted by the user October 18, merged to `main`; not
+pushed. Next: Work Order item 15. Opening a bucket no longer toasts "N
 images in this bucket can't be found". After a fingerprint pass that read
 every file, `buckets::drop_missing` runs after `relink` and removes members
 found nowhere, with one toast naming the buckets. It keeps members outside the
