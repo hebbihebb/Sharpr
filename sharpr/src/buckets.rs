@@ -3,8 +3,9 @@
 //! Each bucket stores its own members in `bucket_members`: a file's last
 //! known path and, once known, its content fingerprint. A member is the file
 //! at that path or any file with the same fingerprint, so moved, renamed,
-//! and identical copies all count. Members found nowhere are missing; they
-//! are counted and never dropped.
+//! and identical copies all count. Members found nowhere are missing. After
+//! a complete fingerprint pass, `drop_missing` removes the ones that cannot
+//! come back (decision D42); until then they are counted.
 //!
 //! A bucket shows its own members plus every member of its sub-buckets.
 //! Adding to a sub-bucket doesn't add to the parent's own list; removing
@@ -12,7 +13,7 @@
 //! written. Until the one-time migration (`migrate`), membership lived in
 //! tags, and those rows are kept untouched.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::library_index::{effective_tags_in, Collection, LibraryIndex, MemberRow};
@@ -483,7 +484,7 @@ pub fn relink(
         }
     }
     if moves.len() >= BULK_RELINK {
-        back_up_members(index, backups)?;
+        back_up_members(index, backups, "before-relink")?;
     }
     for (id, path, fingerprint) in &fingerprints {
         index
@@ -501,15 +502,106 @@ pub fn relink(
     })
 }
 
-/// Copies the index to a new `before-relink-<time>` folder under `backups`
-/// and checks that the copy holds every member row.
-fn back_up_members(index: &LibraryIndex, backups: &Path) -> Result<PathBuf, String> {
+/// Whether `root` looks present: a folder with something in it. The mount
+/// point of an unplugged drive is empty or gone.
+fn root_available(root: &Path) -> bool {
+    std::fs::read_dir(root).is_ok_and(|mut entries| entries.next().is_some())
+}
+
+/// Removes members that exist nowhere in the library (decision D42). Call it
+/// only after `relink` that follows a complete fingerprint pass, so a moved
+/// file has already been found. A member stays while it may come back: one
+/// outside `roots` or in a `disabled` folder, one whose root is unavailable
+/// (an unplugged drive), one with a copy still in the library, and one whose
+/// file is in the trash (`trashed`, original paths), since Undo or a restore
+/// brings it back. With no `roots` nothing is removed. Backs up the index to a new folder under
+/// `backups` first; if that fails nothing is changed. Returns how many
+/// members left each bucket.
+pub fn drop_missing(
+    index: &LibraryIndex,
+    roots: &[PathBuf],
+    disabled: &[PathBuf],
+    trashed: &HashSet<PathBuf>,
+    backups: &Path,
+) -> Result<BTreeMap<i64, usize>, String> {
+    let available: Vec<&PathBuf> = roots.iter().filter(|r| root_available(r)).collect();
+    if available.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let rows: Vec<MemberRow> = index
+        .all_bucket_members()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|row| {
+            visible(&row.last_path, roots, disabled)
+                && available.iter().any(|root| row.last_path.starts_with(root))
+                && stamp(&row.last_path).is_none()
+                && !trashed.contains(&row.last_path)
+        })
+        .collect();
+    let hashes: Vec<String> = rows
+        .iter()
+        .filter_map(|r| r.fingerprint.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let by_hash = index
+        .files_with_fingerprints(&hashes)
+        .map_err(|e| e.to_string())?;
+    let gone: Vec<(i64, PathBuf)> = rows
+        .into_iter()
+        .filter(|row| {
+            !row.fingerprint
+                .as_ref()
+                .and_then(|hash| by_hash.get(hash))
+                .into_iter()
+                .flatten()
+                .any(|(path, size, mtime)| {
+                    visible(path, roots, disabled) && stamp(path) == Some((*size, *mtime))
+                })
+        })
+        .map(|row| (row.collection_id, row.last_path))
+        .collect();
+    if gone.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    back_up_members(index, backups, "before-drop-missing")?;
+    index.remove_members(&gone).map_err(|e| e.to_string())?;
+    let mut dropped = BTreeMap::new();
+    for (id, _) in &gone {
+        *dropped.entry(*id).or_insert(0) += 1;
+    }
+    Ok(dropped)
+}
+
+/// The one toast for a `drop_missing` result.
+pub fn dropped_message(collections: &[Collection], dropped: &BTreeMap<i64, usize>) -> String {
+    let total: usize = dropped.values().sum();
+    let names: Vec<&str> = dropped
+        .keys()
+        .filter_map(|id| collections.iter().find(|c| c.id == *id))
+        .map(|c| c.name.as_str())
+        .collect();
+    let from = match names.as_slice() {
+        [one] if dropped.len() == 1 => (*one).to_string(),
+        [a, b] if dropped.len() == 2 => format!("{a} and {b}"),
+        _ => format!("{} buckets", dropped.len()),
+    };
+    format!(
+        "Removed {total} image{} that can’t be found from {from}",
+        if total == 1 { "" } else { "s" }
+    )
+}
+
+/// Copies the index to a new `<prefix>-<time>` folder under `backups` and
+/// checks that the copy holds every member row.
+fn back_up_members(index: &LibraryIndex, backups: &Path, prefix: &str) -> Result<PathBuf, String> {
     let members = index.all_bucket_members().map_err(|e| e.to_string())?.len();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or_default();
-    let dir = backups.join(format!("before-relink-{stamp}"));
+    let dir = backups.join(format!("{prefix}-{stamp}"));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let copy = dir.join("library-index.sqlite");
     index.backup_to(&copy)?;
@@ -1478,5 +1570,178 @@ mod tests {
             .unwrap()
             .iter()
             .all(|m| !m.last_path.starts_with(f.root.join("off"))));
+    }
+
+    #[test]
+    fn a_member_gone_from_the_library_leaves_its_buckets_after_a_pass() {
+        let f = Fixture::migrated("drop-missing");
+        let none = HashSet::new();
+        let keep = f.bucket("Keep", None);
+        let other = f.bucket("Other", None);
+        let gone = f.image("a/gone.jpg");
+        let stays = f.image("a/stays.jpg");
+        add_to_bucket(&f.index, keep, &[gone.clone(), stays.clone()]).unwrap();
+        add_to_bucket(&f.index, other, std::slice::from_ref(&gone)).unwrap();
+        pass(&f);
+        std::fs::remove_file(&gone).unwrap();
+        pass(&f);
+
+        let backups = f.root.join("backups");
+        let dropped = drop_missing(
+            &f.index,
+            std::slice::from_ref(&f.root),
+            &[],
+            &none,
+            &backups,
+        )
+        .unwrap();
+        assert_eq!(dropped, BTreeMap::from([(keep, 1), (other, 1)]));
+        let rows = f.index.bucket_members(&[keep, other]).unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.last_path.clone()).collect::<Vec<_>>(),
+            vec![stays.clone()]
+        );
+        let view = view(&f.index, keep, std::slice::from_ref(&f.root), &[]).unwrap();
+        assert_eq!((view.paths, view.missing), (vec![stays], 0));
+        assert!(std::fs::read_dir(&backups).unwrap().flatten().any(|e| e
+            .file_name()
+            .to_string_lossy()
+            .starts_with("before-drop-missing-")));
+        // Nothing left to drop: no second backup, no change.
+        let before = std::fs::read_dir(&backups).unwrap().count();
+        assert!(drop_missing(
+            &f.index,
+            std::slice::from_ref(&f.root),
+            &[],
+            &none,
+            &backups
+        )
+        .unwrap()
+        .is_empty());
+        assert_eq!(std::fs::read_dir(&backups).unwrap().count(), before);
+    }
+
+    #[test]
+    fn missing_members_stay_while_they_may_come_back() {
+        let f = Fixture::migrated("keep-missing");
+        let none = HashSet::new();
+        let bucket = f.bucket("Keep", None);
+        let backups = f.root.join("backups");
+        let members = |paths: &[PathBuf]| {
+            for path in paths {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, format!("image {}", path.display())).unwrap();
+            }
+            add_to_bucket(&f.index, bucket, paths).unwrap();
+            for path in paths {
+                std::fs::remove_file(path).unwrap();
+            }
+        };
+        let count = || f.index.bucket_members(&[bucket]).unwrap().len();
+
+        // A root on an unplugged drive: its mount point is empty or gone.
+        let drive = f.root.join("drive");
+        members(&[drive.join("a.jpg")]);
+        for root in [drive.clone(), f.root.join("nowhere")] {
+            assert!(
+                drop_missing(&f.index, std::slice::from_ref(&root), &[], &none, &backups)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        // No roots known, a removed root, or a disabled folder: hidden, not gone.
+        let library = f.root.join("library");
+        f.image("library/present.jpg");
+        assert!(drop_missing(&f.index, &[], &[], &none, &backups)
+            .unwrap()
+            .is_empty());
+        assert!(drop_missing(
+            &f.index,
+            std::slice::from_ref(&library),
+            &[],
+            &none,
+            &backups
+        )
+        .unwrap()
+        .is_empty());
+        let off = library.join("off");
+        members(&[off.join("b.jpg")]);
+        assert!(drop_missing(
+            &f.index,
+            std::slice::from_ref(&library),
+            std::slice::from_ref(&off),
+            &none,
+            &backups
+        )
+        .unwrap()
+        .is_empty());
+        assert_eq!(count(), 2);
+
+        // Moved to identical copies, which re-linking leaves alone: it is
+        // still shown, so it stays.
+        let photo = f.image("library/photo.jpg");
+        add_to_bucket(&f.index, bucket, std::slice::from_ref(&photo)).unwrap();
+        std::fs::copy(&photo, library.join("copy-1.jpg")).unwrap();
+        std::fs::copy(&photo, library.join("copy-2.jpg")).unwrap();
+        crate::fingerprint::run_pass(
+            &f.index,
+            std::slice::from_ref(&library),
+            &[],
+            &[],
+            &|| false,
+            &|_| {},
+        )
+        .unwrap();
+        std::fs::remove_file(&photo).unwrap();
+        let disabled = std::slice::from_ref(&off);
+        relink(&f.index, std::slice::from_ref(&library), disabled, &backups).unwrap();
+        assert!(drop_missing(
+            &f.index,
+            std::slice::from_ref(&library),
+            disabled,
+            &none,
+            &backups
+        )
+        .unwrap()
+        .is_empty());
+        assert_eq!(count(), 3);
+
+        // In the trash: Undo or a restore brings it back.
+        let trashed = f.image("library/trashed.jpg");
+        add_to_bucket(&f.index, bucket, std::slice::from_ref(&trashed)).unwrap();
+        std::fs::remove_file(&trashed).unwrap();
+        assert!(drop_missing(
+            &f.index,
+            std::slice::from_ref(&library),
+            disabled,
+            &HashSet::from([trashed.clone()]),
+            &backups
+        )
+        .unwrap()
+        .is_empty());
+        assert_eq!(count(), 4);
+    }
+
+    #[test]
+    fn the_drop_message_names_up_to_two_buckets() {
+        let f = Fixture::migrated("drop-message");
+        let (a, b, c) = (
+            f.bucket("Art", None),
+            f.bucket("Beach", None),
+            f.bucket("City", None),
+        );
+        let collections = f.index.list_collections().unwrap();
+        assert_eq!(
+            dropped_message(&collections, &BTreeMap::from([(a, 1)])),
+            "Removed 1 image that can’t be found from Art"
+        );
+        assert_eq!(
+            dropped_message(&collections, &BTreeMap::from([(a, 2), (b, 1)])),
+            "Removed 3 images that can’t be found from Art and Beach"
+        );
+        assert_eq!(
+            dropped_message(&collections, &BTreeMap::from([(a, 1), (b, 1), (c, 1)])),
+            "Removed 3 images that can’t be found from 3 buckets"
+        );
     }
 }

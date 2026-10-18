@@ -1,9 +1,23 @@
 # Current Tasks
 
+## Awaiting acceptance: missing bucket members leave their buckets (Work Order item 27, D42)
+
+Branch `fix/missing-bucket-members`. Opening a bucket no longer toasts "N
+images in this bucket can't be found". After a fingerprint pass that read
+every file, `buckets::drop_missing` runs after `relink` and removes members
+found nowhere, with one toast naming the buckets. It keeps members outside the
+roots or in disabled folders, on a root that is gone or empty (unplugged
+drive), with a copy in the library, or in a trash. Backup with count check
+under `backups/before-drop-missing-<time>/` first. Trial on a copy of the live
+index: 1,085 members, 4 removed (`Pictures/Needs Upscale/no crop`, 3 buckets),
+276 kept because their files are in the trash. `./check.sh` (310 tests) and
+all 40 GTK workflows pass off-screen; fixed a race in
+`scoped_search_restores_folder_and_bucket_and_crop_dialog_renders`.
+
 ## Accepted: retire the startup legacy-bucket migration (Work Order item 14)
 
 Deployed as `7e1e410`; accepted by the user October 18 ("buckets work"), merged
-to `main`; not pushed. Next: Work Order item 27. The user
+to `main`; not pushed. The user
 chose to retire it. `migrate_legacy_collections_to_tags` and its startup call
 are gone; legacy tables and rows are untouched. A read-only copy of the live
 index (version 2) had 18 buckets, none unconverted, so the step did nothing

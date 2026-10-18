@@ -817,11 +817,15 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
         cached[sea.to_str().unwrap()].2,
         crate::fingerprint::hash_file(&sea).unwrap()
     );
-    // After the pass, the member follows the file into its bucket.
+    // After the pass, the member follows the file into its bucket. The view
+    // finds it by fingerprint before the re-link stores the new path.
     let index = window.imp().state.borrow().library_index.clone().unwrap();
     pump_until(|| {
         crate::buckets::view(&index, bucket, std::slice::from_ref(&root), &[])
             .is_ok_and(|v| v.paths.contains(&moved) && v.missing == 0)
+            && index
+                .all_bucket_members()
+                .is_ok_and(|rows| rows.iter().any(|m| m.last_path == moved))
     });
     assert!(index
         .all_bucket_members()

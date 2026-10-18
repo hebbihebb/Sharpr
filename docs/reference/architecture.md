@@ -93,7 +93,7 @@ Rules:
 
 - **Buckets store their own members** (`bucket_members`, since Phase 4). Each row holds a bucket, a file's last known path, and its content fingerprint once known.
   - **Who is a member:** the file at that path, or any file whose cached fingerprint matches and whose size and mtime are unchanged. Identical copies are all members.
-  - **Missing members:** a member found nowhere is missing. It is counted ("N images in this bucket can't be found") and never dropped.
+  - **Missing members (D42):** a member found nowhere is missing. After a fingerprint pass that read every file, `buckets::drop_missing` runs after `relink` and removes members that are missing, have no copy in the library, and whose root is present (non-empty); the index is backed up to `backups/before-drop-missing-<time>/` (member count checked) first, and one toast names the buckets. Hidden members (outside the roots, in disabled folders), members on an unavailable root, and members whose file is in a trash (`file_ops::trashed_originals`) stay. Until a pass drops them, missing members are counted (Library Overview) but no toast appears on open.
   - **Inheritance is computed at display time:** a bucket shows its own members plus its sub-buckets'. Hidden members in disabled folders don't count as missing.
   - **Edits:**
     - Adding to a sub-bucket doesn't touch the parent's list.

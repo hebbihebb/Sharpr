@@ -423,6 +423,23 @@ impl LibraryIndex {
         tx.commit()
     }
 
+    /// Deletes the given `(bucket, last_path)` member rows in one transaction.
+    pub fn remove_members(&self, rows: &[(i64, PathBuf)]) -> rusqlite::Result<usize> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let mut removed = 0;
+        {
+            let mut delete = tx.prepare(
+                "DELETE FROM bucket_members WHERE collection_id = ?1 AND last_path = ?2",
+            )?;
+            for (id, path) in rows {
+                removed += delete.execute(params![id, path_to_string(path)])?;
+            }
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
     /// Cached files with each of `hashes`: `hash → [(path, size, mtime_ns)]`.
     /// Callers check that a file still matches before trusting it.
     pub fn files_with_fingerprints(

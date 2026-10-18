@@ -1065,6 +1065,7 @@ impl SharprWindow {
             // After each pass, members follow moved and edited files; views
             // refresh when fingerprints or members changed.
             let (changed_tx, changed_rx) = async_channel::unbounded::<()>();
+            let (dropped_tx, dropped_rx) = async_channel::unbounded::<String>();
             let relink_index = index.clone();
             let backups = dirs::data_local_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
@@ -1123,8 +1124,45 @@ impl SharprWindow {
                             serde_json::json!({"error": error}),
                         ),
                     }
+                    // A file the pass could not read may be a moved member,
+                    // so only a pass that read everything may drop members.
+                    if pass.failed > 0 {
+                        return;
+                    }
+                    match crate::buckets::drop_missing(
+                        &relink_index,
+                        &job.roots,
+                        &job.disabled,
+                        &crate::file_ops::trashed_originals(&job.roots),
+                        &backups,
+                    ) {
+                        Ok(dropped) if !dropped.is_empty() => {
+                            crate::bench_event!(
+                                "buckets.drop_missing",
+                                serde_json::json!({"members": dropped.values().sum::<usize>()}),
+                            );
+                            let collections = relink_index.list_collections().unwrap_or_default();
+                            let _ = dropped_tx.send_blocking(crate::buckets::dropped_message(
+                                &collections,
+                                &dropped,
+                            ));
+                            let _ = changed_tx.send_blocking(());
+                        }
+                        Ok(_) => {}
+                        Err(error) => crate::bench_warn!(
+                            "buckets.drop_missing.fail",
+                            serde_json::json!({"error": error}),
+                        ),
+                    }
                 }),
             );
+            let weak = self.downgrade();
+            glib::MainContext::default().spawn_local(async move {
+                while let Ok(message) = dropped_rx.recv().await {
+                    let Some(win) = weak.upgrade() else { return };
+                    win.add_toast(libadwaita::Toast::new(&message));
+                }
+            });
             let weak = self.downgrade();
             glib::MainContext::default().spawn_local(async move {
                 while changed_rx.recv().await.is_ok() {
@@ -2006,17 +2044,9 @@ impl SharprWindow {
                         return;
                     }
                     let paths = match result {
-                        Ok(view) => {
-                            if view.missing > 0 {
-                                // Missing members are kept; say so, never drop them.
-                                toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
-                                    "{} image{} in this bucket can’t be found",
-                                    view.missing,
-                                    if view.missing == 1 { "" } else { "s" }
-                                )));
-                            }
-                            view.paths
-                        }
+                        // Missing members are told about once, when a
+                        // fingerprint pass drops them (D42), not on every open.
+                        Ok(view) => view.paths,
                         Err(error) => {
                             toast_overlay_c.add_toast(libadwaita::Toast::new(&format!(
                                 "Could not open bucket: {error}"

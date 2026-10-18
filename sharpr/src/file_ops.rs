@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Returns the first non-existing path of the form:
@@ -98,8 +99,13 @@ pub fn rename_no_replace(src: &Path, dest: &Path) -> std::io::Result<()> {
 /// following the freedesktop.org trash spec. The newest entry recorded for
 /// `original` moves back, never over a file now at that name.
 pub fn restore_from_trash(original: &Path) -> Result<(), String> {
+    restore_from_trashes(original, &trashes_for(original))
+}
+
+/// The home trash, plus the trash directories of the drive holding `path`.
+fn trashes_for(path: &Path) -> Vec<(PathBuf, Option<PathBuf>)> {
     let mut trashes = vec![(glib::user_data_dir().join("Trash"), None)];
-    if let Some(top) = mount_top(&lexical(original)) {
+    if let Some(top) = mount_top(&lexical(path)) {
         // SAFETY: getuid has no preconditions and cannot fail.
         let uid = unsafe { libc::getuid() };
         for dir in [
@@ -109,7 +115,78 @@ pub fn restore_from_trash(original: &Path) -> Result<(), String> {
             trashes.push((dir, Some(top.clone())));
         }
     }
-    restore_from_trashes(original, &trashes)
+    trashes
+}
+
+/// The original paths of everything in the trashes that can hold files
+/// from under `roots`: such a file can still be restored.
+pub fn trashed_originals(roots: &[PathBuf]) -> HashSet<PathBuf> {
+    let mut trashes: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+    for root in roots {
+        for trash in trashes_for(&root.join("_")) {
+            if !trashes.contains(&trash) {
+                trashes.push(trash);
+            }
+        }
+    }
+    trash_entries(&trashes)
+        .into_iter()
+        .map(|entry| entry.original)
+        .collect()
+}
+
+/// One `.trashinfo` record: where the file came from and where it is now.
+struct TrashEntry {
+    original: PathBuf,
+    date: String,
+    file: PathBuf,
+    info: PathBuf,
+}
+
+/// Every readable record in `trashes`, each paired with the top directory
+/// its relative paths start from (`None` for the home trash).
+fn trash_entries(trashes: &[(PathBuf, Option<PathBuf>)]) -> Vec<TrashEntry> {
+    let mut found = Vec::new();
+    for (trash, top) in trashes {
+        let Ok(entries) = std::fs::read_dir(trash.join("info")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let info = entry.path();
+            let Some(name) = info
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".trashinfo"))
+            else {
+                continue;
+            };
+            let Ok(text) = std::fs::read_to_string(&info) else {
+                continue;
+            };
+            let (mut path, mut date) = (None, String::new());
+            for line in text.lines() {
+                if let Some(value) = line.strip_prefix("Path=") {
+                    path = Some(percent_decode(value));
+                } else if let Some(value) = line.strip_prefix("DeletionDate=") {
+                    date = value.to_string();
+                }
+            }
+            let Some(path) = path else {
+                continue;
+            };
+            let original = match top {
+                Some(top) if path.is_relative() => top.join(path),
+                _ => path,
+            };
+            found.push(TrashEntry {
+                original,
+                date,
+                file: trash.join("files").join(name),
+                info,
+            });
+        }
+    }
+    found
 }
 
 /// `path` without `.` and `..` components, resolved as text the way GIO
@@ -152,41 +229,10 @@ fn restore_from_trashes(
     let original = lexical(original);
     let original = original.as_path();
     let mut newest: Option<(String, PathBuf, PathBuf)> = None;
-    for (trash, top) in trashes {
-        let Ok(entries) = std::fs::read_dir(trash.join("info")) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let info = entry.path();
-            let Some(name) = info
-                .file_name()
-                .and_then(|n| n.to_str())
-                .and_then(|n| n.strip_suffix(".trashinfo"))
-            else {
-                continue;
-            };
-            let Ok(text) = std::fs::read_to_string(&info) else {
-                continue;
-            };
-            let (mut path, mut date) = (None, String::new());
-            for line in text.lines() {
-                if let Some(value) = line.strip_prefix("Path=") {
-                    path = Some(percent_decode(value));
-                } else if let Some(value) = line.strip_prefix("DeletionDate=") {
-                    date = value.to_string();
-                }
-            }
-            let Some(path) = path else {
-                continue;
-            };
-            let path = match top {
-                Some(top) if path.is_relative() => top.join(path),
-                _ => path,
-            };
-            // ISO 8601 dates sort as text.
-            if path == original && newest.as_ref().is_none_or(|(d, _, _)| date > *d) {
-                newest = Some((date, trash.join("files").join(name), info));
-            }
+    for entry in trash_entries(trashes) {
+        // ISO 8601 dates sort as text.
+        if entry.original == original && newest.as_ref().is_none_or(|(d, _, _)| entry.date > *d) {
+            newest = Some((entry.date, entry.file, entry.info));
         }
     }
     let Some((_, trashed, info)) = newest else {

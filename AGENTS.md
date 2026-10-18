@@ -74,7 +74,7 @@ Images will be found through visual search and typed filters, not manual tags, a
 
 ## Verification
 
-Check in proportion to the risk. `docs/reference/development.md` has the commands.
+Check in proportion to the risk. `docs/reference/development.md` has the commands. Run GTK tests and screenshots off-screen through `tools/gtk-offscreen.py` (user, October 18, 2026), so no window opens on the user's desktop and the desktop clipboard is untouched.
 
 | Change | Minimum check |
 | --- | --- |
