@@ -832,7 +832,7 @@ Open items only; the table above has the order and the model. Each brief adds on
 **13. Re-link a bucket member moved outside Sharpr.**
 - **Goal:** a bucket shows a member the user moved elsewhere without first opening its new folder.
 - **Done when:** a test moves a member out from under Sharpr and the bucket finds it; a same-name file with other content is never matched.
-- **Guardrails:** bucket membership is user data. Match on the content fingerprint, never the name; update the stored path only on a unique match; back up before any bulk update. Item 11's watching may help but is not a dependency.
+- **Guardrails:** bucket membership is user data. Match on the content fingerprint, never the name; update the stored path only on a unique match; back up before any bulk update. Still reproduces after item 11 (user, October 18): a bucket image moved outside Sharpr does not come back until its new folder is opened. Item 11's watching did not fix it; the user keeps it apart from item 26.
 
 **14. Guard or retire the startup legacy-bucket migration.**
 - **Goal:** an old database can never be damaged by the migration that runs at startup.
