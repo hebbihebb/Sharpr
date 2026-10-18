@@ -1277,7 +1277,7 @@ impl ViewerPane {
             }
         };
 
-        let (index, library_id, root, disabled) = imp
+        let (index, library_id, roots, disabled) = imp
             .state
             .borrow()
             .as_ref()
@@ -1286,9 +1286,7 @@ impl ViewerPane {
                 (
                     st.library_index.clone(),
                     st.settings.active_library_id.clone(),
-                    st.settings
-                        .active_library()
-                        .map(|library| library.root.clone()),
+                    st.settings.library_roots(),
                     st.disabled_folders.clone(),
                 )
             })
@@ -1321,12 +1319,7 @@ impl ViewerPane {
                 let duplicates = index
                     .as_ref()
                     .map(|index| {
-                        crate::copies::identical_elsewhere(
-                            index,
-                            &worker_path,
-                            root.as_deref(),
-                            &disabled,
-                        )
+                        crate::copies::identical_elsewhere(index, &worker_path, &roots, &disabled)
                     })
                     .unwrap_or(0);
                 Ok((names, duplicates))

@@ -272,10 +272,10 @@ pub fn group(
 pub fn identical_elsewhere(
     index: &LibraryIndex,
     path: &Path,
-    root: Option<&Path>,
+    roots: &[PathBuf],
     disabled: &[PathBuf],
 ) -> usize {
-    if !crate::buckets::visible(path, root, disabled) {
+    if !crate::buckets::visible(path, roots, disabled) {
         return 0;
     }
     let Ok(metadata) = std::fs::metadata(path) else {
@@ -294,7 +294,7 @@ pub fn identical_elsewhere(
         .flatten()
         .filter(|(other, size, mtime)| {
             other != path
-                && crate::buckets::visible(other, root, disabled)
+                && crate::buckets::visible(other, roots, disabled)
                 && std::fs::metadata(other)
                     .is_ok_and(|m| crate::fingerprint::file_stamp(&m) == (*size, *mtime))
         })
@@ -446,13 +446,21 @@ mod tests {
             std::fs::write(path, b"same image bytes").unwrap();
         }
         let index = crate::library_index::LibraryIndex::open_in_memory().unwrap();
-        crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
-        assert_eq!(identical_elsewhere(&index, &source, None, &[]), 3);
+        crate::fingerprint::run_pass(
+            &index,
+            std::slice::from_ref(&root),
+            &[],
+            &[],
+            &|| false,
+            &|_| {},
+        )
+        .unwrap();
+        assert_eq!(identical_elsewhere(&index, &source, &[], &[]), 3);
         assert_eq!(
             identical_elsewhere(
                 &index,
                 &source,
-                Some(&active),
+                std::slice::from_ref(&active),
                 std::slice::from_ref(&disabled)
             ),
             1
@@ -461,7 +469,7 @@ mod tests {
             identical_elsewhere(
                 &index,
                 &hidden,
-                Some(&active),
+                std::slice::from_ref(&active),
                 std::slice::from_ref(&disabled)
             ),
             0
@@ -470,7 +478,7 @@ mod tests {
             identical_elsewhere(
                 &index,
                 &outside,
-                Some(&active),
+                std::slice::from_ref(&active),
                 std::slice::from_ref(&disabled)
             ),
             0
@@ -712,7 +720,15 @@ mod tests {
             .unwrap();
 
         let index = LibraryIndex::open_in_memory().unwrap();
-        crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
+        crate::fingerprint::run_pass(
+            &index,
+            std::slice::from_ref(&root),
+            &[],
+            &[],
+            &|| false,
+            &|_| {},
+        )
+        .unwrap();
         let files = crate::visual_search::files::locate_in(
             Path::new(&env("SHARPR_TEST_MODEL_DIR")),
             &[PathBuf::from(env("SHARPR_LLAMA_SERVER"))],
@@ -728,7 +744,7 @@ mod tests {
             &index,
             &store,
             "m",
-            &root,
+            std::slice::from_ref(&root),
             &[],
             &|| false,
             &|_| {},

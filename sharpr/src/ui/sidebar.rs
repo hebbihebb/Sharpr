@@ -11,6 +11,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita::prelude::*;
 
+use crate::config::settings::LibraryConfig;
 use crate::library_index::Collection;
 use crate::model::walk;
 use crate::ui::state::AppState;
@@ -78,6 +79,8 @@ mod imp {
         /// Folders listed since the last refresh, so only new ones start collapsed.
         pub(super) known_folder_paths: RefCell<HashSet<PathBuf>>,
         pub(super) folder_scan_canceled: RefCell<Option<Arc<AtomicBool>>>,
+        /// The library's roots, first first, as of the last scan (D41).
+        pub(super) library_roots: RefCell<Vec<PathBuf>>,
         pub ignored_folders: RefCell<Vec<PathBuf>>,
         pub collapsed_collection_ids: RefCell<HashSet<i64>>,
         pub collections: RefCell<Vec<Collection>>,
@@ -107,6 +110,7 @@ mod imp {
                 suppress_folder_signal: Cell::new(false),
                 suppress_collection_signal: Cell::new(false),
                 collapsed_folder_paths: RefCell::new(HashSet::new()),
+                library_roots: RefCell::new(Vec::new()),
                 folder_entries: RefCell::new(Vec::new()),
                 folder_tree: RefCell::new(Vec::new()),
                 known_folder_paths: RefCell::new(HashSet::new()),
@@ -284,9 +288,10 @@ impl SidebarPane {
         imp.toolbar_view.set_parent(self);
     }
 
-    /// Scans the library root on a worker and lists folders as it finds them,
-    /// so a large root such as Home fills in instead of showing nothing until
-    /// the walk ends. The first folder is chosen once the scan is done.
+    /// Scans the library roots on a worker, one after another, and lists
+    /// folders as it finds them, so a large root such as Home fills in instead
+    /// of showing nothing until the walk ends. Each root is a top-level entry,
+    /// in root order. The first folder is chosen once the scan is done.
     fn populate_default_folders(&self, state: Rc<RefCell<AppState>>) {
         let generation = self.imp().folder_generation.get().wrapping_add(1);
         self.imp().folder_generation.set(generation);
@@ -300,7 +305,11 @@ impl SidebarPane {
         }
         let (tx, rx) = async_channel::unbounded::<Vec<PathBuf>>();
         let active_library = state.borrow().settings.active_library().cloned();
-        let root = active_library.as_ref().map(|library| library.root.clone());
+        let roots = active_library
+            .as_ref()
+            .map(LibraryConfig::roots)
+            .unwrap_or_default();
+        *self.imp().library_roots.borrow_mut() = roots.clone();
         std::thread::spawn(move || {
             let Some(library) = active_library else {
                 return;
@@ -313,15 +322,17 @@ impl SidebarPane {
                     pending.1 = Instant::now();
                 }
             };
-            scan_image_folders(
-                &library.root,
-                &library.ignored_folders,
-                &|| {
-                    flush(false);
-                    canceled.load(Ordering::Relaxed) || tx.is_closed()
-                },
-                &mut |path| pending.borrow_mut().0.push(path.to_path_buf()),
-            );
+            for root in library.roots() {
+                scan_image_folders(
+                    &root,
+                    &library.ignored_folders,
+                    &|| {
+                        flush(false);
+                        canceled.load(Ordering::Relaxed) || tx.is_closed()
+                    },
+                    &mut |path| pending.borrow_mut().0.push(path.to_path_buf()),
+                );
+            }
             flush(true);
         });
 
@@ -335,11 +346,11 @@ impl SidebarPane {
                 if widget.imp().folder_generation.get() != generation {
                     return;
                 }
-                let Some(root) = root.as_ref() else {
-                    return;
-                };
                 found.extend(batch);
-                let tree = folder_tree_from(root, &found);
+                let tree: Vec<FolderNode> = roots
+                    .iter()
+                    .flat_map(|root| folder_tree_from(root, &found))
+                    .collect();
                 let ignored_folders = state.borrow().disabled_folders.clone();
                 widget.set_folder_tree(&tree, &ignored_folders);
 
@@ -411,6 +422,7 @@ impl SidebarPane {
                 entry.depth,
                 entry.has_children,
                 collapsed,
+                root_color(&self.imp().library_roots.borrow(), &entry.path),
             );
             row.set_ignored(row_is_ignored(&row.path(), ignored_folders));
             self.attach_folder_row_menu(&row);
@@ -441,14 +453,17 @@ impl SidebarPane {
     }
 
     pub fn refresh_active_library(&self, state: Rc<RefCell<AppState>>) {
-        self.imp().active_library_label.set_tooltip_text(
+        self.imp().active_library_label.set_tooltip_text(Some(
             state
                 .borrow()
                 .settings
-                .active_library()
-                .map(|library| library.root.display().to_string())
-                .as_deref(),
-        );
+                .library_roots()
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .as_str(),
+        ));
         // A new scan lists folders afresh: below the root they start collapsed.
         self.imp().known_folder_paths.borrow_mut().clear();
         self.set_folder_tree(&[], &state.borrow().disabled_folders);
@@ -1025,6 +1040,7 @@ impl SidebarPane {
         gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let popover_clone = popover.clone();
         let row_weak = row.downgrade();
+        let widget_weak = self.downgrade();
         gesture.connect_pressed(move |gesture, _, x, y| {
             let button = gesture.current_button();
             let modifiers = gesture.current_event_state();
@@ -1038,7 +1054,7 @@ impl SidebarPane {
             if let Some(row) = row_weak.upgrade() {
                 toggle_ignore.set_enabled(true);
                 // We update the menu item label dynamically
-                menu.remove(0);
+                menu.remove_all();
                 menu.append(
                     Some(if row.ignored() {
                         "Enable Folder"
@@ -1047,6 +1063,19 @@ impl SidebarPane {
                     }),
                     Some("folder.toggle-ignore"),
                 );
+                // A root can be forgotten while another remains (D41).
+                let roots = widget_weak
+                    .upgrade()
+                    .map(|widget| widget.imp().library_roots.borrow().clone())
+                    .unwrap_or_default();
+                if roots.len() > 1 && roots.contains(&row.path()) {
+                    let item = gio::MenuItem::new(Some("Remove from Library"), None);
+                    item.set_action_and_target_value(
+                        Some("win.remove-library-root"),
+                        Some(&row.path().to_string_lossy().to_variant()),
+                    );
+                    menu.append_item(&item);
+                }
             }
 
             let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
@@ -1448,6 +1477,7 @@ impl FolderRow {
         depth: u32,
         has_children: bool,
         is_collapsed: bool,
+        color: Option<&str>,
     ) -> Self {
         let row: Self = glib::Object::new();
         *row.imp().path.borrow_mut() = path;
@@ -1455,8 +1485,7 @@ impl FolderRow {
 
         let icon_name = folder_icon_name(&row.path());
         let icon = gtk4::Image::from_icon_name(icon_name);
-        let folder_color = folder_icon_color(icon_name);
-        if let Some(color) = folder_color {
+        if let Some(color) = color {
             apply_icon_color(&icon, color);
         }
         let disclosure = gtk4::Button::new();
@@ -1525,15 +1554,10 @@ impl FolderRow {
     }
 }
 
-fn folder_icon_color(icon_name: &str) -> Option<&'static str> {
-    match icon_name {
-        "folder-pictures-symbolic" => Some(crate::palette::BUCKETS[1]),
-        "folder-download-symbolic" => Some(crate::palette::BUCKETS[2]),
-        "folder-videos-symbolic" => Some(crate::palette::BUCKETS[7]),
-        "folder-music-symbolic" => Some(crate::palette::BUCKETS[0]),
-        "folder-documents-symbolic" => Some(crate::palette::BUCKETS[3]),
-        _ => None,
-    }
+/// The folder-icon colour of the root `path` lies under (D41), by root order.
+fn root_color(roots: &[PathBuf], path: &Path) -> Option<&'static str> {
+    let index = roots.iter().position(|root| path.starts_with(root))?;
+    Some(crate::palette::ROOTS[index % crate::palette::ROOTS.len()])
 }
 
 fn folder_icon_name(path: &Path) -> &'static str {

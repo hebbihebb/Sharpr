@@ -8,12 +8,12 @@ impl SharprWindow {
         extra: Vec<String>,
         paths: Vec<PathBuf>,
     ) {
-        let (index, library, root, disabled) = {
+        let (index, library, roots, disabled) = {
             let st = self.imp().state.borrow();
             (
                 st.library_index.clone(),
                 st.settings.active_library_id.clone().unwrap_or_default(),
-                st.settings.active_library().map(|l| l.root.clone()),
+                st.settings.library_roots(),
                 st.disabled_folders.clone(),
             )
         };
@@ -26,7 +26,7 @@ impl SharprWindow {
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = (|| -> Result<_, String> {
-                let filtered = filter_paths_for_library(paths, root.as_deref(), &disabled);
+                let filtered = filter_paths_for_library(paths, &roots, &disabled);
                 if filtered.len() != count {
                     return Err(
                         "Some images are outside the active library or in disabled folders".into(),
@@ -121,11 +121,11 @@ impl SharprWindow {
     }
 
     pub(super) fn change_collection_tags(&self, id: i64, paths: Vec<PathBuf>, remove: bool) {
-        let (index, root, disabled, scope) = {
+        let (index, roots, disabled, scope) = {
             let st = self.imp().state.borrow();
             (
                 st.library_index.clone(),
-                st.settings.active_library().map(|l| l.root.clone()),
+                st.settings.library_roots(),
                 st.disabled_folders.clone(),
                 st.scope.clone(),
             )
@@ -148,7 +148,7 @@ impl SharprWindow {
                 {
                     return Err("Bucket is no longer in this library".into());
                 }
-                let paths = filter_paths_for_library(paths, root.as_deref(), &disabled);
+                let paths = filter_paths_for_library(paths, &roots, &disabled);
                 if paths.len() != count {
                     return Err(
                         "Some images are outside the active library or in disabled folders".into(),
@@ -358,16 +358,16 @@ impl SharprWindow {
             return;
         }
         const NOTICE: &str = "tag_bucket_offer_shown_at";
-        let (index, tags, root, disabled) = {
+        let (index, tags, roots, disabled) = {
             let st = self.imp().state.borrow();
             (
                 st.library_index.clone(),
                 st.tags.clone(),
-                st.settings.active_library().map(|l| l.root.clone()),
+                st.settings.library_roots(),
                 st.disabled_folders.clone(),
             )
         };
-        let (Some(index), Some(tags), Some(root)) = (index, tags, root) else {
+        let (Some(index), Some(tags), false) = (index, tags, roots.is_empty()) else {
             if !once {
                 self.add_toast(libadwaita::Toast::new(
                     "Tag database or library index is unavailable",
@@ -381,7 +381,7 @@ impl SharprWindow {
                 if once && index.notice_shown(NOTICE).map_err(|e| e.to_string())? {
                     return Ok(None);
                 }
-                let offers = crate::buckets::tag_offers(&index, &tags, &root, &disabled)?;
+                let offers = crate::buckets::tag_offers(&index, &tags, &roots, &disabled)?;
                 if once && !offers.is_empty() {
                     index.mark_notice_shown(NOTICE).map_err(|e| e.to_string())?;
                 }
@@ -499,17 +499,18 @@ impl SharprWindow {
     }
 
     fn create_buckets_from_tags(&self, chosen: Vec<String>) {
-        let (index, tags, library, root, disabled) = {
+        let (index, tags, library, roots, disabled) = {
             let st = self.imp().state.borrow();
             (
                 st.library_index.clone(),
                 st.tags.clone(),
                 st.settings.active_library_id.clone(),
-                st.settings.active_library().map(|l| l.root.clone()),
+                st.settings.library_roots(),
                 st.disabled_folders.clone(),
             )
         };
-        let (Some(index), Some(tags), Some(library), Some(root)) = (index, tags, library, root)
+        let (Some(index), Some(tags), Some(library), false) =
+            (index, tags, library, roots.is_empty())
         else {
             self.add_toast(libadwaita::Toast::new(
                 "Tag database or library index is unavailable",
@@ -522,7 +523,7 @@ impl SharprWindow {
                 .into_iter()
                 .map(|tag| {
                     let result = crate::buckets::bucket_from_tag(
-                        &index, &tags, &library, &root, &disabled, &tag,
+                        &index, &tags, &library, &roots, &disabled, &tag,
                     )
                     .map(|(_, members)| members);
                     (tag, result)

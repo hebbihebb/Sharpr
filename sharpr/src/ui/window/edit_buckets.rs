@@ -8,13 +8,13 @@ impl SharprWindow {
     /// turned edit buckets off. A copy saved outside the library would be
     /// hidden there, so its pair is left out and the user is told.
     pub(crate) fn add_edit_copies(&self, kind: EditKind, pairs: Vec<(PathBuf, PathBuf)>) {
-        let (enabled, index, library_id, root, disabled, scope) = {
+        let (enabled, index, library_id, roots, disabled, scope) = {
             let st = self.imp().state.borrow();
             (
                 st.settings.edit_buckets,
                 st.library_index.clone(),
                 st.settings.active_library_id.clone(),
-                st.settings.active_library().map(|l| l.root.clone()),
+                st.settings.library_roots(),
                 st.disabled_folders.clone(),
                 st.scope.clone(),
             )
@@ -26,7 +26,7 @@ impl SharprWindow {
             return;
         }
         let inside = |path: &PathBuf| {
-            !filter_paths_for_library(vec![path.clone()], root.as_deref(), &disabled).is_empty()
+            !filter_paths_for_library(vec![path.clone()], &roots, &disabled).is_empty()
         };
         let outside = pairs.iter().filter(|(_, copy)| !inside(copy)).count();
         let paths: Vec<PathBuf> = pairs

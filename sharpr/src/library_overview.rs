@@ -53,26 +53,26 @@ fn is_below_4k((width, height): (u32, u32)) -> bool {
     width.max(height) < 3840 || width.min(height) < 2160
 }
 
-/// Gathers the overview for the library at `root`. Reads the file system
+/// Gathers the overview for the library with these `roots`. Reads the file system
 /// and the indexes only; changes nothing.
 pub fn gather(
     index: &LibraryIndex,
-    root: &Path,
+    roots: &[PathBuf],
     disabled: &[PathBuf],
     library_id: Option<&str>,
     vector_file: &Path,
 ) -> Result<LibraryStats, String> {
     let never = || false;
-    let walk = |dir: &Path, excluded: &[PathBuf]| {
+    let walk = |dirs: &[PathBuf], excluded: &[PathBuf]| {
         crate::model::library::collect_library_image_paths_cancellable(
-            Some(dir.to_path_buf()),
+            dirs,
             FolderMode::DrillDown,
             None,
             excluded,
             &never,
         )
     };
-    let paths = walk(root, disabled);
+    let paths = walk(roots, disabled);
     let mut stats = LibraryStats {
         images: paths.len(),
         ..Default::default()
@@ -118,10 +118,11 @@ pub fn gather(
         {
             continue;
         }
-        if folder.starts_with(root) {
-            stats
-                .disabled
-                .push((folder.clone(), walk(folder, &[]).len()));
+        if roots.iter().any(|root| folder.starts_with(root)) {
+            stats.disabled.push((
+                folder.clone(),
+                walk(std::slice::from_ref(folder), &[]).len(),
+            ));
         }
     }
 
@@ -132,7 +133,7 @@ pub fn gather(
     let mut in_buckets: HashSet<PathBuf> = HashSet::new();
     for bucket in collections.iter().filter(|c| c.parent_id.is_none()) {
         // A root bucket's view includes its sub-buckets' members.
-        let view = crate::buckets::view(index, bucket.id, Some(root), disabled)?;
+        let view = crate::buckets::view(index, bucket.id, roots, disabled)?;
         stats.bucket_missing += view.missing;
         in_buckets.extend(view.paths);
     }
@@ -164,7 +165,15 @@ mod tests {
         let tags = crate::tags::TagDatabase::open_in_memory().unwrap();
         crate::buckets::migrate(&index, &tags, &root.join("backups")).unwrap();
         let disabled = vec![root.join("off")];
-        crate::fingerprint::run_pass(&index, &root, &disabled, &[], &|| false, &|_| {}).unwrap();
+        crate::fingerprint::run_pass(
+            &index,
+            std::slice::from_ref(&root),
+            &disabled,
+            &[],
+            &|| false,
+            &|_| {},
+        )
+        .unwrap();
         let bucket = index
             .create_collection("lib", None, "Keep", &[], None, None)
             .unwrap();
@@ -177,7 +186,7 @@ mod tests {
 
         let stats = gather(
             &index,
-            &root,
+            std::slice::from_ref(&root),
             &disabled,
             Some("lib"),
             &root.join("visual-search.sqlite"),

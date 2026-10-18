@@ -218,7 +218,7 @@ impl Embedder for ServerEmbedder {
     }
 }
 
-/// Indexes every image under `root` outside `disabled` whose fingerprint has
+/// Indexes every image under the `roots` outside `disabled` whose fingerprint has
 /// no vector or failure for `model`. Images without a current fingerprint
 /// wait for the next fingerprint pass. Returns the coverage reached.
 #[allow(clippy::too_many_arguments)]
@@ -226,14 +226,14 @@ pub fn run_pass(
     index: &LibraryIndex,
     store: &Store,
     model: &str,
-    root: &Path,
+    roots: &[PathBuf],
     disabled: &[PathBuf],
     canceled: &dyn Fn() -> bool,
     progress: &dyn Fn(Coverage),
     embedder: &mut dyn Embedder,
 ) -> Result<Coverage, String> {
     let paths = crate::model::library::collect_library_image_paths_cancellable(
-        Some(root.to_path_buf()),
+        roots,
         FolderMode::DrillDown,
         None,
         disabled,
@@ -333,7 +333,7 @@ pub fn run_pass(
 /// What a pass covers: the active library outside its disabled folders.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
-    pub root: PathBuf,
+    pub roots: Vec<PathBuf>,
     pub disabled: Vec<PathBuf>,
 }
 
@@ -465,7 +465,7 @@ impl Service {
                             &index,
                             &store,
                             &model,
-                            &job.root,
+                            &job.roots,
                             &job.disabled,
                             &canceled,
                             &progress,
@@ -634,7 +634,15 @@ mod tests {
     }
 
     fn fingerprint(index: &LibraryIndex, root: &Path, disabled: &[PathBuf]) {
-        crate::fingerprint::run_pass(index, root, disabled, &[], &|| false, &|_| {}).unwrap();
+        crate::fingerprint::run_pass(
+            index,
+            &[root.to_path_buf()],
+            disabled,
+            &[],
+            &|| false,
+            &|_| {},
+        )
+        .unwrap();
     }
 
     #[test]
@@ -657,7 +665,7 @@ mod tests {
             &index,
             &store,
             "m",
-            &root,
+            std::slice::from_ref(&root),
             &disabled,
             &|| false,
             &|_| {},
@@ -685,7 +693,7 @@ mod tests {
             &index,
             &store,
             "m",
-            &root,
+            std::slice::from_ref(&root),
             &disabled,
             &|| false,
             &|_| {},
@@ -704,7 +712,7 @@ mod tests {
             &index,
             &store,
             "m2",
-            &root,
+            std::slice::from_ref(&root),
             &disabled,
             &|| false,
             &|_| {},
@@ -756,7 +764,7 @@ mod tests {
             &index,
             &store,
             "m",
-            &root,
+            std::slice::from_ref(&root),
             &[],
             &|| false,
             &|_| {},
@@ -832,7 +840,7 @@ mod tests {
             &index,
             &store,
             "m",
-            &root,
+            std::slice::from_ref(&root),
             &[],
             &|| false,
             &|_| {},
@@ -853,7 +861,7 @@ mod tests {
             &index,
             &store,
             "m",
-            &root,
+            std::slice::from_ref(&root),
             &[],
             &|| false,
             &|_| {},
@@ -868,7 +876,7 @@ mod tests {
             &index,
             &store,
             "m",
-            &root,
+            std::slice::from_ref(&root),
             &[],
             &|| true,
             &|_| {},
@@ -1008,7 +1016,7 @@ mod tests {
         let store_path = root.join("store/visual-search.sqlite");
         let service = Service::start(index, store_path.clone(), true);
         service.request(Job {
-            root: root.clone(),
+            roots: vec![root.clone()],
             disabled: Vec::new(),
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
