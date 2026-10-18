@@ -2,7 +2,7 @@
 
 ## Awaiting acceptance: retire the startup legacy-bucket migration (Work Order item 14)
 
-Branch `fix/retire-legacy-bucket-migration`; not merged, not deployed. The user
+Branch `fix/retire-legacy-bucket-migration`; deployed as `7e1e410`, not merged. The user
 chose to retire it. `migrate_legacy_collections_to_tags` and its startup call
 are gone; legacy tables and rows are untouched. A read-only copy of the live
 index (version 2) had 18 buckets, none unconverted, so the step did nothing
