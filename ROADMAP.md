@@ -769,7 +769,7 @@ open the copy in an external tool, and verify batch export still writes WebP.
 
 ## Work Order And Claude Model
 
-Rated October 17, 2026 at the user's request. The user launches a fresh Claude session per task with the listed model and effort. Asked "what's next?", an agent names the first open row. Scale: Codex (Sol medium) for small, bounded, well-specified Rust or UI fixes that touch no scheduler, persistence or user data; Sonnet medium for bounded work with a clear spec; Sonnet high for threading, persistence or thumbnail-scheduler work; Opus where an open design question meets a data-safety or concurrency risk; Haiku for docs only; a stronger agent may use Haiku subagents for exploration and mechanical steps, but does not split an item across models. One model per task. Update this table when a task finishes or the order changes.
+Rated October 17, 2026 at the user's request. The user launches a fresh Claude session per task with the listed model and effort. Asked "what's next?", an agent names the first open row. Scale: Codex (Sol medium) for small, bounded, well-specified Rust or UI fixes that touch no scheduler, persistence or user data; Sonnet medium for bounded work with a clear spec; Sonnet high for threading, persistence or thumbnail-scheduler work; Opus where an open design question meets a data-safety or concurrency risk; Haiku for docs only; a stronger agent may use Haiku subagents for exploration and mechanical steps, but does not split an item across models. One model per task. Numbers are ids, so briefs and notes keep pointing at the right item; the row order is the work order. Update this table when a task finishes or the order changes.
 
 **Give the agent a mission, not a script.** The row plus its brief is the whole prompt. Start a session with "Do Work Order item N from ROADMAP.md" and add only what the user knows that the file does not. A brief states **Goal** (what must work), **Done when** (the evidence that ends the task), and **Guardrails** (what must not be damaged, plus anything the agent cannot find out itself). It does not name files, functions or steps; the agent investigates the repository and chooses the solution.
 
@@ -795,6 +795,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 10 | ~~A broad library root such as Home: the folder walks (sidebar tree and library-wide paths) stay on the root's own drive, skip hidden folders, and the sidebar fills in as it scans (user, October 17: Home as root showed nothing, because the walk crawled the NAS mounts under `~/Network`)~~ **Done October 17, 2026**, accepted by the user ("changing root works", test build `7bb4aa6`) | Sonnet high |
 | 11 | ~~A folder created in the Move to Folder (or Copy to Folder) chooser is not indexed: the files land there but the new folder does not appear in the library index or sidebar (user, October 18). The same happens to folders and images the user adds outside Sharpr while it runs (user, October 18), so this is really "notice changes under the library root": nothing watches the file system today. Prefer file-system events (`gio::FileMonitor`, one per watched folder, local drives only) plus a rescan when the window regains focus over a timer poll. After `move_to_folder` / `copy_to_folder` (`ui/window/file_jobs_controller.rs`), index the destination directly~~ **Done October 18, 2026**, accepted by the user (build `1922b8e`) | Sonnet high |
 | 12 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
+| 26 | Moving an image out of the bucket in view shows "No images in this folder" in the bucket's filmstrip; clicking away and back refreshes it (user, October 18, found while testing item 13; item 9's file-action results handled the open folder, not a bucket view) | Sonnet high |
 | 13 | Re-link a bucket member moved outside Sharpr | Opus medium |
 | 14 | Guard or retire the startup legacy-bucket migration | Sonnet high |
 | 15 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
@@ -822,6 +823,11 @@ Open items only; the table above has the order and the model. Each brief adds on
 - **Goal:** fewer missed copies and fewer false matches on the user's real library.
 - **Done when:** the user's missed and false examples pass as fixtures, with before-and-after counts from a copy of the real library.
 - **Guardrails:** ask the user for the examples first; do not move a threshold on a guess. Trials run on a copy of the library, never the live data.
+
+**26. Moving an image out of the bucket in view.**
+- **Goal:** after Move to Folder from inside a bucket, the bucket's filmstrip shows the rest of the bucket, or an honest empty state when nothing is left, never "No images in this folder"; no click away and back is needed.
+- **Done when:** a GTK workflow moves one image out of a bucket that holds several, and out of a bucket that holds one, and checks the filmstrip, the selection and the message after each.
+- **Guardrails:** same area as item 9 (file-action results keep the selection and the scheduler's state); wrap or extend, never rewrite the filmstrip's scheduling or factory paths. The user saw it in a bucket view; also check search results and Survey if they share the code.
 
 **13. Re-link a bucket member moved outside Sharpr.**
 - **Goal:** a bucket shows a member the user moved elsewhere without first opening its new folder.
