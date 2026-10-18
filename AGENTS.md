@@ -69,7 +69,7 @@ Images will be found through visual search and typed filters, not manual tags, a
 - The archive branches `preserve/october-12-wip`, `visual-search-trial-wip`, and `look-prototype` are kept for reference; never delete them without approval. `viewer-reset`, the old development line, was retired into `main` on October 16, 2026.
 - Commit each user-testable unit, and keep experimental work in separate commits. Never end a session with large uncommitted work. Either commit it or record its state in `CURRENT_TASKS.md`.
 - A fix to an unpushed commit may be amended into that commit.
-- Never push, deploy, delete unmerged or archive branches, or touch user data without explicit user approval. Recommend a push at natural backup points (a release or an accepted feature) and say what would go up; never force-push.
+- Never push, delete unmerged or archive branches, or touch user data without explicit user approval. Deploy only as Verification allows. Recommend a push at natural backup points (a release or an accepted feature) and say what would go up; never force-push.
 - The user has no Git background and runs no Git commands. Make the Git decisions yourself and explain them in plain language.
 
 ## Verification
@@ -87,7 +87,7 @@ Check in proportion to the risk. `docs/reference/development.md` has the command
 
 Ask for an independent review only when the risk justifies it (user data, concurrency), once the candidate is ready.
 
-Hand back a working candidate, not homework: the evidence (what passed, failed or was not tested), a short explanation, and one sentence on what the user should try by hand. Ask the user only for decisions: design choices, usability, and acceptance. Before handing work back, always run `cargo build` in `sharpr/`. The desktop launcher runs an installed release build of one commit (`~/.local/opt/sharpr/current`), so a `cargo build` in the checkout does not change what the user launches. Deploying means running `tools/install-native-launcher.py`, and only with the user's approval.
+Hand back a working candidate, not homework: the evidence (what passed, failed or was not tested), a short explanation, and one sentence on what the user should try by hand. Ask the user only for decisions: design choices, usability, and acceptance. Before handing work back, always run `cargo build` in `sharpr/`. The desktop launcher runs an installed release build of one commit (`~/.local/opt/sharpr/current`), so a `cargo build` in the checkout does not change what the user launches. Deploying means running `tools/install-native-launcher.py` on a committed candidate. Standing approval (user, October 18, 2026): deploy without asking when Sharpr is not running (`pgrep -x sharpr` finds nothing); if it is running, ask first, because the user may be mid-session.
 
 ## Documentation
 
