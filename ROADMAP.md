@@ -771,6 +771,8 @@ open the copy in an external tool, and verify batch export still writes WebP.
 
 Rated October 17, 2026 at the user's request. The user launches a fresh Claude session per task with the listed model and effort. Asked "what's next?", an agent names the first open row. Scale: Sonnet medium for bounded work with a clear spec; Sonnet high for threading, persistence or thumbnail-scheduler work; Opus where an open design question meets a data-safety or concurrency risk; Haiku for docs only. One model per task. Update this table when a task finishes or the order changes.
 
+**The row plus its brief is the whole prompt.** Start a session with "Do Work Order item N from ROADMAP.md" and add only what the user knows that the file does not (a screenshot, a new example). Each open item has a brief under "Item Briefs" with the same three parts: **Start at** (the files to open first), **Done when** (checks the agent can run itself, so it can tell it is finished), and **Watch** (the trap, the invariant, or the question to settle first). Opus and Sonnet-high items begin in plan mode: write the plan, have a second Claude review it as a staff engineer, then build; if the work goes sideways, stop and re-plan rather than push on. A correction the user gives twice belongs in `AGENTS.md`, not in the next prompt. Parallel sessions each use their own git worktree, never the same checkout.
+
 | # | Task | Model, effort |
 | --- | --- | --- |
 | 1 | ~~Crop Copy source format (D37): user acceptance, then merge `codex/audit-0.5.0`~~ **Done October 17, 2026** | Sonnet medium |
@@ -798,6 +800,79 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 23 | Trash Undo in the Flatpak (needs a Flatpak build to verify) | Sonnet high |
 | 24 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
 | 25 | More than one library root (user, October 18): keep Pictures as the root and add Downloads as a second top-level root in the folder list, below the first. Today one library is active and `set_single_library_root` replaces its root; `config/settings.rs` already holds several libraries with an overlap check, so decide first whether a second root is a second library or a second root of one library (buckets, tags, search, Find Copies and the index must span it). Adding and removing a root must never touch the files. Maybe: each root gets its own colour, so a root's folders and images read at a glance (user idea, October 18; decide with the design) | Opus medium |
+
+## Item Briefs
+
+Open items only; the table above has the order and the model. Common to all: `./check.sh` passes, `cargo build` is the last step, and the agent ends with one sentence telling the user what to try by hand.
+
+**11. Notice changes under the library root.**
+- **Start at:** `ui/window/file_jobs_controller.rs` (`move_to_folder`, `copy_to_folder`, `show_new_files`), `ui/sidebar.rs` (`build_folder_tree`), the reconcile path in `library_index/mod.rs` (`reconcile_folder`).
+- **Done when:** a test moves files into a brand-new folder and the folder is indexed and in the sidebar; a test creates a folder and a file outside Sharpr while it runs and both appear without a restart; Copy to Folder behaves the same as Move.
+- **Watch:** nothing watches the file system today. Use `gio::FileMonitor` on local drives and a rescan on window focus, not a timer. Take a list of roots (item 25 is adding more). Honour disabled folders and hidden-folder skipping. Never block the GTK thread; wrap the existing index and thumbnail scheduling.
+
+**12. Tune Find Copies.**
+- **Start at:** `copies.rs`, `ui/copies_dialog.rs`.
+- **Done when:** the user's missed and false examples are fixtures that now pass, with the missed and false counts on a copy of the real library before and after.
+- **Watch:** ask the user for the examples first; do not change a threshold on a guess. Run trials on a copy of the library.
+
+**13. Re-link a bucket member moved outside Sharpr.**
+- **Start at:** `library_index/identity.rs` (`bucket_members`, `last_path`, fingerprints), the "image not found" path in the bucket view.
+- **Done when:** a test moves a member to another folder outside Sharpr and the bucket shows it at its new place without visiting that folder; a same-name file with different content is never matched.
+- **Watch:** match on the content fingerprint, never the name; update `last_path` only on a unique match; back up before any bulk update. Item 11's watching may supply the signal; do not depend on it.
+
+**14. Guard or retire the startup legacy-bucket migration.**
+- **Start at:** `ui/state.rs:72`, `LibraryIndex::migrate_legacy_collections_to_tags` (`library_index/mod.rs`).
+- **Done when:** a test with an old database proves a backup is written and counts match before and after, or the call is gone and a test proves an old database still opens.
+- **Watch:** legacy tables are never dropped or rewritten (AGENTS.md). Ask the user which of guard or retire they want.
+
+**15. Stop computing perceptual hashes in the thumbnail workers.**
+- **Start at:** `thumbnails/worker.rs` (`queue_hash`), `duplicates/phash.rs`, `LibraryIndex::duplicate_groups`.
+- **Done when:** workers no longer hash, `phash.rs` and `duplicate_groups` are removed, Find Copies results are unchanged on the test fixtures, and rapid scroll, folder switch and load are checked.
+- **Watch:** wrap or extend the scheduler; do not rewrite it. Do this before item 17.
+
+**16. Use one sort implementation.**
+- **Start at:** `model/library.rs` (`compare_entries`), `LibraryIndex::images_in_folder` (`library_index/mod.rs`, the `ORDER BY`).
+- **Done when:** one test sorts the same rows by every `SortOrder` both ways, with ties, and gets the same order.
+- **Watch:** pick which tie-break wins and say so; the user sees order change only in tie cases.
+
+**17. Merge the two thumbnail worker loops.**
+- **Start at:** `thumbnails/worker.rs` (`spawn_with_queue_capacity`, `split_thumbnail_workers`).
+- **Done when:** one loop serves both pools; visible requests still win over preload; generation counters unchanged; rapid scroll, folder switch and load checked by hand and by the existing tests.
+- **Watch:** filmstrip performance is non-negotiable. Extend, do not rewrite. After item 15.
+
+**18. Library Overview refresh, errors, and unsupported count.**
+- **Start at:** `ui/library_overview.rs`.
+- **Done when:** the figures refresh while it is open or say "as of" a time; a gathering error shows text, not "…"; unsupported formats are counted apart from unreadable files; a GTK test covers each.
+
+**19. Ctrl+Shift+S opens the GTK Inspector.**
+- **Start at:** the binding in `ui/window/survey_controller.rs:80` (the menu label in `ui/filmstrip.rs:108` only displays it), and the test at `ui/window/gtk_tests.rs:3450`.
+- **Done when:** Ctrl+Shift+S opens Survey on the user's desktop.
+- **Watch:** GTK's own Inspector keys are normally Ctrl+Shift+I and Ctrl+Shift+D, so first check the desktop (`GTK_DEBUG`, a compositor or `gsettings` shortcut). If nothing in the app claims the key, change the binding and say why.
+
+**20. Make the flaky GTK navigation test deterministic.**
+- **Start at:** `rapid_navigation_and_folder_switch_preserve_latest_view` (`ui/window/gtk_tests.rs:836`).
+- **Done when:** it passes 50 runs in a row; the fix waits on a condition, not a sleep.
+- **Watch:** do this before item 21; it is the safety net for that refactor.
+
+**21. Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal.**
+- **Start at:** `ui/window.rs`, `ui/filmstrip.rs`; follow the architecture decision named in the Backlog.
+- **Done when:** one extraction per commit, behaviour unchanged, the full GTK suite green after each.
+- **Watch:** do not touch the factory or scheduling paths; stop after a few extractions and ask the user whether to continue.
+
+**22. AVIF and HEIC/HEIF indexing.**
+- **Start at:** `visual_search/` indexing and the decoder crates.
+- **Done when:** the user has approved the decoders; a bounded decode on the worker indexes a sample of each format; the Flatpak size cost is written down.
+- **Watch:** ask the user for the decoder choice before any code. The live library has none of these files.
+
+**23. Trash Undo in the Flatpak.**
+- **Start at:** the Undo code that reads `$XDG_DATA_HOME/Trash`, and the `flatpak-build` skill.
+- **Done when:** in a Flatpak build, trash then Undo restores the file, or Undo says plainly it cannot and the file stays in the trash.
+- **Watch:** needs a Flatpak build to verify; a native run proves nothing here.
+
+**24. Non-UTF-8 paths.**
+- **Start at:** where paths enter SQLite as text (`library_index/schema.rs`, `tags/db.rs`).
+- **Done when:** a file with a non-UTF-8 name is listed, opened, and survives a rename and a bucket round trip.
+- **Watch:** schema changes are additive (AGENTS.md), so add a byte column and keep the text one; no rewrite. Low value: ask the user before starting.
 
 ## Backlog
 
