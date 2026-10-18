@@ -769,9 +769,17 @@ open the copy in an external tool, and verify batch export still writes WebP.
 
 ## Work Order And Claude Model
 
-Rated October 17, 2026 at the user's request. The user launches a fresh Claude session per task with the listed model and effort. Asked "what's next?", an agent names the first open row. Scale: Sonnet medium for bounded work with a clear spec; Sonnet high for threading, persistence or thumbnail-scheduler work; Opus where an open design question meets a data-safety or concurrency risk; Haiku for docs only. One model per task. Update this table when a task finishes or the order changes.
+Rated October 17, 2026 at the user's request. The user launches a fresh Claude session per task with the listed model and effort. Asked "what's next?", an agent names the first open row. Scale: Codex (Sol medium) for small, bounded, well-specified Rust or UI fixes that touch no scheduler, persistence or user data; Sonnet medium for bounded work with a clear spec; Sonnet high for threading, persistence or thumbnail-scheduler work; Opus where an open design question meets a data-safety or concurrency risk; Haiku for docs only; a stronger agent may use Haiku subagents for exploration and mechanical steps, but does not split an item across models. One model per task. Update this table when a task finishes or the order changes.
 
-**The row plus its brief is the whole prompt.** Start a session with "Do Work Order item N from ROADMAP.md" and add only what the user knows that the file does not (a screenshot, a new example). Each open item has a brief under "Item Briefs" with the same three parts: **Start at** (the files to open first), **Done when** (checks the agent can run itself, so it can tell it is finished), and **Watch** (the trap, the invariant, or the question to settle first). Opus and Sonnet-high items begin in plan mode: write the plan, have a second Claude review it as a staff engineer, then build; if the work goes sideways, stop and re-plan rather than push on. A correction the user gives twice belongs in `AGENTS.md`, not in the next prompt. Parallel sessions each use their own git worktree, never the same checkout.
+**Give the agent a mission, not a script.** The row plus its brief is the whole prompt. Start a session with "Do Work Order item N from ROADMAP.md" and add only what the user knows that the file does not. A brief states **Goal** (what must work), **Done when** (the evidence that ends the task), and **Guardrails** (what must not be damaged, plus anything the agent cannot find out itself). It does not name files, functions or steps; the agent investigates the repository and chooses the solution.
+
+**Standard effort, for every item:** work end to end (investigate, design, implement, test, update the docs, commit); own the implementation decisions; commit on a feature branch in the agent's own git worktree; do not merge, push or deploy; stop when the evidence in "Done when" exists. Hand back a working candidate, the evidence (what passed, failed or was not tested), and a short explanation, with one sentence on what the user should try by hand. Do not hand back instructions for the user to coordinate.
+
+**Verification is proportional to risk.** A bounded set of meaningful tests, `./check.sh`, and a real run of the changed behaviour; investigate genuine failures; do not turn verification into a second project. User data, originals and the filmstrip's responsiveness (see `AGENTS.md`) get strict checks; a flaky unrelated test or an optional doc improvement does not hold a task open. Ask for an independent review only when the risk justifies it, once the candidate is ready.
+
+**Plans live in the repository.** A multi-phase item (21, 25) starts by committing a short plan to `CURRENT_TASKS.md` (decisions, contracts, progress, checkpoints), in normal execution mode, so the next agent finds it. A correction the user gives twice goes into `AGENTS.md`, not the next prompt.
+
+**Human attention goes to decisions:** the design choices flagged below, usability, and acceptance of a changed behaviour. Everything else the agent settles itself.
 
 | # | Task | Model, effort |
 | --- | --- | --- |
@@ -790,10 +798,10 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 13 | Re-link a bucket member moved outside Sharpr | Opus medium |
 | 14 | Guard or retire the startup legacy-bucket migration | Sonnet high |
 | 15 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
-| 16 | Use one sort implementation | Sonnet medium |
+| 16 | Use one sort implementation | Codex (Sol medium) |
 | 17 | Merge the two thumbnail worker loops | Sonnet high |
-| 18 | Library Overview refresh, errors, and unsupported count | Sonnet medium |
-| 19 | Ctrl+Shift+S opens the GTK Inspector | Sonnet low |
+| 18 | Library Overview refresh, errors, and unsupported count | Codex (Sol medium) |
+| 19 | Ctrl+Shift+S opens the GTK Inspector | Codex (Sol medium) |
 | 20 | Make the flaky GTK navigation test deterministic | Sonnet high |
 | 21 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal | Sonnet high |
 | 22 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
@@ -803,76 +811,75 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 
 ## Item Briefs
 
-Open items only; the table above has the order and the model. Common to all: `./check.sh` passes, `cargo build` is the last step, and the agent ends with one sentence telling the user what to try by hand.
+Open items only; the table above has the order and the model. Each brief adds only what the agent cannot learn from the repository. The standard effort, verification and guardrails above apply to every item.
 
 **11. Notice changes under the library root.**
-- **Start at:** `ui/window/file_jobs_controller.rs` (`move_to_folder`, `copy_to_folder`, `show_new_files`), `ui/sidebar.rs` (`build_folder_tree`), the reconcile path in `library_index/mod.rs` (`reconcile_folder`).
-- **Done when:** a test moves files into a brand-new folder and the folder is indexed and in the sidebar; a test creates a folder and a file outside Sharpr while it runs and both appear without a restart; Copy to Folder behaves the same as Move.
-- **Watch:** nothing watches the file system today. Use `gio::FileMonitor` on local drives and a rescan on window focus, not a timer. Take a list of roots (item 25 is adding more). Honour disabled folders and hidden-folder skipping. Never block the GTK thread; wrap the existing index and thumbnail scheduling.
+- **Goal:** a folder made in the Move to Folder (or Copy to Folder) chooser, and folders or images the user adds outside Sharpr while it runs, appear in the sidebar and the index without a restart.
+- **Done when:** tests show a new destination folder indexed after Move and after Copy, and an outside-made folder and file picked up while running; the filmstrip stays responsive during a burst of changes.
+- **Guardrails:** nothing watches the file system today. Prefer file-system events on local drives plus a rescan when the window regains focus over a timer. Take a list of roots (item 25 adds more). Honour disabled folders and hidden-folder skipping. Wrap or extend the index and thumbnail scheduling.
 
 **12. Tune Find Copies.**
-- **Start at:** `copies.rs`, `ui/copies_dialog.rs`.
-- **Done when:** the user's missed and false examples are fixtures that now pass, with the missed and false counts on a copy of the real library before and after.
-- **Watch:** ask the user for the examples first; do not change a threshold on a guess. Run trials on a copy of the library.
+- **Goal:** fewer missed copies and fewer false matches on the user's real library.
+- **Done when:** the user's missed and false examples pass as fixtures, with before-and-after counts from a copy of the real library.
+- **Guardrails:** ask the user for the examples first; do not move a threshold on a guess. Trials run on a copy of the library, never the live data.
 
 **13. Re-link a bucket member moved outside Sharpr.**
-- **Start at:** `library_index/identity.rs` (`bucket_members`, `last_path`, fingerprints), the "image not found" path in the bucket view.
-- **Done when:** a test moves a member to another folder outside Sharpr and the bucket shows it at its new place without visiting that folder; a same-name file with different content is never matched.
-- **Watch:** match on the content fingerprint, never the name; update `last_path` only on a unique match; back up before any bulk update. Item 11's watching may supply the signal; do not depend on it.
+- **Goal:** a bucket shows a member the user moved elsewhere without first opening its new folder.
+- **Done when:** a test moves a member out from under Sharpr and the bucket finds it; a same-name file with other content is never matched.
+- **Guardrails:** bucket membership is user data. Match on the content fingerprint, never the name; update the stored path only on a unique match; back up before any bulk update. Item 11's watching may help but is not a dependency.
 
 **14. Guard or retire the startup legacy-bucket migration.**
-- **Start at:** `ui/state.rs:72`, `LibraryIndex::migrate_legacy_collections_to_tags` (`library_index/mod.rs`).
-- **Done when:** a test with an old database proves a backup is written and counts match before and after, or the call is gone and a test proves an old database still opens.
-- **Watch:** legacy tables are never dropped or rewritten (AGENTS.md). Ask the user which of guard or retire they want.
+- **Goal:** an old database can never be damaged by the migration that runs at startup.
+- **Done when:** a test with an old database proves a backup is written and counts match, or the migration is gone and an old database still opens.
+- **Guardrails:** legacy tables are never dropped or rewritten. **Decision for the user:** guard it or retire it; ask before building.
 
 **15. Stop computing perceptual hashes in the thumbnail workers.**
-- **Start at:** `thumbnails/worker.rs` (`queue_hash`), `duplicates/phash.rs`, `LibraryIndex::duplicate_groups`.
-- **Done when:** workers no longer hash, `phash.rs` and `duplicate_groups` are removed, Find Copies results are unchanged on the test fixtures, and rapid scroll, folder switch and load are checked.
-- **Watch:** wrap or extend the scheduler; do not rewrite it. Do this before item 17.
+- **Goal:** thumbnail workers only make thumbnails; Find Copies already uses fingerprints and vectors, so the old hash code and `LibraryIndex::duplicate_groups` go.
+- **Done when:** Find Copies results are unchanged on the fixtures; rapid scroll, folder switch and load behave as before.
+- **Guardrails:** filmstrip performance is non-negotiable: wrap or extend the scheduler, never rewrite it. Do this before item 17.
 
 **16. Use one sort implementation.**
-- **Start at:** `model/library.rs` (`compare_entries`), `LibraryIndex::images_in_folder` (`library_index/mod.rs`, the `ORDER BY`).
-- **Done when:** one test sorts the same rows by every `SortOrder` both ways, with ties, and gets the same order.
-- **Watch:** pick which tie-break wins and say so; the user sees order change only in tie cases.
+- **Goal:** the folder listing and a row added later sort identically.
+- **Done when:** one test sorts the same rows every way, with ties, through both paths and gets the same order.
+- **Guardrails:** the SQL and Rust versions break ties differently today; choose one rule and say which.
 
 **17. Merge the two thumbnail worker loops.**
-- **Start at:** `thumbnails/worker.rs` (`spawn_with_queue_capacity`, `split_thumbnail_workers`).
-- **Done when:** one loop serves both pools; visible requests still win over preload; generation counters unchanged; rapid scroll, folder switch and load checked by hand and by the existing tests.
-- **Watch:** filmstrip performance is non-negotiable. Extend, do not rewrite. After item 15.
+- **Goal:** one worker loop serves both pools.
+- **Done when:** visible requests still win over preload, generation counters are unchanged, and rapid scroll, folder switch and load are checked.
+- **Guardrails:** as item 15. Do it after 15.
 
 **18. Library Overview refresh, errors, and unsupported count.**
-- **Start at:** `ui/library_overview.rs`.
-- **Done when:** the figures refresh while it is open or say "as of" a time; a gathering error shows text, not "…"; unsupported formats are counted apart from unreadable files; a GTK test covers each.
+- **Goal:** the Overview's figures are trustworthy while it is open.
+- **Done when:** the figures refresh or say when they were taken; a gathering error shows text, not "…"; unsupported formats are counted apart from unreadable files.
 
 **19. Ctrl+Shift+S opens the GTK Inspector.**
-- **Start at:** the binding in `ui/window/survey_controller.rs:80` (the menu label in `ui/filmstrip.rs:108` only displays it), and the test at `ui/window/gtk_tests.rs:3450`.
-- **Done when:** Ctrl+Shift+S opens Survey on the user's desktop.
-- **Watch:** GTK's own Inspector keys are normally Ctrl+Shift+I and Ctrl+Shift+D, so first check the desktop (`GTK_DEBUG`, a compositor or `gsettings` shortcut). If nothing in the app claims the key, change the binding and say why.
+- **Goal:** Ctrl+Shift+S opens Survey on the user's desktop.
+- **Done when:** the user confirms it; a test covers the binding.
+- **Guardrails:** the app binds the key once, and GTK's own Inspector keys are normally Ctrl+Shift+I and Ctrl+Shift+D, so the cause may be the desktop (`GTK_DEBUG`, a compositor or `gsettings` shortcut). If nothing in the app claims it, say so and choose another key with the user.
 
 **20. Make the flaky GTK navigation test deterministic.**
-- **Start at:** `rapid_navigation_and_folder_switch_preserve_latest_view` (`ui/window/gtk_tests.rs:836`).
-- **Done when:** it passes 50 runs in a row; the fix waits on a condition, not a sleep.
-- **Watch:** do this before item 21; it is the safety net for that refactor.
+- **Goal:** `rapid_navigation_and_folder_switch_preserve_latest_view` stops failing at random.
+- **Done when:** it passes repeated runs (about 20); the fix waits on a condition, not a sleep.
+- **Guardrails:** do this before item 21; it is that refactor's safety net.
 
 **21. Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal.**
-- **Start at:** `ui/window.rs`, `ui/filmstrip.rs`; follow the architecture decision named in the Backlog.
-- **Done when:** one extraction per commit, behaviour unchanged, the full GTK suite green after each.
-- **Watch:** do not touch the factory or scheduling paths; stop after a few extractions and ask the user whether to continue.
+- **Goal:** the two long functions become readable pieces with no change in behaviour.
+- **Done when:** one extraction per commit, the GTK suite green after each.
+- **Guardrails:** do not touch the factory or scheduling paths. Commit a short plan first. After a few extractions, stop and ask the user whether to continue.
 
 **22. AVIF and HEIC/HEIF indexing.**
-- **Start at:** `visual_search/` indexing and the decoder crates.
-- **Done when:** the user has approved the decoders; a bounded decode on the worker indexes a sample of each format; the Flatpak size cost is written down.
-- **Watch:** ask the user for the decoder choice before any code. The live library has none of these files.
+- **Goal:** these formats become searchable by visual search through a bounded decoder on the worker.
+- **Done when:** a sample of each indexes; the Flatpak size cost is written down.
+- **Guardrails:** **Decision for the user:** approve the decoders before any code. The live library has none of these files.
 
 **23. Trash Undo in the Flatpak.**
-- **Start at:** the Undo code that reads `$XDG_DATA_HOME/Trash`, and the `flatpak-build` skill.
-- **Done when:** in a Flatpak build, trash then Undo restores the file, or Undo says plainly it cannot and the file stays in the trash.
-- **Watch:** needs a Flatpak build to verify; a native run proves nothing here.
+- **Goal:** Undo restores a trashed file in the Flatpak build, or says plainly that it cannot.
+- **Done when:** verified in a real Flatpak build (use the `flatpak-build` skill); a native run proves nothing here.
 
 **24. Non-UTF-8 paths.**
-- **Start at:** where paths enter SQLite as text (`library_index/schema.rs`, `tags/db.rs`).
-- **Done when:** a file with a non-UTF-8 name is listed, opened, and survives a rename and a bucket round trip.
-- **Watch:** schema changes are additive (AGENTS.md), so add a byte column and keep the text one; no rewrite. Low value: ask the user before starting.
+- **Goal:** a file whose name is not valid UTF-8 is listed, opened, renamed and kept in a bucket.
+- **Done when:** one such file survives each of those in a test.
+- **Guardrails:** schema changes are additive, so add a byte column beside the text one. Low value: **ask the user before starting.**
 
 ## Backlog
 
