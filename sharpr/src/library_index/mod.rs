@@ -998,72 +998,6 @@ impl LibraryIndex {
             .collect())
     }
 
-    pub fn migrate_legacy_collections_to_tags(
-        &self,
-        tags: &crate::tags::TagDatabase,
-    ) -> rusqlite::Result<()> {
-        let legacy_collections = self.legacy_collections_pending_tag_migration()?;
-        if legacy_collections.is_empty() {
-            return Ok(());
-        }
-        let conn = self.conn()?;
-        for collection in legacy_collections {
-            let paths = {
-                let mut stmt = conn.prepare(
-                    "SELECT image_path FROM collection_items
-                     WHERE collection_id = ?1
-                     ORDER BY added_at ASC",
-                )?;
-                let rows = stmt.query_map(params![collection.id], |row| row.get::<_, String>(0))?;
-                rows.filter_map(Result::ok)
-                    .map(PathBuf::from)
-                    .collect::<Vec<_>>()
-            };
-            if !paths.is_empty() {
-                tags.change_tags_checked(
-                    &paths,
-                    std::slice::from_ref(&collection.primary_tag),
-                    false,
-                )
-                .map_err(rusqlite::Error::InvalidParameterName)?;
-            }
-            conn.execute(
-                "UPDATE collections
-                 SET tag_migrated_at = ?2,
-                     updated_at = ?2
-                 WHERE id = ?1",
-                params![collection.id, now_secs()],
-            )?;
-        }
-        Ok(())
-    }
-
-    fn legacy_collections_pending_tag_migration(&self) -> rusqlite::Result<Vec<Collection>> {
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, parent_id, name, primary_tag, extra_tags_json, color, icon_name,
-                    created_at, updated_at
-             FROM collections
-             WHERE tag_migrated_at IS NULL
-             ORDER BY created_at ASC, id ASC",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(Collection {
-                id: row.get(0)?,
-                parent_id: row.get(1)?,
-                name: row.get(2)?,
-                primary_tag: row.get(3)?,
-                extra_tags: parse_tags_json(&row.get::<_, String>(4)?),
-                color: row.get(5)?,
-                icon_name: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                item_count: 0,
-            })
-        })?;
-        Ok(rows.filter_map(Result::ok).collect())
-    }
-
     fn collection_subtree_ids(&self, id: i64) -> rusqlite::Result<Vec<i64>> {
         let collections = self.list_collections()?;
         let mut by_parent: HashMap<Option<i64>, Vec<i64>> = HashMap::new();
@@ -2103,33 +2037,52 @@ mod tests {
     }
 
     #[test]
-    fn migrate_legacy_collection_items_into_tags() {
-        let idx = LibraryIndex::open_in_memory().unwrap();
-        let tags = crate::tags::TagDatabase::open_in_memory().unwrap();
-        let root = std::env::temp_dir().join(format!("sharpr-legacy-migrate-{}", now_secs()));
+    fn old_database_with_unconverted_bucket_opens_untouched() {
+        let root = std::env::temp_dir().join(format!(
+            "sharpr-legacy-bucket-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
         std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("a.jpg");
-        std::fs::write(&path, b"a").unwrap();
-
-        let collection = idx
-            .create_collection("", None, "Pinned", &[], None, None)
+        let path = root.join("library-index.sqlite");
+        let member = "/photos/a.jpg";
+        let collection_id = {
+            let (idx, _) = LibraryIndex::open_at(&path).unwrap();
+            let collection = idx
+                .create_collection("", None, "Pinned", &[], None, None)
+                .unwrap();
+            let conn = idx.conn().unwrap();
+            conn.execute(
+                "UPDATE collections SET tag_migrated_at = NULL WHERE id = ?1",
+                params![collection.id],
+            )
             .unwrap();
-        let conn = idx.conn().unwrap();
-        conn.execute(
-            "UPDATE collections SET tag_migrated_at = NULL WHERE id = ?1",
-            params![collection.id],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT OR IGNORE INTO collection_items (collection_id, image_path, added_at)
-             VALUES (?1, ?2, ?3)",
-            params![collection.id, path.to_string_lossy().as_ref(), now_secs()],
-        )
-        .unwrap();
-        drop(conn);
+            conn.execute(
+                "INSERT INTO collection_items (collection_id, image_path, added_at)
+                 VALUES (?1, ?2, ?3)",
+                params![collection.id, member, now_secs()],
+            )
+            .unwrap();
+            collection.id
+        };
 
-        idx.migrate_legacy_collections_to_tags(&tags).unwrap();
-        assert_eq!(tags.tags_for_path(&path), vec!["pinned".to_string()]);
+        let (idx, _) = LibraryIndex::open_at(&path).unwrap();
+        assert!(idx.collection(collection_id).unwrap().is_some());
+        let conn = idx.conn().unwrap();
+        let (migrated_at, items): (Option<i64>, i64) = conn
+            .query_row(
+                "SELECT c.tag_migrated_at,
+                        (SELECT COUNT(*) FROM collection_items
+                         WHERE collection_id = c.id AND image_path = ?2)
+                 FROM collections c WHERE c.id = ?1",
+                params![collection_id, member],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(migrated_at, None);
+        assert_eq!(items, 1);
+        drop(conn);
+        drop(idx);
 
         std::fs::remove_dir_all(root).unwrap();
     }

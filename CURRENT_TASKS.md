@@ -1,9 +1,19 @@
 # Current Tasks
 
+## Awaiting acceptance: retire the startup legacy-bucket migration (Work Order item 14)
+
+Branch `fix/retire-legacy-bucket-migration`; not merged, not deployed. The user
+chose to retire it. `migrate_legacy_collections_to_tags` and its startup call
+are gone; legacy tables and rows are untouched. A read-only copy of the live
+index (version 2) had 18 buckets, none unconverted, so the step did nothing
+there. Test `old_database_with_unconverted_bucket_opens_untouched` proves an
+old database with an unconverted bucket opens and keeps its rows. `./check.sh`
+passes. Nothing changes on screen; the user checks that buckets still open.
+
 ## Accepted: re-link a bucket member moved outside Sharpr, and the bucket view after a move (Work Order items 13 and 26)
 
 Deployed as `7ba1e3b`; accepted by the user October 18, merged to `main`; not
-pushed. Next: Work Order item 14 (item 12 deferred to the end by the user).
+pushed.
 Why it still
 reproduced after item 11: re-linking only ran inside a fingerprint pass, which
 waits up to 30 s after the last one, and an open bucket never reloaded when a

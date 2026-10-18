@@ -68,9 +68,6 @@ impl AppState {
                 (None, Some(message))
             }
         };
-        if let (Some(index), Some(tags)) = (&library_index, &tags) {
-            let _ = index.migrate_legacy_collections_to_tags(tags);
-        }
         if let (Some(index), Some(library)) = (&library_index, settings.active_library()) {
             let _ = index.assign_orphan_collections(&library.id);
         }
