@@ -1,5 +1,18 @@
 # Current Tasks
 
+## Repository disk cleanup
+
+Active branch: `codex/repo-cleanup`. User authorized the checked cleanup plan.
+Verified: 69.93 → 20.86 GiB (49.07 GiB recovered). Removed obsolete Flatpak
+working builds, Phase 0/prototype compilation output, the main incremental cache
+and 186 generated test fixture/cache trees. Models, runtimes, reports,
+screenshots, patches and test databases retained; 40,746 retained temporary
+files have unchanged sizes/timestamps. Installed launcher/binary unchanged
+(SHA-256 checked). Text evidence from removed trees copied and hash-checked in
+`.tmp/cleanup-evidence/retained/`; local inventory in its sibling `manifest.json`.
+Build instructions now reuse `sharpr/target/`; cleanup guidance added.
+`cargo build --offline --locked` and `git diff --check` pass. No deployment/push.
+
 ## Accepted: the Rename sheet (D40)
 
 Deployed as `127287c`; accepted by the user October 17 ("it works, i like it";

@@ -64,13 +64,34 @@ cargo nextest run --run-ignored ignored-only -E 'test(gtk_tests)'
 
 ## Checkpoint Without Replacing The Launcher
 
-When deployment is not authorized, build with a separate target directory:
+Use the normal development target directory even when deployment is not authorized:
 
 ```bash
-CARGO_TARGET_DIR="$PWD/../.tmp/phase0/target" cargo build --offline --locked
+cargo build --offline --locked
 ```
 
+This writes to `sharpr/target/`; it does not replace the installed launcher.
+Avoid separate target directories for each task: they duplicate dependency builds.
+
 Run checks with `GSETTINGS_BACKEND=memory`, an isolated compiled schema, and isolated `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME`. The Phase 0 verification used these variables for unit tests as well as GTK. Do not run `cargo run` against the live library or assume an idle-data snapshot while another Sharpr process is running.
+
+## Development Disk Usage
+
+Use `sharpr/target/` for normal builds and reuse `.tmp/gtk/` for isolated GTK
+checks when retaining a separate run is unnecessary. Preserve useful logs,
+screenshots and reports before clearing a completed test run's generated
+`fixtures/` and `cache/` directories. Keep model files, runtimes, benchmark
+manifests and judgments; `.tmp/` also contains historical patches and data
+snapshots, so never clear it wholesale.
+
+When space is needed, with no build or test using the directories, review and
+clear obsolete task-specific `target/` directories and
+`sharpr/target/debug/incremental/`. Cargo recreates compilation output; the next
+build may take longer. After a completed Flatpak build, its unpacked working
+trees under `sharpr/packaging/.flatpak-builder/build/` may also be cleared;
+retain `downloads/`, `cache/`, the exported `packaging/repo/` and any bundles
+to avoid needless downloads and preserve packaging results. Review disk usage
+after large milestones rather than retaining every task's generated files.
 
 ## Protecting User Data
 
