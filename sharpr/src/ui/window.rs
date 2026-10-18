@@ -980,12 +980,19 @@ impl SharprWindow {
         {
             service.request(crate::visual_search::index::Job { roots, disabled });
         }
-        self.request_fingerprints();
+        // Something under the roots changed (or the roots did): a member
+        // moved outside Sharpr is found by this pass, so it need not wait.
+        self.request_fingerprints_with(true);
     }
 
     /// Asks for a fingerprint pass over the active library. Passes over the
     /// same library are coalesced and spaced out by the service.
     pub fn request_fingerprints(&self) {
+        self.request_fingerprints_with(false);
+    }
+
+    /// `soon` skips the spacing between passes over the same library.
+    fn request_fingerprints_with(&self, soon: bool) {
         if self.app_state().borrow().bucket_migration_pending {
             return;
         }
@@ -1002,7 +1009,11 @@ impl SharprWindow {
                 disabled: st.disabled_folders.clone(),
             }
         };
-        service.request(job);
+        if soon {
+            service.request_soon(job);
+        } else {
+            service.request(job);
+        }
     }
 
     /// Called after tags change outside a bucket edit, so filmstrip badge
@@ -1055,6 +1066,9 @@ impl SharprWindow {
             // refresh when fingerprints or members changed.
             let (changed_tx, changed_rx) = async_channel::unbounded::<()>();
             let relink_index = index.clone();
+            let backups = dirs::data_local_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("sharpr/backups");
             // Visual search indexes what the fingerprint pass just covered.
             let use_gpu = self.imp().state.borrow().settings.visual_search_gpu;
             let visual_index = Arc::new(crate::visual_search::index::Service::start(
@@ -1090,7 +1104,8 @@ impl SharprWindow {
                         roots: job.roots.clone(),
                         disabled: job.disabled.clone(),
                     });
-                    match crate::buckets::relink(&relink_index, &job.roots, &job.disabled) {
+                    match crate::buckets::relink(&relink_index, &job.roots, &job.disabled, &backups)
+                    {
                         Ok(relinked) => {
                             crate::bench_event!(
                                 "buckets.relink",
@@ -1121,6 +1136,12 @@ impl SharprWindow {
                     let filmstrip = win.imp().filmstrip.borrow().clone();
                     if let Some(filmstrip) = filmstrip {
                         filmstrip.rebuild_path_colors();
+                    }
+                    // A member that moved may now be found: the open bucket
+                    // shows it without being opened again.
+                    let scope = win.app_state().borrow().scope.clone();
+                    if let ViewScope::Collection(id) = scope {
+                        win.refresh_bucket_if_members_changed(id);
                     }
                 }
             });

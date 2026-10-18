@@ -4355,7 +4355,7 @@ fn internal_rename_keeps_buckets_when_the_old_filename_is_reused() {
         &|_| {},
     )
     .unwrap();
-    crate::buckets::relink(&index, &[], &[]).unwrap();
+    crate::buckets::relink(&index, &[], &[], &root.join("backups")).unwrap();
     assert_eq!(
         crate::buckets::view(&index, bucket.id, std::slice::from_ref(&root), &[])
             .unwrap()
@@ -5352,5 +5352,108 @@ fn a_folder_made_in_the_move_chooser_is_listed_and_indexed() {
         original,
         "the source is only read"
     );
+    window.close();
+}
+
+/// Work Order item 13: a bucket member moved outside Sharpr, while its bucket
+/// is open, shows up at its new path without opening that folder or the
+/// bucket again; a same-named picture elsewhere is not taken for it.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn a_member_moved_outside_sharpr_shows_in_the_open_bucket() {
+    let root = isolated_fixture("member-moved-outside");
+    let picture = |path: &Path, color: [u8; 3]| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        image::RgbImage::from_pixel(160, 90, image::Rgb(color))
+            .save(path)
+            .unwrap();
+    };
+    let (first, second, wander) = (
+        root.join("A/first.png"),
+        root.join("A/second.png"),
+        root.join("A/wander.png"),
+    );
+    picture(&first, [200, 60, 60]);
+    picture(&second, [60, 200, 60]);
+    picture(&wander, [60, 60, 200]);
+    // Same name as the member, other content, in another folder.
+    let decoy = root.join("C/wander.png");
+    picture(&decoy, [200, 200, 60]);
+    // A folder the sidebar lists, so it is watched.
+    picture(&root.join("B/resident.png"), [120, 120, 120]);
+
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    let library = settings
+        .add_library("Moved outside", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.join("A")));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    let state = window.app_state();
+    pump_until(|| {
+        let watch = window.imp().root_watch.borrow();
+        window.is_mapped()
+            && state.borrow().library.image_count() == 3
+            && [root.join("A"), root.join("B")]
+                .iter()
+                .all(|folder| watch.monitors.contains_key(folder))
+    });
+    let index = state.borrow().library_index.clone().unwrap();
+    let bucket = index
+        .create_collection(&library, None, "Keep", &[], None, None)
+        .unwrap()
+        .id;
+    crate::buckets::add_to_bucket(
+        &index,
+        bucket,
+        &[first.clone(), second.clone(), wander.clone()],
+    )
+    .unwrap();
+    window
+        .imp()
+        .sidebar
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .emit_collection_selected(bucket);
+    let shown = || {
+        let st = state.borrow();
+        let mut paths: Vec<PathBuf> = (0..st.library.image_count())
+            .filter_map(|i| st.library.entry_at(i))
+            .map(|e| e.path())
+            .collect();
+        paths.sort();
+        paths
+    };
+    pump_until(|| state.borrow().scope == ViewScope::Collection(bucket) && shown().len() == 3);
+    let selected = || state.borrow().library.selected_entry().map(|e| e.path());
+    let viewing = selected();
+    assert!(viewing.is_some());
+    // Settle the opening passes, so the move is not caught by one by chance.
+    settle(1500);
+
+    // Moved in a file manager, renamed on the way.
+    let moved = root.join("B/far away.png");
+    std::fs::rename(&wander, &moved).unwrap();
+    let mut expected = vec![first.clone(), second.clone(), moved.clone()];
+    expected.sort();
+    pump_until(|| shown() == expected);
+    assert_eq!(state.borrow().scope, ViewScope::Collection(bucket));
+    assert_eq!(selected(), viewing, "the image in view stays selected");
+    assert!(!shown().contains(&decoy));
+    let rows = index.bucket_members(&[bucket]).unwrap();
+    assert!(rows.iter().any(|row| row.last_path == moved));
+    assert!(!rows
+        .iter()
+        .any(|row| row.last_path == wander || row.last_path == decoy));
     window.close();
 }

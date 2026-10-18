@@ -272,6 +272,64 @@ impl SharprWindow {
         });
     }
 
+    /// After a fingerprint pass changed what members resolve to (a member
+    /// moved outside Sharpr was found, or one went missing): re-reads the
+    /// open bucket on a worker and refreshes it only if its images differ
+    /// from those it holds, keeping the selection and the search.
+    pub(crate) fn refresh_bucket_if_members_changed(&self, id: i64) {
+        if self.imp().bucket_open_pending.get().is_some()
+            || self.app_state().borrow().scope != ViewScope::Collection(id)
+        {
+            return;
+        }
+        let (index, roots, disabled) = {
+            let state = self.app_state();
+            let state = state.borrow();
+            (
+                state.library_index.clone(),
+                state.settings.library_roots(),
+                state.disabled_folders.clone(),
+            )
+        };
+        let Some(index) = index else { return };
+        let generation = self.imp().bucket_open_generation.get();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let paths = crate::buckets::view(&index, id, &roots, &disabled)
+                .map(|view| filter_paths_for_library(view.paths, &roots, &disabled));
+            let _ = tx.send_blocking(paths);
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(Ok(paths)) = rx.recv().await else {
+                return;
+            };
+            let Some(window) = weak.upgrade() else { return };
+            if window.imp().bucket_open_generation.get() != generation
+                || window.imp().bucket_open_pending.get().is_some()
+                || window.app_state().borrow().scope != ViewScope::Collection(id)
+            {
+                return;
+            }
+            // With a search running, the bucket's images are in the snapshot.
+            let held: std::collections::HashSet<PathBuf> =
+                match window.imp().browse_snapshot.borrow().as_ref() {
+                    Some(snapshot) => snapshot.entries.iter().map(|e| e.path()).collect(),
+                    None => {
+                        let state = window.app_state();
+                        let state = state.borrow();
+                        (0..state.library.image_count())
+                            .filter_map(|i| state.library.entry_at(i))
+                            .map(|e| e.path())
+                            .collect()
+                    }
+                };
+            if paths.len() != held.len() || paths.iter().any(|p| !held.contains(p)) {
+                window.refresh_current_bucket(id);
+            }
+        });
+    }
+
     pub(super) fn capture_browse_view(&self) {
         if self.imp().browse_snapshot.borrow().is_some() {
             return;

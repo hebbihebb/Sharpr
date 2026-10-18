@@ -1,5 +1,24 @@
 # Current Tasks
 
+## Implemented: re-link a bucket member moved outside Sharpr (Work Order item 13)
+
+Branch `fix/relink-moved-members` (own worktree `../Sharpr-item13`); committed,
+not merged, pushed or deployed; awaiting the user's test. Why it still
+reproduced after item 11: re-linking only ran inside a fingerprint pass, which
+waits up to 30 s after the last one, and an open bucket never reloaded when a
+pass found a moved member. Opening the new folder "fixed" it because viewing an
+image there fingerprints it at once. Now a pass asked for by the root watch
+starts at once (`fingerprint::Service::request_soon`), and an open bucket
+re-reads its members after a pass and reloads, keeping selection and search,
+only if its images changed. `buckets::relink` matches by content only: it moves
+a member only to a unique copy (several identical copies leave the stored path,
+all copies still show), follows the content when another file takes the old
+name, and backs up `library-index.sqlite` (`backups/before-relink-<time>/`,
+member count checked) before moving 10 or more members. Tests: three bucket
+unit tests, one service test, GTK workflow
+`a_member_moved_outside_sharpr_shows_in_the_open_bucket` (failed on `main`,
+passes 12 of 12 runs). Item 26 stays separate (in-Sharpr move, file-job path).
+
 ## Accepted: notice changes under the library roots (Work Order item 11)
 
 Deployed as `1922b8e`; accepted by the user October 18, merged to `main` and

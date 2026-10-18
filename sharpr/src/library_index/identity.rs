@@ -555,7 +555,7 @@ mod tests {
                 &|_| {},
             )
             .unwrap();
-            crate::buckets::relink(&index, &[], &[]).unwrap();
+            crate::buckets::relink(&index, &[], &[], &root.join("backups")).unwrap();
             for id in [one, two] {
                 assert_eq!(
                     crate::buckets::view(&index, id, std::slice::from_ref(&root), &[])

@@ -169,13 +169,16 @@ impl Job {
 #[derive(Default)]
 struct Queue {
     pending: Option<Job>,
+    /// The pending pass need not wait for the spacing between passes.
+    soon: bool,
     running: Option<Job>,
 }
 
 /// A background thread that runs fingerprint passes on request. The newest
 /// request wins. A request for the same library while a pass runs queues
 /// one more pass; a different library or set of disabled folders cancels it.
-/// Passes over the same library start at least `MIN_INTERVAL` apart.
+/// Passes over the same library start at least `MIN_INTERVAL` apart, unless
+/// asked for with `request_soon`.
 pub struct Service {
     queue: std::sync::Arc<(std::sync::Mutex<Queue>, std::sync::Condvar)>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -194,6 +197,14 @@ const MIN_INTERVAL: std::time::Duration = std::time::Duration::ZERO;
 impl Service {
     /// Starts the thread. `pass_done` runs on it after every completed pass.
     pub fn start(index: std::sync::Arc<LibraryIndex>, pass_done: PassDone) -> Self {
+        Self::start_spaced(index, pass_done, MIN_INTERVAL)
+    }
+
+    fn start_spaced(
+        index: std::sync::Arc<LibraryIndex>,
+        pass_done: PassDone,
+        interval: std::time::Duration,
+    ) -> Self {
         let queue = std::sync::Arc::new((
             std::sync::Mutex::new(Queue::default()),
             std::sync::Condvar::new(),
@@ -210,22 +221,38 @@ impl Service {
                 lower_thread_priority();
                 let mut last: Option<(Job, std::time::Instant)> = None;
                 loop {
+                    // The pending job stays queued while it waits out the
+                    // spacing, so a newer request replaces it and a soon one
+                    // ends the wait.
                     let job = {
                         let (lock, ready) = &*thread_queue;
                         let mut queue = lock.lock().unwrap_or_else(|e| e.into_inner());
                         loop {
-                            if let Some(job) = queue.pending.take() {
-                                queue.running = Some(job.clone());
-                                break job;
+                            let Some(job) = queue.pending.as_ref() else {
+                                queue = ready.wait(queue).unwrap_or_else(|e| e.into_inner());
+                                continue;
+                            };
+                            let wait = match &last {
+                                Some((previous, started))
+                                    if !queue.soon && previous.same_scope(job) =>
+                                {
+                                    interval.saturating_sub(started.elapsed())
+                                }
+                                _ => std::time::Duration::ZERO,
+                            };
+                            if !wait.is_zero() {
+                                queue = ready
+                                    .wait_timeout(queue, wait)
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .0;
+                                continue;
                             }
-                            queue = ready.wait(queue).unwrap_or_else(|e| e.into_inner());
+                            let job = queue.pending.take().expect("checked above");
+                            queue.soon = false;
+                            queue.running = Some(job.clone());
+                            break job;
                         }
                     };
-                    if let Some((previous, started)) = &last {
-                        if previous.same_scope(&job) {
-                            std::thread::sleep(MIN_INTERVAL.saturating_sub(started.elapsed()));
-                        }
-                    }
                     thread_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
                     let started = std::time::Instant::now();
                     let canceled = || thread_cancel.load(std::sync::atomic::Ordering::Relaxed);
@@ -274,6 +301,16 @@ impl Service {
 
     /// Asks for a pass over `job`'s library.
     pub fn request(&self, job: Job) {
+        self.enqueue(job, false);
+    }
+
+    /// Like `request`, but the pass starts without waiting for the spacing
+    /// between passes: something under the roots changed.
+    pub fn request_soon(&self, job: Job) {
+        self.enqueue(job, true);
+    }
+
+    fn enqueue(&self, job: Job, soon: bool) {
         let (lock, ready) = &*self.queue;
         let mut queue = lock.lock().unwrap_or_else(|e| e.into_inner());
         if queue
@@ -285,6 +322,7 @@ impl Service {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         queue.pending = Some(job);
+        queue.soon |= soon;
         ready.notify_one();
     }
 
@@ -322,6 +360,35 @@ mod tests {
         assert_eq!(a, hash_file(&dir.join("copy.jpg")).unwrap());
         assert_ne!(a, hash_file(&dir.join("b.jpg")).unwrap());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_soon_request_skips_the_spacing_between_passes() {
+        let root = temp_dir("soon");
+        std::fs::write(root.join("a.jpg"), b"a").unwrap();
+        let index = std::sync::Arc::new(LibraryIndex::open_in_memory().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let service = Service::start_spaced(
+            index,
+            Box::new(move |_, summary| {
+                let _ = tx.send(summary.hashed);
+            }),
+            std::time::Duration::from_secs(60),
+        );
+        let job = Job {
+            roots: vec![root.clone()],
+            disabled: Vec::new(),
+        };
+        let wait = |ms| rx.recv_timeout(std::time::Duration::from_millis(ms));
+        service.request(job.clone());
+        assert_eq!(wait(5000), Ok(1));
+        service.request(job.clone());
+        assert!(wait(300).is_err(), "a plain request waits out the spacing");
+        // A file appears: the waiting pass starts now and finds it.
+        std::fs::write(root.join("b.jpg"), b"b").unwrap();
+        service.request_soon(job);
+        assert_eq!(wait(5000), Ok(1));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

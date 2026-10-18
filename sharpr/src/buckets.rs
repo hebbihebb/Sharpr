@@ -398,71 +398,137 @@ pub struct RelinkSummary {
     pub relinked: usize,
 }
 
+/// A pass that would move at least this many members backs up the index
+/// first, since that many stored paths change at once.
+const BULK_RELINK: usize = 10;
+
 /// Brings stored members up to date after a fingerprint pass, using only
-/// cached fingerprints:
+/// cached fingerprints, and matching on content, never on names:
+/// - a member whose file is gone moves to the one unchanged file with its
+///   fingerprint. With several identical copies it stays where it is, since
+///   the bucket shows every copy anyway; with none it stays, as missing;
 /// - a member whose file is at its path gets that file's current fingerprint
-///   (first known, or changed because the file was edited);
-/// - a member whose file is gone moves to an unchanged file with its
-///   fingerprint, if there is one. Others stay, as missing.
+///   (first known, or changed because the file was edited), unless the old
+///   content still exists elsewhere: then another file took the name, and
+///   the member follows its content to a single copy, or stays as it is.
+///
+/// Moving `BULK_RELINK` or more members at once first backs up the index to
+/// a new folder under `backups`; if that fails nothing is changed.
 pub fn relink(
     index: &LibraryIndex,
     roots: &[PathBuf],
     disabled: &[PathBuf],
+    backups: &Path,
 ) -> Result<RelinkSummary, String> {
     // Excluded members remain stored, untouched, without even a metadata probe.
-    let rows: Vec<_> = index
+    let rows: Vec<(MemberRow, Option<String>, bool)> = index
         .all_bucket_members()
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|row| visible(&row.last_path, roots, disabled))
-        .collect();
-    let mut summary = RelinkSummary::default();
-    let lost: Vec<String> = rows
+        .map(|row| {
+            let (current, present) = match stamp(&row.last_path) {
+                Some((size, mtime)) => (
+                    index
+                        .fresh_fingerprint(&row.last_path, size, mtime)
+                        .map_err(|e| e.to_string())?,
+                    true,
+                ),
+                None => (None, false),
+            };
+            Ok((row, current, present))
+        })
+        .collect::<Result<_, String>>()?;
+    // The content to look for elsewhere: members whose file is gone, or whose
+    // path now holds other content.
+    let sought: Vec<String> = rows
         .iter()
-        .filter(|r| stamp(&r.last_path).is_none())
-        .filter_map(|r| r.fingerprint.clone())
+        .filter(|(row, current, present)| {
+            !present || (current.is_some() && *current != row.fingerprint)
+        })
+        .filter_map(|(row, _, _)| row.fingerprint.clone())
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
     let by_hash = index
-        .files_with_fingerprints(&lost)
+        .files_with_fingerprints(&sought)
         .map_err(|e| e.to_string())?;
-    for row in rows {
-        match stamp(&row.last_path) {
-            Some((size, mtime)) => {
-                let current = index
-                    .fresh_fingerprint(&row.last_path, size, mtime)
-                    .map_err(|e| e.to_string())?;
-                if let Some(current) = current.filter(|c| row.fingerprint.as_ref() != Some(c)) {
-                    index
-                        .set_member_fingerprint(row.collection_id, &row.last_path, &current)
-                        .map_err(|e| e.to_string())?;
-                    summary.fingerprinted += 1;
-                }
-            }
-            None => {
-                let mut candidates: Vec<&PathBuf> = row
-                    .fingerprint
-                    .as_ref()
-                    .and_then(|hash| by_hash.get(hash))
-                    .into_iter()
-                    .flatten()
-                    .filter(|(path, size, mtime)| {
-                        visible(path, roots, disabled) && stamp(path) == Some((*size, *mtime))
-                    })
-                    .map(|(path, _, _)| path)
-                    .collect();
-                candidates.sort();
-                if let Some(to) = candidates.first() {
-                    index
-                        .move_member(row.collection_id, &row.last_path, to)
-                        .map_err(|e| e.to_string())?;
-                    summary.relinked += 1;
-                }
+    let copies = |row: &MemberRow| -> Vec<&PathBuf> {
+        row.fingerprint
+            .as_ref()
+            .and_then(|hash| by_hash.get(hash))
+            .into_iter()
+            .flatten()
+            .filter(|(path, size, mtime)| {
+                *path != row.last_path
+                    && visible(path, roots, disabled)
+                    && stamp(path) == Some((*size, *mtime))
+            })
+            .map(|(path, _, _)| path)
+            .collect()
+    };
+    let mut moves: Vec<(i64, PathBuf, PathBuf)> = Vec::new();
+    let mut fingerprints: Vec<(i64, PathBuf, String)> = Vec::new();
+    for (row, current, present) in &rows {
+        if *present && (current.is_none() || *current == row.fingerprint) {
+            continue;
+        }
+        let elsewhere = copies(row);
+        if let [to] = elsewhere.as_slice() {
+            moves.push((row.collection_id, row.last_path.clone(), (*to).clone()));
+        } else if *present && elsewhere.is_empty() {
+            if let Some(current) = current {
+                fingerprints.push((row.collection_id, row.last_path.clone(), current.clone()));
             }
         }
     }
-    Ok(summary)
+    if moves.len() >= BULK_RELINK {
+        back_up_members(index, backups)?;
+    }
+    for (id, path, fingerprint) in &fingerprints {
+        index
+            .set_member_fingerprint(*id, path, fingerprint)
+            .map_err(|e| e.to_string())?;
+    }
+    for (id, from, to) in &moves {
+        index
+            .move_member(*id, from, to)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(RelinkSummary {
+        fingerprinted: fingerprints.len(),
+        relinked: moves.len(),
+    })
+}
+
+/// Copies the index to a new `before-relink-<time>` folder under `backups`
+/// and checks that the copy holds every member row.
+fn back_up_members(index: &LibraryIndex, backups: &Path) -> Result<PathBuf, String> {
+    let members = index.all_bucket_members().map_err(|e| e.to_string())?.len();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    let dir = backups.join(format!("before-relink-{stamp}"));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let copy = dir.join("library-index.sqlite");
+    index.backup_to(&copy)?;
+    let stored: i64 =
+        rusqlite::Connection::open_with_flags(&copy, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .and_then(|backup| {
+                backup.query_row("SELECT COUNT(*) FROM bucket_members", [], |row| row.get(0))
+            })
+            .map_err(|e| format!("backup unreadable: {e}"))?;
+    if stored as usize != members {
+        return Err(format!(
+            "backup has {stored} bucket members instead of {members}"
+        ));
+    }
+    crate::bench_event!(
+        "buckets.relink.backup",
+        serde_json::json!({"members": members, "dir": dir.display().to_string()}),
+    );
+    Ok(dir)
 }
 
 /// Paths of every stored member, for fingerprinting them first.
@@ -842,7 +908,13 @@ mod tests {
             };
             std::fs::remove_file(&source).unwrap();
             let before = f.index.bucket_members(&[bucket]).unwrap();
-            let summary = relink(&f.index, std::slice::from_ref(active), &disabled).unwrap();
+            let summary = relink(
+                &f.index,
+                std::slice::from_ref(active),
+                &disabled,
+                &f.root.join("backups"),
+            )
+            .unwrap();
             assert_eq!(
                 summary.relinked, 0,
                 "must not probe or choose an excluded candidate"
@@ -871,7 +943,13 @@ mod tests {
             add_to_bucket(&f.index, hidden_bucket, std::slice::from_ref(&hidden)).unwrap();
             std::fs::remove_file(&hidden).unwrap();
             let hidden_before = f.index.bucket_members(&[hidden_bucket]).unwrap();
-            relink(&f.index, std::slice::from_ref(active), &disabled).unwrap();
+            relink(
+                &f.index,
+                std::slice::from_ref(active),
+                &disabled,
+                &f.root.join("backups"),
+            )
+            .unwrap();
             assert_eq!(
                 f.index.bucket_members(&[hidden_bucket]).unwrap(),
                 hidden_before
@@ -1008,7 +1086,7 @@ mod tests {
                 &|_| {},
             )
             .unwrap();
-            relink(&f.index, &[], &[]).unwrap()
+            relink(&f.index, &[], &[], &f.root.join("backups")).unwrap()
         };
         assert_eq!(
             pass(),
@@ -1057,6 +1135,165 @@ mod tests {
         let gone = view(&f.index, bucket, std::slice::from_ref(&f.root), &[]).unwrap();
         assert_eq!((gone.paths.len(), gone.missing), (0, 1));
         assert_eq!(f.index.bucket_members(&[bucket]).unwrap().len(), 1);
+    }
+
+    /// A fingerprint pass over the fixture's root, then a relink.
+    fn pass(f: &Fixture) -> RelinkSummary {
+        crate::fingerprint::run_pass(
+            &f.index,
+            std::slice::from_ref(&f.root),
+            &[],
+            &[],
+            &|| false,
+            &|_| {},
+        )
+        .unwrap();
+        relink(
+            &f.index,
+            std::slice::from_ref(&f.root),
+            &[],
+            &f.root.join("backups"),
+        )
+        .unwrap()
+    }
+
+    fn move_file(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::rename(from, to).unwrap();
+    }
+
+    #[test]
+    fn a_member_moved_outside_sharpr_is_found_by_content_never_by_name() {
+        let f = Fixture::migrated("moved-outside");
+        let bucket = f.bucket("Keep", None);
+        let photo = f.image("a/photo.jpg");
+        let hash = crate::fingerprint::hash_file(&photo).unwrap();
+        add_to_bucket(&f.index, bucket, std::slice::from_ref(&photo)).unwrap();
+        // Another file with the member's name, other content, elsewhere.
+        let decoy = f.root.join("b/photo.jpg");
+        std::fs::create_dir_all(decoy.parent().unwrap()).unwrap();
+        std::fs::write(&decoy, b"another picture").unwrap();
+
+        // Moved and renamed in a file manager: the bucket finds it.
+        let moved = f.root.join("c/beach.jpg");
+        move_file(&photo, &moved);
+        assert_eq!(
+            pass(&f),
+            RelinkSummary {
+                fingerprinted: 0,
+                relinked: 1
+            }
+        );
+        let rows = f.index.bucket_members(&[bucket]).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].last_path, moved);
+        assert_eq!(rows[0].fingerprint.as_ref(), Some(&hash));
+        assert_eq!(f.shows(bucket), vec![moved.clone()]);
+
+        // Moved again, and a different picture takes its old name: the
+        // member follows its content, not the name.
+        let again = f.root.join("d/beach.jpg");
+        move_file(&moved, &again);
+        std::fs::write(&moved, b"a newer download").unwrap();
+        assert_eq!(
+            pass(&f),
+            RelinkSummary {
+                fingerprinted: 0,
+                relinked: 1
+            }
+        );
+        let rows = f.index.bucket_members(&[bucket]).unwrap();
+        assert_eq!(rows[0].last_path, again);
+        assert_eq!(rows[0].fingerprint.as_ref(), Some(&hash));
+        assert_eq!(f.shows(bucket), vec![again.clone()]);
+        assert!(!f.shows(bucket).contains(&decoy));
+
+        // Gone from the library: only same-named files are left, and
+        // neither is taken for it. It stays, as missing.
+        std::fs::remove_file(&again).unwrap();
+        assert_eq!(pass(&f), RelinkSummary::default());
+        let gone = view(&f.index, bucket, std::slice::from_ref(&f.root), &[]).unwrap();
+        assert_eq!((gone.paths, gone.missing), (vec![], 1));
+        assert_eq!(
+            f.index.bucket_members(&[bucket]).unwrap()[0].last_path,
+            again
+        );
+    }
+
+    #[test]
+    fn identical_copies_leave_the_stored_path_and_all_show() {
+        let f = Fixture::migrated("copies");
+        let bucket = f.bucket("Keep", None);
+        let photo = f.image("photo.jpg");
+        add_to_bucket(&f.index, bucket, std::slice::from_ref(&photo)).unwrap();
+        let (one, two) = (f.root.join("x/one.jpg"), f.root.join("y/two.jpg"));
+        for copy in [&one, &two] {
+            std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+            std::fs::copy(&photo, copy).unwrap();
+        }
+        std::fs::remove_file(&photo).unwrap();
+        // No unique match: the stored path is not rewritten to either copy.
+        assert_eq!(pass(&f), RelinkSummary::default());
+        assert_eq!(
+            f.index.bucket_members(&[bucket]).unwrap()[0].last_path,
+            photo
+        );
+        let shown = view(&f.index, bucket, std::slice::from_ref(&f.root), &[]).unwrap();
+        assert_eq!(
+            (shown.paths, shown.missing),
+            (vec![one.clone(), two.clone()], 0)
+        );
+
+        // One copy goes: the member follows the other.
+        std::fs::remove_file(&one).unwrap();
+        assert_eq!(pass(&f).relinked, 1);
+        assert_eq!(f.index.bucket_members(&[bucket]).unwrap()[0].last_path, two);
+    }
+
+    #[test]
+    fn moving_many_members_at_once_backs_up_the_index_first() {
+        let f = Fixture::migrated("bulk");
+        let bucket = f.bucket("Keep", None);
+        let photos: Vec<PathBuf> = (0..13).map(|i| f.image(&format!("old/{i}.jpg"))).collect();
+        add_to_bucket(&f.index, bucket, &photos).unwrap();
+        let backups = || -> Vec<PathBuf> {
+            std::fs::read_dir(f.root.join("backups"))
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("before-relink-")
+                })
+                .collect()
+        };
+        let move_all = |few: &[PathBuf]| {
+            for path in few {
+                move_file(path, &f.root.join("new").join(path.file_name().unwrap()));
+            }
+        };
+        move_all(&photos[..3]);
+        assert_eq!(pass(&f).relinked, 3);
+        assert!(backups().is_empty());
+
+        move_all(&photos[3..]);
+        assert_eq!(pass(&f).relinked, 10);
+        let made = backups();
+        assert_eq!(made.len(), 1);
+        let copy = rusqlite::Connection::open(made[0].join("library-index.sqlite")).unwrap();
+        // Taken before the moves: 13 members, ten still at their old paths.
+        let (all, old): (i64, i64) = copy
+            .query_row(
+                "SELECT COUNT(*), SUM(last_path LIKE '%/old/%') FROM bucket_members",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((all, old), (13, 10));
+        assert_eq!(f.shows(bucket).len(), 13);
     }
 
     #[test]
