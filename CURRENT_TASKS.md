@@ -3,7 +3,7 @@
 ## Accepted: re-link a bucket member moved outside Sharpr, and the bucket view after a move (Work Order items 13 and 26)
 
 Deployed as `7ba1e3b`; accepted by the user October 18, merged to `main`; not
-pushed. Next: Work Order item 12 (Tune Find Copies; ask for examples first).
+pushed. Next: Work Order item 14 (item 12 deferred to the end by the user).
 Why it still
 reproduced after item 11: re-linking only ran inside a fingerprint pass, which
 waits up to 30 s after the last one, and an open bucket never reloaded when a
