@@ -273,7 +273,8 @@ impl SharprWindow {
     }
 
     /// After a fingerprint pass changed what members resolve to (a member
-    /// moved outside Sharpr was found, or one went missing): re-reads the
+    /// moved outside Sharpr was found, or one went missing), or a move inside
+    /// Sharpr gave a member a new path: re-reads the
     /// open bucket on a worker and refreshes it only if its images differ
     /// from those it holds, keeping the selection and the search.
     pub(crate) fn refresh_bucket_if_members_changed(&self, id: i64) {

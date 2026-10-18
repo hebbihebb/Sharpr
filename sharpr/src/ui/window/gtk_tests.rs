@@ -5457,3 +5457,182 @@ fn a_member_moved_outside_sharpr_shows_in_the_open_bucket() {
         .any(|row| row.last_path == wander || row.last_path == decoy));
     window.close();
 }
+
+/// Work Order item 26: Move to Folder from inside a bucket, with the keyboard
+/// focus on the filmstrip as after a click, keeps the bucket open. Removing
+/// the focused row used to make GTK move the focus on, as Tab does, into the
+/// sidebar's folder list, which selected its first folder and opened it:
+/// "No images in this folder" in place of the bucket. The moved image stays
+/// in its bucket, at its new path.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn moving_an_image_out_of_an_open_bucket_keeps_the_bucket() {
+    let root = isolated_fixture("move-out-of-bucket");
+    let picture = |path: &Path, color: [u8; 3]| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        image::RgbImage::from_pixel(160, 90, image::Rgb(color))
+            .save(path)
+            .unwrap();
+    };
+    let a = root.join("A/a.png");
+    let b = root.join("A/b.png");
+    let c = root.join("A/c.png");
+    let solo = root.join("D/solo.png");
+    picture(&a, [200, 60, 60]);
+    picture(&b, [60, 200, 60]);
+    picture(&c, [60, 60, 200]);
+    picture(&solo, [200, 200, 60]);
+    let dest = root.join("B");
+    picture(&dest.join("resident.png"), [120, 120, 120]);
+
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    let library = settings
+        .add_library("Move out of bucket", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.join("A")));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    let state = window.app_state();
+    let sidebar = window.imp().sidebar.borrow().clone().unwrap();
+    let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
+    pump_until(|| window.is_mapped() && state.borrow().library.image_count() == 3);
+    // Both side panels shown, as on the desktop, so the folder list can take
+    // the focus.
+    for split in find_widgets::<libadwaita::OverlaySplitView>(window.upcast_ref()) {
+        split.set_collapsed(false);
+        split.set_show_sidebar(true);
+    }
+    pump_until(|| sidebar.is_mapped());
+    let index = state.borrow().library_index.clone().unwrap();
+    let bucket = |name: &str, members: &[PathBuf]| {
+        let id = index
+            .create_collection(&library, None, name, &[], None, None)
+            .unwrap()
+            .id;
+        crate::buckets::add_to_bucket(&index, id, members).unwrap();
+        id
+    };
+    let three = bucket("Three", &[a.clone(), b.clone(), c.clone()]);
+    let one = bucket("One", std::slice::from_ref(&solo));
+    window
+        .imp()
+        .refresh_sidebar_collections_cb
+        .borrow()
+        .as_ref()
+        .unwrap()();
+
+    let shown = || {
+        let st = state.borrow();
+        let mut paths: Vec<PathBuf> = (0..st.library.image_count())
+            .filter_map(|i| st.library.entry_at(i))
+            .map(|e| e.path())
+            .collect();
+        paths.sort();
+        paths
+    };
+    let selected = || state.borrow().library.selected_entry().map(|e| e.path());
+    let focus_in_filmstrip = || {
+        gtk4::prelude::GtkWindowExt::focus(&window)
+            .is_some_and(|focus| focus.is_ancestor(&filmstrip.imp().list_view))
+    };
+    let folder_selected = || {
+        find_widgets::<crate::ui::sidebar::FolderRow>(sidebar.upcast_ref())
+            .iter()
+            .any(|row| row.is_selected())
+    };
+    // Opens the bucket as a click on its sidebar row does, then clicks the
+    // image at `at` in the filmstrip, which takes the focus.
+    let open = |id: i64, count: usize, at: u32| {
+        let find_row = || {
+            find_widgets::<crate::ui::sidebar::CollectionRow>(sidebar.upcast_ref())
+                .into_iter()
+                .find(|row| row.collection_id() == id)
+        };
+        pump_until(|| find_row().is_some_and(|row| row.is_mapped()));
+        let row = find_row().unwrap();
+        row.parent()
+            .and_downcast::<gtk4::ListBox>()
+            .unwrap()
+            .select_row(Some(&row));
+        pump_until(|| {
+            state.borrow().scope == ViewScope::Collection(id)
+                && window.imp().bucket_open_pending.get().is_none()
+                && shown().len() == count
+        });
+        assert!(!folder_selected());
+        filmstrip.navigate_to(at);
+        settle(300);
+        assert!(filmstrip.imp().list_view.grab_focus());
+        pump_until(focus_in_filmstrip);
+    };
+
+    // The focus is never left on a row the filmstrip has removed: GTK would
+    // pick a new focus as Tab does, which on the desktop selected and opened
+    // the sidebar's first folder.
+    let focus_not_orphaned =
+        || gtk4::prelude::GtkWindowExt::focus(&window).is_none_or(|focus| focus.root().is_some());
+    open(three, 3, 1);
+    filmstrip.refresh();
+    assert!(focus_not_orphaned(), "the focused image row was removed");
+    pump_until(focus_in_filmstrip);
+    assert_eq!(state.borrow().scope, ViewScope::Collection(three));
+    assert!(!folder_selected());
+
+    // A bucket of three: move the middle one out of its folder.
+    open(three, 3, 1);
+    assert_eq!(selected(), Some(b.clone()));
+    window.move_to_folder(vec![b.clone()], dest.clone());
+    pump_until(|| {
+        assert!(focus_not_orphaned(), "the focused image row was removed");
+        !shown().contains(&b)
+    });
+    let moved = dest.join("b.png");
+    let mut expected = vec![a.clone(), moved.clone(), c.clone()];
+    expected.sort();
+    pump_until(|| shown() == expected);
+    settle(1500);
+    assert_eq!(state.borrow().scope, ViewScope::Collection(three));
+    assert!(
+        !folder_selected(),
+        "no folder opened in place of the bucket"
+    );
+    assert_eq!(shown(), expected, "the moved image stays in its bucket");
+    assert!(selected().is_some_and(|path| path == c || path == a));
+    assert!(moved.exists() && !b.exists());
+
+    // A bucket of one: the image moves, and the bucket still shows it.
+    open(one, 1, 0);
+    window.move_to_folder(vec![solo.clone()], dest.clone());
+    pump_until(|| {
+        assert!(focus_not_orphaned(), "the focused image row was removed");
+        !shown().contains(&solo)
+    });
+    let moved_solo = dest.join("solo.png");
+    pump_until(|| shown() == vec![moved_solo.clone()]);
+    settle(1500);
+    assert_eq!(state.borrow().scope, ViewScope::Collection(one));
+    assert!(
+        !folder_selected(),
+        "no folder opened in place of the bucket"
+    );
+    assert_eq!(shown(), vec![moved_solo.clone()]);
+    assert_eq!(selected(), Some(moved_solo));
+    assert_eq!(
+        filmstrip
+            .imp()
+            .content_stack
+            .visible_child_name()
+            .as_deref(),
+        Some("list")
+    );
+    window.close();
+}

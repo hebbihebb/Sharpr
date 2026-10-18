@@ -32,6 +32,7 @@ This file covers how to build them in GTK.
 - The operation indicator is informational and does not navigate anywhere.
 - Every meaningful icon-only control needs an accessible name or tooltip.
 - Keyboard-only navigation is an acceptance path. Delete and other single-key shortcuts must not fire while a text entry has focus.
+- Never remove a row that holds the keyboard focus. GTK then moves the focus on after the next frame as Tab does, and a sidebar `ListBox` row that gets the focus that way is selected, which opens that folder or bucket (Work Order item 26: a bucket view became "No images in this folder"). The filmstrip lets go of the focus before its rows are removed or replaced (its store's `items-changed`, `refresh`, `clear_model`) and gives it back to the selected image on idle; the bucket list does the same when it rebuilds. New code that rebuilds a focused list must do likewise.
 
 ## Threading
 

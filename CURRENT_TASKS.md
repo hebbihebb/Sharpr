@@ -1,6 +1,6 @@
 # Current Tasks
 
-## Implemented: re-link a bucket member moved outside Sharpr (Work Order item 13)
+## Implemented: re-link a bucket member moved outside Sharpr, and the bucket view after a move (Work Order items 13 and 26)
 
 Branch `fix/relink-moved-members` (own worktree `../Sharpr-item13`); committed,
 not merged, pushed or deployed; awaiting the user's test. Why it still
@@ -17,7 +17,20 @@ name, and backs up `library-index.sqlite` (`backups/before-relink-<time>/`,
 member count checked) before moving 10 or more members. Tests: three bucket
 unit tests, one service test, GTK workflow
 `a_member_moved_outside_sharpr_shows_in_the_open_bucket` (failed on `main`,
-passes 12 of 12 runs). Item 26 stays separate (in-Sharpr move, file-job path).
+passes 12 of 12 runs).
+
+The user's first test of `888c08e` showed "No images in this folder": the
+re-link worked, but reloading the bucket hit item 26, so item 26 is fixed on
+the same branch at the user's request. Cause (GTK 4.22 `gtkwindow.c`
+`maybe_unset_focus_and_default`): removing the filmstrip row that holds the
+keyboard focus makes GTK move the focus on as Tab does; in a bucket no folder
+row is selected, so it lands on the first folder row, which a `ListBox`
+selects on focus, opening Pictures. The filmstrip now lets go of the focus
+before rows go and returns it to the selected image; the bucket list does the
+same on rebuild. After Move to Folder an open bucket re-reads its members, so
+the moved image stays in it at its new path. GTK workflow
+`moving_an_image_out_of_an_open_bucket_keeps_the_bucket` fails without the
+guard ("the focused image row was removed").
 
 ## Accepted: notice changes under the library roots (Work Order item 11)
 

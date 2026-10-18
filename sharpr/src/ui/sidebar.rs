@@ -768,6 +768,19 @@ impl SidebarPane {
             .selected_row()
             .and_then(|row| row.downcast::<CollectionRow>().ok())
             .map(|row| row.collection_id());
+        // A focused row that is removed makes GTK move the focus on as Tab
+        // does, which can select a row elsewhere and open it. Let go of the
+        // focus first and give it to the reselected row afterwards.
+        let root = self.root();
+        let had_focus = root
+            .as_ref()
+            .and_then(|root| root.focus())
+            .is_some_and(|focus| focus.is_ancestor(&imp.collection_list));
+        if had_focus {
+            if let Some(root) = &root {
+                root.set_focus(None::<&gtk4::Widget>);
+            }
+        }
         imp.suppress_collection_signal.set(true);
         imp.collection_list.unselect_all();
         while let Some(child) = imp.collection_list.first_child() {
@@ -802,6 +815,9 @@ impl SidebarPane {
                 if let Ok(row) = widget.downcast::<CollectionRow>() {
                     if row.collection_id() == selected_id {
                         imp.collection_list.select_row(Some(&row));
+                        if had_focus {
+                            row.grab_focus();
+                        }
                         break;
                     }
                 }

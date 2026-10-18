@@ -502,6 +502,12 @@ impl SharprWindow {
             let moved: Vec<PathBuf> = report.done.iter().map(|(p, _)| p.clone()).collect();
             win.drop_paths_from_view(&moved);
             win.show_new_files(new_paths(&report), |_| {});
+            // Buckets follow a moved file, so an open bucket still holds it,
+            // now in its new folder.
+            let scope = win.imp().state.borrow().scope.clone();
+            if let ViewScope::Collection(id) = scope {
+                win.refresh_bucket_if_members_changed(id);
+            }
             win.destination_changed();
             win.add_toast(libadwaita::Toast::new(&summary("Moved", &report, total)));
         });

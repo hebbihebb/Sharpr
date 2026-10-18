@@ -225,6 +225,8 @@ mod imp {
         pub pending_thumbnails: RefCell<Option<Arc<Mutex<std::collections::HashSet<PathBuf>>>>>,
         pub pending_notify_count: std::sync::atomic::AtomicU32,
         pub refresh_schedule_pending: Cell<bool>,
+        /// The focus was let go of before rows went; it returns on idle.
+        pub focus_return_pending: Cell<bool>,
         /// The active library's buckets, for badge colours.
         pub bucket_collections: RefCell<Vec<crate::library_index::Collection>>,
         /// Badge colour per path, built off the GTK thread from bucket
@@ -289,6 +291,7 @@ mod imp {
                 pending_thumbnails: RefCell::new(None),
                 pending_notify_count: std::sync::atomic::AtomicU32::new(0),
                 refresh_schedule_pending: Cell::new(false),
+                focus_return_pending: Cell::new(false),
                 bucket_collections: RefCell::new(Vec::new()),
                 path_colors: RefCell::new(None),
                 path_colors_generation: Cell::new(0),
@@ -330,9 +333,63 @@ glib::wrapper! {
 impl FilmstripPane {
     pub fn new(state: Rc<RefCell<AppState>>) -> Self {
         let widget: Self = glib::Object::new();
+        // Connected before the list view's selection model ever sees the
+        // store, so it runs while the rows being removed still exist.
+        let store = state.borrow().library.store.clone();
         *widget.imp().state.borrow_mut() = Some(state);
         widget.build_ui();
+        let weak = widget.downgrade();
+        store.connect_items_changed(move |_, _, removed, _| {
+            if removed > 0 {
+                if let Some(filmstrip) = weak.upgrade() {
+                    filmstrip.let_go_of_focus_for_row_changes();
+                }
+            }
+        });
         widget
+    }
+
+    /// Rows are about to be removed or replaced. If one of them holds the
+    /// keyboard focus, GTK would move the focus on after the next frame as
+    /// Tab does, from the top of the window: into the sidebar's folder list,
+    /// whose first row it selects, which opens that folder in place of a
+    /// bucket or search. So let go of the focus first, and hand it back to
+    /// the selected image once the list has settled.
+    fn let_go_of_focus_for_row_changes(&self) {
+        let imp = self.imp();
+        let Some(root) = self.root() else { return };
+        let in_list = root.focus().is_some_and(|focus| {
+            focus == *imp.list_view.upcast_ref::<gtk4::Widget>()
+                || focus.is_ancestor(&imp.list_view)
+        });
+        if !in_list {
+            return;
+        }
+        root.set_focus(None::<&gtk4::Widget>);
+        if imp.focus_return_pending.replace(true) {
+            return;
+        }
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(filmstrip) = weak.upgrade() else {
+                return;
+            };
+            let imp = filmstrip.imp();
+            imp.focus_return_pending.set(false);
+            // Something else took the focus meanwhile (a click, a dialog).
+            if filmstrip.root().is_none_or(|root| root.focus().is_some()) {
+                return;
+            }
+            let selected = imp.selection_model.selected();
+            if selected == gtk4::INVALID_LIST_POSITION || !imp.list_view.is_mapped() {
+                return;
+            }
+            imp.list_view
+                .scroll_to(selected, gtk4::ListScrollFlags::FOCUS, None);
+            if filmstrip.root().is_some_and(|root| root.focus().is_none()) {
+                imp.list_view.grab_focus();
+            }
+        });
     }
 
     fn build_ui(&self) {
@@ -1103,6 +1160,7 @@ impl FilmstripPane {
             return;
         };
         let store = state_rc.borrow().library.store.clone();
+        self.let_go_of_focus_for_row_changes();
         imp.selection_model.set_model(None::<&gio::ListStore>);
         imp.selection_model.set_model(Some(&store));
 
@@ -1176,6 +1234,7 @@ impl FilmstripPane {
     }
 
     pub fn clear_model(&self) {
+        self.let_go_of_focus_for_row_changes();
         self.imp()
             .selection_model
             .set_model(None::<&gio::ListStore>);
