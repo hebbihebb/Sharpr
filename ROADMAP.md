@@ -789,6 +789,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 26 | ~~Moving an image out of the bucket in view shows "No images in this folder" in the bucket's filmstrip; clicking away and back refreshes it~~ **Done October 18, 2026** with item 13, accepted by the user (build `7ba1e3b`): removing the focused filmstrip row let GTK move the focus into the folder list, which opened its first folder | Sonnet high (done by Opus with item 13) |
 | 13 | ~~Re-link a bucket member moved outside Sharpr~~ **Done October 18, 2026**, accepted by the user (build `7ba1e3b`) | Opus medium |
 | 14 | Guard or retire the startup legacy-bucket migration | Sonnet high |
+| 27 | Missing bucket members (user, October 18, 2026): opening a bucket shows "N images in this bucket can't be found" every time. The user chose (warned of the risk) that a member which can't be found leaves the bucket automatically, with one toast. Needs a decision-log entry, since today missing members are kept and shown. Remove only when certain: the member's root is present and on a mounted drive (not a removed root or an unplugged drive), and a re-link pass found no copy; back up and count first | Opus medium |
 | 15 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
 | 16 | Use one sort implementation | Codex (Sol medium) |
 | 17 | Merge the two thumbnail worker loops | Sonnet high |
