@@ -783,23 +783,26 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 8 | ~~Compare: bounded decodes and a screen-sized preview~~ **Done October 17, 2026**, accepted by the user ("all tested working", build `6bf37cd`) | Sonnet high |
 | 9 | ~~Show file-action results in the open folder: Duplicate, Copy to Folder, Rename, and moves into the open folder appear in the filmstrip straight away, keeping the selection and the thumbnail scheduler's state (user, October 17; after item 7's folder-load token)~~ **Done October 17, 2026**, accepted by the user ("everything works", build `790e2a4`) | Sonnet high |
 | 10 | ~~A broad library root such as Home: the folder walks (sidebar tree and library-wide paths) stay on the root's own drive, skip hidden folders, and the sidebar fills in as it scans (user, October 17: Home as root showed nothing, because the walk crawled the NAS mounts under `~/Network`)~~ **Done October 17, 2026**, accepted by the user ("changing root works", test build `7bb4aa6`) | Sonnet high |
-| 11 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
-| 12 | Re-link a bucket member moved outside Sharpr | Opus medium |
-| 13 | Guard or retire the startup legacy-bucket migration | Sonnet high |
-| 14 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
-| 15 | Use one sort implementation | Sonnet medium |
-| 16 | Merge the two thumbnail worker loops | Sonnet high |
-| 17 | Library Overview refresh, errors, and unsupported count | Sonnet medium |
-| 18 | Ctrl+Shift+S opens the GTK Inspector | Sonnet low |
-| 19 | Make the flaky GTK navigation test deterministic | Sonnet high |
-| 20 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal | Sonnet high |
-| 21 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
-| 22 | Trash Undo in the Flatpak (needs a Flatpak build to verify) | Sonnet high |
-| 23 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
+| 11 | A folder created in the Move to Folder (or Copy to Folder) chooser is not indexed: the files land there but the new folder does not appear in the library index or sidebar (user, October 18). Find why no pass reaches it after `move_to_folder` / `copy_to_folder` (`ui/window/file_jobs_controller.rs`), and index the destination | Sonnet high |
+| 12 | Tune Find Copies (ask the user for missed and false examples first) | Sonnet high |
+| 13 | Re-link a bucket member moved outside Sharpr | Opus medium |
+| 14 | Guard or retire the startup legacy-bucket migration | Sonnet high |
+| 15 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
+| 16 | Use one sort implementation | Sonnet medium |
+| 17 | Merge the two thumbnail worker loops | Sonnet high |
+| 18 | Library Overview refresh, errors, and unsupported count | Sonnet medium |
+| 19 | Ctrl+Shift+S opens the GTK Inspector | Sonnet low |
+| 20 | Make the flaky GTK navigation test deterministic | Sonnet high |
+| 21 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal | Sonnet high |
+| 22 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
+| 23 | Trash Undo in the Flatpak (needs a Flatpak build to verify) | Sonnet high |
+| 24 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
 
 ## Backlog
 
 Optional. Pick something up only when a phase touches that area, or the user asks. The suggested order and model are in the table above.
+
+- A folder created while choosing a destination is not indexed (Work Order item 11, user, October 18): in "Move to Folder…", the user made a new folder in the chooser and moved images into it, and the new folder was not indexed. `move_to_folder` and `copy_to_folder` (`ui/window/file_jobs_controller.rs`) only add the moved rows to the view with `show_new_files`; nothing asks the indexer to pass over the destination. Check whether a library-root folder that appears mid-session (also the sidebar tree) is ever picked up, and whether Copy to Folder behaves the same. Wrap or extend the existing index and thumbnail scheduling; don't rewrite it.
 
 - A broad library root (Work Order item 10, user, October 17): choosing Home as the root left the sidebar empty. `build_folder_tree` (`ui/sidebar.rs`) and `collect_library_image_paths_cancellable` (`model/library.rs`) walk every folder under the root, including hidden ones (`.cache`, `.steam`, `.cargo`) and the NFS shares mounted under `~/Network/Gigabyte`, and the sidebar shows nothing until the whole walk ends. Stay on the root's filesystem (a mount inside it is added on purpose by choosing it, or as its own root), skip hidden folders, publish the tree progressively, and consider a note when the root is a home folder. The indexer must not crawl the NAS either.
 
