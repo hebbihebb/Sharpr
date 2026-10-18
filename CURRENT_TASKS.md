@@ -1,8 +1,22 @@
 # Current Tasks
 
+## Accepted: more than one library root (Work Order item 25, D41)
+
+Deployed as `90e594e`; accepted by the user October 18 ("deployed and working"),
+merged to `main` and pushed. A second root (Downloads beside Pictures) is added
+from Main menu → Library → Add Library Root… or Preferences → Library → Add…;
+each root is a top-level sidebar entry, and right-click → Remove from Library
+forgets it without touching files, buckets or index data (hidden bucket members
+come back when the root is added again). Overlapping roots are refused naming the
+root in the way. Folder icons are coloured per root (blue, orange, green, pink,
+teal, yellow). Buckets, search, Find Copies, the indexer and the Library
+Overview cover every root. With one root the saved settings are unchanged and no
+database was migrated. `./check.sh` passes (301 tests), 36 GTK workflows pass.
+Next: Work Order item 11 (notice changes under the library roots).
+
 ## Repository disk cleanup
 
-Active branch: `codex/repo-cleanup`. User authorized the checked cleanup plan.
+Done on `codex/repo-cleanup` and merged to `main`. User authorized the checked cleanup plan.
 Verified: 69.93 → 20.86 GiB (49.07 GiB recovered). Removed obsolete Flatpak
 working builds, Phase 0/prototype compilation output, the main incremental cache
 and 186 generated test fixture/cache trees. Models, runtimes, reports,
