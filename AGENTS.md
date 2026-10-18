@@ -44,10 +44,11 @@ Images will be found through visual search and typed filters, not manual tags, a
 ## Working Rules
 
 - **Start from the repository, not chat history.** Read `CURRENT_TASKS.md` and run `git status`. If you find uncommitted work you did not create, identify it before you touch anything.
-- **Size tasks by outcome:** goal, effort, verification, and essential guardrails. For work spanning sessions, keep the durable plan in `CURRENT_TASKS.md`.
+- **A task is a mission, not a script:** goal, effort, verification, and only the guardrails that apply to it, never a restatement of these rules. It does not name files or steps; investigate the repository and choose the solution. Work spanning sessions keeps its plan, decisions and progress in `CURRENT_TASKS.md`, worked in normal execution mode rather than a throwaway chat plan. A correction the user gives twice belongs in this file, not in the next prompt.
+- **Own the whole task:** investigate, design, implement, test, update the docs and commit it yourself, on a feature branch (see Git). Use cheaper subagents for exploration and mechanical steps when that helps; do not hand the next step to another model or add agents because you can.
 - **Prefer extending proven code to rebuilding it.** Extract a focused controller only when you are already changing that area. No broad rewrites. Before writing infrastructure, check GTK, GNOME, and existing crates.
 - **Justify every dependency** by its packaging, Flatpak, and maintenance cost.
-- **Finish, then stop.** Do one self-review per milestone. Fix real defects, record the rest in `ROADMAP.md` under Backlog, and close the milestone when its acceptance criteria are met. Do not start review, audit, and remediation loops on your own, and do not write dated audit documents into the repository.
+- **Finish, then stop.** Completed, verified work is the goal, not agent activity: stop when the task's "done when" evidence exists, and do not let a flaky unrelated test or an optional improvement hold it open. Do one self-review per milestone. Fix real defects, record the rest in `ROADMAP.md` under Backlog, and close the milestone when its acceptance criteria are met. Do not start review, audit, and remediation loops on your own, and do not write dated audit documents into the repository.
 - **Audits happen only when the user asks,** in three stages on one branch, `codex/audit-<version>` (or `audit-<version>` for other agents):
   1. **Audit.** Look for bugs against the invariants, interface out of line with the approved design (D-decisions, `docs/reference/interface-inventory.md`), dead or stale code, and documentation drift. Change no code. Approved decisions and existing Backlog items are not findings. Write `AUDIT.md` at the repository root (ID, category, severity, `file:line`, scenario, confirmed or suspected, proposed fix, status), commit it on the branch, and stop.
   2. **Review.** Go through the findings with the user in plain language. They agree, reject, or defer each one; record that in `AUDIT.md`. Fix nothing before they decide.
@@ -84,7 +85,9 @@ Check in proportion to the risk. `docs/reference/development.md` has the command
 | Dependencies | `cargo deny check` and `cargo machete`; regenerate `packaging/cargo-sources.json` |
 | Release | `./check.sh`, a GTK test run, and a full Flatpak build |
 
-Before handing work back, always run `cargo build` in `sharpr/`. Then tell the user exactly what to test and what should happen. The desktop launcher runs an installed release build of one commit (`~/.local/opt/sharpr/current`), so a `cargo build` in the checkout does not change what the user launches. Deploying means running `tools/install-native-launcher.py`, and only with the user's approval.
+Ask for an independent review only when the risk justifies it (user data, concurrency), once the candidate is ready.
+
+Hand back a working candidate, not homework: the evidence (what passed, failed or was not tested), a short explanation, and one sentence on what the user should try by hand. Ask the user only for decisions: design choices, usability, and acceptance. Before handing work back, always run `cargo build` in `sharpr/`. The desktop launcher runs an installed release build of one commit (`~/.local/opt/sharpr/current`), so a `cargo build` in the checkout does not change what the user launches. Deploying means running `tools/install-native-launcher.py`, and only with the user's approval.
 
 ## Documentation
 
