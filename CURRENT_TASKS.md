@@ -1,19 +1,18 @@
 # Current Tasks
 
-## Implemented: notice changes under the library roots (Work Order item 11)
+## Accepted: notice changes under the library roots (Work Order item 11)
 
-Branch `feature/watch-roots`, awaiting the user's test; not deployed. Sharpr now
-watches the library roots and the folders it lists (`ui/window/root_watch.rs`):
-a folder or image made outside Sharpr while it runs, or a destination made in
-the Move to Folder / Copy to Folder chooser, appears in the sidebar, is passed to
-the fingerprint and visual-search indexers, and (for images) is added to the open
-folder without a reload. The window also looks again when it gets the focus back.
-Local drives only; disabled and hidden folders are skipped. Verified: `./check.sh`
-(303 tests) and all 38 GTK workflows; the Move/Copy workflow failed first without
-the hook. To test: with Sharpr open, make a folder with a picture in it in the
-file manager, and drop a picture into the open folder; both show within a couple
-of seconds. Then Move to Folder… → New Folder in the chooser and move an image
-into it: the folder is listed.
+Deployed as `1922b8e`; accepted by the user October 18, merged to `main` and
+pushed. Sharpr watches the library roots and the folders it lists
+(`ui/window/root_watch.rs`): a folder or image made outside Sharpr while it runs,
+or a destination made in the Move to Folder / Copy to Folder chooser, appears in
+the sidebar, is passed to the fingerprint and visual-search indexers, and (for
+images) is added to the open folder without a reload. The window also looks
+again when it gets the focus back. Local drives only; disabled and hidden
+folders are skipped. `./check.sh` (303 tests) and all 38 GTK workflows pass.
+Known gaps: an image deleted outside Sharpr stays in the open filmstrip until a
+reload; every pass re-walks all roots. Next: Work Order item 12 (Tune Find
+Copies; ask the user for missed and false examples first).
 
 ## Accepted: more than one library root (Work Order item 25, D41)
 
@@ -27,7 +26,6 @@ root in the way. Folder icons are coloured per root (blue, orange, green, pink,
 teal, yellow). Buckets, search, Find Copies, the indexer and the Library
 Overview cover every root. With one root the saved settings are unchanged and no
 database was migrated. `./check.sh` passes (301 tests), 36 GTK workflows pass.
-Next: Work Order item 11 (notice changes under the library roots), implemented below.
 
 ## Repository disk cleanup
 
