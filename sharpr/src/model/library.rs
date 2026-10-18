@@ -128,7 +128,6 @@ pub struct LibraryManager {
     /// Set of all image paths encountered during the session, for cross-folder duplicates.
     pub(crate) all_known_paths: HashSet<PathBuf>,
     pub(crate) removed_paths: HashSet<PathBuf>,
-    hash_store: FxHashMap<PathBuf, u64>,
     active_thumbnail_cache: FxHashMap<PathBuf, Texture>,
     thumbnail_cache: FxHashMap<PathBuf, Texture>,
     /// Insertion order for LRU eviction.
@@ -152,7 +151,6 @@ impl LibraryManager {
             virtual_has_repeated_paths: false,
             all_known_paths: HashSet::new(),
             removed_paths: HashSet::new(),
-            hash_store: FxHashMap::default(),
             active_thumbnail_cache: FxHashMap::default(),
             thumbnail_cache: FxHashMap::default(),
             cache_order: Vec::new(),
@@ -204,7 +202,6 @@ impl LibraryManager {
         self.removed_paths.clear();
         self.store.remove_all();
         self.path_to_index.clear();
-        self.hash_store.clear();
         self.active_thumbnail_cache.clear();
         if let (Some(folder), Some(idx)) = (self.current_folder.as_ref(), self.selected_index) {
             self.folder_history.insert(folder.clone(), idx);
@@ -720,30 +717,6 @@ impl LibraryManager {
         }
     }
 
-    pub fn insert_hash(&mut self, path: PathBuf, hash: u64) {
-        self.hash_store.insert(path, hash);
-    }
-
-    /// Returns all (path, hash) pairs for the current folder, in store order.
-    pub fn hashes_snapshot(&self) -> Vec<(PathBuf, u64)> {
-        (0..self.store.n_items())
-            .filter_map(|i| self.entry_at(i))
-            .filter_map(|e| {
-                let p = e.path();
-                self.hash_store.get(&p).map(|&h| (p, h))
-            })
-            .collect()
-    }
-
-    /// Returns ALL accumulated (path, hash) pairs regardless of the current view.
-    /// Use this for whole-library duplicate detection.
-    pub fn all_hashes_snapshot(&self) -> Vec<(PathBuf, u64)> {
-        self.hash_store
-            .iter()
-            .map(|(path, &hash)| (path.clone(), hash))
-            .collect()
-    }
-
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
@@ -1192,19 +1165,6 @@ mod tests {
             .map(|(i, _)| i)
             .collect();
         assert_eq!(found, vec![0, 2], "a repeated path is found in every row");
-    }
-
-    #[test]
-    fn load_virtual_preserves_session_hashes_for_duplicates() {
-        let path = PathBuf::from("/photos/a.jpg");
-        let mut library = LibraryManager::new();
-        library.insert_hash(path.clone(), 0xabcd);
-
-        let (generation, pending) = library.load_virtual(std::slice::from_ref(&path));
-
-        assert_ne!(generation, 0);
-        assert_eq!(pending, vec![path.clone()]);
-        assert_eq!(library.all_hashes_snapshot(), vec![(path, 0xabcd)]);
     }
 
     fn row(name: &str, modified: Option<i64>, size: Option<(u32, u32)>) -> IndexedImage {

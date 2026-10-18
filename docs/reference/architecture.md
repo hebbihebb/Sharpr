@@ -30,7 +30,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `export/` | Source-format crop copies and batch WebP export with safe output reservation, and crop geometry |
 | `copies.rs`, `ui/copies_dialog.rs` | Phase 7 "Find Copies…", over the images in view: exact copies by fingerprint, and resized or converted copies by visual-search vectors (cosine ≥ 0.95, the same aspect, and matching 32×32 colour versions, made once per image from the thumbnail cache where possible, in parallel and cancellable; every member is then checked directly against the copy to keep), then review and confirmed trash, which skips files changed since the review (`copies::verify`) |
 | `export/mod.rs` `Pending` | Every new output (crop, batch export): an exclusive hidden partial file written through its own handle, published by `renameat2(RENAME_NOREPLACE)` (or a hard link) under the first free name; it never replaces or removes a file it didn't create |
-| `duplicates/`, `quality/` | Perceptual hashes (still computed by the thumbnail workers, no longer shown) and sharpness |
+| `quality/` | Sharpness |
 | `ops/`, `ui/ops_indicator.rs` | Events for transient background operations. There is no persistent queue. |
 | `config/settings.rs` | GSettings wrapper. Keys for removed features stay declared but are not used. |
 | `bench.rs` | Structured JSONL event log (see `development.md`) |
@@ -68,7 +68,7 @@ The filmstrip is Sharpr's most performance-sensitive surface. Keep these rules:
 
 1. Bump the thumbnail generation whenever the list's contents change (folder, bucket, search, or sort).
 2. Every path added to `pending_paths` must be removed on every exit path, including failure and stale drops.
-3. The GTK side never blocks on a worker channel, and workers never block on their own bounded queue. Follow-up hash requests use `queue_hash` (non-blocking), and stale requests are skipped with `drain_stale`; reuse both.
+3. The GTK side never blocks on a worker channel, and workers never block on their own bounded queue. Workers send no follow-up requests to their own queue (perceptual hashing was removed October 18, 2026, Work Order item 15), and stale requests are skipped with `drain_stale`; reuse it.
 4. Factory bind callbacks do no database or filesystem I/O.
 5. Large store mutations are chunked.
 6. A result is applied only after both its generation and its path lookup still match. This holds for failures as well as successes: every `ThumbnailWorkerResponse` carries the generation it was requested under, the worker sends no failure from a retired generation, and the GTK side drops any response whose generation is no longer current.
@@ -81,7 +81,7 @@ The thumbnail caches are an unbounded per-view memory cache, a global memory cac
 
 | Store | Location | Contents | Rebuildable? |
 | --- | --- | --- | --- |
-| `library-index.sqlite` | `~/.local/share/sharpr/` | folders, images (oriented dimensions, quality, phash), bucket definitions (`collections`, including colour and icon), member lists (`bucket_members`), fingerprint caches, and legacy `pipelines`, `pipeline_steps`, and `collection_items` | Bucket definitions and member lists: **no**, they are user data. Image/folder metadata and fingerprints: yes. Preserve all legacy tables and rows. |
+| `library-index.sqlite` | `~/.local/share/sharpr/` | folders, images (oriented dimensions, quality; the `phash` columns are legacy, no longer written), bucket definitions (`collections`, including colour and icon), member lists (`bucket_members`), fingerprint caches, and legacy `pipelines`, `pipeline_steps`, and `collection_items` | Bucket definitions and member lists: **no**, they are user data. Image/folder metadata and fingerprints: yes. Preserve all legacy tables and rows. |
 | `tags.sqlite3` | `~/.local/share/sharpr/` | `file_tags(path, tag)` and `image_quality` (sharpness) | Tags: **no** |
 | GSettings `io.github.hebbihebb.Sharpr` | dconf | libraries, disabled folders, and preferences | No |
 | `~/.config/sharpr/settings.json` | config dir | legacy file; current code does not read it | n/a |

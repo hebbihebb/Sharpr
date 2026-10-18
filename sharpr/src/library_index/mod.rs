@@ -62,8 +62,6 @@ pub struct IndexedImage {
 pub struct LibraryIndex {
     pool: Pool<SqliteConnectionManager>,
     dimensions: std::sync::Mutex<crate::model::browse::DimensionCache>,
-    /// Duplicate groups with a fingerprint of the hash list they came from.
-    duplicate_groups: std::sync::Mutex<Option<(u64, Vec<Vec<PathBuf>>)>>,
 }
 
 fn sort_indexed_aspects(
@@ -138,7 +136,6 @@ impl LibraryIndex {
             Self {
                 pool,
                 dimensions: Default::default(),
-                duplicate_groups: Default::default(),
             },
             interrupted_count,
         ))
@@ -475,27 +472,6 @@ impl LibraryIndex {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub fn update_image_phash(&self, path: &Path, hash: u64) -> rusqlite::Result<()> {
-        self.update_image_phashes(&[(path.to_path_buf(), hash)])
-    }
-
-    /// Stores perceptual hashes in one transaction. Writing them one by one
-    /// flooded the shared worker pool and delayed folder opens.
-    pub fn update_image_phashes(&self, hashes: &[(PathBuf, u64)]) -> rusqlite::Result<()> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
-        {
-            let mut stmt = tx.prepare(
-                "UPDATE images SET phash = ?2, phash_status = 'ready', error = NULL WHERE path = ?1",
-            )?;
-            for (path, hash) in hashes {
-                stmt.execute(params![path_to_string(path), *hash as i64])?;
-            }
-        }
-        tx.commit()
-    }
-
     pub fn mark_image_error(&self, path: &Path, error: &str) -> rusqlite::Result<()> {
         let conn = self.conn()?;
         conn.execute(
@@ -599,51 +575,6 @@ impl LibraryIndex {
         )?;
         let rows = stmt.query_map(params![class.label()], |row| row.get::<_, String>(0))?;
         Ok(rows.filter_map(Result::ok).map(PathBuf::from).collect())
-    }
-
-    pub fn images_with_phash(&self) -> rusqlite::Result<Vec<(PathBuf, u64)>> {
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "
-            SELECT images.path, images.phash
-            FROM images
-            LEFT JOIN folders ON folders.path = images.folder_path
-            WHERE images.phash_status = 'ready'
-              AND images.phash IS NOT NULL
-              AND COALESCE(folders.ignored, 0) = 0
-            ORDER BY images.path COLLATE NOCASE
-            ",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                PathBuf::from(row.get::<_, String>(0)?),
-                row.get::<_, i64>(1)? as u64,
-            ))
-        })?;
-        Ok(rows.filter_map(Result::ok).collect())
-    }
-
-    /// Duplicate groups over all stored hashes. Grouping compares every pair,
-    /// so the result is reused until the hash list itself changes; the viewer
-    /// asks on every image change.
-    pub fn duplicate_groups(&self) -> rusqlite::Result<Vec<Vec<PathBuf>>> {
-        use std::hash::{Hash, Hasher};
-        let hashes = self.images_with_phash()?;
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        hashes.hash(&mut hasher);
-        let fingerprint = hasher.finish();
-        if let Ok(cache) = self.duplicate_groups.lock() {
-            if let Some((cached, groups)) = cache.as_ref() {
-                if *cached == fingerprint {
-                    return Ok(groups.clone());
-                }
-            }
-        }
-        let groups = crate::duplicates::phash::group_duplicates(&hashes);
-        if let Ok(mut cache) = self.duplicate_groups.lock() {
-            *cache = Some((fingerprint, groups.clone()));
-        }
-        Ok(groups)
     }
 
     pub fn all_indexed_paths(&self) -> rusqlite::Result<Vec<PathBuf>> {
@@ -1319,7 +1250,6 @@ impl LibraryIndex {
         Ok(Self {
             pool,
             dimensions: Default::default(),
-            duplicate_groups: Default::default(),
         })
     }
 
@@ -1336,7 +1266,6 @@ impl LibraryIndex {
         Ok(Self {
             pool,
             dimensions: Default::default(),
-            duplicate_groups: Default::default(),
         })
     }
 }
@@ -1378,13 +1307,11 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_file_preserves_metadata_and_phash_status() {
+    fn unchanged_file_preserves_metadata_status() {
         let idx = LibraryIndex::open_in_memory().unwrap();
         let info = make_info("/photos", "a.jpg", 1000, Some(100));
         idx.upsert_image_basic(&info).unwrap();
         idx.update_image_metadata(Path::new("/photos/a.jpg"), 1920, 1080, QualityClass::Fair)
-            .unwrap();
-        idx.update_image_phash(Path::new("/photos/a.jpg"), 0xdeadbeef)
             .unwrap();
 
         // Upsert same file again — size and mtime unchanged.
@@ -1398,13 +1325,11 @@ mod tests {
     }
 
     #[test]
-    fn changed_file_invalidates_metadata_and_phash() {
+    fn changed_file_invalidates_metadata() {
         let idx = LibraryIndex::open_in_memory().unwrap();
         let info = make_info("/photos", "a.jpg", 1000, Some(100));
         idx.upsert_image_basic(&info).unwrap();
         idx.update_image_metadata(Path::new("/photos/a.jpg"), 1920, 1080, QualityClass::Fair)
-            .unwrap();
-        idx.update_image_phash(Path::new("/photos/a.jpg"), 0xdeadbeef)
             .unwrap();
 
         // Upsert with different size — file changed.
@@ -1568,72 +1493,6 @@ mod tests {
 
         assert!(!idx.is_folder_ignored(Path::new("/library")).unwrap());
         assert!(!idx.is_folder_ignored(Path::new("/library/child")).unwrap());
-    }
-
-    #[test]
-    fn duplicate_groups_follow_hash_changes() {
-        let idx = LibraryIndex::open_in_memory().unwrap();
-        for name in ["a.jpg", "b.jpg", "c.jpg"] {
-            idx.upsert_image_basic(&make_info("/photos", name, 100, None))
-                .unwrap();
-        }
-        idx.update_image_phashes(&[
-            (PathBuf::from("/photos/a.jpg"), 0xF0F0),
-            (PathBuf::from("/photos/b.jpg"), 0xF0F0),
-            (PathBuf::from("/photos/c.jpg"), 0xFFFF_0000_FFFF_0000),
-        ])
-        .unwrap();
-        let first = idx.duplicate_groups().unwrap();
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].len(), 2);
-        assert_eq!(
-            idx.duplicate_groups().unwrap(),
-            first,
-            "cached result reused"
-        );
-
-        idx.update_image_phash(Path::new("/photos/c.jpg"), 0xF0F0)
-            .unwrap();
-        let after = idx.duplicate_groups().unwrap();
-        assert_eq!(after.len(), 1);
-        assert_eq!(after[0].len(), 3, "a changed hash regroups");
-    }
-
-    #[test]
-    fn phashes_are_stored_in_one_batch() {
-        let idx = LibraryIndex::open_in_memory().unwrap();
-        for name in ["a.jpg", "b.jpg"] {
-            idx.upsert_image_basic(&make_info("/photos", name, 100, None))
-                .unwrap();
-        }
-        idx.update_image_phashes(&[
-            (PathBuf::from("/photos/a.jpg"), 1),
-            (PathBuf::from("/photos/b.jpg"), 2),
-            (PathBuf::from("/photos/not-indexed.jpg"), 3),
-        ])
-        .unwrap();
-        let mut hashes = idx.images_with_phash().unwrap();
-        hashes.sort();
-        assert_eq!(
-            hashes,
-            vec![
-                (PathBuf::from("/photos/a.jpg"), 1),
-                (PathBuf::from("/photos/b.jpg"), 2)
-            ]
-        );
-    }
-
-    #[test]
-    fn update_image_phash_persists_and_is_queryable() {
-        let idx = LibraryIndex::open_in_memory().unwrap();
-        idx.upsert_image_basic(&make_info("/photos", "a.jpg", 100, None))
-            .unwrap();
-        idx.update_image_phash(Path::new("/photos/a.jpg"), 0xabcd1234)
-            .unwrap();
-        let hashes = idx.images_with_phash().unwrap();
-        assert_eq!(hashes.len(), 1);
-        assert_eq!(hashes[0].0, PathBuf::from("/photos/a.jpg"));
-        assert_eq!(hashes[0].1, 0xabcd1234u64);
     }
 
     #[test]

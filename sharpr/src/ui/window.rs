@@ -91,33 +91,6 @@ fn remove_path_from_action_selection(state: &mut AppState, path: &Path) {
         .retain(|selected| state.library.entry_for_path(selected).is_some());
 }
 
-/// Saves perceptual hashes on one background thread, a batch per
-/// transaction. One pool job per hash used to flood the shared rayon pool
-/// and make folder opens wait behind thousands of single-row writes.
-fn spawn_phash_writer(index: Arc<LibraryIndex>) -> async_channel::Sender<(PathBuf, u64)> {
-    let (tx, rx) = async_channel::unbounded::<(PathBuf, u64)>();
-    let _ = std::thread::Builder::new()
-        .name("phash-writer".into())
-        .spawn(move || {
-            while let Ok(first) = rx.recv_blocking() {
-                let mut batch = vec![first];
-                while batch.len() < 512 {
-                    match rx.try_recv() {
-                        Ok(next) => batch.push(next),
-                        Err(_) => break,
-                    }
-                }
-                if let Err(err) = index.update_image_phashes(&batch) {
-                    crate::bench_warn!(
-                        "hash.index_persist_fail",
-                        serde_json::json!({"count": batch.len(), "error": err.to_string()})
-                    );
-                }
-            }
-        });
-    tx
-}
-
 /// Look prototype: Sort, then the filters, in one menu. A filter here adds
 /// the same chip as typing it (option A), so what is active always shows.
 fn sort_and_filter_menu(sort: &gio::MenuModel) -> gio::Menu {
@@ -443,7 +416,7 @@ pub(super) fn load_virtual_async(state: &Rc<RefCell<AppState>>, paths: &[PathBuf
 
 mod imp {
     use super::*;
-    use crate::thumbnails::worker::{HashResult, SharpnessResult, ThumbnailWorkerResponse};
+    use crate::thumbnails::worker::{SharpnessResult, ThumbnailWorkerResponse};
     use async_channel::Receiver;
 
     pub struct SharprWindow {
@@ -453,7 +426,6 @@ mod imp {
         pub metadata_worker: RefCell<Option<crate::image_pipeline::worker::MetadataWorker>>,
         // Cloned receiver so the async task can hold it.
         pub result_rx: RefCell<Option<Receiver<ThumbnailWorkerResponse>>>,
-        pub hash_result_rx: RefCell<Option<Receiver<HashResult>>>,
         pub sharpness_result_rx: RefCell<Option<Receiver<SharpnessResult>>>,
         pub global_thumbnail_op: RefCell<Option<crate::ops::queue::OpHandle>>,
         pub toast_overlay: RefCell<Option<libadwaita::ToastOverlay>>,
@@ -534,7 +506,6 @@ mod imp {
                 thumbnail_worker: RefCell::new(None),
                 metadata_worker: RefCell::new(None),
                 result_rx: RefCell::new(None),
-                hash_result_rx: RefCell::new(None),
                 sharpness_result_rx: RefCell::new(None),
                 global_thumbnail_op: RefCell::new(None),
                 toast_overlay: RefCell::new(None),
@@ -1048,12 +1019,11 @@ impl SharprWindow {
         // Double the thread count for I/O bound thumbnail loading, cap at 16.
         let thread_count = (cpu_count * 2).clamp(4, 16);
         let tags = self.imp().state.borrow().tags.clone();
-        let (worker, result_rx, hash_result_rx, sharpness_result_rx) =
+        let (worker, result_rx, sharpness_result_rx) =
             ThumbnailWorker::spawn(thread_count, tags.clone());
 
         *self.imp().thumbnail_worker.borrow_mut() = Some(worker);
         *self.imp().result_rx.borrow_mut() = Some(result_rx);
-        *self.imp().hash_result_rx.borrow_mut() = Some(hash_result_rx);
         *self.imp().sharpness_result_rx.borrow_mut() = Some(sharpness_result_rx);
 
         let (metadata_worker, metadata_result_rx) =
@@ -2331,7 +2301,6 @@ impl SharprWindow {
 
         // Start draining thumbnail results.
         self.start_thumbnail_poll(state.clone(), filmstrip.clone());
-        self.start_hash_poll(state.clone());
         self.start_sharpness_poll(state.clone(), viewer.clone());
 
         // -----------------------------------------------------------------------
@@ -3749,40 +3718,6 @@ impl SharprWindow {
             if let Some(window) = window_weak.upgrade() {
                 if let Some(op) = window.imp().global_thumbnail_op.borrow_mut().take() {
                     op.complete();
-                }
-            }
-        });
-    }
-
-    fn start_hash_poll(&self, state: Rc<RefCell<AppState>>) {
-        let hash_rx = self.imp().hash_result_rx.borrow().clone();
-        let Some(rx) = hash_rx else { return };
-        let persist = state.borrow().library_index.clone().map(spawn_phash_writer);
-
-        glib::MainContext::default().spawn_local(async move {
-            while let Ok(result) = rx.recv().await {
-                let path = result.path.clone();
-                let hash = result.hash;
-                if path_is_disabled(&path, &state.borrow().disabled_folders) {
-                    crate::bench_event!(
-                        "hash.apply_skipped",
-                        serde_json::json!({
-                            "path": path.display().to_string(),
-                            "reason": "disabled_folder",
-                        }),
-                    );
-                    continue;
-                }
-                state.borrow_mut().library.insert_hash(result.path, hash);
-                crate::bench_event!(
-                    "hash.apply",
-                    serde_json::json!({
-                        "path": path.display().to_string(),
-                    }),
-                );
-                // Persist phash to the index so duplicate detection is cross-session.
-                if let Some(persist) = persist.as_ref() {
-                    let _ = persist.try_send((path, hash));
                 }
             }
         });

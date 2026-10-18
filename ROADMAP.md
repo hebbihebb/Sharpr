@@ -790,7 +790,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 13 | ~~Re-link a bucket member moved outside Sharpr~~ **Done October 18, 2026**, accepted by the user (build `7ba1e3b`) | Opus medium |
 | 14 | ~~Guard or retire the startup legacy-bucket migration~~ **Done October 18, 2026**: retired at the user's choice, accepted by the user ("buckets work", build `7e1e410`) | Sonnet high (done by Opus) |
 | 27 | ~~Missing bucket members leave their buckets with one toast (D42)~~ **Done October 18, 2026**, accepted by the user (build `bf351ab`); members whose files are in a trash stay | Opus medium |
-| 15 | Stop computing perceptual hashes in the thumbnail workers | Sonnet medium |
+| 15 | ~~Stop computing perceptual hashes in the thumbnail workers~~ **Implemented October 18, 2026** on `feature/roadmap-batch`, awaiting acceptance | Sonnet medium (done by Opus) |
 | 16 | Use one sort implementation | Codex (Sol medium) |
 | 17 | Merge the two thumbnail worker loops | Sonnet high |
 | 18 | Library Overview refresh, errors, and unsupported count | Codex (Sol medium) |

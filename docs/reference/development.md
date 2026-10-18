@@ -46,7 +46,6 @@ Most tests live in `#[cfg(test)]` modules next to the code. The main ones cover:
 - `tags/db`
 - `export`
 - `thumbnails/worker`
-- `duplicates/phash`
 - `model/library`
 - `model/browse`
 

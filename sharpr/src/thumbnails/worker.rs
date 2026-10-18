@@ -26,7 +26,6 @@ pub struct SharpnessResult {
 /// decode work — stale requests (different generation) are skipped immediately.
 pub enum WorkerRequest {
     Thumbnail { path: PathBuf, gen: u64 },
-    Hash { path: PathBuf, gen: u64 },
     Shutdown,
 }
 
@@ -84,12 +83,6 @@ pub(crate) fn visible_requests(
     (requests, outgoing)
 }
 
-/// Message sent back from a worker thread after computing a perceptual hash.
-pub struct HashResult {
-    pub path: PathBuf,
-    pub hash: u64,
-}
-
 /// Manages two pools of background threads: a high-priority visible pool and a
 /// low-priority preload pool. Both share the same result receivers.
 ///
@@ -117,14 +110,13 @@ const THUMB_HEIGHT: u32 = 160;
 impl ThumbnailWorker {
     /// Spawn background workers split into a visible pool (`thread_count - 1`
     /// threads) and a preload pool (1 thread).
-    /// Returns the worker handle and the receivers for thumbnail, hash, and sharpness results.
+    /// Returns the worker handle and the receivers for thumbnail and sharpness results.
     pub fn spawn(
         thread_count: usize,
         db: Option<Arc<crate::tags::TagDatabase>>,
     ) -> (
         Self,
         Receiver<ThumbnailWorkerResponse>,
-        Receiver<HashResult>,
         Receiver<SharpnessResult>,
     ) {
         Self::spawn_with_queue_capacity(thread_count, db, 4096)
@@ -137,7 +129,6 @@ impl ThumbnailWorker {
     ) -> (
         Self,
         Receiver<ThumbnailWorkerResponse>,
-        Receiver<HashResult>,
         Receiver<SharpnessResult>,
     ) {
         let (visible_workers, preload_workers) = split_thumbnail_workers(thread_count);
@@ -145,7 +136,6 @@ impl ThumbnailWorker {
         let (visible_tx, visible_rx) = async_channel::bounded::<WorkerRequest>(queue_capacity);
         let (preload_tx, preload_rx) = async_channel::bounded::<WorkerRequest>(queue_capacity);
         let (result_tx, result_rx) = async_channel::unbounded::<ThumbnailWorkerResponse>();
-        let (hash_result_tx, hash_result_rx) = async_channel::unbounded::<HashResult>();
         let (sharpness_tx, sharpness_rx) = async_channel::unbounded::<SharpnessResult>();
         let generation = Arc::new(AtomicU64::new(0));
         let pending_paths = Arc::new(Mutex::new(HashSet::new()));
@@ -153,9 +143,7 @@ impl ThumbnailWorker {
         // Visible workers — service in-viewport tile requests at normal priority.
         for _ in 0..visible_workers {
             let request_rx = visible_rx.clone();
-            let request_tx = visible_tx.clone();
             let result_tx = result_tx.clone();
-            let hash_result_tx = hash_result_tx.clone();
             let sharpness_tx = sharpness_tx.clone();
             let db = db.clone();
             let gen_arc = generation.clone();
@@ -171,13 +159,7 @@ impl ThumbnailWorker {
                                 let drained = match pending_paths.lock() {
                                     Ok(mut pending) => {
                                         pending.remove(&path);
-                                        drain_stale(
-                                            &request_rx,
-                                            &request_tx,
-                                            &gen_arc,
-                                            &mut pending,
-                                            "visible",
-                                        )
+                                        drain_stale(&request_rx, &gen_arc, &mut pending)
                                     }
                                     Err(_) => Drained::Empty,
                                 };
@@ -247,39 +229,8 @@ impl ThumbnailWorker {
                                 report_failure(&result_tx, &gen_arc, &path, gen, "visible");
                             }
 
-                            // Chain hashing to the same pool, even when the thumbnail was cached.
-                            queue_hash(&request_tx, &path, gen, "visible");
-
                             if let Ok(mut pending) = pending_paths.lock() {
                                 pending.remove(&path);
-                            }
-                        }
-                        Ok(WorkerRequest::Hash { path, gen }) => {
-                            if gen != gen_arc.load(Ordering::Relaxed) {
-                                continue;
-                            }
-                            let started = Instant::now();
-                            if let Some(hash) = compute_hash(&path) {
-                                crate::bench_event!(
-                                    "hash.finish",
-                                    serde_json::json!({
-                                        "path": path.display().to_string(),
-                                        "pool": "visible",
-                                        "gen": gen,
-                                        "duration_ms": crate::bench::duration_ms(started),
-                                    }),
-                                );
-                                let _ = hash_result_tx.send_blocking(HashResult { path, hash });
-                            } else {
-                                crate::bench_event!(
-                                    "hash.fail",
-                                    serde_json::json!({
-                                        "path": path.display().to_string(),
-                                        "pool": "visible",
-                                        "gen": gen,
-                                        "duration_ms": crate::bench::duration_ms(started),
-                                    }),
-                                );
                             }
                         }
                         Ok(WorkerRequest::Shutdown) | Err(_) => break,
@@ -291,9 +242,7 @@ impl ThumbnailWorker {
         // Preload workers — generate off-screen thumbnails at background priority.
         for _ in 0..preload_workers {
             let request_rx = preload_rx.clone();
-            let request_tx = preload_tx.clone();
             let result_tx = result_tx.clone();
-            let hash_result_tx = hash_result_tx.clone();
             let sharpness_tx = sharpness_tx.clone();
             let db = db.clone();
             let gen_arc = generation.clone();
@@ -306,13 +255,7 @@ impl ThumbnailWorker {
                             let drained = match pending_paths.lock() {
                                 Ok(mut pending) => {
                                     pending.remove(&path);
-                                    drain_stale(
-                                        &request_rx,
-                                        &request_tx,
-                                        &gen_arc,
-                                        &mut pending,
-                                        "preload",
-                                    )
+                                    drain_stale(&request_rx, &gen_arc, &mut pending)
                                 }
                                 Err(_) => Drained::Empty,
                             };
@@ -380,39 +323,8 @@ impl ThumbnailWorker {
                             report_failure(&result_tx, &gen_arc, &path, gen, "preload");
                         }
 
-                        // Hashing is low priority, so we chain it here.
-                        queue_hash(&request_tx, &path, gen, "preload");
-
                         if let Ok(mut pending) = pending_paths.lock() {
                             pending.remove(&path);
-                        }
-                    }
-                    Ok(WorkerRequest::Hash { path, gen }) => {
-                        if gen != gen_arc.load(Ordering::Relaxed) {
-                            continue;
-                        }
-                        let started = Instant::now();
-                        if let Some(hash) = compute_hash(&path) {
-                            crate::bench_event!(
-                                "hash.finish",
-                                serde_json::json!({
-                                    "path": path.display().to_string(),
-                                    "pool": "preload",
-                                    "gen": gen,
-                                    "duration_ms": crate::bench::duration_ms(started),
-                                }),
-                            );
-                            let _ = hash_result_tx.send_blocking(HashResult { path, hash });
-                        } else {
-                            crate::bench_event!(
-                                "hash.fail",
-                                serde_json::json!({
-                                    "path": path.display().to_string(),
-                                    "pool": "preload",
-                                    "gen": gen,
-                                    "duration_ms": crate::bench::duration_ms(started),
-                                }),
-                            );
                         }
                     }
                     Ok(WorkerRequest::Shutdown) | Err(_) => break,
@@ -431,7 +343,6 @@ impl ThumbnailWorker {
                 sharpness_tx,
             },
             result_rx,
-            hash_result_rx,
             sharpness_rx,
         )
     }
@@ -493,23 +404,6 @@ fn split_thumbnail_workers(thread_count: usize) -> (usize, usize) {
     (visible_workers, preload_workers)
 }
 
-/// Queues a follow-up hash without ever blocking. A worker that blocked on
-/// its own full queue would stop the whole pool, because no worker would be
-/// left to drain it. When the queue is full the hash is skipped; it is
-/// requested again the next time the image's thumbnail is requested.
-fn queue_hash(request_tx: &Sender<WorkerRequest>, path: &Path, gen: u64, pool: &str) {
-    let request = WorkerRequest::Hash {
-        path: path.to_path_buf(),
-        gen,
-    };
-    if let Err(async_channel::TrySendError::Full(_)) = request_tx.try_send(request) {
-        crate::bench_warn!(
-            "hash.skipped_queue_full",
-            serde_json::json!({"path": path.display().to_string(), "pool": pool}),
-        );
-    }
-}
-
 /// Reports a decode failure unless the request's generation has been retired
 /// since it was queued; a failure from an old view must not mark a new one.
 fn report_failure(
@@ -547,17 +441,13 @@ enum Drained {
 }
 
 /// Drops queued stale thumbnail requests until a current one turns up.
-/// Current hash requests taken off the queue on the way are queued again
-/// afterwards, and a shutdown request is honoured rather than lost.
+/// A shutdown request is honoured rather than lost.
 fn drain_stale(
     request_rx: &Receiver<WorkerRequest>,
-    request_tx: &Sender<WorkerRequest>,
     generation: &AtomicU64,
     pending: &mut HashSet<PathBuf>,
-    pool: &str,
 ) -> Drained {
-    let mut hashes = Vec::new();
-    let drained = loop {
+    loop {
         match request_rx.try_recv() {
             Ok(WorkerRequest::Thumbnail { path, gen }) => {
                 if gen == generation.load(Ordering::Relaxed) {
@@ -565,19 +455,10 @@ fn drain_stale(
                 }
                 pending.remove(&path);
             }
-            Ok(WorkerRequest::Hash { path, gen }) => {
-                if gen == generation.load(Ordering::Relaxed) {
-                    hashes.push((path, gen));
-                }
-            }
             Ok(WorkerRequest::Shutdown) => break Drained::Shutdown,
             Err(_) => break Drained::Empty,
         }
-    };
-    for (path, gen) in hashes {
-        queue_hash(request_tx, &path, gen, pool);
     }
-    drained
 }
 
 impl Drop for ThumbnailWorker {
@@ -915,7 +796,7 @@ fn thumbnail_cache_path(source_path: &Path) -> Option<PathBuf> {
 }
 
 /// Load cached thumbnail pixels from the Sharpr disk cache or system GNOME cache.
-/// Used by hash and sharpness work that can reuse existing thumbnail pixels.
+/// Used by Find Copies, which can reuse existing thumbnail pixels.
 pub(crate) fn load_cached_rgba(path: &Path) -> Option<(Vec<u8>, u32, u32)> {
     load_cached_thumbnail(path)
         .or_else(|| load_system_thumbnail(path))
@@ -943,22 +824,6 @@ fn maybe_score_sharpness(
     })
 }
 
-fn compute_hash(path: &Path) -> Option<u64> {
-    if let Some((bytes, w, h)) = load_cached_rgba(path) {
-        if let Some(rgba) = image::RgbaImage::from_raw(w, h, bytes) {
-            let img = image::DynamicImage::ImageRgba8(rgba);
-            return Some(crate::duplicates::phash::dhash(&img));
-        }
-    }
-
-    let file = std::fs::File::open(path).ok()?;
-    let reader = image::ImageReader::new(std::io::BufReader::new(file))
-        .with_guessed_format()
-        .ok()?;
-    let img = reader.decode().ok()?;
-    Some(crate::duplicates::phash::dhash(&img))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -968,7 +833,7 @@ mod tests {
         // spawn() creates background threads that block waiting for requests.
         // We never send any requests, so they never touch GTK.
         // Drop sends Shutdown to all threads, so cleanup is automatic.
-        let (worker, _result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let (worker, _result_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
         worker
     }
 
@@ -1021,7 +886,7 @@ mod tests {
         // Send a thumbnail request with an old generation. The worker must skip
         // it without producing a result. We can verify no result arrives within
         // a short timeout because the decode path is bypassed before any file I/O.
-        let (worker, result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let (worker, result_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
         let current_gen = worker.current_generation();
 
         // Bump so any request carrying current_gen is now stale.
@@ -1054,7 +919,7 @@ mod tests {
             .unwrap()
             .success());
 
-        let (worker, result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let (worker, result_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
         let gen = worker.current_generation();
         worker
             .visible_sender()
@@ -1118,7 +983,7 @@ mod tests {
 
     #[test]
     fn multiple_stale_requests_are_silently_dropped_by_worker() {
-        let (worker, result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let (worker, result_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
         let stale_gen = worker.current_generation();
         worker.bump_generation();
 
@@ -1140,7 +1005,7 @@ mod tests {
 
     #[test]
     fn fresh_request_after_stale_burst_is_the_only_result() {
-        let (worker, result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let (worker, result_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
         let stale_gen = worker.current_generation();
         let current_gen = worker.bump_generation();
 
@@ -1179,10 +1044,9 @@ mod tests {
 
     #[test]
     fn overfilled_queue_never_stalls_workers_or_leaves_paths_pending() {
-        // Each finished thumbnail queues a hash on the same small queue. With
-        // a blocking send every worker eventually waited on a full queue that
-        // no worker was left to drain.
-        let (worker, result_rx, _hash_rx, _sharp_rx) =
+        // A flood through a tiny queue: every request still gets a result
+        // and leaves the pending set.
+        let (worker, result_rx, _sharp_rx) =
             ThumbnailWorker::spawn_with_queue_capacity(2, None, 2);
         let gen = worker.current_generation();
         let tx = worker.visible_sender();
@@ -1217,22 +1081,13 @@ mod tests {
     }
 
     #[test]
-    fn draining_stale_requests_keeps_current_hashes_and_honours_shutdown() {
+    fn draining_stale_requests_honours_shutdown() {
         let (tx, rx) = async_channel::bounded::<WorkerRequest>(8);
         let generation = AtomicU64::new(2);
-        let current_hash = PathBuf::from("/x/current-hash.jpg");
         for request in [
             WorkerRequest::Thumbnail {
                 path: PathBuf::from("/x/stale.jpg"),
                 gen: 1,
-            },
-            WorkerRequest::Hash {
-                path: PathBuf::from("/x/stale-hash.jpg"),
-                gen: 1,
-            },
-            WorkerRequest::Hash {
-                path: current_hash.clone(),
-                gen: 2,
             },
             WorkerRequest::Shutdown,
         ] {
@@ -1240,17 +1095,10 @@ mod tests {
         }
         let mut pending = HashSet::from([PathBuf::from("/x/stale.jpg")]);
 
-        let drained = drain_stale(&rx, &tx, &generation, &mut pending, "test");
+        let drained = drain_stale(&rx, &generation, &mut pending);
 
         assert!(matches!(drained, Drained::Shutdown));
         assert!(pending.is_empty(), "stale paths leave the pending set");
-        match rx.try_recv() {
-            Ok(WorkerRequest::Hash { path, gen }) => {
-                assert_eq!((path, gen), (current_hash, 2));
-            }
-            _ => panic!("the current hash request must be queued again"),
-        }
-        assert!(rx.try_recv().is_err(), "stale hash requests are dropped");
     }
 
     #[test]
@@ -1261,7 +1109,7 @@ mod tests {
             return;
         }
 
-        let (worker, result_rx, _hash_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
+        let (worker, result_rx, _sharp_rx) = ThumbnailWorker::spawn(2, None);
         let gen = worker.current_generation();
         worker
             .visible_sender()
