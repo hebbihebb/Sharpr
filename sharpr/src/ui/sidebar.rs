@@ -79,6 +79,12 @@ mod imp {
         /// Folders listed since the last refresh, so only new ones start collapsed.
         pub(super) known_folder_paths: RefCell<HashSet<PathBuf>>,
         pub(super) folder_scan_canceled: RefCell<Option<Arc<AtomicBool>>>,
+        /// A scan (the first, or a rescan) is walking the roots.
+        pub(super) scan_running: Cell<bool>,
+        /// Something changed on disk while a scan ran; scan again when it ends.
+        pub(super) rescan_wanted: Cell<bool>,
+        /// Runs after a scan has listed the folders (the first or a rescan).
+        pub(super) folders_scanned_cb: RefCell<Option<Box<dyn Fn()>>>,
         /// The library's roots, first first, as of the last scan (D41).
         pub(super) library_roots: RefCell<Vec<PathBuf>>,
         pub ignored_folders: RefCell<Vec<PathBuf>>,
@@ -115,6 +121,9 @@ mod imp {
                 folder_tree: RefCell::new(Vec::new()),
                 known_folder_paths: RefCell::new(HashSet::new()),
                 folder_scan_canceled: RefCell::new(None),
+                scan_running: Cell::new(false),
+                rescan_wanted: Cell::new(false),
+                folders_scanned_cb: RefCell::new(None),
                 ignored_folders: RefCell::new(Vec::new()),
                 collapsed_collection_ids: RefCell::new(HashSet::new()),
                 collections: RefCell::new(Vec::new()),
@@ -303,6 +312,7 @@ impl SidebarPane {
         {
             previous.store(true, Ordering::Relaxed);
         }
+        self.imp().scan_running.set(true);
         let (tx, rx) = async_channel::unbounded::<Vec<PathBuf>>();
         let active_library = state.borrow().settings.active_library().cloned();
         let roots = active_library
@@ -376,7 +386,100 @@ impl SidebarPane {
                     widget.emit_folder_selected(path);
                 }
             }
+            widget.scan_finished(state);
         });
+    }
+
+    /// Lists the folders again after something changed on disk, keeping the
+    /// selection and scroll position: the roots are walked on a worker and the
+    /// list is updated once, with rows added in place. A scan that is already
+    /// running is asked to go round again when it ends.
+    pub fn rescan_folders(&self, state: Rc<RefCell<AppState>>) {
+        let imp = self.imp();
+        if imp.scan_running.get() {
+            imp.rescan_wanted.set(true);
+            return;
+        }
+        let roots = imp.library_roots.borrow().clone();
+        let Some(library) = state.borrow().settings.active_library().cloned() else {
+            return;
+        };
+        if roots.is_empty() {
+            return;
+        }
+        imp.scan_running.set(true);
+        let generation = imp.folder_generation.get();
+        let canceled = Arc::new(AtomicBool::new(false));
+        if let Some(previous) = imp.folder_scan_canceled.replace(Some(canceled.clone())) {
+            previous.store(true, Ordering::Relaxed);
+        }
+        let (tx, rx) = async_channel::bounded::<Vec<PathBuf>>(1);
+        let walked = roots.clone();
+        std::thread::spawn(move || {
+            let mut found = Vec::new();
+            for root in &walked {
+                scan_image_folders(
+                    root,
+                    &library.ignored_folders,
+                    &|| canceled.load(Ordering::Relaxed) || tx.is_closed(),
+                    &mut |path| found.push(path.to_path_buf()),
+                );
+            }
+            if !canceled.load(Ordering::Relaxed) {
+                let _ = tx.send_blocking(found);
+            }
+        });
+        let widget_weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let found = rx.recv().await.ok();
+            let Some(widget) = widget_weak.upgrade() else {
+                return;
+            };
+            // A new first scan (another root, say) owns the list now.
+            if widget.imp().folder_generation.get() != generation {
+                return;
+            }
+            if let Some(found) = found {
+                let found: HashSet<PathBuf> = found.into_iter().collect();
+                let tree: Vec<FolderNode> = roots
+                    .iter()
+                    .flat_map(|root| folder_tree_from(root, &found))
+                    .collect();
+                let ignored_folders = state.borrow().disabled_folders.clone();
+                widget.set_folder_tree(&tree, &ignored_folders);
+                if let crate::ui::state::ViewScope::Folder(path) = state.borrow().scope.clone() {
+                    widget.select_folder(&path);
+                }
+            }
+            widget.scan_finished(state);
+        });
+    }
+
+    fn scan_finished(&self, state: Rc<RefCell<AppState>>) {
+        self.imp().scan_running.set(false);
+        if let Some(callback) = self.imp().folders_scanned_cb.borrow().as_ref() {
+            callback();
+        }
+        if self.imp().rescan_wanted.replace(false) {
+            self.rescan_folders(state);
+        }
+    }
+
+    pub fn connect_folders_scanned<F: Fn() + 'static>(&self, f: F) {
+        *self.imp().folders_scanned_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// The library roots and the folders listed under them, none of them
+    /// disabled: where a change on disk can add a folder or an image.
+    pub fn watchable_folders(&self) -> Vec<PathBuf> {
+        let ignored = self.imp().ignored_folders.borrow();
+        let mut folders = self.imp().library_roots.borrow().clone();
+        for entry in self.imp().folder_entries.borrow().iter() {
+            if !row_is_ignored(&entry.path, &ignored) && !folders.contains(&entry.path) {
+                folders.push(entry.path.clone());
+            }
+        }
+        folders
     }
 
     /// Shows `entries`. With `grow_in_place`, rows that were only added since

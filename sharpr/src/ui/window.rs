@@ -36,6 +36,7 @@ mod file_jobs_controller;
 mod library_root;
 pub(crate) mod mode_header;
 mod rename_sheet;
+mod root_watch;
 mod survey_controller;
 /// Gets Compare's survivors when someone else opened it (Find Copies).
 type CompareDone = Box<dyn FnOnce(Vec<PathBuf>)>;
@@ -489,6 +490,8 @@ mod imp {
         pub(crate) survey_page: RefCell<Option<Rc<crate::ui::survey::SurveyPage>>>,
         pub content_stack: RefCell<Option<gtk4::Stack>>,
         pub open_folder_cb: RefCell<Option<OpenFolderCallback>>,
+        /// File-system monitors and the debounce for changes under the roots.
+        pub(super) root_watch: RefCell<root_watch::RootWatch>,
         pub refresh_sidebar_collections_cb: RefCell<Option<RefreshCollectionsCallback>>,
         /// Background content fingerprinting (ROADMAP Phase 4).
         pub fingerprints: RefCell<Option<Rc<crate::fingerprint::Service>>>,
@@ -564,6 +567,7 @@ mod imp {
                 survey_page: RefCell::new(None),
                 content_stack: RefCell::new(None),
                 open_folder_cb: RefCell::new(None),
+                root_watch: RefCell::default(),
                 refresh_sidebar_collections_cb: RefCell::new(None),
                 fingerprints: RefCell::new(None),
                 visual_index: RefCell::new(None),
@@ -2519,6 +2523,7 @@ impl SharprWindow {
         self.install_compare_shortcut();
         self.setup_bucket_repeat();
         self.setup_library_root();
+        self.setup_root_watch();
         {
             let compare_action = compare_action.clone();
             let weak = self.downgrade();

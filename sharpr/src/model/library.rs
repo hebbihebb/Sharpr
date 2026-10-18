@@ -785,7 +785,7 @@ impl LibraryManager {
         cached
     }
 
-    fn is_image(path: &Path) -> bool {
+    pub(crate) fn is_image(path: &Path) -> bool {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             return false;
         };

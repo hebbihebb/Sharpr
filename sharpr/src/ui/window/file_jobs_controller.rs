@@ -190,7 +190,11 @@ impl SharprWindow {
     /// and the folder is not reloaded. The files are read on a worker, then
     /// added if that folder's load still owns the view. `after` runs on the
     /// GTK thread once they are in, or at once when none can be shown.
-    fn show_new_files(&self, created: Vec<PathBuf>, after: impl FnOnce(&SharprWindow) + 'static) {
+    pub(super) fn show_new_files(
+        &self,
+        created: Vec<PathBuf>,
+        after: impl FnOnce(&SharprWindow) + 'static,
+    ) {
         let target = {
             let st = self.imp().state.borrow();
             let ViewScope::Folder(folder) = &st.scope else {
@@ -498,6 +502,7 @@ impl SharprWindow {
             let moved: Vec<PathBuf> = report.done.iter().map(|(p, _)| p.clone()).collect();
             win.drop_paths_from_view(&moved);
             win.show_new_files(new_paths(&report), |_| {});
+            win.destination_changed();
             win.add_toast(libadwaita::Toast::new(&summary("Moved", &report, total)));
         });
     }
@@ -512,6 +517,7 @@ impl SharprWindow {
         let title = format!("Copying {}…", files_text(total));
         self.queue_file_job(Job::Copy { paths, dest_dir }, title, move |win, report| {
             win.show_new_files(new_paths(&report), |_| {});
+            win.destination_changed();
             win.add_toast(libadwaita::Toast::new(&summary("Copied", &report, total)));
         });
     }

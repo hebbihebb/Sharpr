@@ -5167,3 +5167,190 @@ fn a_second_root_is_listed_below_the_first_and_removing_it_only_forgets_it() {
     assert!(window.remove_library_root(&pictures).is_err());
     window.close();
 }
+
+/// Work Order item 11: a folder or image made outside Sharpr while it runs is
+/// listed, indexed and shown without a restart; hidden folders stay out.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn folders_and_images_made_outside_sharpr_are_noticed() {
+    let root = isolated_fixture("outside-changes");
+    let picture = |path: &Path| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        image::RgbImage::from_pixel(160, 90, image::Rgb([90, 120, 200]))
+            .save(path)
+            .unwrap();
+    };
+    picture(&root.join("a.png"));
+
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Outside changes", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    let sidebar = window.imp().sidebar.borrow().clone().unwrap();
+    let rows = || {
+        find_widgets::<crate::ui::sidebar::FolderRow>(sidebar.upcast_ref())
+            .iter()
+            .map(|row| row.path())
+            .collect::<Vec<_>>()
+    };
+    let state = window.app_state();
+    pump_until(|| {
+        window.is_mapped()
+            && state.borrow().library.image_count() == 1
+            && rows() == vec![root.clone()]
+            && window
+                .imp()
+                .root_watch
+                .borrow()
+                .monitors
+                .contains_key(&root)
+    });
+
+    // A folder with a picture appears beside the open one.
+    picture(&root.join("Fresh/b.png"));
+    std::fs::create_dir_all(root.join(".secret")).unwrap();
+    picture(&root.join(".secret/hidden.png"));
+    pump_until(|| rows() == vec![root.clone(), root.join("Fresh")]);
+
+    // And the index covers it.
+    let index = state.borrow().library_index.clone().unwrap();
+    let fresh = root.join("Fresh/b.png");
+    pump_until(|| {
+        index
+            .cached_fingerprints()
+            .unwrap()
+            .contains_key(fresh.to_str().unwrap())
+    });
+    assert!(!index
+        .cached_fingerprints()
+        .unwrap()
+        .keys()
+        .any(|path| path.contains(".secret")));
+
+    // A burst of pictures in the open folder is added to it, the one being
+    // viewed stays selected, and the thumbnail generation is left alone.
+    let generation = || {
+        window
+            .imp()
+            .thumbnail_worker
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .current_generation()
+    };
+    let selected_path = || state.borrow().library.selected_entry().map(|e| e.path());
+    let (before, viewing) = (generation(), selected_path());
+    assert!(viewing.is_some());
+    for n in 0..30 {
+        picture(&root.join(format!("burst-{n:02}.png")));
+    }
+    pump_until(|| state.borrow().library.image_count() == 31);
+    assert_eq!(selected_path(), viewing, "the image in view stays selected");
+    assert_eq!(
+        generation(),
+        before,
+        "no reload, no new thumbnail generation"
+    );
+    assert_eq!(rows(), vec![root.clone(), root.join("Fresh")]);
+    window.close();
+}
+
+/// Work Order item 11: Move and Copy to a folder the sidebar has never listed
+/// (made in the chooser, with nothing watching it) list the folder and index
+/// the copy.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn a_folder_made_in_the_move_chooser_is_listed_and_indexed() {
+    let root = isolated_fixture("move-chooser-folder");
+    std::fs::create_dir_all(&root).unwrap();
+    let make = |name: &str, width: u32| {
+        let path = root.join(name);
+        image::RgbImage::from_pixel(width, 90, image::Rgb([90, 120, 200]))
+            .save(&path)
+            .unwrap();
+        path
+    };
+    let (a, b) = (make("a.png", 160), make("b.png", 168));
+
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Move chooser", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    let sidebar = window.imp().sidebar.borrow().clone().unwrap();
+    let rows = || {
+        find_widgets::<crate::ui::sidebar::FolderRow>(sidebar.upcast_ref())
+            .iter()
+            .map(|row| row.path())
+            .collect::<Vec<_>>()
+    };
+    let state = window.app_state();
+    pump_until(|| {
+        window.is_mapped()
+            && state.borrow().library.image_count() == 2
+            && rows() == vec![root.clone()]
+            && window
+                .imp()
+                .root_watch
+                .borrow()
+                .monitors
+                .contains_key(&root)
+    });
+
+    // Nothing is watching: only the file job's own report can reveal the folders.
+    window.imp().root_watch.borrow_mut().monitors.clear();
+    let (moved_to, copied_to) = (root.join("Moved"), root.join("Copied"));
+    std::fs::create_dir_all(&moved_to).unwrap();
+    std::fs::create_dir_all(&copied_to).unwrap();
+    let original = std::fs::read(&b).unwrap();
+
+    window.copy_to_folder(vec![b.clone()], copied_to.clone());
+    pump_until(|| rows().contains(&copied_to));
+    let index = state.borrow().library_index.clone().unwrap();
+    let copy = copied_to.join("b.png");
+    pump_until(|| {
+        index
+            .cached_fingerprints()
+            .unwrap()
+            .contains_key(copy.to_str().unwrap())
+    });
+
+    window.move_to_folder(vec![a.clone()], moved_to.clone());
+    pump_until(|| rows().contains(&moved_to));
+    let moved = moved_to.join("a.png");
+    pump_until(|| {
+        index
+            .cached_fingerprints()
+            .unwrap()
+            .contains_key(moved.to_str().unwrap())
+    });
+    assert_eq!(
+        std::fs::read(&b).unwrap(),
+        original,
+        "the source is only read"
+    );
+    window.close();
+}
