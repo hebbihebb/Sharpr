@@ -839,16 +839,18 @@ impl Default for LibraryManager {
 /// Each start (a root, or the open folder) is walked on its own filesystem and
 /// without hidden folders, like the sidebar tree (`model::walk`).
 pub(crate) fn collect_library_image_paths_cancellable(
-    library_root: Option<PathBuf>,
+    library_roots: &[PathBuf],
     folder_mode: FolderMode,
     current_folder: Option<&Path>,
     disabled: &[PathBuf],
     canceled: &dyn Fn() -> bool,
 ) -> Vec<PathBuf> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home"));
-    let roots = library_root
-        .map(|root| vec![root])
-        .unwrap_or_else(|| vec![home.join("Pictures"), home.join("Downloads"), home]);
+    let roots = if library_roots.is_empty() {
+        vec![home.join("Pictures"), home.join("Downloads"), home]
+    } else {
+        library_roots.to_vec()
+    };
     let maximum_depth = if folder_mode == FolderMode::DrillDown {
         usize::MAX
     } else {
@@ -1096,7 +1098,7 @@ mod tests {
         write_bmp(&disabled.join("hidden.bmp"), 16, 9);
         write_bmp(&disabled.join("deep/hidden.bmp"), 16, 9);
         let paths = collect_library_image_paths_cancellable(
-            Some(root.clone()),
+            std::slice::from_ref(&root),
             FolderMode::DrillDown,
             None,
             std::slice::from_ref(&disabled),
@@ -1106,6 +1108,30 @@ mod tests {
         assert!(paths.contains(&enabled.join("new.bmp")));
         assert!(paths.contains(&root.join("root.bmp")));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn whole_library_scan_covers_every_root_and_their_disabled_folders() {
+        let base = temp_path("two-roots");
+        let (pictures, downloads) = (base.join("Pictures"), base.join("Downloads"));
+        std::fs::create_dir_all(pictures.join("art")).unwrap();
+        std::fs::create_dir_all(downloads.join("off")).unwrap();
+        std::fs::create_dir_all(base.join("Elsewhere")).unwrap();
+        write_bmp(&pictures.join("art/a.bmp"), 16, 9);
+        write_bmp(&downloads.join("b.bmp"), 16, 9);
+        write_bmp(&downloads.join("off/c.bmp"), 16, 9);
+        write_bmp(&base.join("Elsewhere/d.bmp"), 16, 9);
+        let paths = collect_library_image_paths_cancellable(
+            &[pictures.clone(), downloads.clone()],
+            FolderMode::DrillDown,
+            None,
+            &[downloads.join("off")],
+            &|| false,
+        );
+        let mut expected = vec![pictures.join("art/a.bmp"), downloads.join("b.bmp")];
+        expected.sort_by(|a, b| path_sort_key(a, b));
+        assert_eq!(paths, expected);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -1119,7 +1145,7 @@ mod tests {
         write_bmp(&hidden.join("cached.bmp"), 16, 9);
         write_bmp(&root.join(".cache/direct.bmp"), 16, 9);
         let paths = collect_library_image_paths_cancellable(
-            Some(root.clone()),
+            std::slice::from_ref(&root),
             FolderMode::DrillDown,
             None,
             &[],
@@ -1129,7 +1155,7 @@ mod tests {
 
         // Choosing a hidden folder on purpose still lists it.
         let paths = collect_library_image_paths_cancellable(
-            Some(root.clone()),
+            std::slice::from_ref(&root),
             FolderMode::DrillDown,
             Some(&root.join(".cache")),
             &[],

@@ -2049,7 +2049,7 @@ impl FilmstripPane {
                 let state = state.borrow();
                 crate::buckets::visible(
                     path,
-                    state.settings.active_library().map(|l| l.root.as_path()),
+                    &state.settings.library_roots(),
                     &state.disabled_folders,
                 )
             })
@@ -2077,7 +2077,7 @@ impl FilmstripPane {
                         let state = state.borrow();
                         crate::buckets::visible(
                             &result.path,
-                            state.settings.active_library().map(|l| l.root.as_path()),
+                            &state.settings.library_roots(),
                             &state.disabled_folders,
                         )
                     });

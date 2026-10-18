@@ -19,21 +19,21 @@ pub fn build_preferences_dialog(
     let library_group = libadwaita::PreferencesGroup::new();
     library_group.set_title("Library");
     let root_row = libadwaita::ActionRow::new();
-    root_row.set_title("Library Root");
-    root_row.set_subtitle(
-        &settings
-            .active_library()
-            .map(|library| library.root.display().to_string())
-            .unwrap_or_default(),
-    );
+    show_roots(&root_row, &settings.library_roots());
     let choose = gtk4::Button::with_label("Choose…");
     choose.set_valign(gtk4::Align::Center);
+    choose.set_tooltip_text(Some("Change the first library root"));
     choose.set_action_name(Some("win.choose-library-root"));
     root_row.add_suffix(&choose);
     root_row.set_activatable_widget(Some(&choose));
+    let add = gtk4::Button::with_label("Add…");
+    add.set_valign(gtk4::Align::Center);
+    add.set_tooltip_text(Some("Add another library root"));
+    add.set_action_name(Some("win.add-library-root"));
+    root_row.add_suffix(&add);
     library_group.add(&root_row);
     library_group.set_description(Some(
-        "Browse this folder and all its subfolders. Disabled folders stay excluded.",
+        "Browse these folders and all their subfolders. Disabled folders stay excluded.",
     ));
     library_page.add(&library_group);
     let weak_row = root_row.downgrade();
@@ -42,14 +42,7 @@ pub fn build_preferences_dialog(
         let (Some(row), Some(parent)) = (weak_row.upgrade(), weak_parent.upgrade()) else {
             return gtk4::glib::ControlFlow::Break;
         };
-        let root = parent
-            .app_state()
-            .borrow()
-            .settings
-            .active_library()
-            .map(|library| library.root.display().to_string())
-            .unwrap_or_default();
-        row.set_subtitle(&root);
+        show_roots(&row, &parent.app_state().borrow().settings.library_roots());
         gtk4::glib::ControlFlow::Continue
     });
 
@@ -125,4 +118,15 @@ fn gpu_subtitle() -> String {
         "No GPU build of llama-server in the model folder's runtime-gpu; indexing uses the processor"
             .into()
     }
+}
+
+/// One root per subtitle line, first first (D41).
+fn show_roots(row: &libadwaita::ActionRow, roots: &[std::path::PathBuf]) {
+    row.set_title(if roots.len() > 1 {
+        "Library Roots"
+    } else {
+        "Library Root"
+    });
+    let shown: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
+    row.set_subtitle(&shown.join("\n"));
 }

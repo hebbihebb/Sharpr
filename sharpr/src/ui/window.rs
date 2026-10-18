@@ -236,21 +236,16 @@ fn path_is_disabled(path: &std::path::Path, disabled_folders: &[PathBuf]) -> boo
         .any(|folder| path.starts_with(folder))
 }
 
-fn path_in_active_library(path: &Path, active_root: Option<&Path>) -> bool {
-    active_root
-        .map(|root| path.starts_with(root))
-        .unwrap_or(true)
-}
-
+/// Keeps the paths under one of the library's roots (all of them when there
+/// are none) and outside its disabled folders.
 pub(super) fn filter_paths_for_library(
     paths: Vec<PathBuf>,
-    active_root: Option<&Path>,
+    roots: &[PathBuf],
     disabled_folders: &[PathBuf],
 ) -> Vec<PathBuf> {
     paths
         .into_iter()
-        .filter(|path| path_in_active_library(path, active_root))
-        .filter(|path| !path_is_disabled(path, disabled_folders))
+        .filter(|path| crate::buckets::visible(path, roots, disabled_folders))
         .collect()
 }
 
@@ -933,12 +928,12 @@ impl SharprWindow {
             let st = self.imp().state.borrow();
             st.settings
                 .active_library()
-                .map(|library| (library.root.clone(), st.disabled_folders.clone()))
+                .map(|library| (library.roots(), st.disabled_folders.clone()))
         };
-        if let (Some((root, disabled)), Some(service)) =
+        if let (Some((roots, disabled)), Some(service)) =
             (job, self.imp().visual_index.borrow().as_ref())
         {
-            service.rebuild(crate::visual_search::index::Job { root, disabled });
+            service.rebuild(crate::visual_search::index::Job { roots, disabled });
             self.add_toast(libadwaita::Toast::new("Rebuilding the visual search index"));
         }
     }
@@ -974,12 +969,12 @@ impl SharprWindow {
             let st = self.imp().state.borrow();
             st.settings
                 .active_library()
-                .map(|library| (library.root.clone(), st.disabled_folders.clone()))
+                .map(|library| (library.roots(), st.disabled_folders.clone()))
         };
-        if let (Some((root, disabled)), Some(service)) =
+        if let (Some((roots, disabled)), Some(service)) =
             (job, self.imp().visual_index.borrow().as_ref())
         {
-            service.request(crate::visual_search::index::Job { root, disabled });
+            service.request(crate::visual_search::index::Job { roots, disabled });
         }
         self.request_fingerprints();
     }
@@ -999,7 +994,7 @@ impl SharprWindow {
                 return;
             };
             crate::fingerprint::Job {
-                root: library.root.clone(),
+                roots: library.roots(),
                 disabled: st.disabled_folders.clone(),
             }
         };
@@ -1088,10 +1083,10 @@ impl SharprWindow {
                 index,
                 Box::new(move |job, pass| {
                     visual_index.request(crate::visual_search::index::Job {
-                        root: job.root.clone(),
+                        roots: job.roots.clone(),
                         disabled: job.disabled.clone(),
                     });
-                    match crate::buckets::relink(&relink_index, Some(&job.root), &job.disabled) {
+                    match crate::buckets::relink(&relink_index, &job.roots, &job.disabled) {
                         Ok(relinked) => {
                             crate::bench_event!(
                                 "buckets.relink",
@@ -1713,12 +1708,12 @@ impl SharprWindow {
                 }
                 let next = generation.get().wrapping_add(1);
                 generation.set(next);
-                let (index, library, root, disabled) = {
+                let (index, library, roots, disabled) = {
                     let st = state_c.borrow();
                     (
                         st.library_index.clone(),
                         st.settings.active_library_id.clone(),
-                        st.settings.active_library().map(|l| l.root.clone()),
+                        st.settings.library_roots(),
                         st.disabled_folders.clone(),
                     )
                 };
@@ -1735,14 +1730,10 @@ impl SharprWindow {
                             .list_collections_for_library(library.as_deref())
                             .map_err(|e| e.to_string())?;
                         for collection in &mut collections {
-                            collection.item_count = crate::buckets::view(
-                                &index,
-                                collection.id,
-                                root.as_deref(),
-                                &disabled,
-                            )?
-                            .paths
-                            .len();
+                            collection.item_count =
+                                crate::buckets::view(&index, collection.id, &roots, &disabled)?
+                                    .paths
+                                    .len();
                         }
                         Ok(collections)
                     },
@@ -1950,11 +1941,11 @@ impl SharprWindow {
                 win.imp().bucket_open_pending.set(Some(generation));
                 state_c.borrow_mut().scope = ViewScope::Collection(id);
                 apply_scope_to_sidebar(&ViewScope::Collection(id), &sidebar_c);
-                let (index, active_root, disabled) = {
+                let (index, active_roots, disabled) = {
                     let state = state_c.borrow();
                     (
                         state.library_index.clone(),
-                        state.settings.active_library().map(|lib| lib.root.clone()),
+                        state.settings.library_roots(),
                         state.disabled_folders.clone(),
                     )
                 };
@@ -1967,7 +1958,7 @@ impl SharprWindow {
                         let Some(index) = index else {
                             return Err("the bucket database is unavailable".into());
                         };
-                        crate::buckets::view(&index, id, active_root.as_deref(), &disabled)
+                        crate::buckets::view(&index, id, &active_roots, &disabled)
                     })();
                     let _ = tx.send_blocking(result);
                 });
@@ -3765,6 +3756,7 @@ impl SharprWindow {
 
         let library_section = gio::Menu::new();
         library_section.append(Some("Open Library Root…"), Some("win.choose-library-root"));
+        library_section.append(Some("Add Library Root…"), Some("win.add-library-root"));
         let copies = gio::MenuItem::new(Some("Find Copies…"), Some("win.find-duplicates"));
         copies.set_icon(&gio::ThemedIcon::new("sharpr-copies-symbolic"));
         library_section.append_item(&copies);

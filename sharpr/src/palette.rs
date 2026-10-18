@@ -2,6 +2,11 @@
 pub const BUCKETS: &[&str] = &[
     "#57e389", "#62a0ea", "#ff7800", "#f5c211", "#dc8add", "#5bc8af", "#e01b24", "#9141ac",
 ];
+/// Folder-icon colours of the library roots, in root order (D41): the first
+/// root keeps the blue Pictures had, then orange, green, pink, teal, yellow.
+pub const ROOTS: &[&str] = &[
+    BUCKETS[1], BUCKETS[2], BUCKETS[0], BUCKETS[4], BUCKETS[5], BUCKETS[3],
+];
 pub type Ink = (f64, f64, f64, f64);
 pub const SCRIM: Ink = (0.0, 0.0, 0.0, 0.6);
 pub const WHITE: Ink = (1.0, 1.0, 1.0, 1.0);

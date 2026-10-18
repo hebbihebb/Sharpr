@@ -48,6 +48,9 @@ removed means the control is absent, with stored user data retained.
 | Folders | Library switcher / create-library menu | Removed; inactive configurations remain stored | D11, D32 |
 | Folders | Library list / names / root / top-level-versus-drill-down editor | Changed to one root action; identity and legacy options survive | D32 |
 | Folders | Folder rows and disclosure buttons | Kept; recursively expose image-containing subfolders | D32 |
+| Folders | Add Library Root… (main menu, Preferences Add…) | Added; another root of the one library, listed below the others | D41 |
+| Folders | Root row → Remove from Library | Added; forgets the root only, never the last one | D41 |
+| Folders | Folder icon colour | Changed; by root (first root blue) instead of by folder name | D41 |
 | Folders | Enable/disable folder | Kept; disabled rows can be enabled without scanning their children | D32 |
 | Buckets | Bucket rows and counts | Kept, scoped to the active identity and enabled root | D3, D4 |
 | Buckets | Nested disclosure buttons | Kept, with inherited parent membership | D4 |

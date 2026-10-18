@@ -546,11 +546,19 @@ mod tests {
                 );
             }
             std::fs::write(&source, b"unrelated replacement").unwrap();
-            crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
-            crate::buckets::relink(&index, None, &[]).unwrap();
+            crate::fingerprint::run_pass(
+                &index,
+                std::slice::from_ref(&root),
+                &[],
+                &[],
+                &|| false,
+                &|_| {},
+            )
+            .unwrap();
+            crate::buckets::relink(&index, &[], &[]).unwrap();
             for id in [one, two] {
                 assert_eq!(
-                    crate::buckets::view(&index, id, Some(&root), &[])
+                    crate::buckets::view(&index, id, std::slice::from_ref(&root), &[])
                         .unwrap()
                         .paths,
                     vec![destination.clone()]

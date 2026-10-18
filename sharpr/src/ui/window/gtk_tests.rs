@@ -820,7 +820,7 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     // After the pass, the member follows the file into its bucket.
     let index = window.imp().state.borrow().library_index.clone().unwrap();
     pump_until(|| {
-        crate::buckets::view(&index, bucket, Some(&root), &[])
+        crate::buckets::view(&index, bucket, std::slice::from_ref(&root), &[])
             .is_ok_and(|v| v.paths.contains(&moved) && v.missing == 0)
     });
     assert!(index
@@ -1242,7 +1242,7 @@ fn unused_tags_are_offered_as_buckets() {
         .find(|c| c.name == "mountain")
         .unwrap();
     assert_eq!(
-        crate::buckets::view(&index, bucket.id, Some(&root), &[])
+        crate::buckets::view(&index, bucket.id, std::slice::from_ref(&root), &[])
             .unwrap()
             .paths
             .len(),
@@ -1308,7 +1308,15 @@ fn library_overview_counts_the_library() {
     window.present();
     pump_until(|| window.imp().state.borrow().library.image_count() == 3 && window.is_mapped());
     let index = window.imp().state.borrow().library_index.clone().unwrap();
-    crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
+    crate::fingerprint::run_pass(
+        &index,
+        std::slice::from_ref(&root),
+        &[],
+        &[],
+        &|| false,
+        &|_| {},
+    )
+    .unwrap();
 
     crate::ui::library_overview::present(&window);
     pump_until(|| window.visible_dialog().is_some());
@@ -1559,7 +1567,15 @@ fn copies_are_found_and_trashed_only_on_request() {
     window.present();
     pump_until(|| window.imp().state.borrow().library.image_count() == 3 && window.is_mapped());
     let index = window.imp().state.borrow().library_index.clone().unwrap();
-    crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
+    crate::fingerprint::run_pass(
+        &index,
+        std::slice::from_ref(&root),
+        &[],
+        &[],
+        &|| false,
+        &|_| {},
+    )
+    .unwrap();
 
     crate::ui::copies_dialog::present(&window);
     pump_until(|| window.visible_dialog().is_some());
@@ -3058,7 +3074,15 @@ fn interface_tour_screenshots() {
     open_root();
     // Buckets and Find Copies work from fingerprints.
     let index = state.borrow().library_index.clone().unwrap();
-    crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
+    crate::fingerprint::run_pass(
+        &index,
+        std::slice::from_ref(&root),
+        &[],
+        &[],
+        &|| false,
+        &|_| {},
+    )
+    .unwrap();
     go_to("alpine-dawn.png");
     pump_until(|| viewer.imp().metadata_chip.is_visible());
     // Let the "Added to bucket" toasts pass, and every thumbnail load.
@@ -3339,7 +3363,7 @@ fn repeat_bucket_and_expanding_info_preserve_originals() {
     settle(150);
     assert!(window_shortcut(&window, "<Control><Shift>b"));
     pump_until(|| {
-        crate::buckets::view(&index, bucket.id, Some(&root), &[])
+        crate::buckets::view(&index, bucket.id, std::slice::from_ref(&root), &[])
             .unwrap()
             .paths
             .len()
@@ -3349,7 +3373,7 @@ fn repeat_bucket_and_expanding_info_preserve_originals() {
     window.add_to_last_bucket(vec![paths[0].clone()]);
     settle(150);
     assert_eq!(
-        crate::buckets::view(&index, bucket.id, Some(&root), &[])
+        crate::buckets::view(&index, bucket.id, std::slice::from_ref(&root), &[])
             .unwrap()
             .paths
             .len(),
@@ -3659,7 +3683,7 @@ fn one_root_preserves_library_identity_members_fingerprints_and_vectors() {
     let view = crate::buckets::view(
         &index,
         bucket.id,
-        Some(&narrow),
+        std::slice::from_ref(&narrow),
         &[disabled.clone(), blocked.clone()],
     )
     .unwrap();
@@ -3702,7 +3726,7 @@ fn one_root_preserves_library_identity_members_fingerprints_and_vectors() {
     let view = crate::buckets::view(
         &index,
         bucket.id,
-        Some(&root),
+        std::slice::from_ref(&root),
         &[disabled.clone(), blocked.clone()],
     )
     .unwrap();
@@ -4049,7 +4073,7 @@ fn edits_collect_originals_and_copies_in_buckets() {
             .unwrap()
             .into_iter()
             .find(|bucket| bucket.name == name)?;
-        let mut paths = crate::buckets::view(&index, bucket.id, Some(&root), &[])
+        let mut paths = crate::buckets::view(&index, bucket.id, std::slice::from_ref(&root), &[])
             .unwrap()
             .paths;
         paths.sort();
@@ -4322,10 +4346,18 @@ fn internal_rename_keeps_buckets_when_the_old_filename_is_reused() {
     image::RgbImage::from_pixel(160, 90, image::Rgb([40, 40, 200]))
         .save(&original)
         .unwrap();
-    crate::fingerprint::run_pass(&index, &root, &[], &[], &|| false, &|_| {}).unwrap();
-    crate::buckets::relink(&index, None, &[]).unwrap();
+    crate::fingerprint::run_pass(
+        &index,
+        std::slice::from_ref(&root),
+        &[],
+        &[],
+        &|| false,
+        &|_| {},
+    )
+    .unwrap();
+    crate::buckets::relink(&index, &[], &[]).unwrap();
     assert_eq!(
-        crate::buckets::view(&index, bucket.id, Some(&root), &[])
+        crate::buckets::view(&index, bucket.id, std::slice::from_ref(&root), &[])
             .unwrap()
             .paths,
         vec![renamed.clone()]
@@ -5017,5 +5049,121 @@ fn a_broad_root_lists_image_folders_without_hidden_ones() {
         ],
         "no .cache and no Documents"
     );
+    window.close();
+}
+
+/// Work Order item 25 (D41): a second root is listed below the first with its
+/// own folder colour, joins the library-wide scope, rejects an overlap, and is
+/// only forgotten when removed.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn a_second_root_is_listed_below_the_first_and_removing_it_only_forgets_it() {
+    let base = isolated_fixture("second-root");
+    let (pictures, downloads) = (base.join("Pictures"), base.join("Downloads"));
+    let picture = |path: &Path| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        image::RgbImage::from_pixel(160, 90, image::Rgb([90, 120, 200]))
+            .save(path)
+            .unwrap();
+    };
+    picture(&pictures.join("a.png"));
+    picture(&pictures.join("Art/b.png"));
+    picture(&downloads.join("c.png"));
+
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Pictures", pictures.clone(), FolderMode::DrillDown)
+        .unwrap();
+    let library_id = settings.active_library_id.clone();
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    let sidebar = window.imp().sidebar.borrow().clone().unwrap();
+    let rows = || {
+        find_widgets::<crate::ui::sidebar::FolderRow>(sidebar.upcast_ref())
+            .iter()
+            .map(|row| row.path())
+            .collect::<Vec<_>>()
+    };
+    pump_until(|| {
+        window.is_mapped()
+            && !window.app_state().borrow().bucket_migration_pending
+            && rows() == vec![pictures.clone(), pictures.join("Art")]
+    });
+
+    // An overlapping root is refused and names the root in the way.
+    let error = window.add_library_root(pictures.join("Art")).unwrap_err();
+    assert!(
+        error.contains("overlaps") && error.contains("Pictures"),
+        "{error}"
+    );
+
+    window.add_library_root(downloads.clone()).unwrap();
+    pump_until(|| rows() == vec![pictures.clone(), pictures.join("Art"), downloads.clone()]);
+    let icon_class = |path: &Path| {
+        let row = find_widgets::<crate::ui::sidebar::FolderRow>(sidebar.upcast_ref())
+            .into_iter()
+            .find(|row| row.path() == path)
+            .unwrap();
+        find_widgets::<gtk4::Image>(row.upcast_ref())
+            .iter()
+            .flat_map(|image| image.css_classes())
+            .map(|class| class.to_string())
+            .find(|class| class.starts_with("sharpr-icon-color"))
+    };
+    let blue = crate::ui::look::color_class(crate::palette::ROOTS[0], false);
+    let orange = crate::ui::look::color_class(crate::palette::ROOTS[1], false);
+    assert_eq!(icon_class(&pictures.join("Art")), Some(blue));
+    assert_eq!(icon_class(&downloads), Some(orange));
+    {
+        let state = window.app_state();
+        let state = state.borrow();
+        assert_eq!(state.settings.active_library_id, library_id, "same library");
+        assert_eq!(
+            state.settings.library_roots(),
+            vec![pictures.clone(), downloads.clone()]
+        );
+    }
+    // Reloaded settings keep both roots.
+    assert_eq!(
+        AppSettings::load().library_roots(),
+        vec![pictures.clone(), downloads.clone()]
+    );
+
+    // The second root's folder opens like any other.
+    sidebar.select_folder(&downloads);
+    if let Some(open) = window.imp().open_folder_cb.borrow().as_ref() {
+        open(downloads.clone());
+    }
+    pump_until(|| {
+        let state = window.app_state();
+        let state = state.borrow();
+        state.scope == ViewScope::Folder(downloads.clone()) && state.library.image_count() == 1
+    });
+
+    // Removing it only forgets it.
+    gtk4::prelude::ActionGroupExt::activate_action(
+        &window,
+        "remove-library-root",
+        Some(&downloads.to_string_lossy().to_variant()),
+    );
+    pump_until(|| rows() == vec![pictures.clone(), pictures.join("Art")]);
+    assert!(downloads.join("c.png").is_file(), "files are untouched");
+    assert_eq!(AppSettings::load().library_roots(), vec![pictures.clone()]);
+    assert_eq!(
+        window.app_state().borrow().settings.last_folder,
+        Some(pictures.clone()),
+        "the view leaves the forgotten root"
+    );
+    // The last root cannot be removed.
+    assert!(window.remove_library_root(&pictures).is_err());
     window.close();
 }

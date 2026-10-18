@@ -67,11 +67,11 @@ pub fn present(window: &SharprWindow) {
     let page = libadwaita::PreferencesPage::new();
     dialog.add(&page);
 
-    let (root, disabled, library_id) = {
+    let (roots, disabled, library_id) = {
         let state = window.app_state();
         let st = state.borrow();
         (
-            st.settings.active_library().map(|l| l.root.clone()),
+            st.settings.library_roots(),
             st.disabled_folders.clone(),
             st.settings.active_library_id.clone(),
         )
@@ -79,8 +79,9 @@ pub fn present(window: &SharprWindow) {
 
     let library = libadwaita::PreferencesGroup::new();
     library.set_title("Library");
-    if let Some(root) = &root {
-        library.set_description(Some(&root.display().to_string()));
+    if !roots.is_empty() {
+        let shown: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
+        library.set_description(Some(&shown.join("\n")));
     }
     let size_row = row("Images");
     let formats_row = row("Formats");
@@ -231,13 +232,14 @@ pub fn present(window: &SharprWindow) {
         });
     };
 
-    if let (Some(root), Some(index)) = (root, window.app_state().borrow().library_index.clone()) {
+    let index = window.app_state().borrow().library_index.clone();
+    if let (false, Some(index)) = (roots.is_empty(), index) {
         let (tx, rx) = async_channel::bounded(1);
         let vector_file = crate::visual_search::store::default_path();
         std::thread::spawn(move || {
             let _ = tx.send_blocking(crate::library_overview::gather(
                 &index,
-                &root,
+                &roots,
                 &disabled,
                 library_id.as_deref(),
                 &vector_file,

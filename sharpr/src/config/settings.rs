@@ -22,6 +22,11 @@ pub struct LibraryConfig {
     pub last_folder: Option<PathBuf>,
     #[serde(default)]
     pub ignored_folders: Vec<PathBuf>,
+    /// Roots added after the first (D41). Left out of the stored record while
+    /// empty, so a one-root library is saved as before and older builds still
+    /// read `root`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_roots: Vec<PathBuf>,
 }
 
 impl LibraryConfig {
@@ -33,7 +38,21 @@ impl LibraryConfig {
             folder_mode,
             last_folder: None,
             ignored_folders: Vec::new(),
+            extra_roots: Vec::new(),
         }
+    }
+
+    /// Every root of the library, the first one first. This is the one list
+    /// of roots: walks, filters and (later) file watching all take it.
+    pub fn roots(&self) -> Vec<PathBuf> {
+        std::iter::once(self.root.clone())
+            .chain(self.extra_roots.iter().cloned())
+            .collect()
+    }
+
+    /// Whether `path` is one of the roots or lies below one.
+    pub fn contains(&self, path: &Path) -> bool {
+        path.starts_with(&self.root) || self.extra_roots.iter().any(|root| path.starts_with(root))
     }
 }
 
@@ -168,7 +187,7 @@ impl AppSettings {
                     .last_folder
                     .as_ref()
                     .or(last_folder.as_ref())
-                    .filter(|folder| folder.starts_with(&library.root))
+                    .filter(|folder| library.contains(folder))
                     .cloned()
             });
 
@@ -275,13 +294,79 @@ impl AppSettings {
             return Err("Choose an absolute library folder".into());
         }
         let library = self.active_library_mut().ok_or("Library not found")?;
+        if let Some(other) = library
+            .extra_roots
+            .iter()
+            .find(|other| roots_overlap(other, &root))
+        {
+            return Err(overlap_message(other));
+        }
         library.root = root.clone();
         if library
             .last_folder
             .as_ref()
-            .is_none_or(|path| !path.starts_with(&root))
+            .is_none_or(|path| !library.contains(path))
         {
             library.last_folder = Some(root);
+        }
+        self.last_folder = library.last_folder.clone();
+        self.save();
+        Ok(())
+    }
+
+    /// The active library's roots, or none when there is no library.
+    pub fn library_roots(&self) -> Vec<PathBuf> {
+        self.active_library()
+            .map(LibraryConfig::roots)
+            .unwrap_or_default()
+    }
+
+    /// Adds another root to the active library (D41). It may not be, contain
+    /// or lie inside one of the library's roots; stored inactive library
+    /// configurations do not count. Directory existence is checked on the
+    /// caller's worker thread.
+    pub fn add_library_root(&mut self, root: PathBuf) -> Result<(), String> {
+        if !root.is_absolute()
+            || root
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err("Choose an absolute library folder".into());
+        }
+        let library = self.active_library_mut().ok_or("Library not found")?;
+        if let Some(other) = library
+            .roots()
+            .iter()
+            .find(|other| roots_overlap(other, &root))
+        {
+            return Err(overlap_message(other));
+        }
+        library.extra_roots.push(root);
+        self.save();
+        Ok(())
+    }
+
+    /// Forgets one root of the active library. Nothing on disk or in the
+    /// databases changes; the last root cannot be removed. Removing the first
+    /// root makes the next one first.
+    pub fn remove_library_root(&mut self, root: &Path) -> Result<(), String> {
+        let library = self.active_library_mut().ok_or("Library not found")?;
+        if library.extra_roots.is_empty() {
+            return Err("A library needs at least one root".into());
+        }
+        if library.root == root {
+            library.root = library.extra_roots.remove(0);
+        } else if let Some(index) = library.extra_roots.iter().position(|r| r == root) {
+            library.extra_roots.remove(index);
+        } else {
+            return Err("That folder is not a library root".into());
+        }
+        if library
+            .last_folder
+            .as_ref()
+            .is_none_or(|path| !library.contains(path))
+        {
+            library.last_folder = Some(library.root.clone());
         }
         self.last_folder = library.last_folder.clone();
         self.save();
@@ -524,6 +609,10 @@ fn validate_no_root_overlap(
     Ok(())
 }
 
+fn overlap_message(root: &Path) -> String {
+    format!("That folder overlaps the library root “{}”", root.display())
+}
+
 fn roots_overlap(a: &Path, b: &Path) -> bool {
     a == b || a.starts_with(b) || b.starts_with(a)
 }
@@ -564,6 +653,7 @@ mod tests {
             folder_mode: FolderMode::DrillDown,
             last_folder: Some(PathBuf::from("/tmp/library/Art")),
             ignored_folders: vec![PathBuf::from("/tmp/library/Ignore")],
+            extra_roots: Vec::new(),
         };
         let app = AppSettings {
             last_folder: Some(PathBuf::from("/tmp/library/Art")),
@@ -655,5 +745,91 @@ mod tests {
         let loaded = AppSettings::load_from_settings(backend);
         assert_eq!(loaded.libraries, vec![active, inactive]);
         assert_eq!(loaded.active_library_id, app.active_library_id);
+    }
+
+    fn one_root_app(backend: gio::Settings, root: &str) -> AppSettings {
+        let mut app = AppSettings::load_from_settings(backend);
+        let library = LibraryConfig::new("Pictures".into(), root.into(), FolderMode::TopLevel);
+        app.active_library_id = Some(library.id.clone());
+        app.libraries = vec![library];
+        app
+    }
+
+    #[test]
+    fn a_stored_one_root_library_loads_and_saves_unchanged() {
+        // A record written before D41 has no extra roots and must read back
+        // as one root, and saving it must not add the new field.
+        let raw = r#"[{"id":"library-1","name":"Pictures","root":"/tmp/pics","folder_mode":"top_level","last_folder":"/tmp/pics/Art","ignored_folders":[]}]"#;
+        let backend = test_settings();
+        backend.set_string("libraries-json", raw).unwrap();
+        backend
+            .set_string("active-library-id", "library-1")
+            .unwrap();
+        let app = AppSettings::load_from_settings(backend.clone());
+        assert_eq!(app.library_roots(), vec![PathBuf::from("/tmp/pics")]);
+        assert_eq!(app.last_folder, Some(PathBuf::from("/tmp/pics/Art")));
+        app.save();
+        assert_eq!(backend.string("libraries-json").as_str(), raw);
+    }
+
+    #[test]
+    fn added_roots_survive_reload_and_keep_the_library_identity() {
+        let backend = test_settings();
+        let mut app = one_root_app(backend.clone(), "/tmp/pics");
+        let id = app.active_library_id.clone();
+        app.add_library_root("/tmp/downloads".into()).unwrap();
+        let loaded = AppSettings::load_from_settings(backend);
+        assert_eq!(loaded.active_library_id, id);
+        assert_eq!(loaded.libraries.len(), 1);
+        assert_eq!(
+            loaded.library_roots(),
+            vec![PathBuf::from("/tmp/pics"), PathBuf::from("/tmp/downloads")]
+        );
+        let library = loaded.active_library().unwrap();
+        assert!(library.contains(Path::new("/tmp/downloads/a/b.png")));
+        assert!(library.contains(Path::new("/tmp/pics/c.png")));
+        assert!(!library.contains(Path::new("/tmp/elsewhere/c.png")));
+    }
+
+    #[test]
+    fn overlapping_roots_are_rejected_with_the_root_named() {
+        let mut app = one_root_app(test_settings(), "/tmp/pics");
+        app.add_library_root("/tmp/downloads".into()).unwrap();
+        for root in ["/tmp/pics", "/tmp/pics/Art", "/tmp", "/tmp/downloads/x"] {
+            let error = app.add_library_root(root.into()).unwrap_err();
+            assert!(error.contains("overlaps"), "{root}: {error}");
+        }
+        assert!(app.add_library_root("relative".into()).is_err());
+        // Changing the first root cannot swallow an added one either.
+        assert!(app
+            .set_single_library_root("/tmp".into())
+            .unwrap_err()
+            .contains("/tmp/downloads"));
+        // A stored inactive library does not block a root.
+        app.libraries.push(LibraryConfig::new(
+            "Old".into(),
+            "/tmp/old".into(),
+            FolderMode::TopLevel,
+        ));
+        app.add_library_root("/tmp/old".into()).unwrap();
+        assert_eq!(app.library_roots().len(), 3);
+    }
+
+    #[test]
+    fn removing_a_root_only_forgets_it_and_never_the_last() {
+        let mut app = one_root_app(test_settings(), "/tmp/pics");
+        assert!(app.remove_library_root(Path::new("/tmp/pics")).is_err());
+        app.add_library_root("/tmp/downloads".into()).unwrap();
+        app.set_active_library_last_folder(Some("/tmp/downloads/sub".into()));
+        app.remove_library_root(Path::new("/tmp/downloads"))
+            .unwrap();
+        assert_eq!(app.library_roots(), vec![PathBuf::from("/tmp/pics")]);
+        // The last folder was under the forgotten root, so it falls back.
+        assert_eq!(app.last_folder, Some(PathBuf::from("/tmp/pics")));
+        // Removing the first root promotes the next one.
+        app.add_library_root("/tmp/downloads".into()).unwrap();
+        app.remove_library_root(Path::new("/tmp/pics")).unwrap();
+        assert_eq!(app.library_roots(), vec![PathBuf::from("/tmp/downloads")]);
+        assert!(app.remove_library_root(Path::new("/tmp/nowhere")).is_err());
     }
 }

@@ -67,14 +67,17 @@ impl RankedSnapshot {
     }
 }
 
+/// A whole-library walk: its session, roots, disabled folders and paths.
+type LibraryWalk = (u64, Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>);
+
 /// State the browse worker keeps between queries.
 #[derive(Default)]
 pub(super) struct BrowseCaches {
     pub dimensions: crate::model::browse::DimensionCache,
     /// Whole-library file list for one search session, keyed by session,
-    /// library root and disabled folders. Walking the library tree on every
+    /// library roots and disabled folders. Walking the library tree on every
     /// keystroke grows with library size.
-    library_paths: Option<(u64, PathBuf, Vec<PathBuf>, Vec<PathBuf>)>,
+    library_paths: Option<LibraryWalk>,
     ranked: Option<RankedSnapshot>,
 }
 
@@ -82,17 +85,17 @@ impl BrowseCaches {
     fn library_paths(
         &mut self,
         session: u64,
-        root: &Path,
+        roots: &[PathBuf],
         disabled: &[PathBuf],
         superseded: &dyn Fn() -> bool,
     ) -> Result<Vec<PathBuf>, String> {
-        if let Some((cached_session, cached_root, cached_disabled, paths)) = &self.library_paths {
-            if *cached_session == session && cached_root == root && cached_disabled == disabled {
+        if let Some((cached_session, cached_roots, cached_disabled, paths)) = &self.library_paths {
+            if *cached_session == session && cached_roots == roots && cached_disabled == disabled {
                 return Ok(paths.clone());
             }
         }
         let paths = crate::model::library::collect_library_image_paths_cancellable(
-            Some(root.to_path_buf()),
+            roots,
             FolderMode::DrillDown,
             None,
             disabled,
@@ -102,12 +105,7 @@ impl BrowseCaches {
         if superseded() {
             return Err("Search superseded".into());
         }
-        self.library_paths = Some((
-            session,
-            root.to_path_buf(),
-            disabled.to_vec(),
-            paths.clone(),
-        ));
+        self.library_paths = Some((session, roots.to_vec(), disabled.to_vec(), paths.clone()));
         Ok(paths)
     }
 }
@@ -185,12 +183,12 @@ impl SharprWindow {
         {
             return;
         }
-        let (index, root, disabled) = {
+        let (index, roots, disabled) = {
             let state = self.app_state();
             let state = state.borrow();
             (
                 state.library_index.clone(),
-                state.settings.active_library().map(|l| l.root.clone()),
+                state.settings.library_roots(),
                 state.disabled_folders.clone(),
             )
         };
@@ -205,7 +203,7 @@ impl SharprWindow {
             .store(search, std::sync::atomic::Ordering::Relaxed);
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let _ = tx.send_blocking(crate::buckets::view(&index, id, root.as_deref(), &disabled));
+            let _ = tx.send_blocking(crate::buckets::view(&index, id, &roots, &disabled));
         });
         let weak = self.downgrade();
         glib::MainContext::default().spawn_local(async move {
@@ -234,7 +232,7 @@ impl SharprWindow {
                 let state = state.borrow();
                 filter_paths_for_library(
                     paths,
-                    state.settings.active_library().map(|l| l.root.as_path()),
+                    &state.settings.library_roots(),
                     &state.disabled_folders,
                 )
             };
@@ -719,7 +717,7 @@ impl SharprWindow {
             return;
         }
         self.capture_browse_view();
-        let (candidates, root, disabled, scope, order, index) = {
+        let (candidates, roots, disabled, scope, order, index) = {
             let st = self.imp().state.borrow();
             let snapshot = self.imp().browse_snapshot.borrow();
             let Some(snapshot) = snapshot.as_ref() else {
@@ -731,7 +729,7 @@ impl SharprWindow {
                     .iter()
                     .map(|e| e.path())
                     .collect::<Vec<_>>(),
-                st.settings.active_library().map(|l| l.root.clone()),
+                st.settings.library_roots(),
                 st.disabled_folders.clone(),
                 st.scope.clone(),
                 st.sort_order,
@@ -773,13 +771,15 @@ impl SharprWindow {
                         }
                     }
                     let candidates = if options.whole_library {
-                        let root = root.clone().ok_or("No active library")?;
-                        cache.library_paths(session, &root, &disabled, &superseded)?
+                        if roots.is_empty() {
+                            return Err("No active library".into());
+                        }
+                        cache.library_paths(session, &roots, &disabled, &superseded)?
                     } else {
                         candidates
                     };
                     let candidates = if options.whole_library {
-                        filter_paths_for_library(candidates, root.as_deref(), &disabled)
+                        filter_paths_for_library(candidates, &roots, &disabled)
                     } else {
                         candidates
                             .into_iter()
@@ -1134,18 +1134,29 @@ mod tests {
         let current = || false;
 
         assert_eq!(
-            caches.library_paths(1, &root, &[], &current).unwrap().len(),
+            caches
+                .library_paths(1, std::slice::from_ref(&root), &[], &current)
+                .unwrap()
+                .len(),
             1
         );
         std::fs::write(root.join("b.jpg"), b"b").unwrap();
         assert_eq!(
-            caches.library_paths(1, &root, &[], &current).unwrap().len(),
+            caches
+                .library_paths(1, std::slice::from_ref(&root), &[], &current)
+                .unwrap()
+                .len(),
             1,
             "same session reuses the walk"
         );
-        assert!(caches.library_paths(2, &root, &[], &|| true).is_err());
+        assert!(caches
+            .library_paths(2, std::slice::from_ref(&root), &[], &|| true)
+            .is_err());
         assert_eq!(
-            caches.library_paths(2, &root, &[], &current).unwrap().len(),
+            caches
+                .library_paths(2, std::slice::from_ref(&root), &[], &current)
+                .unwrap()
+                .len(),
             2,
             "a new session walks again; the cancelled walk was not kept"
         );

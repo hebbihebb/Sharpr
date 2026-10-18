@@ -107,15 +107,18 @@ pub fn current_fingerprint(index: &LibraryIndex, path: &Path) -> Option<String> 
     Some(hash)
 }
 
-pub(crate) fn visible(path: &Path, root: Option<&Path>, disabled: &[PathBuf]) -> bool {
-    root.is_none_or(|root| path.starts_with(root)) && !disabled.iter().any(|d| path.starts_with(d))
+/// Whether `path` lies under one of `roots` (any path when there are none)
+/// and outside the `disabled` folders.
+pub(crate) fn visible(path: &Path, roots: &[PathBuf], disabled: &[PathBuf]) -> bool {
+    (roots.is_empty() || roots.iter().any(|root| path.starts_with(root)))
+        && !disabled.iter().any(|d| path.starts_with(d))
 }
 
 /// Resolves stored member rows to the files they mean now.
 fn resolve(
     index: &LibraryIndex,
     rows: &[MemberRow],
-    root: Option<&Path>,
+    roots: &[PathBuf],
     disabled: &[PathBuf],
 ) -> Result<BucketView, String> {
     let hashes: Vec<String> = rows
@@ -142,7 +145,7 @@ fn resolve(
             .unwrap_or_else(|| row.last_path.to_string_lossy().into_owned());
         // Out-of-scope members are hidden, even if their files are unavailable.
         // Do not probe disabled folders or a previous, wider root.
-        let eligible = visible(&row.last_path, root, disabled);
+        let eligible = visible(&row.last_path, roots, disabled);
         let mut exists = !eligible;
         if eligible && stamp_of(&row.last_path).is_some() {
             exists = true;
@@ -155,7 +158,7 @@ fn resolve(
             .into_iter()
             .flatten()
         {
-            if !visible(path, root, disabled) {
+            if !visible(path, roots, disabled) {
                 continue;
             }
             // A cached fingerprint counts only while the file is unchanged.
@@ -180,14 +183,14 @@ fn resolve(
 pub fn view(
     index: &LibraryIndex,
     id: i64,
-    root: Option<&Path>,
+    roots: &[PathBuf],
     disabled: &[PathBuf],
 ) -> Result<BucketView, String> {
     let collections = index.list_collections().map_err(|e| e.to_string())?;
     let rows = index
         .bucket_members(&subtree_ids(&collections, id))
         .map_err(|e| e.to_string())?;
-    resolve(index, &rows, root, disabled)
+    resolve(index, &rows, roots, disabled)
 }
 
 /// The buckets among `collections` whose view contains the file at `path`:
@@ -403,7 +406,7 @@ pub struct RelinkSummary {
 ///   fingerprint, if there is one. Others stay, as missing.
 pub fn relink(
     index: &LibraryIndex,
-    root: Option<&Path>,
+    roots: &[PathBuf],
     disabled: &[PathBuf],
 ) -> Result<RelinkSummary, String> {
     // Excluded members remain stored, untouched, without even a metadata probe.
@@ -411,7 +414,7 @@ pub fn relink(
         .all_bucket_members()
         .map_err(|e| e.to_string())?
         .into_iter()
-        .filter(|row| visible(&row.last_path, root, disabled))
+        .filter(|row| visible(&row.last_path, roots, disabled))
         .collect();
     let mut summary = RelinkSummary::default();
     let lost: Vec<String> = rows
@@ -445,7 +448,7 @@ pub fn relink(
                     .into_iter()
                     .flatten()
                     .filter(|(path, size, mtime)| {
-                        visible(path, root, disabled) && stamp(path) == Some((*size, *mtime))
+                        visible(path, roots, disabled) && stamp(path) == Some((*size, *mtime))
                     })
                     .map(|(path, _, _)| path)
                     .collect();
@@ -571,7 +574,7 @@ pub struct TagOffer {
 fn tag_candidates(
     index: &LibraryIndex,
     tags: &TagDatabase,
-    root: &Path,
+    roots: &[PathBuf],
     disabled: &[PathBuf],
 ) -> Result<std::collections::BTreeMap<String, Vec<PathBuf>>, String> {
     let protected: HashSet<String> = index
@@ -586,7 +589,7 @@ fn tag_candidates(
     for (path, tag) in tags.stored_rows()? {
         let file = PathBuf::from(&path);
         if protected.contains(&tag)
-            || !visible(&file, Some(root), disabled)
+            || !visible(&file, roots, disabled)
             || automatic.contains(&(path, tag.clone()))
         {
             continue;
@@ -603,10 +606,10 @@ fn tag_candidates(
 pub fn tag_offers(
     index: &LibraryIndex,
     tags: &TagDatabase,
-    root: &Path,
+    roots: &[PathBuf],
     disabled: &[PathBuf],
 ) -> Result<Vec<TagOffer>, String> {
-    let mut offers: Vec<TagOffer> = tag_candidates(index, tags, root, disabled)?
+    let mut offers: Vec<TagOffer> = tag_candidates(index, tags, roots, disabled)?
         .into_iter()
         .map(|(tag, paths)| TagOffer {
             tag,
@@ -625,12 +628,12 @@ pub fn bucket_from_tag(
     index: &LibraryIndex,
     tags: &TagDatabase,
     library_id: &str,
-    root: &Path,
+    roots: &[PathBuf],
     disabled: &[PathBuf],
     tag: &str,
 ) -> Result<(Collection, usize), String> {
     require_migrated(index)?;
-    let paths = tag_candidates(index, tags, root, disabled)?
+    let paths = tag_candidates(index, tags, roots, disabled)?
         .remove(tag)
         .ok_or_else(|| format!("No images to add for “{tag}”"))?;
     let members: Vec<(PathBuf, Option<String>)> = paths
@@ -691,7 +694,9 @@ mod tests {
         }
 
         fn shows(&self, id: i64) -> Vec<PathBuf> {
-            view(&self.index, id, Some(&self.root), &[]).unwrap().paths
+            view(&self.index, id, std::slice::from_ref(&self.root), &[])
+                .unwrap()
+                .paths
         }
     }
 
@@ -699,6 +704,27 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn visibility_spans_every_root_and_leaves_out_disabled_folders() {
+        let roots = [PathBuf::from("/p/Pictures"), PathBuf::from("/p/Downloads")];
+        let disabled = [PathBuf::from("/p/Downloads/off")];
+        assert!(visible(Path::new("/p/Pictures/a.png"), &roots, &disabled));
+        assert!(visible(Path::new("/p/Downloads/b.png"), &roots, &disabled));
+        assert!(!visible(
+            Path::new("/p/Downloads/off/c.png"),
+            &roots,
+            &disabled
+        ));
+        assert!(!visible(Path::new("/p/Elsewhere/d.png"), &roots, &disabled));
+        // A forgotten root's members are hidden, not gone.
+        assert!(!visible(
+            Path::new("/p/Downloads/b.png"),
+            &roots[..1],
+            &disabled
+        ));
+        assert!(visible(Path::new("/p/Elsewhere/d.png"), &[], &[]));
     }
 
     #[test]
@@ -795,7 +821,15 @@ mod tests {
             std::fs::copy(&source, &hidden).unwrap();
             let bucket = f.bucket("Keep", None);
             add_to_bucket(&f.index, bucket, std::slice::from_ref(&source)).unwrap();
-            crate::fingerprint::run_pass(&f.index, &f.root, &[], &[], &|| false, &|_| {}).unwrap();
+            crate::fingerprint::run_pass(
+                &f.index,
+                std::slice::from_ref(&f.root),
+                &[],
+                &[],
+                &|| false,
+                &|_| {},
+            )
+            .unwrap();
             let disabled = if excluded == "disabled" {
                 vec![hidden.parent().unwrap().to_path_buf()]
             } else {
@@ -808,14 +842,14 @@ mod tests {
             };
             std::fs::remove_file(&source).unwrap();
             let before = f.index.bucket_members(&[bucket]).unwrap();
-            let summary = relink(&f.index, Some(active), &disabled).unwrap();
+            let summary = relink(&f.index, std::slice::from_ref(active), &disabled).unwrap();
             assert_eq!(
                 summary.relinked, 0,
                 "must not probe or choose an excluded candidate"
             );
             assert_eq!(f.index.bucket_members(&[bucket]).unwrap(), before);
             assert_eq!(
-                view(&f.index, bucket, Some(active), &disabled)
+                view(&f.index, bucket, std::slice::from_ref(active), &disabled)
                     .unwrap()
                     .missing,
                 1
@@ -824,12 +858,20 @@ mod tests {
             // into the enabled tree just because an identical copy is there.
             std::fs::write(&source, b"enabled copy").unwrap();
             std::fs::write(&hidden, b"enabled copy").unwrap();
-            crate::fingerprint::run_pass(&f.index, &f.root, &[], &[], &|| false, &|_| {}).unwrap();
+            crate::fingerprint::run_pass(
+                &f.index,
+                std::slice::from_ref(&f.root),
+                &[],
+                &[],
+                &|| false,
+                &|_| {},
+            )
+            .unwrap();
             let hidden_bucket = f.bucket("Hidden", None);
             add_to_bucket(&f.index, hidden_bucket, std::slice::from_ref(&hidden)).unwrap();
             std::fs::remove_file(&hidden).unwrap();
             let hidden_before = f.index.bucket_members(&[hidden_bucket]).unwrap();
-            relink(&f.index, Some(active), &disabled).unwrap();
+            relink(&f.index, std::slice::from_ref(active), &disabled).unwrap();
             assert_eq!(
                 f.index.bucket_members(&[hidden_bucket]).unwrap(),
                 hidden_before
@@ -853,14 +895,28 @@ mod tests {
         std::fs::copy(&moved, &copy).unwrap();
         std::fs::remove_file(&gone).unwrap();
         let never = || false;
-        crate::fingerprint::run_pass(&f.index, &f.root, &[], &[], &never, &|_| {}).unwrap();
+        crate::fingerprint::run_pass(
+            &f.index,
+            std::slice::from_ref(&f.root),
+            &[],
+            &[],
+            &never,
+            &|_| {},
+        )
+        .unwrap();
 
-        let shown = view(&f.index, bucket, Some(&f.root), &[]).unwrap();
+        let shown = view(&f.index, bucket, std::slice::from_ref(&f.root), &[]).unwrap();
         assert_eq!(shown.paths, vec![copy.clone(), moved.clone()]);
         assert_eq!(shown.missing, 1, "the deleted file is missing, not dropped");
 
         // A member in a disabled folder is hidden, not missing.
-        let hidden = view(&f.index, bucket, Some(&f.root), &[f.root.join("sub")]).unwrap();
+        let hidden = view(
+            &f.index,
+            bucket,
+            std::slice::from_ref(&f.root),
+            &[f.root.join("sub")],
+        )
+        .unwrap();
         assert_eq!((hidden.paths, hidden.missing), (vec![copy], 1));
     }
 
@@ -943,8 +999,16 @@ mod tests {
         );
         let never = || false;
         let pass = || {
-            crate::fingerprint::run_pass(&f.index, &f.root, &[], &[], &never, &|_| {}).unwrap();
-            relink(&f.index, None, &[]).unwrap()
+            crate::fingerprint::run_pass(
+                &f.index,
+                std::slice::from_ref(&f.root),
+                &[],
+                &[],
+                &never,
+                &|_| {},
+            )
+            .unwrap();
+            relink(&f.index, &[], &[]).unwrap()
         };
         assert_eq!(
             pass(),
@@ -990,7 +1054,7 @@ mod tests {
         // Deleted: it stays, as missing.
         std::fs::remove_file(&moved).unwrap();
         assert_eq!(pass(), RelinkSummary::default());
-        let gone = view(&f.index, bucket, Some(&f.root), &[]).unwrap();
+        let gone = view(&f.index, bucket, std::slice::from_ref(&f.root), &[]).unwrap();
         assert_eq!((gone.paths.len(), gone.missing), (0, 1));
         assert_eq!(f.index.bucket_members(&[bucket]).unwrap().len(), 1);
     }
@@ -1039,12 +1103,12 @@ mod tests {
         assert_eq!(tag_rows(&f.tags), before, "tag rows are untouched");
 
         // Same members as the tag rules gave, the missing file included.
-        let art_view = view(&f.index, art, Some(&f.root), &[]).unwrap();
+        let art_view = view(&f.index, art, std::slice::from_ref(&f.root), &[]).unwrap();
         assert_eq!(
             (art_view.paths, art_view.missing),
             (vec![photo.clone(), render.clone()], 1)
         );
-        let diffusion_view = view(&f.index, diffusion, Some(&f.root), &[]).unwrap();
+        let diffusion_view = view(&f.index, diffusion, std::slice::from_ref(&f.root), &[]).unwrap();
         assert_eq!(
             (diffusion_view.paths, diffusion_view.missing),
             (vec![render.clone()], 1)
@@ -1082,7 +1146,7 @@ mod tests {
             rows
         };
 
-        let offers = tag_offers(&f.index, &f.tags, &f.root, &[]).unwrap();
+        let offers = tag_offers(&f.index, &f.tags, std::slice::from_ref(&f.root), &[]).unwrap();
         assert_eq!(
             offers,
             vec![
@@ -1098,34 +1162,56 @@ mod tests {
             "bucket tags, automatic rows, and images outside the library are left out"
         );
 
-        let (bucket, members) =
-            bucket_from_tag(&f.index, &f.tags, "test", &f.root, &[], "nature").unwrap();
+        let (bucket, members) = bucket_from_tag(
+            &f.index,
+            &f.tags,
+            "test",
+            std::slice::from_ref(&f.root),
+            &[],
+            "nature",
+        )
+        .unwrap();
         assert_eq!((bucket.name.as_str(), members), ("nature", 3));
-        let view = view(&f.index, bucket.id, Some(&f.root), &[]).unwrap();
+        let view = view(&f.index, bucket.id, std::slice::from_ref(&f.root), &[]).unwrap();
         assert_eq!(view.paths, vec![a.clone(), b.clone()]);
         assert_eq!(view.missing, 1, "the missing file is kept as a member");
         let mut rows_after = f.tags.stored_rows().unwrap();
         rows_after.sort();
         assert_eq!(rows_after, rows_before, "tag rows are untouched");
         assert!(
-            tag_offers(&f.index, &f.tags, &f.root, &[])
+            tag_offers(&f.index, &f.tags, std::slice::from_ref(&f.root), &[])
                 .unwrap()
                 .iter()
                 .all(|o| o.tag != "nature"),
             "a converted tag is no longer offered"
         );
         assert!(
-            bucket_from_tag(&f.index, &f.tags, "test", &f.root, &[], "Nature").is_err(),
+            bucket_from_tag(
+                &f.index,
+                &f.tags,
+                "test",
+                std::slice::from_ref(&f.root),
+                &[],
+                "Nature"
+            )
+            .is_err(),
             "no second bucket with the same name"
         );
 
         // The conversion takes exactly what the offer counted: the JPEG's
         // hand-made png tag, not the PNG's automatic one.
-        let (png, members) =
-            bucket_from_tag(&f.index, &f.tags, "test", &f.root, &[], "png").unwrap();
+        let (png, members) = bucket_from_tag(
+            &f.index,
+            &f.tags,
+            "test",
+            std::slice::from_ref(&f.root),
+            &[],
+            "png",
+        )
+        .unwrap();
         assert_eq!(members, 1);
         assert_eq!(
-            super::view(&f.index, png.id, Some(&f.root), &[])
+            super::view(&f.index, png.id, std::slice::from_ref(&f.root), &[])
                 .unwrap()
                 .paths,
             vec![b.clone()]
@@ -1136,10 +1222,18 @@ mod tests {
         f.tags.add_tag(&hidden, "comics");
         f.tags.add_tag(&a, "comics");
         let disabled = vec![f.root.join("off")];
-        let offers = tag_offers(&f.index, &f.tags, &f.root, &disabled).unwrap();
+        let offers =
+            tag_offers(&f.index, &f.tags, std::slice::from_ref(&f.root), &disabled).unwrap();
         assert_eq!(offers.iter().find(|o| o.tag == "comics").unwrap().images, 1);
-        let (comics, members) =
-            bucket_from_tag(&f.index, &f.tags, "test", &f.root, &disabled, "comics").unwrap();
+        let (comics, members) = bucket_from_tag(
+            &f.index,
+            &f.tags,
+            "test",
+            std::slice::from_ref(&f.root),
+            &disabled,
+            "comics",
+        )
+        .unwrap();
         assert_eq!(members, 1);
         assert!(f
             .index

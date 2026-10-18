@@ -77,20 +77,20 @@ pub struct PassSummary {
     pub failed: usize,
 }
 
-/// Fingerprints every image under `root` outside `disabled` folders that has
+/// Fingerprints every image under the `roots` outside `disabled` folders that has
 /// no fresh cached fingerprint. `first` paths (such as bucket members) are
 /// done before the rest. Stops early when `canceled` returns true; work done
 /// so far is kept.
 pub fn run_pass(
     index: &LibraryIndex,
-    root: &Path,
+    roots: &[PathBuf],
     disabled: &[PathBuf],
     first: &[PathBuf],
     canceled: &dyn Fn() -> bool,
     progress: &dyn Fn(Progress),
 ) -> Result<PassSummary, String> {
     let mut paths = crate::model::library::collect_library_image_paths_cancellable(
-        Some(root.to_path_buf()),
+        roots,
         FolderMode::DrillDown,
         None,
         disabled,
@@ -156,13 +156,13 @@ pub fn run_pass(
 /// What a pass covers: the active library outside its disabled folders.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
-    pub root: PathBuf,
+    pub roots: Vec<PathBuf>,
     pub disabled: Vec<PathBuf>,
 }
 
 impl Job {
     fn same_scope(&self, other: &Job) -> bool {
-        self.root == other.root && self.disabled == other.disabled
+        self.roots == other.roots && self.disabled == other.disabled
     }
 }
 
@@ -234,7 +234,14 @@ impl Service {
                     };
                     // Bucket members first, so re-linking can start soonest.
                     let first = crate::buckets::member_paths(&index);
-                    match run_pass(&index, &job.root, &job.disabled, &first, &canceled, &report) {
+                    match run_pass(
+                        &index,
+                        &job.roots,
+                        &job.disabled,
+                        &first,
+                        &canceled,
+                        &report,
+                    ) {
                         Ok(summary) if !canceled() => {
                             crate::bench_event!(
                                 "fingerprint.pass",
@@ -327,7 +334,15 @@ mod tests {
         let index = LibraryIndex::open_in_memory().unwrap();
         let disabled = vec![root.join("off")];
         let never = || false;
-        let first = run_pass(&index, &root, &disabled, &[], &never, &|_| {}).unwrap();
+        let first = run_pass(
+            &index,
+            std::slice::from_ref(&root),
+            &disabled,
+            &[],
+            &never,
+            &|_| {},
+        )
+        .unwrap();
         assert_eq!((first.files, first.hashed), (2, 2));
         assert!(index
             .cached_fingerprints()
@@ -335,12 +350,28 @@ mod tests {
             .keys()
             .all(|p| !p.contains("/off/")));
 
-        let again = run_pass(&index, &root, &disabled, &[], &never, &|_| {}).unwrap();
+        let again = run_pass(
+            &index,
+            std::slice::from_ref(&root),
+            &disabled,
+            &[],
+            &never,
+            &|_| {},
+        )
+        .unwrap();
         assert_eq!(again.hashed, 0, "unchanged files are not read again");
 
         std::thread::sleep(std::time::Duration::from_millis(10));
         std::fs::write(root.join("b.png"), b"changed").unwrap();
-        let changed = run_pass(&index, &root, &disabled, &[], &never, &|_| {}).unwrap();
+        let changed = run_pass(
+            &index,
+            std::slice::from_ref(&root),
+            &disabled,
+            &[],
+            &never,
+            &|_| {},
+        )
+        .unwrap();
         assert_eq!(changed.hashed, 1);
         let expected = hash_file(&root.join("b.png")).unwrap();
         assert_eq!(
