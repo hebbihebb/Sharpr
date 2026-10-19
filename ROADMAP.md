@@ -804,7 +804,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 28 | Similar photos (user, October 19): group near-identical shots such as bursts and series from the visual-search vectors, and narrow each group with Compare. Nothing is trashed without the user choosing it | Opus medium |
 | 29 | Similar-image count in Info (user, October 19), the companion to item 28: the Info panel says how many similar images or close matches the image has (for example "38 similar images"), and clicking it shows them through item 28's similarity search. Replaces the earlier "short image descriptions" idea, which conflicted with "No generated tags". Do it after item 28 | Sonnet medium |
 | 30 | ~~AVIF and HEIC show no filmstrip thumbnail~~ **Done October 19, 2026**, accepted by the user (build `637d98f`): the thumbnail worker decodes them through glycin's HEIF loader, as visual search does | Sonnet high (done by Opus) |
-| 31 | Retire Survey (D43, user, October 19): Compare does the same job, and Survey's tiles are blurry enlarged thumbnails | Sonnet medium |
+| 31 | ~~Retire Survey (D43)~~ **Done October 19, 2026**, accepted by the user (build `8343c3c`) | Sonnet medium (done by Opus) |
 
 Audit fixes `codex/audit-0.5.0-2` (A01–A09): **Done October 19, 2026**,
 accepted by the user and merged. Cleanup now retains uncertain members, legacy
