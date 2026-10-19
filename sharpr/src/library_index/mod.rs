@@ -901,6 +901,32 @@ impl LibraryIndex {
         Ok(ids)
     }
 
+    /// Legacy members not yet represented by tags. Read only during the
+    /// backed-up membership upgrade; converted rows are historical evidence.
+    pub(crate) fn unconverted_bucket_members(
+        &self,
+    ) -> rusqlite::Result<HashMap<i64, Vec<PathBuf>>> {
+        let conn = self.conn()?;
+        let mut query = conn.prepare(
+            "SELECT items.collection_id, items.image_path FROM collection_items AS items
+             JOIN collections AS buckets ON buckets.id = items.collection_id
+             WHERE buckets.tag_migrated_at IS NULL
+             ORDER BY items.collection_id, items.image_path",
+        )?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                PathBuf::from(row.get::<_, String>(1)?),
+            ))
+        })?;
+        let mut members: HashMap<i64, Vec<PathBuf>> = HashMap::new();
+        for row in rows {
+            let (id, path) = row?;
+            members.entry(id).or_default().push(path);
+        }
+        Ok(members)
+    }
+
     // ---- Pipeline CRUD ----
 
     fn conn(&self) -> rusqlite::Result<PooledConnection<SqliteConnectionManager>> {
@@ -1315,32 +1341,6 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_folder_batch_upsert_and_stale_removal() {
-        let idx = LibraryIndex::open_in_memory().unwrap();
-        // Pre-populate with two images.
-        idx.upsert_image_basic(&make_info("/photos", "old.jpg", 100, None))
-            .unwrap();
-        idx.upsert_image_basic(&make_info("/photos", "keep.jpg", 200, None))
-            .unwrap();
-        idx.update_image_metadata(Path::new("/photos/keep.jpg"), 1600, 900, QualityClass::Poor)
-            .unwrap();
-
-        // Reconcile with keep.jpg (unchanged) and new.jpg; old.jpg is gone.
-        let entries = vec![
-            make_info("/photos", "keep.jpg", 200, None),
-            make_info("/photos", "new.jpg", 300, None),
-        ];
-        let (rows, stale, pending) = idx
-            .reconcile_folder(Path::new("/photos"), &entries, SortOrder::NameAsc)
-            .unwrap();
-
-        assert_eq!(stale, 1, "old.jpg should be removed");
-        assert_eq!(rows.len(), 2);
-        // keep.jpg metadata should be preserved (unchanged file).
-        let keep_row = rows.iter().find(|r| r.filename == "keep.jpg").unwrap();
-        assert_eq!(keep_row.metadata_status, "ready");
-        assert_eq!(keep_row.width, Some(1600));
-    #[test]
     fn indexing_preserves_retired_perceptual_hash_values() {
         for reconcile in [false, true] {
             let idx = LibraryIndex::open_in_memory().unwrap();
@@ -1398,6 +1398,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reconcile_folder_batch_upsert_and_stale_removal() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        // Pre-populate with two images.
+        idx.upsert_image_basic(&make_info("/photos", "old.jpg", 100, None))
+            .unwrap();
+        idx.upsert_image_basic(&make_info("/photos", "keep.jpg", 200, None))
+            .unwrap();
+        idx.update_image_metadata(Path::new("/photos/keep.jpg"), 1600, 900, QualityClass::Poor)
+            .unwrap();
+
+        // Reconcile with keep.jpg (unchanged) and new.jpg; old.jpg is gone.
+        let entries = vec![
+            make_info("/photos", "keep.jpg", 200, None),
+            make_info("/photos", "new.jpg", 300, None),
+        ];
+        let (rows, stale, pending) = idx
+            .reconcile_folder(Path::new("/photos"), &entries, SortOrder::NameAsc)
+            .unwrap();
+
+        assert_eq!(stale, 1, "old.jpg should be removed");
+        assert_eq!(rows.len(), 2);
+        // keep.jpg metadata should be preserved (unchanged file).
+        let keep_row = rows.iter().find(|r| r.filename == "keep.jpg").unwrap();
+        assert_eq!(keep_row.metadata_status, "ready");
+        assert_eq!(keep_row.width, Some(1600));
         // new.jpg needs metadata.
         assert!(pending.iter().any(|p| p.filename == "new.jpg"));
     }
@@ -2002,7 +2028,74 @@ mod tests {
     }
 
     #[test]
-    fn old_database_with_unconverted_bucket_opens_untouched() {
+    fn upgrade_unions_unconverted_members_without_reviving_converted_history() {
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let tags = crate::tags::TagDatabase::open_in_memory().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "sharpr-legacy-union-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        let pending = idx
+            .create_collection("test", None, "Pending", &[], None, None)
+            .unwrap();
+        let converted = idx
+            .create_collection("test", None, "Converted", &[], None, None)
+            .unwrap();
+        let legacy = root.join("missing-legacy.jpg");
+        let tagged = root.join("missing-tagged.jpg");
+        let historical = root.join("retired-member.jpg");
+        let conn = idx.conn().unwrap();
+        conn.execute(
+            "UPDATE collections SET tag_migrated_at = NULL WHERE id = ?1",
+            [pending.id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE collections SET tag_migrated_at = 1 WHERE id = ?1",
+            [converted.id],
+        )
+        .unwrap();
+        for (bucket, path) in [(pending.id, &legacy), (converted.id, &historical)] {
+            conn.execute(
+                "INSERT INTO collection_items(collection_id,image_path,added_at) VALUES (?1,?2,1)",
+                params![bucket, path.to_str().unwrap()],
+            )
+            .unwrap();
+        }
+        // Duplicate legacy/tag membership is counted once; independently tagged
+        // members remain too. Converted history must not become membership again.
+        tags.add_tag(&legacy, &pending.primary_tag);
+        tags.add_tag(&tagged, &pending.primary_tag);
+        tags.add_tag(&tagged, &converted.primary_tag);
+        let before_tags = tags.stored_rows().unwrap();
+        drop(conn);
+        crate::buckets::migrate(&idx, &tags, &root.join("backups")).unwrap();
+        let paths = |id| {
+            idx.bucket_members(&[id])
+                .unwrap()
+                .into_iter()
+                .map(|m| m.last_path)
+                .collect::<Vec<_>>()
+        };
+        let mut expected = vec![legacy, tagged.clone()];
+        expected.sort();
+        assert_eq!(paths(pending.id), expected);
+        assert_eq!(paths(converted.id), vec![tagged]);
+        assert_eq!(tags.stored_rows().unwrap(), before_tags);
+        assert_eq!(
+            idx.conn()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM collection_items", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn old_database_with_unconverted_bucket_upgrades_without_losing_members() {
         let root = std::env::temp_dir().join(format!(
             "sharpr-legacy-bucket-{}-{}",
             std::process::id(),
@@ -2046,6 +2139,56 @@ mod tests {
             .unwrap();
         assert_eq!(migrated_at, None);
         assert_eq!(items, 1);
+        drop(conn);
+        let tags = crate::tags::TagDatabase::open_in_memory().unwrap();
+        let backup = crate::buckets::migrate(&idx, &tags, &root.join("backups"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            idx.bucket_members(&[collection_id])
+                .unwrap()
+                .iter()
+                .map(|row| row.last_path.clone())
+                .collect::<Vec<_>>(),
+            vec![PathBuf::from(member)],
+            "normal startup must carry unconverted legacy membership into version 2"
+        );
+        assert!(idx.is_membership_migrated().unwrap());
+        let conn = idx.conn().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM collection_items", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert!(
+            tags.stored_rows().unwrap().is_empty(),
+            "the retired tag conversion stays retired"
+        );
+        assert!(backup.join("tags.sqlite3").is_file());
+        let before = rusqlite::Connection::open_with_flags(
+            backup.join("library-index.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        assert_eq!(
+            before
+                .query_row("SELECT COUNT(*) FROM collection_items", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            before
+                .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            crate::buckets::migrate(&idx, &tags, &root.join("backups")).unwrap(),
+            None
+        );
+        drop(before);
         drop(conn);
         drop(idx);
 

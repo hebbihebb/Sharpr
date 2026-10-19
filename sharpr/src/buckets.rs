@@ -656,7 +656,7 @@ pub fn migrate(
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         index.backup_to(&dir.join("library-index.sqlite"))?;
         tags.backup_to(&dir.join("tags.sqlite3"))?;
-        verify_backup(&dir, collections.len())?;
+        verify_backup(&dir, collections.len(), &legacy)?;
         Some(dir)
     };
     let mut members = Vec::new();
@@ -690,7 +690,11 @@ pub fn migrate(
     Ok(backup)
 }
 
-fn verify_backup(dir: &Path, collections: usize) -> Result<(), String> {
+fn verify_backup(
+    dir: &Path,
+    collections: usize,
+    legacy: &HashMap<i64, Vec<PathBuf>>,
+) -> Result<(), String> {
     let open = |name: &str| {
         rusqlite::Connection::open_with_flags(
             dir.join(name),
@@ -757,6 +761,9 @@ fn tag_candidates(
     for paths in candidates.values_mut() {
         paths.sort();
     }
+    let legacy = index
+        .unconverted_bucket_members()
+        .map_err(|e| e.to_string())?;
     Ok(candidates)
 }
 
@@ -780,6 +787,14 @@ pub fn tag_offers(
 
 /// Makes a bucket named `tag` from exactly the images its offer counted,
 /// with the bucket and all its members written in one transaction: on any
+        // Carry unconverted legacy rows directly into membership. The retired
+        // tag-writing conversion stays retired; both source stores stay intact.
+        let paths: Vec<PathBuf> = paths
+            .into_iter()
+            .chain(legacy.get(&bucket.id).into_iter().flatten().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
 /// failure nothing is created. The tag rows are not touched. Returns the
 /// bucket and its member count.
 pub fn bucket_from_tag(
@@ -819,6 +834,21 @@ mod tests {
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
+    for (id, paths) in legacy {
+        let stored: i64 = index
+            .query_row(
+                "SELECT COUNT(*) FROM collection_items WHERE collection_id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("backup legacy members unreadable: {e}"))?;
+        if stored as usize != paths.len() {
+            return Err(format!(
+                "backup has {stored} legacy members for bucket {id} instead of {}",
+                paths.len()
+            ));
+        }
+    }
                     .unwrap()
                     .as_nanos()
             ));
