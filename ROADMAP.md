@@ -806,7 +806,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 30 | ~~AVIF and HEIC show no filmstrip thumbnail~~ **Done October 19, 2026**, accepted by the user (build `637d98f`): the thumbnail worker decodes them through glycin's HEIF loader, as visual search does | Sonnet high (done by Opus) |
 | 31 | ~~Retire Survey (D43)~~ **Done October 19, 2026**, accepted by the user (build `8343c3c`) | Sonnet medium (done by Opus) |
 | 32 | ~~AVIF and HEIC don't load in Compare~~ **Done October 19, 2026**, accepted by the user (build `e24032b`): `export::decode_oriented` decodes them through glycin | Sonnet medium (done by Opus) |
-| 33 | Compare layout redesign (user, October 19): the filename/Keep rows, the Replace Left/Right control and the candidate thumbnails sit off to the sides, which is confusing. Centre the controls and candidate strip under the images, and make the Replace control contextual. Design with the user before building | Opus medium |
+| 33 | Compare layout redesign (user, October 19), **designed as D45**: Keep buttons mirrored on the centre line, captions on the images, a centred candidate strip with L \| R hover halves (hidden with two left), no key-hints line | Sonnet medium |
 | 34 | ~~Crop Copy fails on AVIF~~ **Done October 19, 2026**, accepted by the user (build `d275c54`): sizes read through glycin; AVIF and HEIC crops keep their format at the highest quality (D37) | Sonnet medium (done by Opus) |
 | 35 | ~~Compare zooms out past Fit~~ **Done October 19, 2026**, accepted by the user (build `d275c54`): Fit is the floor, as in the viewer and crop | Sonnet medium (done by Opus) |
 
@@ -899,9 +899,9 @@ Open items only; the table above has the order and the model. Each brief adds on
 - **Guardrails:** Survey stored nothing, so no data changes. Keep Compare, multi-select and the selection-ordering helpers that other features still use. Remove dead code, but rewrite nothing else.
 
 **33. Compare layout redesign.**
-- **Goal:** Compare's controls read at a glance: the Keep buttons, the candidate strip and the remaining count are centred under the images, and replacing a side is offered only in context, not as a standing Left/Right toggle.
-- **Done when:** the user has approved a layout (sketch or off-screen screenshot) and the built page matches it in Side by Side, Split and Flip at the minimum and wide window sizes; Keep, Undo, Done, the arrow keys and the survivors returned stay as they are; the Compare GTK tests pass.
-- **Guardrails:** the user's call on the layout and on what "contextual" means for Replace (for example, choosing a candidate offers which side it replaces). Keep Compare's bounded decodes, its thumbnail lane and its generation checks. No file changes from Compare.
+- **Goal:** Compare's controls read at a glance, as designed in D45 (approved by the user, October 19): Keep Left and Keep Right mirrored on the centre line with their keys, each image's caption in its own corner, a centred candidate strip with L | R hover halves and the remaining count beside it, hidden with two images left; no standing Replace toggle and no key-hints line.
+- **Done when:** off-screen screenshots in Side by Side, Split and Flip, with two and with several images, at the minimum and wide window sizes, match D45; a load error shows in its image's area with only that side's Keep disabled; choosing a thumbnail's L or R half replaces that side; Keep, Undo, Done, the arrow keys and the survivors returned work as before; the Compare GTK tests pass, updated for the new controls.
+- **Guardrails:** D45 is the layout; ask the user only where it leaves a real gap. Keep Compare's bounded decodes, its thumbnail lane and its generation checks. No file changes from Compare. Keyboard choice of a candidate must still work without hover.
 
 ## Backlog
 
