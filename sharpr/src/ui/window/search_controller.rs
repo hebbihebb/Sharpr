@@ -32,8 +32,9 @@ pub(super) enum VisualSummary {
 }
 
 /// One visual search's complete ranking. "Show More" pages through it
-/// without ranking again, so results already shown never move while
-/// indexing adds vectors. A new query replaces it.
+/// without ranking again, so the images shown stay shown while indexing
+/// adds vectors; each page is sorted in the chosen order. A new query or
+/// sort order replaces it.
 struct RankedSnapshot {
     /// The browse session, the search box's text and the sort order it
     /// answers.
@@ -44,9 +45,15 @@ struct RankedSnapshot {
     /// Visual results that are strong matches on their own.
     strong: std::collections::HashSet<PathBuf>,
     summary: VisualSummary,
+    /// What the sort needs to know about each candidate.
+    entries: std::collections::HashMap<PathBuf, crate::model::library::RawImageEntry>,
+    order: crate::model::library::SortOrder,
 }
 
 impl RankedSnapshot {
+    /// The file-name matches and the `limit` closest images: which images
+    /// show is decided by closeness, their order by the chosen sort (user,
+    /// October 19).
     fn page(&self, limit: usize) -> BrowseResult {
         let mut paths = self.by_name.clone();
         paths.extend(self.visual.iter().take(limit).cloned());
@@ -56,6 +63,14 @@ impl RankedSnapshot {
             .filter(|(i, path)| *i < self.by_name.len() || self.strong.contains(*path))
             .map(|(_, path)| path.clone())
             .collect();
+        let mut shown: Vec<_> = paths
+            .iter()
+            .filter_map(|path| self.entries.get(path).cloned())
+            .collect();
+        if shown.len() == paths.len() {
+            crate::model::library::sort_raw_entries(&mut shown, self.order);
+            paths = shown.into_iter().map(|entry| entry.path).collect();
+        }
         let mut summary = self.summary.clone();
         if let VisualSummary::Ranked { more, .. } = &mut summary {
             *more = self.visual.len() > limit;
@@ -978,20 +993,7 @@ impl SharprWindow {
                         Some(map) => map,
                         None => index.cached_fingerprints().map_err(|e| e.to_string())?,
                     };
-                    // Sorted first, so equally close images follow the order.
-                    let mut order_of: Vec<(crate::model::library::RawImageEntry, (u64, i64))> =
-                        raw.into_iter().zip(stamps).collect();
-                    {
-                        let mut entries: Vec<_> = order_of.iter().map(|(e, _)| e.clone()).collect();
-                        crate::model::library::sort_raw_entries(&mut entries, order);
-                        let rank_of: std::collections::HashMap<PathBuf, usize> = entries
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, e)| (e.path, i))
-                            .collect();
-                        order_of.sort_by_key(|(e, _)| rank_of[&e.path]);
-                    }
-                    let (raw, stamps): (Vec<_>, Vec<_>) = order_of.into_iter().unzip();
+                    let mut entries = std::collections::HashMap::with_capacity(raw.len());
                     let mut by_name = Vec::new();
                     let mut candidates = Vec::with_capacity(raw.len());
                     for (entry, stamp) in raw.into_iter().zip(stamps) {
@@ -1001,10 +1003,10 @@ impl SharprWindow {
                             .map(|(_, _, hash)| hash.clone());
                         candidates.push((entry.path.clone(), fingerprint));
                         if name_matches.contains(&entry.path) {
-                            by_name.push(entry);
+                            by_name.push(entry.path.clone());
                         }
+                        entries.insert(entry.path.clone(), entry);
                     }
-                    crate::model::library::sort_raw_entries(&mut by_name, order);
                     // Coverage and strength count every candidate; only the
                     // listing leaves the file-name matches out of the ranking.
                     let ranked = crate::visual_search::search::rank(&candidates, &prepared);
@@ -1030,9 +1032,11 @@ impl SharprWindow {
                             excluded,
                             not_applied,
                         },
-                        by_name: by_name.into_iter().map(|r| r.path).collect(),
+                        by_name,
                         visual,
                         strong,
+                        entries,
+                        order,
                     };
                     let page = snapshot.page(visual_limit);
                     cache.ranked = Some(snapshot);
@@ -1340,14 +1344,34 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn show_more_extends_one_ranking_without_reordering() {
+    fn a_page_shows_the_closest_images_in_the_chosen_order() {
+        use crate::model::library::{RawImageEntry, SortOrder};
+        // Closest first: z, b, y, a, x. The file-name match is "m".
+        let visual: Vec<PathBuf> = ["z", "b", "y", "a", "x"]
+            .iter()
+            .map(|n| PathBuf::from(format!("/l/{n}.jpg")))
+            .collect();
+        let by_name = vec![PathBuf::from("/l/m-tower.jpg")];
+        let entries = by_name
+            .iter()
+            .chain(&visual)
+            .map(|path| {
+                let entry = RawImageEntry {
+                    path: path.clone(),
+                    filename: path.file_name().unwrap().to_string_lossy().into_owned(),
+                    file_size: 1,
+                    modified: None,
+                    width: 1,
+                    height: 1,
+                };
+                (path.clone(), entry)
+            })
+            .collect();
         let snapshot = RankedSnapshot {
-            key: (1, "tower".into(), crate::model::library::SortOrder::NameAsc),
-            by_name: vec![PathBuf::from("/l/tower-notes.jpg")],
-            visual: (0..5)
-                .map(|i| PathBuf::from(format!("/l/{i}.jpg")))
-                .collect(),
-            strong: [PathBuf::from("/l/0.jpg"), PathBuf::from("/l/3.jpg")].into(),
+            key: (1, "tower".into(), SortOrder::NameAsc),
+            by_name,
+            visual,
+            strong: [PathBuf::from("/l/z.jpg"), PathBuf::from("/l/a.jpg")].into(),
             summary: VisualSummary::Ranked {
                 name_matches: 1,
                 indexed: 6,
@@ -1357,27 +1381,31 @@ mod tests {
                 excluded: 0,
                 not_applied: None,
             },
+            entries,
+            order: SortOrder::NameAsc,
         };
+        let names = |page: &BrowseResult| {
+            page.paths
+                .iter()
+                .map(|p| p.file_stem().unwrap().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        // The two closest join the name match, and all three sort by name.
         let first = snapshot.page(2);
-        let more = snapshot.page(4);
-        assert_eq!(first.paths.len(), 3);
-        assert_eq!(
-            &more.paths[..3],
-            &first.paths[..],
-            "shown results never move"
-        );
+        assert_eq!(names(&first), ["b", "m-tower", "z"]);
         assert!(matches!(
             first.visual,
             Some(VisualSummary::Ranked { more: true, .. })
         ));
+        let mut strong = first.strong.clone();
+        strong.sort();
         assert_eq!(
-            first.strong,
-            vec![
-                PathBuf::from("/l/tower-notes.jpg"),
-                PathBuf::from("/l/0.jpg")
-            ],
-            "name matches and strong visual results on the page; 3.jpg isn't shown yet"
+            strong,
+            vec![PathBuf::from("/l/m-tower.jpg"), PathBuf::from("/l/z.jpg")],
+            "name matches and strong visual results on the page; a.jpg isn't shown yet"
         );
+        // Show More adds the next closest, sorted in among them.
+        assert_eq!(names(&snapshot.page(4)), ["a", "b", "m-tower", "y", "z"]);
         assert!(matches!(
             snapshot.page(5).visual,
             Some(VisualSummary::Ranked { more: false, .. })
