@@ -5702,38 +5702,46 @@ fn moving_an_image_out_of_an_open_bucket_keeps_the_bucket() {
     window.close();
 }
 
-/// Show Similar (Work Order item 28, D44): from the image menu's action,
-/// a search lists the image and the images like it across the library,
-/// closest first; the Close / Series / Loose switch changes how many, and
-/// removing the chip returns to the folder. Vectors are written directly,
-/// under placeholder model files when no model is installed, so the test
-/// needs no model and runs no server.
+/// Show Similar (Work Order item 28, D44): from the image menu's action, a
+/// search ranks the images in the folder by how like the image they look,
+/// closest first. Versions of the image in its own folder are left out of
+/// Similar and listed by Exact; Close lists other takes of the scene; the
+/// Whole library box widens it to versions and pictures elsewhere; removing
+/// the chip returns to the folder. Vectors are written directly, under
+/// placeholder model files when no model is installed, so the test needs
+/// no model and runs no server.
 #[test]
 #[ignore = "requires isolated GSettings/data directories and a graphical session"]
 fn show_similar_lists_close_images_through_search() {
     let root = isolated_fixture("show-similar");
-    std::fs::create_dir_all(&root).unwrap();
-    // The angle of each image's vector from the shot's: cos 12° ≈ 0.978,
-    // 18° ≈ 0.951, 22° ≈ 0.927, 40° ≈ 0.766.
-    let images = [
-        ("shot.png", 0.0f32),
-        ("retake.png", 12.0),
-        ("series.png", 18.0),
-        ("style.png", 22.0),
-        ("other.png", 40.0),
+    let here = root.join("here");
+    let elsewhere = root.join("elsewhere");
+    std::fs::create_dir_all(&here).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    // Each picture's vector is at an angle from the shot's: cos 12° ≈ 0.978
+    // (another take), 20° ≈ 0.940, 32° ≈ 0.848, 60° = 0.5. Colours differ
+    // widely, so only true copies pass the pixel check.
+    let pictures = [
+        (here.join("shot.png"), 0.0f32, [0u8, 90, 160]),
+        (here.join("retake.png"), 12.0, [200, 30, 30]),
+        (here.join("lava.png"), 32.0, [240, 200, 20]),
+        (here.join("other.png"), 60.0, [20, 220, 60]),
+        (elsewhere.join("near.png"), 20.0, [250, 250, 250]),
     ];
-    let paths: Vec<PathBuf> = images
+    for (path, _, colour) in &pictures {
+        image::RgbImage::from_pixel(64, 48, image::Rgb(*colour))
+            .save(path)
+            .unwrap();
+    }
+    // Identical copies of the shot, in its folder and elsewhere.
+    std::fs::copy(here.join("shot.png"), here.join("shot-copy.png")).unwrap();
+    std::fs::copy(here.join("shot.png"), elsewhere.join("shot-backup.png")).unwrap();
+    let all: Vec<PathBuf> = [&here, &elsewhere]
         .iter()
-        .enumerate()
-        .map(|(i, (name, _))| {
-            let path = root.join(name);
-            image::RgbImage::from_pixel(64, 48, image::Rgb([i as u8 * 40, 90, 160]))
-                .save(&path)
-                .unwrap();
-            path
-        })
+        .flat_map(|dir| std::fs::read_dir(dir).unwrap())
+        .map(|e| e.unwrap().path())
         .collect();
-    let originals: Vec<_> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    let originals: Vec<_> = all.iter().map(|p| std::fs::read(p).unwrap()).collect();
     let model_dir = crate::visual_search::files::model_dir();
     let placeholder = crate::visual_search::files::locate().is_err();
     if placeholder {
@@ -5758,7 +5766,7 @@ fn show_similar_lists_close_images_through_search() {
     settings
         .add_library("Similar", root.clone(), FolderMode::DrillDown)
         .unwrap();
-    settings.set_active_library_last_folder(Some(root.clone()));
+    settings.set_active_library_last_folder(Some(here.clone()));
     let app = libadwaita::Application::builder()
         .application_id("io.github.hebbihebb.Sharpr.GtkTest")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
@@ -5771,8 +5779,7 @@ fn show_similar_lists_close_images_through_search() {
     let index = window.app_state().borrow().library_index.clone().unwrap();
     pump_until(|| {
         let cached = index.cached_fingerprints().unwrap();
-        paths
-            .iter()
+        all.iter()
             .all(|p| cached.contains_key(p.to_string_lossy().as_ref()))
     });
     let cached = index.cached_fingerprints().unwrap();
@@ -5782,7 +5789,7 @@ fn show_similar_lists_close_images_through_search() {
     let key = store
         .model_key(&crate::visual_search::files::locate().unwrap())
         .unwrap();
-    for (path, (_, degrees)) in paths.iter().zip(images) {
+    for (path, degrees, _) in &pictures {
         let mut vector = vec![0.0; crate::visual_search::DIMENSIONS];
         vector[0] = degrees.to_radians().cos();
         vector[1] = degrees.to_radians().sin();
@@ -5811,10 +5818,15 @@ fn show_similar_lists_close_images_through_search() {
     gio::prelude::ActionGroupExt::activate_action(
         &window,
         "show-similar",
-        Some(&paths[0].to_string_lossy().to_variant()),
+        Some(&here.join("shot.png").to_string_lossy().to_variant()),
     );
-    pump_until(|| shown() == ["shot.png", "retake.png", "series.png"]);
-    assert!(status().starts_with("2 similar images"), "{}", status());
+    // Similar, in the folder: the copy here is left out, nothing elsewhere.
+    pump_until(|| shown() == ["shot.png", "retake.png", "lava.png", "other.png"]);
+    assert!(
+        status().contains("1 version in this folder left out"),
+        "{}",
+        status()
+    );
     assert_eq!(
         window.app_state().borrow().library.selected_index,
         Some(0),
@@ -5827,12 +5839,31 @@ fn show_similar_lists_close_images_through_search() {
             .find(|b| b.label().as_deref() == Some(label))
             .unwrap()
     };
-    assert!(switch("Series").is_active());
-    switch("Loose").set_active(true);
-    pump_until(|| shown() == ["shot.png", "retake.png", "series.png", "style.png"]);
+    assert!(switch("Similar").is_active());
+    switch("Exact").set_active(true);
+    pump_until(|| shown() == ["shot.png", "shot-copy.png"]);
+    assert!(status().starts_with("1 version ·"), "{}", status());
     switch("Close").set_active(true);
     pump_until(|| shown() == ["shot.png", "retake.png"]);
-    assert!(status().starts_with("1 similar image ·"), "{}", status());
+    assert!(status().starts_with("1 close take"), "{}", status());
+    // The Whole library box widens it: the backup elsewhere and the near
+    // picture join; the copy in the image's own folder stays out.
+    switch("Similar").set_active(true);
+    let whole = window.imp().search_whole_library.borrow().clone().unwrap();
+    whole.set_active(true);
+    pump_until(|| {
+        shown()
+            == [
+                "shot.png",
+                "shot-backup.png",
+                "retake.png",
+                "near.png",
+                "lava.png",
+                "other.png",
+            ]
+    });
+    whole.set_active(false);
+    pump_until(|| shown() == ["shot.png", "retake.png", "lava.png", "other.png"]);
     // Removing the chip returns to the folder.
     let remove = find_widgets::<gtk4::Button>(chips.upcast_ref())
         .into_iter()
@@ -5840,7 +5871,7 @@ fn show_similar_lists_close_images_through_search() {
         .unwrap();
     remove.emit_clicked();
     pump_until(|| shown().len() == 5 && window.imp().browse_options.borrow().similar.is_none());
-    for (path, bytes) in paths.iter().zip(originals) {
+    for (path, bytes) in all.iter().zip(originals) {
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
     window.close();

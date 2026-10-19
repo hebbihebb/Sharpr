@@ -1,9 +1,10 @@
 //! Show Similar (Work Order item 28, D44): a search for the images like one
 //! image, from the image menu. It runs through the search bar as a chip
-//! with a Close / Series / Loose switch, so the results, Compare, buckets,
+//! with an Exact / Close / Similar switch, over the folder or bucket in view
+//! or the whole library as the box says, so the results, Compare, buckets,
 //! filter chips and Escape work as for any search.
 use super::*;
-use crate::visual_search::similar::Closeness;
+use crate::visual_search::similar::Level;
 
 impl SharprWindow {
     pub(super) fn setup_show_similar(&self) {
@@ -19,20 +20,20 @@ impl SharprWindow {
         self.add_action(&action);
     }
 
-    /// Lists the images like `path` across the library, keeping the
-    /// closeness last chosen in this search.
+    /// Lists the images like `path`, keeping the level last chosen in this
+    /// search.
     pub(crate) fn show_similar(&self, path: PathBuf) {
         if file_actions_blocked(self.upcast_ref()) {
             return;
         }
         {
             let mut options = self.imp().browse_options.borrow_mut();
-            let closeness = options
+            let level = options
                 .similar
                 .as_ref()
                 .map(|(_, c)| *c)
                 .unwrap_or_default();
-            options.similar = Some((path, closeness));
+            options.similar = Some((path, level));
         }
         // The search bar shows the chip; the keys stay with the filmstrip.
         if let Some(revealer) = self.imp().inline_search_revealer.borrow().as_ref() {
@@ -47,9 +48,9 @@ impl SharprWindow {
         self.run_scoped_search(String::new());
     }
 
-    /// The "similar to <name>" chip: the switch changes the closeness, the
-    /// close button ends Show Similar.
-    pub(super) fn similar_chip(&self, path: &Path, closeness: Closeness) -> gtk4::Box {
+    /// The "similar to <name>" chip: the switch changes the level, the close
+    /// button ends Show Similar.
+    pub(super) fn similar_chip(&self, path: &Path, level: Level) -> gtk4::Box {
         let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         let pill = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         pill.add_css_class("linked");
@@ -70,16 +71,12 @@ impl SharprWindow {
         let switch = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         switch.add_css_class("linked");
         let mut group: Option<gtk4::ToggleButton> = None;
-        for option in Closeness::ALL {
+        for option in Level::ALL {
             let button = gtk4::ToggleButton::with_label(option.label());
             button.add_css_class("sharpr-filter-chip");
-            button.set_tooltip_text(Some(match option {
-                Closeness::Close => "The same picture, re-rendered or lightly edited",
-                Closeness::Series => "The same scene or shot in different takes",
-                Closeness::Loose => "Also pictures that share a subject and style",
-            }));
+            button.set_tooltip_text(Some(option.tooltip()));
             button.set_group(group.as_ref());
-            button.set_active(option == closeness);
+            button.set_active(option == level);
             group.get_or_insert_with(|| button.clone());
             let weak = self.downgrade();
             button.connect_toggled(move |button| {

@@ -32,11 +32,15 @@ pub(super) enum VisualSummary {
     },
     /// Visual search couldn't run; file names were matched instead.
     Unavailable(String),
-    /// Show Similar (item 28): `None` similar when the image itself isn't
-    /// indexed yet.
+    /// Show Similar (item 28, D44). `found` is `None` when the image itself
+    /// isn't indexed yet.
     Similar {
-        similar: Option<usize>,
-        closeness: crate::visual_search::similar::Closeness,
+        level: crate::visual_search::similar::Level,
+        found: Option<usize>,
+        /// Versions of the image in its own folder, left out of Similar.
+        copies_left_out: usize,
+        /// More wait behind "Show More".
+        more: bool,
         indexed: usize,
         eligible: usize,
     },
@@ -212,9 +216,9 @@ pub(crate) struct BrowseOptions {
     pub whole_library: bool,
     /// Chips taken out of the search box (decision D16).
     pub chips: crate::model::search_query::ChipFilters,
-    /// Show Similar's image and closeness (item 28, D44): the search looks
-    /// across the library for images like it instead of for words.
-    pub similar: Option<(PathBuf, crate::visual_search::similar::Closeness)>,
+    /// Show Similar's image and level (item 28, D44): the search ranks the
+    /// images in scope by how like it they look instead of by words.
+    pub similar: Option<(PathBuf, crate::visual_search::similar::Level)>,
 }
 impl BrowseOptions {
     pub(super) fn has_filters(&self) -> bool {
@@ -604,8 +608,8 @@ impl SharprWindow {
         let similar = self.imp().browse_options.borrow().similar.clone();
         container.set_visible(!chips.is_empty() || similar.is_some());
         self.sync_search_chip_bar();
-        if let Some((path, closeness)) = similar {
-            container.append(&self.similar_chip(&path, closeness));
+        if let Some((path, level)) = similar {
+            container.append(&self.similar_chip(&path, level));
             if let Some(child) = container.last_child() {
                 child.set_focusable(false);
             }
@@ -717,7 +721,10 @@ impl SharprWindow {
         status.label.set_text(text.as_deref().unwrap_or_default());
         status.more.set_visible(matches!(
             summary,
-            Some(VisualSummary::Ranked { more: true, .. })
+            Some(
+                VisualSummary::Ranked { more: true, .. }
+                    | VisualSummary::Similar { more: true, .. }
+            )
         ));
         let ranked = matches!(
             summary,
@@ -885,15 +892,14 @@ impl SharprWindow {
                     }
                     // The sort order is part of the key: a new order sorts again.
                     let snapshot_key = (session, snapshot_query, order);
-                    if extend {
+                    if extend && options.similar.is_none() {
                         if let Some(snapshot) = &cache.ranked {
                             if snapshot.key == snapshot_key {
                                 return Ok(snapshot.page(visual_limit));
                             }
                         }
                     }
-                    // Show Similar looks across the whole library.
-                    let whole_library = options.whole_library || options.similar.is_some();
+                    let whole_library = options.whole_library;
                     let candidates = if whole_library {
                         if roots.is_empty() {
                             return Err("No active library".into());
@@ -1021,7 +1027,7 @@ impl SharprWindow {
                             fingerprints = Some(map);
                         }
                     }
-                    if let Some((target, closeness)) = &options.similar {
+                    if let Some((target, level)) = &options.similar {
                         let index = index.as_ref().ok_or("Library index is unavailable")?;
                         let fingerprints = match fingerprints {
                             Some(map) => map,
@@ -1029,7 +1035,8 @@ impl SharprWindow {
                         };
                         return similar_result(
                             target,
-                            *closeness,
+                            *level,
+                            visual_limit,
                             raw,
                             &stamps,
                             &fingerprints,
@@ -1199,17 +1206,23 @@ impl SharprWindow {
     }
 }
 
-/// The Show Similar listing: the image first, then the images like it,
-/// closest first. Without vectors the image shows alone, with the reason.
+/// The Show Similar listing (D44): the image first, then, by `level`, its
+/// versions, other takes of its scene, or every other picture closest
+/// first, up to `limit`. Versions in the image's own folder are left out of
+/// Similar.
+/// Without vectors the image shows alone, with the reason.
+#[allow(clippy::too_many_arguments)]
 fn similar_result(
     target: &Path,
-    closeness: crate::visual_search::similar::Closeness,
+    level: crate::visual_search::similar::Level,
+    limit: usize,
     raw: Vec<RawImageEntry>,
     stamps: &[(u64, i64)],
     fingerprints: &std::collections::HashMap<String, (u64, i64, String)>,
     searcher: Option<&crate::visual_search::search::Searcher>,
     superseded: &dyn Fn() -> bool,
 ) -> Result<BrowseResult, String> {
+    use crate::visual_search::similar::{Level, CLOSE_FROM};
     let current = |path: &Path, stamp: (u64, i64)| {
         fingerprints
             .get(path.to_string_lossy().as_ref())
@@ -1242,30 +1255,84 @@ fn similar_result(
         Err(error) if error == crate::visual_search::search::SUPERSEDED => return Err(error),
         Err(error) => return Ok(alone(VisualSummary::Unavailable(error))),
     };
-    let found = target_fingerprint.and_then(|fingerprint| {
-        crate::visual_search::similar::similar_to(&fingerprint, &candidates, &vectors, closeness)
-    });
     let indexed = candidates
         .iter()
         .filter(|(_, f)| f.as_ref().is_some_and(|f| vectors.contains_key(f)))
         .count();
-    Ok(match found {
-        Some(found) => BrowseResult {
-            strong: Vec::new(),
-            paths: found.paths,
-            visual: Some(VisualSummary::Similar {
-                similar: Some(found.similar),
-                closeness,
-                indexed: found.indexed,
-                eligible: found.eligible,
-            }),
-        },
-        None => alone(VisualSummary::Similar {
-            similar: None,
-            closeness,
-            indexed,
-            eligible: candidates.len(),
-        }),
+    let summary = |found, copies_left_out, more| VisualSummary::Similar {
+        level,
+        found,
+        copies_left_out,
+        more,
+        indexed,
+        eligible: candidates.len(),
+    };
+    let ranked = target_fingerprint.as_ref().and_then(|fingerprint| {
+        crate::visual_search::similar::neighbours(fingerprint, &candidates, &vectors)
+    });
+    let (Some(target_fingerprint), Some(ranked)) = (target_fingerprint, ranked) else {
+        return Ok(alone(summary(None, 0, false)));
+    };
+    // Versions of the image (copies, crops, edits); only the few closest
+    // need the pixel check, and the image's small version is read once.
+    let target_tiny = std::sync::OnceLock::new();
+    let tiny = |path: &Path| {
+        if path == target {
+            target_tiny
+                .get_or_init(|| crate::copies::tiny_version(path))
+                .clone()
+        } else {
+            crate::copies::tiny_version(path)
+        }
+    };
+    let readers = crate::copies::Readers {
+        size_of: &|_| None,
+        tiny: &tiny,
+        canceled: &|| false,
+        progress: &|_, _| {},
+    };
+    let folder = target.parent();
+    let mut listed = Vec::new();
+    let mut copies_left_out = 0;
+    for neighbour in ranked {
+        if neighbour.path == target {
+            continue;
+        }
+        if superseded() {
+            return Err(crate::visual_search::search::SUPERSEDED.into());
+        }
+        let copy = crate::copies::version_of(
+            (target, &target_fingerprint),
+            (&neighbour.path, &neighbour.fingerprint),
+            neighbour.score,
+            &readers,
+        );
+        let keep = match level {
+            Level::Exact => copy,
+            Level::Close => !copy && neighbour.score >= CLOSE_FROM,
+            Level::Similar if copy && neighbour.path.parent() == folder => {
+                copies_left_out += 1;
+                false
+            }
+            Level::Similar => true,
+        };
+        if keep {
+            listed.push(neighbour.path);
+        }
+        // Past the copy and close bands only Similar lists anything.
+        if level != Level::Similar && neighbour.score < CLOSE_FROM.min(crate::copies::MAYBE_SAME) {
+            break;
+        }
+    }
+    let found = listed.len();
+    let more = found > limit;
+    listed.truncate(limit);
+    let mut paths = vec![target.to_path_buf()];
+    paths.extend(listed);
+    Ok(BrowseResult {
+        strong: Vec::new(),
+        paths,
+        visual: Some(summary(Some(found), copies_left_out, more)),
     })
 }
 
@@ -1273,25 +1340,41 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
     use crate::visual_search::search::Strength;
     match summary {
         VisualSummary::Similar {
-            similar,
-            closeness,
+            level,
+            found,
+            copies_left_out,
+            more,
             indexed,
             eligible,
         } => {
-            use crate::visual_search::similar::Closeness;
-            let found = match similar {
-                None => "This image isn't indexed for visual search yet".to_string(),
-                Some(0) if *closeness == Closeness::Loose => "No similar images".to_string(),
-                Some(0) => "No similar images; try Loose".to_string(),
-                Some(1) => "1 similar image".to_string(),
-                Some(n) => format!("{n} similar images"),
+            use crate::visual_search::similar::Level;
+            let plural = |n: usize, one: &str, many: &str| match n {
+                1 => format!("1 {one}"),
+                n => format!("{n} {many}"),
             };
-            let coverage = if indexed < eligible {
+            let mut parts = vec![match (level, found) {
+                (_, None) => "This image isn't indexed for visual search yet".to_string(),
+                (Level::Exact, Some(0)) => "No other versions of this picture".to_string(),
+                (Level::Exact, Some(n)) => plural(*n, "version", "versions"),
+                (Level::Close, Some(0)) => "No other takes of this scene; try Similar".to_string(),
+                (Level::Close, Some(n)) => plural(*n, "close take", "close takes"),
+                (Level::Similar, Some(_)) if *more => {
+                    "Closest first; Show More adds the next".to_string()
+                }
+                (Level::Similar, Some(_)) => "Closest first".to_string(),
+            }];
+            if *copies_left_out > 0 {
+                parts.push(format!(
+                    "{} in this folder left out",
+                    plural(*copies_left_out, "version", "versions")
+                ));
+            }
+            parts.push(if indexed < eligible {
                 format!("{indexed} of {eligible} images indexed")
             } else {
                 format!("all {eligible} images searched")
-            };
-            format!("{found} · closest first · {coverage}")
+            });
+            parts.join(" · ")
         }
         VisualSummary::Unavailable(reason) => {
             format!("Matching file names only. {}", reason.trim_end_matches('.'))

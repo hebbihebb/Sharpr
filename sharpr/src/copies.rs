@@ -119,13 +119,45 @@ pub fn tiny_version(path: &Path) -> Option<Vec<u8>> {
 
 /// Whether two 32×32 versions show the same picture.
 fn look_the_same(a: &[u8], b: &[u8]) -> bool {
-    let diff: f64 = a
-        .iter()
+    mean_difference(a, b) <= PIXEL_TOLERANCE
+}
+
+/// The mean difference, out of 255, between two 32×32 versions; infinite
+/// when their lengths differ.
+fn mean_difference(a: &[u8], b: &[u8]) -> f64 {
+    if a.len() != b.len() {
+        return f64::INFINITY;
+    }
+    a.iter()
         .zip(b)
         .map(|(x, y)| f64::from(x.abs_diff(*y)))
         .sum::<f64>()
-        / a.len().max(1) as f64;
-    a.len() == b.len() && diff <= PIXEL_TOLERANCE
+        / a.len().max(1) as f64
+}
+
+/// The largest mean difference, out of 255, between 32×32 colour versions
+/// for Show Similar's "versions of this picture" (D44), which also takes
+/// crops and edits. In the user's library a cropped, colour-tweaked edit
+/// differed from its original by 10–13; separate AI renders of one prompt
+/// by 44–47.
+const VERSION_TOLERANCE: f64 = 20.0;
+
+/// Whether `b` is a version of `a` for Show Similar's Exact (D44): the same
+/// fingerprint, or at least `MAYBE_SAME` alike with matching 32×32
+/// versions. Unlike Find Copies' rule (D14), crops and light edits count,
+/// so the aspect isn't checked and the pixels may differ more; nothing is
+/// trashed from this. `score` is their vectors' similarity.
+pub fn version_of(a: (&Path, &str), b: (&Path, &str), score: f32, read: &Readers) -> bool {
+    if a.1 == b.1 {
+        return true;
+    }
+    if score < MAYBE_SAME {
+        return false;
+    }
+    match ((read.tiny)(a.0), (read.tiny)(b.0)) {
+        (Some(ta), Some(tb)) => mean_difference(&ta, &tb) <= VERSION_TOLERANCE,
+        _ => false,
+    }
 }
 
 /// How to read the files `group` checks; tests substitute their own.
@@ -595,6 +627,49 @@ mod tests {
         let mut members = groups[0].clone();
         members.sort();
         assert_eq!(members, vec![p("a-1080p.jpg"), p("a-copy.png"), p("a.png")]);
+    }
+
+    /// Show Similar's Exact (D44): copies, resized, converted, cropped and
+    /// lightly edited versions count; a separate render of the same prompt
+    /// and anything below `MAYBE_SAME` don't.
+    #[test]
+    fn versions_include_crops_and_edits_but_not_other_renders() {
+        static SHADE: fn(&Path) -> Option<Vec<u8>> = |path| {
+            let name = path.file_name().unwrap().to_string_lossy();
+            let shade = match name.as_ref() {
+                "edited-crop.jpg" => 140,  // 12 off, as the user's edit
+                "other-render.png" => 173, // 45 off, as AI renders
+                "unreadable.png" => return None,
+                _ => 128,
+            };
+            Some(vec![shade; 32 * 32 * 3])
+        };
+        let size_of = |path: &Path| {
+            Some(if path.ends_with("edited-crop.jpg") {
+                (2835, 1598)
+            } else {
+                (2836, 1696)
+            })
+        };
+        let read = Readers {
+            size_of: &size_of,
+            tiny: &SHADE,
+            canceled: &|| false,
+            progress: &|_, _| {},
+        };
+        let a = Path::new("/l/a.jpg");
+        let version = |b: &str, hash: &str, score: f32| {
+            version_of((a, "A"), (Path::new(b), hash), score, &read)
+        };
+        assert!(version("/l/a-copy.jpg", "A", 0.2), "identical bytes");
+        assert!(
+            version("/l/a-small.webp", "A2", 0.99),
+            "resized and converted"
+        );
+        assert!(version("/l/edited-crop.jpg", "A3", 0.98), "a crop and edit");
+        assert!(!version("/l/other-render.png", "B", 0.97), "another render");
+        assert!(!version("/l/unreadable.png", "C", 0.99), "pixels unknown");
+        assert!(!version("/l/a-small.webp", "A2", 0.94), "below MAYBE_SAME");
     }
 
     #[test]

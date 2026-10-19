@@ -68,7 +68,7 @@ See `architecture.md`. In UI code this means:
 
 ## Show Similar (D44)
 
-- Image menu → Show Similar (single image) runs a search through `BrowseOptions::similar`: the chip bar shows a "similar to <name>" chip (click selects the image, × ends it) and a linked Close / Series / Loose toggle. The worker looks across the whole library, applies filter chips and file-name words, and lists the image, then images at least as close as the toggle says, closest first; the status line counts them. The selection starts on the image. Escape and clearing the search end it like any search.
+- Image menu → Show Similar (single image) runs a search through `BrowseOptions::similar`: the chip bar shows a "similar to <name>" chip (click selects the image, × ends it) and a linked Exact / Close / Similar toggle. Scope follows the Whole library box like any search. The worker ranks the scope closest first; Similar pages 200 at a time with Show More and leaves out versions in the image's own folder, Close keeps non-versions at 0.94 and up, Exact keeps versions (`copies::version_of`). The status line counts them; the selection starts on the image. Escape and clearing the search end it like any search.
 
 ## Survey (retired, D43)
 

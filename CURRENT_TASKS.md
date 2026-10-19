@@ -2,21 +2,23 @@
 
 ## Active: Show Similar (Work Order item 28, D44)
 
-Branch `feature/show-similar`. The user chose Show Similar on the image menu
-with a closeness switch, run through the search bar (decisions recorded as
-D44). Trial on a copy of the user's vectors (5,501 indexed images): pairs
-from 0.94 were series of one scene or shot, from 0.96 near-identical
-variants, at 0.92 style-only matches began; groups around one image at 0.94
-numbered 758. Thresholds: Close 0.96, Series 0.94 (default), Loose 0.92.
-- `visual_search::similar` ranks by one image's stored vector; the search
-  thread hands out loaded vectors without the query server
-  (`Searcher::vectors`).
-- `BrowseOptions::similar` runs it as a whole-library search with a chip and
-  switch (`ui/window/similar_controller.rs`); filmstrip menu action
-  `show-similar` → `win.show-similar`.
-- Tests: unit test of the thresholds and order; GTK test of menu action,
-  switch, status count, chip removal and unchanged files (placeholder model
-  files, no server).
+Branch `feature/show-similar`. First version (`4a9e574`) cut at fixed scores
+and always searched the whole library; the user found it listed only copies
+(October 19). Revised per D44 and the approved plan:
+- Ranked closest first by stored vectors (`visual_search::similar::neighbours`),
+  no cutoff for Similar; Close = non-versions ≥ 0.94; Exact = versions
+  (`copies::version_of`: same file, or ≥ 0.95 with 32×32 versions within 20,
+  which takes crops and edits; Find Copies' D14 rule unchanged).
+- Scope follows the Whole library box; versions in the image's own folder are
+  left out of Similar; Show More pages Similar.
+- Trial on a copy of the user's data: the "(Edited)" lava wallpaper's Exact
+  finds its 4 versions across the library; Similar in Wallpapers lists other
+  lava and landscape wallpapers; an SDXL render's Close finds its 2 seed
+  siblings. 2–100 ms per search.
+- Tests: neighbours order; `version_of` (crop and edit in, other renders
+  out); GTK test of folder scope, the three levels, the Whole library box,
+  chip removal and unchanged files. Show More isn't covered by a test (needs
+  more than 200 images).
 
 ## Accepted: Compare zoom floor and AVIF/HEIC Crop Copy (Work Order items 35, 34)
 
