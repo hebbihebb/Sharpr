@@ -36,7 +36,7 @@ deleted membership does not exist.
   or was outside positive scan coverage; preserve enough location/device
   provenance to distinguish an unmounted subtree from permanent loss. Keep the
   approved rule against crawling nested mounts. Add nested-mount regressions.
-- **Status:** Agreed — implementation pending.
+- **Status:** Agreed; implemented and committed as `6f44cba`. Final verification below; user acceptance pending.
 
 ### A02 — `failed == 0` can describe an incomplete search for a moved member
 
@@ -58,7 +58,7 @@ deleted membership does not exist.
   decisions when filesystem changes occur. Define conservative retention for
   moves into excluded/unsearched locations without widening the approved walk.
   Add tests for a move after collection, unreadable subtrees, and hidden moves.
-- **Status:** Agreed — implementation pending.
+- **Status:** Agreed; implemented and committed as `6f44cba`. Final verification below; user acceptance pending.
 
 ### A03 — A scope change cannot cancel deletion once the completion hook starts
 
@@ -75,7 +75,7 @@ deleted membership does not exist.
 - **Proposed fix:** carry a scope generation into cleanup and synchronize
   its validity with the final membership mutation, including after backup;
   cancel stale re-link writes too. Test scope changes during the hook.
-- **Status:** Agreed — implementation pending.
+- **Status:** Agreed; implemented and committed as `6f44cba`. Final verification below; user acceptance pending.
 
 ### A04 — A file inside a trashed directory is not protected
 
@@ -90,7 +90,7 @@ deleted membership does not exist.
 - **Proposed fix:** recognize descendant files of restorable directory trash
   entries, using component-aware paths and validating the corresponding trash
   payload; test trashing and restoring a directory containing bucket members.
-- **Status:** Agreed — implementation pending.
+- **Status:** Agreed; implemented and committed as `6f44cba`. Final verification below; user acceptance pending.
 
 ### A05 — An unreadable trash is treated as proof that no restore is possible
 
@@ -106,7 +106,7 @@ deleted membership does not exist.
 - **Proposed fix:** return trash coverage/errors and withhold cleanup for
   affected locations on read failure. Distinguish a nonexistent trash from a
   failed read; test unreadable metadata and recovery. Preserve error feedback.
-- **Status:** Agreed — implementation pending.
+- **Status:** Agreed; implemented and committed as `6f44cba`. Final verification below; user acceptance pending.
 
 ### A06 — The next startup upgrade hides unconverted version-1 membership
 
@@ -130,7 +130,7 @@ deleted membership does not exist.
   Test the full startup upgrade with an unconverted version-1 fixture. Explain
   the actual support/upgrade outcome in architecture and task documentation;
   saying merely that old rows survive omits the active-membership loss.
-- **Status:** Agreed — implementation pending.
+- **Status:** Agreed; implemented and committed as `f8509f1`. Final verification below; user acceptance pending.
 
 ### A07 — Show More re-sorts the strong block and mixes weak results in early
 
@@ -150,7 +150,7 @@ deleted membership does not exist.
   status text with the user. Add a test exceeding PAGE strong matches. Update
   the stale filename-first rule in `docs/reference/ui-gtk.md:20` alongside the
   final rule; architecture currently also promises weaker-only Show More.
-- **Status:** Agreed — implementation pending.
+- **Status:** Agreed; implemented and committed as `eddd30d`. Final verification below; user acceptance pending.
 
 ### A08 — Preferences destroys the focused switch after a root toggle
 
@@ -166,7 +166,7 @@ deleted membership does not exist.
 - **Proposed fix:** retain root rows and update state in place; when actual
   root removal requires replacement, restore focus to an appropriate control.
   Test a keyboard toggle across the timer refresh.
-- **Status:** Agreed — implementation pending.
+- **Status:** Agreed; implemented and committed as `6c62560` and `86b6167`. Final verification below; user acceptance pending.
 
 ### A09 — Retired perceptual hashes still incur index bookkeeping
 
@@ -183,7 +183,7 @@ deleted membership does not exist.
   regression is asserted.
 - **Proposed fix:** remove obsolete status reads and conflict-update work,
   preserving the legacy columns and stored values; align documentation.
-- **Status:** Agreed — implementation pending.
+- **Status:** Agreed; implemented and committed as `59e1f9e`. Final verification below; user acceptance pending.
 
 ## Other inspected behavior and limits
 
@@ -262,5 +262,59 @@ deleted membership does not exist.
   isolated `.tmp/audit-0502*` data/config/cache/fixtures. The GTK suite uses
   `tools/gtk-offscreen.py`, a private compositor and D-Bus session.
 
-Stage 2 is complete: A01–A09 agreed by the user. Stage 3 is in progress.
-No fixes have yet been verified; acceptance is pending.
+## Stage-3 fix evidence
+
+All nine agreed findings are implemented and committed on the audit branch.
+No findings were rejected or deferred. The live library/settings/trash were not
+used for trials, and no installed binary was replaced.
+
+- A01–A05: session-only positive observations include every containing directory
+  through the configured root, with device/inode identities. Unknown locations,
+  excluded coverage, read failures, moved/replaced ancestors, changed directory
+  stamps and stale epochs retain members. Source bytes in simulated offline and
+  restored trash fixtures are checked. A shared short SQL commit gate defers
+  settings changes through GTK timers rather than blocking GTK. Existing backups
+  and legacy rows are preserved. Trash error notices are deduplicated.
+- A06: union unconverted legacy rows directly with stored effective-tag members;
+  verify backup legacy counts, preserve source rows/tags, do not revive converted
+  history. Full startup upgrade and repeat-open cases are covered.
+- A07: 401 strong matches plus a filename match are shown/sorted together and
+  remain fixed while weak matches append; no Show More when only strong remain.
+- A08: the same root switch retains toplevel focus through timer and sidebar
+  changes. The headless test checks `is_focus()` and the root's focus widget;
+  inactive off-screen windows do not have desktop-wide `has_focus()`.
+- A09: changed and unchanged basic upserts/reconciliation preserve prior
+  perceptual hash values/status while metadata invalidation still works.
+
+Red evidence before fixes: A01/A02 unknown-location deletion and failed-walk
+coverage; A05 unreadable record incorrectly claimed absence; A06 startup lost
+an unconverted member (isolated copy of `bed0278` plus the new test while the
+main checkout's APIs were being integrated); A07 showed 201 instead of 402
+strong/name results; A08 replaced the focused switch; A09 replaced legacy hash
+values/status. During the one independent review, a same-filesystem nested
+location case was reproduced red and fixed with ancestor provenance. Staged
+transaction rollback, stale backup completion, mid-pass moves, cached copies,
+empty/missing/removed/disabled roots and trashed parents have positive tests.
+
+Final `./check.sh`: passed, 315 tests (44 skipped), run
+`fc2f7237-f712-4c56-b51c-b49dded4655d`; formatting, strict Clippy, deny and machete
+also passed. The complete off-screen GTK run `9aca0e5c-7929-489c-bbb6-8cd702eab181`
+ran 41 workflows: 40 passed, one failed on a rapid switch/sidebar synchronization
+case. Removed the stale snapshot fast path (`86b6167`); its regression then
+passed in `b9b7ccc0-8176-4cb7-ab8f-db554176cc71` (4.518 seconds). The same run
+passed real-model content search (23.944 seconds), using the existing local
+model/runtime and isolated `.tmp/audit-0502-final-model` data through the
+private compositor. No unresolved GTK failure remains; a second full 41-test
+suite was not run after this three-line UI-only correction. Formatting and
+whitespace checks passed again. `cargo build --jobs 4` passed in 11.38 seconds under the same memory cap.
+
+Limits: session-only provenance intentionally retains already-missing members
+after a restart. Skipped hidden/disabled/symlink/other-filesystem locations
+withhold cleanup rather than being crawled. External filesystem changes cannot
+be committed atomically with SQLite; final metadata rechecks and prompt event
+invalidation reduce that race but do not lock arbitrary external writers.
+No manual release-build scroll benchmark or new Flatpak Undo trial was added.
+
+Final verification is complete. Remove this report in its own commit as AGENTS.md
+requires. Its stage-1 findings, review decisions and fix evidence remain in git.
+Acceptance, merge, deployment and push remain pending.

@@ -802,6 +802,12 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 24 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
 | 25 | ~~More than one library root (user, October 18): keep Pictures as the root and add Downloads as a second top-level root in the folder list, below the first. Today one library is active and `set_single_library_root` replaces its root; `config/settings.rs` already holds several libraries with an overlap check, so decide first whether a second root is a second library or a second root of one library (buckets, tags, search, Find Copies and the index must span it). Adding and removing a root must never touch the files. Maybe: each root gets its own colour, so a root's folders and images read at a glance (user idea, October 18; decide with the design)~~ **Done October 18, 2026** (D41), accepted by the user ("deployed and working", build `90e594e`) | Opus medium |
 
+Audit fix candidate `codex/audit-0.5.0-2`: A01–A09 agreed by the user.
+Cleanup now retains uncertain members, legacy upgrades preserve unconverted
+membership, search keeps all strong matches together, Preferences retains
+switch focus, and retired hash values stay untouched. Fixes are committed;
+acceptance and merge are pending. Verification is in `CURRENT_TASKS.md`.
+
 ## Item Briefs
 
 Open items only; the table above has the order and the model. Each brief adds only what the agent cannot learn from the repository. The standard effort, verification and guardrails above apply to every item.

@@ -122,3 +122,20 @@ Next: edit buckets (D35).
 ## October 16: edit buckets accepted, pushed
 
 Edit buckets (D35) shipped after 0.5.0. Crop Copy, WebP export and Duplicate put each original and its copy in Edits › Cropped, Exported or Duplicated, so a copy can be compared with its original wherever it was saved. They are on by default, with a Preferences switch. The user accepted the feature, and `main`, `viewer-reset` and the `v0.5.0` tag were pushed to GitHub for the first time since the realignment.
+
+
+## Accepted refinements through `bed0278`
+
+October 17–19 accepted work was merged before `codex/audit-0.5.0-2`:
+source-format crops (D37), movable guide and zoomable crop (D38–D39), the
+Rename sheet (D40), background file actions and immediate results, thumbnail
+and folder generations, bounded Compare decoding, broad-root scans, multiple
+roots (D41), filesystem watches, bucket re-linking, and bucket focus fixes.
+The old tag-writing legacy conversion was retired and missing-member cleanup
+was added (D42). The roadmap batch retired perceptual hashing, unified sorts
+and worker loops, refreshed Overview counts, stabilized navigation checks,
+selected the Flatpak host trash, extracted three setup blocks, and added
+Preferences root switches and sorted good search matches. The latest accepted
+native candidate was `ba0ff78`; acceptance was recorded at `bed0278`.
+Previous detailed task checkpoints remain in the history of `CURRENT_TASKS.md`
+through `bed0278`; `ROADMAP.md` retains the Work Order and product decisions.
