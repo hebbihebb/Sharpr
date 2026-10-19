@@ -225,7 +225,7 @@ impl LibraryIndex {
     }
 
     /// Reconcile `folder` against `entries` in a single SQLite transaction.
-    /// Upserts all entries (preserving metadata/phash for unchanged files, invalidating for
+    /// Upserts all entries (preserving metadata for unchanged files, invalidating for
     /// changed ones), removes rows whose paths are no longer present, then returns the final
     /// sorted rows, the stale-removal count, and the list of images still needing metadata.
     pub fn reconcile_folder(
@@ -256,11 +256,11 @@ impl LibraryIndex {
                 let mut stmt = tx.prepare_cached(
                     "INSERT INTO images (
                          path, folder_path, filename, extension, file_size, modified_secs,
-                         width, height, quality_class, phash, phash_status, metadata_status,
+                         width, height, quality_class, metadata_status,
                          indexed_at, error
                      )
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL,
-                             'missing', 'missing', ?7, NULL)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL,
+                             'missing', ?7, NULL)
                      ON CONFLICT(path) DO UPDATE SET
                          folder_path      = excluded.folder_path,
                          filename         = excluded.filename,
@@ -278,12 +278,6 @@ impl LibraryIndex {
                          quality_class = CASE WHEN images.file_size = excluded.file_size
                                                    AND images.modified_secs IS excluded.modified_secs
                                               THEN images.quality_class ELSE NULL END,
-                         phash = CASE WHEN images.file_size = excluded.file_size
-                                           AND images.modified_secs IS excluded.modified_secs
-                                      THEN images.phash        ELSE NULL END,
-                         phash_status = CASE WHEN images.file_size = excluded.file_size
-                                                  AND images.modified_secs IS excluded.modified_secs
-                                             THEN images.phash_status ELSE 'stale' END,
                          metadata_status = CASE WHEN images.file_size = excluded.file_size
                                                      AND images.modified_secs IS excluded.modified_secs
                                                 THEN images.metadata_status ELSE 'missing' END",
@@ -377,38 +371,30 @@ impl LibraryIndex {
                 *size == info.file_size as i64 && *modified == info.modified_secs
             })
             .unwrap_or(false);
-        let (metadata_status, phash_status): (Cow<'static, str>, Cow<'static, str>) =
-            match (existing, unchanged) {
-                (Some(_), true) => (
-                    current_status(&conn, &info.path, "metadata_status")?
-                        .map(Cow::Owned)
-                        .unwrap_or(Cow::Borrowed("missing")),
-                    current_status(&conn, &info.path, "phash_status")?
-                        .map(Cow::Owned)
-                        .unwrap_or(Cow::Borrowed("missing")),
-                ),
-                (Some(_), false) => (Cow::Borrowed("missing"), Cow::Borrowed("stale")),
-                (None, _) => (Cow::Borrowed("missing"), Cow::Borrowed("missing")),
-            };
+        let metadata_status = if unchanged {
+            current_status(&conn, &info.path, "metadata_status")?
+                .map(Cow::Owned)
+                .unwrap_or(Cow::Borrowed("missing"))
+        } else {
+            Cow::Borrowed("missing")
+        };
         conn.execute(
             "
             INSERT INTO images (
                 path, folder_path, filename, extension, file_size, modified_secs,
-                width, height, quality_class, phash, phash_status, metadata_status,
+                width, height, quality_class, metadata_status,
                 indexed_at, error
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL, ?7, ?8, ?9, NULL)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, ?7, ?8, NULL)
             ON CONFLICT(path) DO UPDATE SET
                 folder_path = excluded.folder_path,
                 filename = excluded.filename,
                 extension = excluded.extension,
                 file_size = excluded.file_size,
                 modified_secs = excluded.modified_secs,
-                width = CASE WHEN ?10 THEN images.width ELSE NULL END,
-                height = CASE WHEN ?10 THEN images.height ELSE NULL END,
-                quality_class = CASE WHEN ?10 THEN images.quality_class ELSE NULL END,
-                phash = CASE WHEN ?10 THEN images.phash ELSE NULL END,
-                phash_status = excluded.phash_status,
+                width = CASE WHEN ?9 THEN images.width ELSE NULL END,
+                height = CASE WHEN ?9 THEN images.height ELSE NULL END,
+                quality_class = CASE WHEN ?9 THEN images.quality_class ELSE NULL END,
                 metadata_status = excluded.metadata_status,
                 indexed_at = excluded.indexed_at,
                 error = NULL
@@ -420,7 +406,6 @@ impl LibraryIndex {
                 info.extension,
                 info.file_size as i64,
                 info.modified_secs,
-                phash_status.as_ref(),
                 metadata_status.as_ref(),
                 now,
                 unchanged,
@@ -1355,6 +1340,64 @@ mod tests {
         let keep_row = rows.iter().find(|r| r.filename == "keep.jpg").unwrap();
         assert_eq!(keep_row.metadata_status, "ready");
         assert_eq!(keep_row.width, Some(1600));
+    #[test]
+    fn indexing_preserves_retired_perceptual_hash_values() {
+        for reconcile in [false, true] {
+            let idx = LibraryIndex::open_in_memory().unwrap();
+            let mut info = make_info("/photos", "legacy.jpg", 100, Some(1));
+            idx.upsert_image_basic(&info).unwrap();
+            idx.update_image_metadata(&info.path, 1600, 900, QualityClass::Poor)
+                .unwrap();
+            idx.conn()
+                .unwrap()
+                .execute(
+                    "UPDATE images SET phash = 12345, phash_status = 'ready' WHERE path = ?1",
+                    params![path_to_string(&info.path)],
+                )
+                .unwrap();
+
+            // Both unchanged indexing and a real source-file change leave
+            // retired user-database columns alone, while live metadata expires.
+            for changed in [false, true] {
+                if changed {
+                    info.file_size += 1;
+                    info.modified_secs = Some(2);
+                }
+                if reconcile {
+                    idx.reconcile_folder(
+                        Path::new("/photos"),
+                        std::slice::from_ref(&info),
+                        SortOrder::NameAsc,
+                    )
+                    .unwrap();
+                } else {
+                    idx.upsert_image_basic(&info).unwrap();
+                }
+                let (hash, hash_status, metadata_status, width): (
+                    Option<i64>,
+                    String,
+                    String,
+                    Option<u32>,
+                ) = idx
+                    .conn()
+                    .unwrap()
+                    .query_row(
+                        "SELECT phash, phash_status, metadata_status, width FROM images WHERE path = ?1",
+                        params![path_to_string(&info.path)],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    (hash, hash_status.as_str()),
+                    (Some(12345), "ready"),
+                    "retired fields changed: reconcile={reconcile}, changed={changed}"
+                );
+                assert_eq!(metadata_status, if changed { "missing" } else { "ready" });
+                assert_eq!(width, if changed { None } else { Some(1600) });
+            }
+        }
+    }
+
         // new.jpg needs metadata.
         assert!(pending.iter().any(|p| p.filename == "new.jpg"));
     }

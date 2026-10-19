@@ -81,7 +81,7 @@ The thumbnail caches are an unbounded per-view memory cache, a global memory cac
 
 | Store | Location | Contents | Rebuildable? |
 | --- | --- | --- | --- |
-| `library-index.sqlite` | `~/.local/share/sharpr/` | folders, images (oriented dimensions, quality; the `phash` columns are legacy, no longer written), bucket definitions (`collections`, including colour and icon), member lists (`bucket_members`), fingerprint caches, and legacy `pipelines`, `pipeline_steps`, and `collection_items` | Bucket definitions and member lists: **no**, they are user data. Image/folder metadata and fingerprints: yes. Preserve all legacy tables and rows. |
+| `library-index.sqlite` | `~/.local/share/sharpr/` | folders, images (oriented dimensions, quality; the `phash` columns are legacy; hashes are neither computed nor updated, and existing values are preserved), bucket definitions (`collections`, including colour and icon), member lists (`bucket_members`), fingerprint caches, and legacy `pipelines`, `pipeline_steps`, and `collection_items` | Bucket definitions and member lists: **no**, they are user data. Image/folder metadata and fingerprints: yes. Preserve all legacy tables and rows. |
 | `tags.sqlite3` | `~/.local/share/sharpr/` | `file_tags(path, tag)` and `image_quality` (sharpness) | Tags: **no** |
 | GSettings `io.github.hebbihebb.Sharpr` | dconf | libraries, disabled folders, and preferences | No |
 | `~/.config/sharpr/settings.json` | config dir | legacy file; current code does not read it | n/a |
