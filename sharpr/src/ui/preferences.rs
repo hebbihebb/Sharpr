@@ -42,9 +42,6 @@ pub fn build_preferences_dialog(parent: &SharprWindow) -> libadwaita::Preference
                 return false;
             };
             let now = roots_shown(&parent);
-            if shown.borrow().as_ref() == Some(&now) {
-                return true;
-            }
             let same_roots = shown.borrow().as_ref().is_some_and(|previous| {
                 previous.len() == now.len() && previous.iter().zip(&now).all(|(a, b)| a.0 == b.0)
             });
