@@ -1,25 +1,19 @@
 # Current Tasks
 
-## Awaiting acceptance: roadmap batch (Work Order items 15, 17, 16, 18, 20, 23)
+## Accepted: roadmap batch, search sorting and Preferences roots
 
-Branch `feature/roadmap-batch`, one commit per item, at the user's request
-("finish the tasks that do not require user intervention, then deploy").
-- 15: thumbnail workers no longer compute perceptual hashes; `duplicates/`,
-  the hash writer and `duplicate_groups` are gone (phash columns kept).
-- 17: both worker pools run one `run_worker` loop, each with its own queue.
-- 16: one sort rule, `model::library::compare_rows`, for listings, search
-  results and added rows; a test sorts every way through all three paths.
-- 18: Library Overview counts again every 30 s, says when, shows errors,
-  and counts AVIF/HEIC apart from unreadable images.
-- 20: the rapid-navigation GTK test waits on conditions; 20 of 20 runs pass.
-- 23: in the Flatpak, Undo and D42's trash check read the host trash.
-- 21: three extractions done (plan below), GTK suite green after each;
-  paused for the user: continue or stop here?
+Deployed as `ba0ff78`; accepted by the user October 19 ("search works now"),
+merged to `main`; not pushed. Work Order items 15, 16, 17, 18, 20, 23 done;
+item 21 has three extractions merged and waits for the user's go-ahead. Also:
+- Word search: the file-name and strong visual matches show in the chosen
+  sort order; Show More adds weaker matches closest first (user's choice).
+- Preferences lists each library root with an on/off switch, Choose… on the
+  first and Remove while another remains.
 Left for the user: 12 (examples), 19 (nothing in Sharpr or GTK binds
-Ctrl+Shift+S to the Inspector; the desktop has
-`org.gtk.gtk4.Settings.Debug enable-inspector-keybinding` on; needs the
-user to reproduce), 21 (asks after a few extractions), 22 (decoder
-approval), 24 (ask first).
+Ctrl+Shift+S to the Inspector; the desktop has GTK's
+`enable-inspector-keybinding` on; needs a reproduction), 21 (continue?),
+22 (decoder approval), 24 (ask first). Next: an audit by Sol of this
+session's work, if the user starts one.
 
 ## Plan: split `SharprWindow::setup` and `filmstrip::build_ui` (Work Order item 21)
 
