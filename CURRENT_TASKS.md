@@ -13,11 +13,24 @@ Branch `feature/roadmap-batch`, one commit per item, at the user's request
   and counts AVIF/HEIC apart from unreadable images.
 - 20: the rapid-navigation GTK test waits on conditions; 20 of 20 runs pass.
 - 23: in the Flatpak, Undo and D42's trash check read the host trash.
+- 21 (in progress, then ask the user): plan below.
 Left for the user: 12 (examples), 19 (nothing in Sharpr or GTK binds
 Ctrl+Shift+S to the Inspector; the desktop has
 `org.gtk.gtk4.Settings.Debug enable-inspector-keybinding` on; needs the
 user to reproduce), 21 (asks after a few extractions), 22 (decoder
 approval), 24 (ask first).
+
+## Plan: split `SharprWindow::setup` and `filmstrip::build_ui` (Work Order item 21)
+
+`setup` (`ui/window.rs`) is about 2,050 lines; `build_ui` (`ui/filmstrip.rs`)
+about 1,800. Move self-contained blocks into `ui/window/*.rs` methods, as
+`setup_bucket_repeat` and `setup_root_watch` already are: one extraction per
+commit, GTK suite green after each, behaviour unchanged. Never touch the
+thumbnail worker pool, the workload monitor, the factory or the scheduler.
+First three: (1) background indexing startup (fingerprint and visual-search
+services and the pass-done hook) → `background_indexing.rs`; (2) the bucket
+sidebar handlers (new, select, rename, delete, reparent); (3) the search chip
+bar. Then stop and ask the user whether to continue.
 
 ## Accepted: missing bucket members leave their buckets (Work Order item 27, D42)
 
