@@ -5194,9 +5194,46 @@ fn a_second_root_is_listed_below_the_first_and_removing_it_only_forgets_it() {
             .unwrap()
     };
     assert!(switch().is_active());
-    switch().set_active(false);
+    let focused_switch = switch();
+    assert!(focused_switch.grab_focus());
+    let focused_widget: gtk4::Widget = focused_switch.clone().upcast();
+    assert!(focused_switch.is_focus());
+    assert_eq!(
+        window.root().and_then(|root| root.focus()),
+        Some(focused_widget.clone())
+    );
+    focused_switch.set_active(false);
     pump_until(disabled);
+    // A preference refresh must retain the switch the keyboard user is on.
+    // Let the one-second refresh run before checking widget identity and focus.
+    let refreshed = std::time::Instant::now();
+    pump_until(|| refreshed.elapsed() > std::time::Duration::from_secs(2));
+    assert_eq!(
+        switch(),
+        focused_switch,
+        "refresh replaced the focused root switch"
+    );
+    // Off-screen windows may lack global input focus; assert the actual
+    // focused widget within the toplevel, before and after the refresh.
+    assert!(focused_switch.is_focus());
+    assert_eq!(
+        window.root().and_then(|root| root.focus()),
+        Some(focused_widget.clone()),
+        "the root switch lost keyboard focus"
+    );
     switch().set_active(true);
+    pump_until(|| !disabled());
+
+    // A change from the sidebar also updates the same focused control.
+    sidebar.change_folder_ignored(downloads.clone(), true);
+    pump_until(|| !focused_switch.is_active());
+    assert_eq!(switch(), focused_switch);
+    assert!(focused_switch.is_focus());
+    assert_eq!(
+        window.root().and_then(|root| root.focus()),
+        Some(focused_widget)
+    );
+    focused_switch.set_active(true);
     pump_until(|| !disabled());
 
     // Removing it only forgets it.

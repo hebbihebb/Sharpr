@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -30,8 +30,9 @@ pub fn build_preferences_dialog(parent: &SharprWindow) -> libadwaita::Preference
     add.set_action_name(Some("win.add-library-root"));
     library_group.set_header_suffix(Some(&add));
     library_page.add(&library_group);
-    // One row per root, rebuilt when the roots or their on/off state change.
-    let rows: Rc<RefCell<Vec<libadwaita::ActionRow>>> = Rc::default();
+    // Retain the controls while a root's on/off state changes, including
+    // keyboard focus on its switch. Only a changed root list needs rebuilding.
+    let rows: Rc<RefCell<Vec<LibraryRootRow>>> = Rc::default();
     let shown: Rc<RefCell<Option<RootsShown>>> = Rc::default();
     let refresh = {
         let group = library_group.downgrade();
@@ -44,12 +45,24 @@ pub fn build_preferences_dialog(parent: &SharprWindow) -> libadwaita::Preference
             if shown.borrow().as_ref() == Some(&now) {
                 return true;
             }
+            let same_roots = shown.borrow().as_ref().is_some_and(|previous| {
+                previous.len() == now.len() && previous.iter().zip(&now).all(|(a, b)| a.0 == b.0)
+            });
+            if same_roots {
+                for (row, (_, enabled)) in rows.borrow().iter().zip(&now) {
+                    row.syncing.set(true);
+                    row.switch.set_active(*enabled);
+                    row.syncing.set(false);
+                }
+                *shown.borrow_mut() = Some(now);
+                return true;
+            }
             for row in rows.borrow_mut().drain(..) {
-                group.remove(&row);
+                group.remove(&row.row);
             }
             for (index, (root, enabled)) in now.iter().enumerate() {
                 let row = root_row(&parent, root, *enabled, index == 0, now.len() > 1);
-                group.add(&row);
+                group.add(&row.row);
                 rows.borrow_mut().push(row);
             }
             *shown.borrow_mut() = Some(now);
@@ -142,6 +155,13 @@ fn gpu_subtitle() -> String {
 /// Each root of the active library, first first, and whether it is on.
 type RootsShown = Vec<(PathBuf, bool)>;
 
+struct LibraryRootRow {
+    row: libadwaita::ActionRow,
+    switch: gtk4::Switch,
+    /// Updating a switch from settings must not write those settings again.
+    syncing: Rc<Cell<bool>>,
+}
+
 fn roots_shown(parent: &SharprWindow) -> RootsShown {
     let state = parent.app_state();
     let state = state.borrow();
@@ -165,7 +185,7 @@ fn root_row(
     enabled: bool,
     first: bool,
     removable: bool,
-) -> libadwaita::ActionRow {
+) -> LibraryRootRow {
     let row = libadwaita::ActionRow::new();
     row.set_title(
         &root
@@ -197,7 +217,12 @@ fn root_row(
     switch.set_tooltip_text(Some("Include this root in the library"));
     let parent = parent.downgrade();
     let root = root.to_path_buf();
+    let syncing = Rc::new(Cell::new(false));
+    let syncing_notify = syncing.clone();
     switch.connect_active_notify(move |switch| {
+        if syncing_notify.get() {
+            return;
+        }
         let Some(parent) = parent.upgrade() else {
             return;
         };
@@ -208,5 +233,9 @@ fn root_row(
     });
     row.add_suffix(&switch);
     row.set_activatable_widget(Some(&switch));
-    row
+    LibraryRootRow {
+        row,
+        switch,
+        syncing,
+    }
 }
