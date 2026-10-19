@@ -796,7 +796,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 18 | ~~Library Overview refresh, errors, and unsupported count~~ **Implemented October 19, 2026** on `feature/roadmap-batch`, awaiting acceptance | Codex (Sol medium) (done by Opus) |
 | 19 | Ctrl+Shift+S opens the GTK Inspector | Codex (Sol medium) |
 | 20 | ~~Make the flaky GTK navigation test deterministic~~ **Implemented October 19, 2026** on `feature/roadmap-batch`, awaiting acceptance (20 of 20 off-screen runs pass) | Sonnet high (done by Opus) |
-| 21 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal | Sonnet high |
+| 21 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal. **In progress October 19, 2026** on `feature/roadmap-batch`: 3 extractions done (background indexing, bucket sidebar, search chip bar; `setup` about 2,050 → 1,600 lines); paused for the user's go-ahead per the brief | Sonnet high |
 | 22 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
 | 23 | ~~Trash Undo in the Flatpak~~ **Implemented October 19, 2026** on `feature/roadmap-batch`, awaiting acceptance: verified in a real Flatpak build that the portal trashes into the host's `~/.local/share/Trash` (absolute `Path=`), which the sandbox can read and restore from; the sandbox `$XDG_DATA_HOME/Trash` does not exist | Sonnet high (done by Opus) |
 | 24 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
@@ -892,6 +892,8 @@ Optional. Pick something up only when a phase touches that area, or the user ask
 - Index AVIF and HEIC/HEIF for visual search, with a bounded decoder on the worker (Phase 5 audit, finding 13). The live library has none; weigh the Flatpak cost before adding decoders.
 - Library Overview: refresh the fingerprint, copy, bucket, and index-file figures while it is open, or label them as a snapshot; show gathering errors instead of "…"; count unsupported formats apart from unreadable files (Phases 6–8 audit, finding 12).
 - GTK test harness: `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs); make it deterministic. The dropdown selection test was replaced by direct candidate-row activation in D29. The screenshot timeout is solved (October 14): a window the compositor isn't drawing (covered, for example by a fullscreen video while the user works) gives no frame, so screenshots are now best-effort and never fail a test.
+
+- GTK test harness: `compare_narrows_five_images_to_one` once timed out waiting for the chosen candidate during a full off-screen suite run (October 19); it passed 5 of 5 alone and the suite passed on rerun. Make the wait deterministic if it recurs.
 
 ### Considered, Not Planned
 

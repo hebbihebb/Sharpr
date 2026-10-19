@@ -13,7 +13,8 @@ Branch `feature/roadmap-batch`, one commit per item, at the user's request
   and counts AVIF/HEIC apart from unreadable images.
 - 20: the rapid-navigation GTK test waits on conditions; 20 of 20 runs pass.
 - 23: in the Flatpak, Undo and D42's trash check read the host trash.
-- 21 (in progress, then ask the user): plan below.
+- 21: three extractions done (plan below), GTK suite green after each;
+  paused for the user: continue or stop here?
 Left for the user: 12 (examples), 19 (nothing in Sharpr or GTK binds
 Ctrl+Shift+S to the Inspector; the desktop has
 `org.gtk.gtk4.Settings.Debug enable-inspector-keybinding` on; needs the

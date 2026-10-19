@@ -1173,6 +1173,107 @@ fn match_candidates(candidates: &[PathBuf], query: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+impl SharprWindow {
+    /// Builds the bar under the viewer header that holds the search chips,
+    /// the word suggestions and the visual-search status, and hands it to
+    /// the mode header. Called once from `setup`.
+    pub(super) fn build_search_chip_bar(
+        &self,
+        viewer_toolbar: &libadwaita::ToolbarView,
+        viewer_header: &libadwaita::HeaderBar,
+    ) {
+        // Typed filter chips sit in their own bar under the header and wrap,
+        // so they never widen the window past its minimum size.
+        let search_chips = gtk4::FlowBox::new();
+        search_chips.set_selection_mode(gtk4::SelectionMode::None);
+        search_chips.set_halign(gtk4::Align::Start);
+        search_chips.set_max_children_per_line(32);
+        search_chips.set_column_spacing(6);
+        search_chips.set_row_spacing(6);
+        search_chips.set_margin_start(12);
+        search_chips.set_margin_end(12);
+        search_chips.set_margin_top(6);
+        search_chips.set_margin_bottom(6);
+        // Filter words that complete what is being typed (decision D16).
+        let search_suggestions = gtk4::FlowBox::new();
+        search_suggestions.set_selection_mode(gtk4::SelectionMode::None);
+        search_suggestions.set_halign(gtk4::Align::Start);
+        search_suggestions.set_max_children_per_line(32);
+        search_suggestions.set_column_spacing(4);
+        search_suggestions.set_margin_start(12);
+        search_suggestions.set_margin_end(12);
+        search_suggestions.set_margin_bottom(6);
+        search_suggestions.set_visible(false);
+        // How much of the scope visual search covered and how well it matched
+        // (principle 5), with more results on request.
+        let search_status = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        search_status.set_margin_start(12);
+        search_status.set_margin_end(12);
+        search_status.set_margin_bottom(6);
+        search_status.set_visible(false);
+        let search_status_label = gtk4::Label::new(None);
+        search_status_label.add_css_class("dim-label");
+        search_status_label.set_wrap(true);
+        search_status_label.set_xalign(0.0);
+        search_status_label.set_hexpand(true);
+        let search_more = gtk4::Button::with_label("Show More");
+        search_more.add_css_class("flat");
+        search_more.set_valign(gtk4::Align::Center);
+        search_more.set_tooltip_text(Some("Show the next closest images"));
+        {
+            let weak = self.downgrade();
+            search_more.connect_clicked(move |_| {
+                if let Some(win) = weak.upgrade() {
+                    win.show_more_visual_results();
+                }
+            });
+        }
+        let search_selected = gtk4::Label::new(None);
+        search_selected.add_css_class("dim-label");
+        search_selected.add_css_class("numeric");
+        search_selected.set_visible(false);
+        let search_add = gtk4::Button::with_label("Add to Bucket…");
+        search_add.add_css_class("flat");
+        search_add.set_valign(gtk4::Align::Center);
+        search_add.set_tooltip_text(Some("Add these results to a new or existing bucket"));
+        search_add.set_visible(false);
+        {
+            let weak = self.downgrade();
+            search_add.connect_clicked(move |_| {
+                if let Some(win) = weak.upgrade() {
+                    win.add_search_results_to_bucket();
+                }
+            });
+        }
+        search_status.append(&search_status_label);
+        search_status.append(&search_selected);
+        search_status.append(&search_add);
+        search_status.append(&search_more);
+        let chip_bar = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        chip_bar.append(&search_chips);
+        chip_bar.append(&search_suggestions);
+        chip_bar.append(&search_status);
+        *self.imp().search_status.borrow_mut() = Some(SearchStatus {
+            bar: search_status,
+            label: search_status_label,
+            selected: search_selected,
+            add: search_add,
+            more: search_more,
+        });
+        let search_chips_revealer = gtk4::Revealer::new();
+        search_chips_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideDown);
+        search_chips_revealer.set_child(Some(&chip_bar));
+        viewer_toolbar.add_top_bar(&search_chips_revealer);
+        *self.imp().search_chips.borrow_mut() = Some(search_chips);
+        *self.imp().search_suggestions.borrow_mut() = Some(search_suggestions);
+        *self.imp().mode_header.borrow_mut() = Some(mode_header::ModeHeader::new(
+            viewer_header,
+            &search_chips_revealer,
+        ));
+        *self.imp().search_chip_bar.borrow_mut() = Some(search_chips_revealer);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
