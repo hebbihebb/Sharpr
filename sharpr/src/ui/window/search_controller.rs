@@ -32,6 +32,14 @@ pub(super) enum VisualSummary {
     },
     /// Visual search couldn't run; file names were matched instead.
     Unavailable(String),
+    /// Show Similar (item 28): `None` similar when the image itself isn't
+    /// indexed yet.
+    Similar {
+        similar: Option<usize>,
+        closeness: crate::visual_search::similar::Closeness,
+        indexed: usize,
+        eligible: usize,
+    },
 }
 
 /// One visual search's complete ranking. "Show More" pages through it
@@ -204,10 +212,13 @@ pub(crate) struct BrowseOptions {
     pub whole_library: bool,
     /// Chips taken out of the search box (decision D16).
     pub chips: crate::model::search_query::ChipFilters,
+    /// Show Similar's image and closeness (item 28, D44): the search looks
+    /// across the library for images like it instead of for words.
+    pub similar: Option<(PathBuf, crate::visual_search::similar::Closeness)>,
 }
 impl BrowseOptions {
     pub(super) fn has_filters(&self) -> bool {
-        self.whole_library || !self.chips.is_empty()
+        self.whole_library || !self.chips.is_empty() || self.similar.is_some()
     }
 }
 
@@ -520,7 +531,10 @@ impl SharprWindow {
 
     /// Shows the chip bar while it has chips or suggestions to offer.
     fn sync_search_chip_bar(&self) {
-        let has_chips = !self.imp().browse_options.borrow().chips.is_empty();
+        let has_chips = {
+            let options = self.imp().browse_options.borrow();
+            !options.chips.is_empty() || options.similar.is_some()
+        };
         let has_suggestions = self
             .imp()
             .search_suggestions
@@ -587,8 +601,15 @@ impl SharprWindow {
             container.remove(&child);
         }
         let chips = self.imp().browse_options.borrow().chips.chips.clone();
-        container.set_visible(!chips.is_empty());
+        let similar = self.imp().browse_options.borrow().similar.clone();
+        container.set_visible(!chips.is_empty() || similar.is_some());
         self.sync_search_chip_bar();
+        if let Some((path, closeness)) = similar {
+            container.append(&self.similar_chip(&path, closeness));
+            if let Some(child) = container.last_child() {
+                child.set_focusable(false);
+            }
+        }
         for chip in chips {
             let pill = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             pill.add_css_class("linked");
@@ -698,7 +719,10 @@ impl SharprWindow {
             summary,
             Some(VisualSummary::Ranked { more: true, .. })
         ));
-        let ranked = matches!(summary, Some(VisualSummary::Ranked { .. }));
+        let ranked = matches!(
+            summary,
+            Some(VisualSummary::Ranked { .. } | VisualSummary::Similar { .. })
+        );
         status.add.set_visible(ranked);
         if !ranked {
             self.imp().search_strong.borrow_mut().clear();
@@ -868,7 +892,9 @@ impl SharprWindow {
                             }
                         }
                     }
-                    let candidates = if options.whole_library {
+                    // Show Similar looks across the whole library.
+                    let whole_library = options.whole_library || options.similar.is_some();
+                    let candidates = if whole_library {
                         if roots.is_empty() {
                             return Err("No active library".into());
                         }
@@ -876,7 +902,7 @@ impl SharprWindow {
                     } else {
                         candidates
                     };
-                    let candidates = if options.whole_library {
+                    let candidates = if whole_library {
                         filter_paths_for_library(candidates, &roots, &disabled)
                     } else {
                         candidates
@@ -886,14 +912,16 @@ impl SharprWindow {
                     };
                     // Words go to visual search when it can run; otherwise,
                     // and for file names, they match names.
-                    let visual = (!search_terms(&text).is_empty())
+                    // With Show Similar, words only match file names.
+                    let visual = (!search_terms(&text).is_empty() && options.similar.is_none())
                         .then_some(searcher.as_ref())
                         .flatten()
                         .map(|searcher| searcher.prepare(&text, &superseded));
                     if superseded() {
                         return Err("Search superseded".into());
                     }
-                    let name_only = !matches!(visual, Some(Ok(_)));
+                    let name_only = !matches!(visual, Some(Ok(_)))
+                        && (options.similar.is_none() || !search_terms(&text).is_empty());
                     let name_matches: std::collections::HashSet<PathBuf> =
                         match_candidates(&candidates, &text).into_iter().collect();
                     let paths = if name_only {
@@ -992,6 +1020,22 @@ impl SharprWindow {
                             stamps = kept_stamps;
                             fingerprints = Some(map);
                         }
+                    }
+                    if let Some((target, closeness)) = &options.similar {
+                        let index = index.as_ref().ok_or("Library index is unavailable")?;
+                        let fingerprints = match fingerprints {
+                            Some(map) => map,
+                            None => index.cached_fingerprints().map_err(|e| e.to_string())?,
+                        };
+                        return similar_result(
+                            target,
+                            *closeness,
+                            raw,
+                            &stamps,
+                            &fingerprints,
+                            searcher.as_ref(),
+                            &superseded,
+                        );
                     }
                     let prepared = match visual {
                         Some(Ok(prepared)) => prepared,
@@ -1108,7 +1152,10 @@ impl SharprWindow {
                     win.bump_thumbnail_generation("search.apply");
                     // A new ranking starts at the closest image; "Show More"
                     // keeps the selection and the place in the list.
-                    let ranked = matches!(visual, Some(VisualSummary::Ranked { .. }));
+                    let ranked = matches!(
+                        visual,
+                        Some(VisualSummary::Ranked { .. } | VisualSummary::Similar { .. })
+                    );
                     let selected = if ranked && !extend { None } else { selected };
                     if !extend {
                         win.imp().state.borrow_mut().selected_paths.clear();
@@ -1152,9 +1199,100 @@ impl SharprWindow {
     }
 }
 
+/// The Show Similar listing: the image first, then the images like it,
+/// closest first. Without vectors the image shows alone, with the reason.
+fn similar_result(
+    target: &Path,
+    closeness: crate::visual_search::similar::Closeness,
+    raw: Vec<RawImageEntry>,
+    stamps: &[(u64, i64)],
+    fingerprints: &std::collections::HashMap<String, (u64, i64, String)>,
+    searcher: Option<&crate::visual_search::search::Searcher>,
+    superseded: &dyn Fn() -> bool,
+) -> Result<BrowseResult, String> {
+    let current = |path: &Path, stamp: (u64, i64)| {
+        fingerprints
+            .get(path.to_string_lossy().as_ref())
+            .filter(|(size, mtime, _)| (*size, *mtime) == stamp)
+            .map(|(_, _, hash)| hash.clone())
+    };
+    let candidates: Vec<(PathBuf, Option<String>)> = raw
+        .into_iter()
+        .zip(stamps)
+        .map(|(entry, stamp)| {
+            let fingerprint = current(&entry.path, *stamp);
+            (entry.path, fingerprint)
+        })
+        .collect();
+    let alone = |visual| BrowseResult {
+        strong: Vec::new(),
+        paths: vec![target.to_path_buf()],
+        visual: Some(visual),
+    };
+    let target_fingerprint = std::fs::metadata(target)
+        .ok()
+        .and_then(|m| current(target, crate::fingerprint::file_stamp(&m)));
+    let Some(searcher) = searcher else {
+        return Ok(alone(VisualSummary::Unavailable(
+            "Visual search is off, so there is nothing to compare with".into(),
+        )));
+    };
+    let vectors = match searcher.vectors(superseded) {
+        Ok(vectors) => vectors,
+        Err(error) if error == crate::visual_search::search::SUPERSEDED => return Err(error),
+        Err(error) => return Ok(alone(VisualSummary::Unavailable(error))),
+    };
+    let found = target_fingerprint.and_then(|fingerprint| {
+        crate::visual_search::similar::similar_to(&fingerprint, &candidates, &vectors, closeness)
+    });
+    let indexed = candidates
+        .iter()
+        .filter(|(_, f)| f.as_ref().is_some_and(|f| vectors.contains_key(f)))
+        .count();
+    Ok(match found {
+        Some(found) => BrowseResult {
+            strong: Vec::new(),
+            paths: found.paths,
+            visual: Some(VisualSummary::Similar {
+                similar: Some(found.similar),
+                closeness,
+                indexed: found.indexed,
+                eligible: found.eligible,
+            }),
+        },
+        None => alone(VisualSummary::Similar {
+            similar: None,
+            closeness,
+            indexed,
+            eligible: candidates.len(),
+        }),
+    })
+}
+
 fn visual_summary_text(summary: &VisualSummary) -> String {
     use crate::visual_search::search::Strength;
     match summary {
+        VisualSummary::Similar {
+            similar,
+            closeness,
+            indexed,
+            eligible,
+        } => {
+            use crate::visual_search::similar::Closeness;
+            let found = match similar {
+                None => "This image isn't indexed for visual search yet".to_string(),
+                Some(0) if *closeness == Closeness::Loose => "No similar images".to_string(),
+                Some(0) => "No similar images; try Loose".to_string(),
+                Some(1) => "1 similar image".to_string(),
+                Some(n) => format!("{n} similar images"),
+            };
+            let coverage = if indexed < eligible {
+                format!("{indexed} of {eligible} images indexed")
+            } else {
+                format!("all {eligible} images searched")
+            };
+            format!("{found} · closest first · {coverage}")
+        }
         VisualSummary::Unavailable(reason) => {
             format!("Matching file names only. {}", reason.trim_end_matches('.'))
         }

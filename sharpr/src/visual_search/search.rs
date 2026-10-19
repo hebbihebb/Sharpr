@@ -170,7 +170,9 @@ pub fn rank(candidates: &[(PathBuf, Option<String>)], prepared: &Prepared) -> Ra
 }
 
 struct Request {
-    text: String,
+    /// The words to embed, or `None` for only the vectors (Show Similar),
+    /// which needs no query server.
+    text: Option<String>,
     reply: mpsc::Sender<Result<Prepared, String>>,
     /// Set when the caller stopped waiting; the search thread then skips
     /// the request instead of working through a backlog of old searches.
@@ -210,7 +212,10 @@ impl Searcher {
                     match rx.recv_timeout(IDLE) {
                         Ok(request) if request.abandoned.load(Ordering::Relaxed) => {}
                         Ok(request) => {
-                            let result = state.prepare(&request.text);
+                            let result = match &request.text {
+                                Some(text) => state.prepare(text),
+                                None => state.vectors_only(),
+                            };
                             if result.is_err() {
                                 state.server = None;
                             }
@@ -234,12 +239,22 @@ impl Searcher {
     /// given up on is skipped by the search thread. Errors explain why
     /// visual search can't run, in words for the user.
     pub fn prepare(&self, text: &str, superseded: &dyn Fn() -> bool) -> Result<Prepared, String> {
+        self.ask(Some(text.to_string()), superseded)
+    }
+
+    /// The indexed vectors, kept loaded with the ones searches use, without
+    /// starting the query server. Waits as `prepare` does.
+    pub fn vectors(&self, superseded: &dyn Fn() -> bool) -> Result<Vectors, String> {
+        self.ask(None, superseded).map(|prepared| prepared.vectors)
+    }
+
+    fn ask(&self, text: Option<String>, superseded: &dyn Fn() -> bool) -> Result<Prepared, String> {
         let (reply, response) = mpsc::channel();
         let abandoned = Arc::new(AtomicBool::new(false));
         let _abandon = Abandon(abandoned.clone());
         self.requests
             .send(Request {
-                text: text.to_string(),
+                text,
                 reply,
                 abandoned,
             })
@@ -356,6 +371,22 @@ impl State {
         Ok(vectors)
     }
 
+    /// The vectors alone, with no query: Show Similar compares images with
+    /// each other, so the query server isn't started.
+    fn vectors_only(&mut self) -> Result<Prepared, String> {
+        let files = super::files::locate()?;
+        let model = self.model_key(&files)?;
+        let vectors = self.vectors(&model)?;
+        if vectors.is_empty() {
+            return Err("No images are indexed for visual search yet".into());
+        }
+        Ok(Prepared {
+            query: Vec::new(),
+            specific: Vec::new(),
+            vectors,
+        })
+    }
+
     fn prepare(&mut self, text: &str) -> Result<Prepared, String> {
         let files = super::files::locate()?;
         let model = self.model_key(&files)?;
@@ -417,7 +448,7 @@ mod tests {
         searcher
             .requests
             .send(Request {
-                text: "tower".into(),
+                text: Some("tower".into()),
                 reply,
                 abandoned: Arc::new(AtomicBool::new(true)),
             })

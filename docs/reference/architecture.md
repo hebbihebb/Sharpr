@@ -34,7 +34,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `ops/`, `ui/ops_indicator.rs` | Events for transient background operations. There is no persistent queue. |
 | `config/settings.rs` | GSettings wrapper. Keys for removed features stay declared but are not used. |
 | `bench.rs` | Structured JSONL event log (see `development.md`) |
-| `visual_search/` | Visual search (Phase 5, GTK-free): model files (`files`), `llama-server` children and their loopback client (`runtime`), image preparation (`prepare`), the vector file (`store`), background indexing (`index`), and query ranking (`search`) |
+| `visual_search/` | Visual search (Phase 5, GTK-free): model files (`files`), `llama-server` children and their loopback client (`runtime`), image preparation (`prepare`), the vector file (`store`), background indexing (`index`), query ranking (`search`), and Show Similar (`similar`, D44: the images whose stored vectors are close to one image's, from the searcher's loaded vectors with no query server; `ui/window/similar_controller.rs` runs it as a search chip) |
 
 ## Threading
 

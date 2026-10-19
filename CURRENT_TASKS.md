@@ -1,5 +1,23 @@
 # Current Tasks
 
+## Active: Show Similar (Work Order item 28, D44)
+
+Branch `feature/show-similar`. The user chose Show Similar on the image menu
+with a closeness switch, run through the search bar (decisions recorded as
+D44). Trial on a copy of the user's vectors (5,501 indexed images): pairs
+from 0.94 were series of one scene or shot, from 0.96 near-identical
+variants, at 0.92 style-only matches began; groups around one image at 0.94
+numbered 758. Thresholds: Close 0.96, Series 0.94 (default), Loose 0.92.
+- `visual_search::similar` ranks by one image's stored vector; the search
+  thread hands out loaded vectors without the query server
+  (`Searcher::vectors`).
+- `BrowseOptions::similar` runs it as a whole-library search with a chip and
+  switch (`ui/window/similar_controller.rs`); filmstrip menu action
+  `show-similar` → `win.show-similar`.
+- Tests: unit test of the thresholds and order; GTK test of menu action,
+  switch, status count, chip removal and unchanged files (placeholder model
+  files, no server).
+
 ## Accepted: Compare zoom floor and AVIF/HEIC Crop Copy (Work Order items 35, 34)
 
 Branch `fix/compare-zoom-avif-crop`.

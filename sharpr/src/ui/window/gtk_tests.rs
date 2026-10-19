@@ -5701,3 +5701,150 @@ fn moving_an_image_out_of_an_open_bucket_keeps_the_bucket() {
     );
     window.close();
 }
+
+/// Show Similar (Work Order item 28, D44): from the image menu's action,
+/// a search lists the image and the images like it across the library,
+/// closest first; the Close / Series / Loose switch changes how many, and
+/// removing the chip returns to the folder. Vectors are written directly,
+/// under placeholder model files when no model is installed, so the test
+/// needs no model and runs no server.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn show_similar_lists_close_images_through_search() {
+    let root = isolated_fixture("show-similar");
+    std::fs::create_dir_all(&root).unwrap();
+    // The angle of each image's vector from the shot's: cos 12° ≈ 0.978,
+    // 18° ≈ 0.951, 22° ≈ 0.927, 40° ≈ 0.766.
+    let images = [
+        ("shot.png", 0.0f32),
+        ("retake.png", 12.0),
+        ("series.png", 18.0),
+        ("style.png", 22.0),
+        ("other.png", 40.0),
+    ];
+    let paths: Vec<PathBuf> = images
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| {
+            let path = root.join(name);
+            image::RgbImage::from_pixel(64, 48, image::Rgb([i as u8 * 40, 90, 160]))
+                .save(&path)
+                .unwrap();
+            path
+        })
+        .collect();
+    let originals: Vec<_> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    let model_dir = crate::visual_search::files::model_dir();
+    let placeholder = crate::visual_search::files::locate().is_err();
+    if placeholder {
+        std::fs::create_dir_all(model_dir.join("runtime")).unwrap();
+        for file in [
+            crate::visual_search::files::MODEL_FILE,
+            crate::visual_search::files::PROJECTOR_FILE,
+        ] {
+            std::fs::write(model_dir.join(file), b"GGUF placeholder").unwrap();
+        }
+        // A server that never starts, so indexing records nothing.
+        let server = model_dir.join("runtime").join("llama-server");
+        std::fs::write(&server, "#!/bin/sh\nexit 1\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Similar", root.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.app_state().borrow().library.image_count() == 5 && window.is_mapped());
+    let index = window.app_state().borrow().library_index.clone().unwrap();
+    pump_until(|| {
+        let cached = index.cached_fingerprints().unwrap();
+        paths
+            .iter()
+            .all(|p| cached.contains_key(p.to_string_lossy().as_ref()))
+    });
+    let cached = index.cached_fingerprints().unwrap();
+    let store =
+        crate::visual_search::store::Store::open(&crate::visual_search::store::default_path())
+            .unwrap();
+    let key = store
+        .model_key(&crate::visual_search::files::locate().unwrap())
+        .unwrap();
+    for (path, (_, degrees)) in paths.iter().zip(images) {
+        let mut vector = vec![0.0; crate::visual_search::DIMENSIONS];
+        vector[0] = degrees.to_radians().cos();
+        vector[1] = degrees.to_radians().sin();
+        let (_, _, hash) = &cached[path.to_string_lossy().as_ref()];
+        store.put_vector(&key, hash, &vector).unwrap();
+    }
+    let shown = || -> Vec<String> {
+        let state = window.app_state();
+        let state = state.borrow();
+        (0..state.library.image_count())
+            .filter_map(|i| state.library.entry_at(i))
+            .map(|e| e.path().file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    };
+    let status = || {
+        window
+            .imp()
+            .search_status
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .label
+            .text()
+            .to_string()
+    };
+    gio::prelude::ActionGroupExt::activate_action(
+        &window,
+        "show-similar",
+        Some(&paths[0].to_string_lossy().to_variant()),
+    );
+    pump_until(|| shown() == ["shot.png", "retake.png", "series.png"]);
+    assert!(status().starts_with("2 similar images"), "{}", status());
+    assert_eq!(
+        window.app_state().borrow().library.selected_index,
+        Some(0),
+        "the image itself is selected first"
+    );
+    let chips = window.imp().search_chips.borrow().clone().unwrap();
+    let switch = |label: &str| {
+        find_widgets::<gtk4::ToggleButton>(chips.upcast_ref())
+            .into_iter()
+            .find(|b| b.label().as_deref() == Some(label))
+            .unwrap()
+    };
+    assert!(switch("Series").is_active());
+    switch("Loose").set_active(true);
+    pump_until(|| shown() == ["shot.png", "retake.png", "series.png", "style.png"]);
+    switch("Close").set_active(true);
+    pump_until(|| shown() == ["shot.png", "retake.png"]);
+    assert!(status().starts_with("1 similar image ·"), "{}", status());
+    // Removing the chip returns to the folder.
+    let remove = find_widgets::<gtk4::Button>(chips.upcast_ref())
+        .into_iter()
+        .find(|b| b.tooltip_text().as_deref() == Some("Stop showing similar images"))
+        .unwrap();
+    remove.emit_clicked();
+    pump_until(|| shown().len() == 5 && window.imp().browse_options.borrow().similar.is_none());
+    for (path, bytes) in paths.iter().zip(originals) {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    window.close();
+    if placeholder {
+        std::fs::remove_dir_all(&model_dir).unwrap();
+    }
+}

@@ -103,6 +103,7 @@ fn build_context_menu_model(
             Some("<Control><Shift>c"),
         ));
     } else {
+        image.append_item(&menu_item("Show Similar", "filmstrip.show-similar", None));
         image.append_item(&menu_item("Crop Copy\u{2026}", "filmstrip.crop-copy", None));
     }
     image.append_item(&menu_item(
@@ -990,6 +991,25 @@ impl FilmstripPane {
             });
         }
         group.add_action(&info);
+
+        // Show Similar runs as a search, which the window owns.
+        let show_similar = gio::SimpleAction::new("show-similar", None);
+        {
+            let w = self.downgrade();
+            show_similar.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let path = widget
+                    .imp()
+                    .menu_ctx
+                    .borrow()
+                    .as_ref()
+                    .map(|c| c.clicked_path.to_string_lossy().into_owned());
+                if let Some(path) = path {
+                    let _ = widget.activate_action("win.show-similar", Some(&path.to_variant()));
+                }
+            });
+        }
+        group.add_action(&show_similar);
 
         for (name, kind) in [
             ("crop-copy", CopyKind::Crop),

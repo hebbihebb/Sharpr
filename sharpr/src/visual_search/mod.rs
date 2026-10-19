@@ -15,6 +15,7 @@ pub mod index;
 pub mod prepare;
 pub mod runtime;
 pub mod search;
+pub mod similar;
 pub mod store;
 
 /// Length of every EmbeddingGemma 2 vector.

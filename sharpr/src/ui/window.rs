@@ -46,6 +46,7 @@ use compare_controller::is_comparing;
 #[cfg(test)]
 mod gtk_tests;
 mod search_controller;
+mod similar_controller;
 mod tag_controller;
 
 // ---------------------------------------------------------------------------
@@ -2037,6 +2038,7 @@ impl SharprWindow {
             });
         }
         self.add_action(&compare_action);
+        self.setup_show_similar();
         self.install_compare_shortcut();
         self.setup_bucket_repeat();
         self.setup_library_root();

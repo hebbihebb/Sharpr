@@ -66,6 +66,10 @@ See `architecture.md`. In UI code this means:
 - Crop's header contains aspect, live output dimensions, destination, Cancel and Save Copy; zoom/pan/drag/Enter/Escape hints float at the bottom of the canvas. The destination label ellipsizes and its tooltip names the full path.
 - Mode keys are routed from the window so header focus works. Text fields, picker popups and modal sheets keep their own keys. Ctrl+F and type-to-search leave an active mode alone. Fullscreen retains the active mode controls.
 
+## Show Similar (D44)
+
+- Image menu → Show Similar (single image) runs a search through `BrowseOptions::similar`: the chip bar shows a "similar to <name>" chip (click selects the image, × ends it) and a linked Close / Series / Loose toggle. The worker looks across the whole library, applies filter chips and file-name words, and lists the image, then images at least as close as the toggle says, closest first; the status line counts them. The selection starts on the image. Escape and clearing the search end it like any search.
+
 ## Survey (retired, D43)
 
 - Survey was removed on October 19, 2026; Compare narrows a selection. Compare's serial viewport-fed thumbnail lane through the existing cache/decoder, with session generations and recycled-row checks, stays. Filmstrip pools and visible-thumbnail priority are unchanged.
