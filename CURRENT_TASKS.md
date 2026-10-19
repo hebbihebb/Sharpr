@@ -1,6 +1,6 @@
 # Current Tasks
 
-## Active: AVIF and HEIC filmstrip thumbnails (Work Order item 30)
+## Accepted: AVIF and HEIC filmstrip thumbnails (Work Order item 30)
 
 Branch `fix/avif-thumbnails`. The thumbnail worker decodes AVIF and HEIC/HEIF
 through glycin's HEIF loader (`prepare::decode_with_glycin`, shared with
@@ -8,7 +8,8 @@ visual search): sandboxed, upright, size-checked against the decode budget.
 Other formats are unchanged. Test: glycin-written AVIF and HEIC samples give
 160 px thumbnails of the right colour (fails without the fix). The five real
 AVIFs in `~/Pictures/avif test` take 60–250 ms each on a worker, then come
-from the disk cache. Survey retirement recorded as D43 / item 31 (user).
+from the disk cache. Deployed as `637d98f`; accepted by the user October 19
+and merged to `main`. Survey retirement recorded as D43 / item 31 (user).
 
 ## Accepted: drop Ctrl+Shift+S for Survey (Work Order item 19)
 
