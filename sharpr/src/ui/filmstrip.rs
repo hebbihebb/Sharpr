@@ -388,6 +388,11 @@ impl FilmstripPane {
         });
     }
 
+    /// Gives the keyboard focus to the image list.
+    pub fn take_focus(&self) {
+        self.imp().list_view.grab_focus();
+    }
+
     fn build_ui(&self) {
         let imp = self.imp();
 

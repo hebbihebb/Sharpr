@@ -15,6 +15,12 @@ Tests: `close_count` unit test (versions elsewhere, standing out, nearest
 below the cutoff, same-folder copy, cancel); Show Similar's GTK test opens
 Info on the shot ("1 close image") and clicks it. `./check.sh` (323 tests)
 and all 41 GTK tests pass off screen.
+Fix (user, October 19): clicking the count ended the search half a second
+later. The focused button vanished as Info collapsed, so GTK moved the
+focus into the sidebar's folder list, which opened its folder (item 26's
+trap). The button no longer takes the focus on click, and from the keyboard
+the focus goes to the filmstrip; the GTK test focuses it, clicks, collapses
+Info and checks the results stay.
 
 ## Accepted: Show Similar (Work Order item 28, D44)
 

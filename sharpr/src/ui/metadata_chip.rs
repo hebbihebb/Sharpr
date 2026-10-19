@@ -140,6 +140,9 @@ mod imp {
             close_button.set_halign(gtk4::Align::Start);
             close_button.set_tooltip_text(Some("Show them, from the whole library"));
             close_button.set_action_name(Some("win.show-close-images"));
+            // The card collapses under it; a focused button would hand the
+            // focus on to the sidebar's folder list, which opens a folder.
+            close_button.set_focus_on_click(false);
             close_button.set_visible(false);
 
             let details = gtk4::Box::new(gtk4::Orientation::Vertical, 8);

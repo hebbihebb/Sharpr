@@ -5913,7 +5913,18 @@ fn show_similar_lists_close_images_through_search() {
     let close = viewer.imp().metadata_chip.imp().close_button.clone();
     pump_until(|| close.is_visible());
     assert_eq!(close.label().as_deref(), Some("1 close image"));
-    // Clicking it opens Show Similar at Close, Whole library ticked.
+    // Clicking it opens Show Similar at Close, Whole library ticked. With
+    // the button focused (from the keyboard), the search must survive Info
+    // collapsing under it: GTK used to move the focus on into the sidebar's
+    // folder list, which opened its folder in place of the results (user,
+    // October 19). Both side panels shown, as on the desktop.
+    for split in find_widgets::<libadwaita::OverlaySplitView>(window.upcast_ref()) {
+        split.set_collapsed(false);
+        split.set_show_sidebar(true);
+    }
+    let sidebar = window.imp().sidebar.borrow().clone().unwrap();
+    pump_until(|| sidebar.is_mapped());
+    assert!(close.grab_focus());
     close.emit_clicked();
     pump_until(|| {
         shown()
@@ -5926,6 +5937,13 @@ fn show_similar_lists_close_images_through_search() {
                 "other.png",
             ]
     });
+    viewer.hide_info();
+    settle(500);
+    assert!(
+        window.imp().browse_options.borrow().similar.is_some(),
+        "the search stays open"
+    );
+    assert_eq!(shown().len(), 6);
     assert!(switch("Close").is_active());
     assert!(whole.is_active());
     for (path, bytes) in all.iter().zip(originals) {

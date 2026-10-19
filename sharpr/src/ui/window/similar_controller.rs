@@ -26,6 +26,19 @@ impl SharprWindow {
             let Some(path) = parameter.and_then(|p| p.get::<String>()) else {
                 return;
             };
+            // From the keyboard the button holds the focus, and Info
+            // collapses under it: GTK would move the focus on into the
+            // sidebar's folder list, which opens a folder in place of the
+            // results. The keys go to the filmstrip, as for Show Similar.
+            let focus = gtk4::prelude::GtkWindowExt::focus(&window);
+            let in_viewer = window
+                .imp_viewer()
+                .is_some_and(|viewer| focus.is_some_and(|f| f.is_ancestor(&viewer)));
+            if in_viewer {
+                if let Some(filmstrip) = window.imp().filmstrip.borrow().clone() {
+                    filmstrip.take_focus();
+                }
+            }
             window.show_similar_at(PathBuf::from(path), Some(Level::Close), true);
         });
         self.add_action(&action);
