@@ -1,6 +1,6 @@
 # Current Tasks
 
-## Awaiting acceptance: close-images count in Info (Work Order item 29)
+## Accepted: close-images count in Info (Work Order item 29)
 
 Branch `feature/close-count`. While the Info card is open, the viewer counts
 the pictures close to the image over the whole library, off the GTK thread,
@@ -21,6 +21,7 @@ focus into the sidebar's folder list, which opened its folder (item 26's
 trap). The button no longer takes the focus on click, and from the keyboard
 the focus goes to the filmstrip; the GTK test focuses it, clicks, collapses
 Info and checks the results stay.
+Deployed as `fed0396`; accepted by the user October 19 and merged to `main`.
 
 ## Accepted: Show Similar (Work Order item 28, D44)
 
