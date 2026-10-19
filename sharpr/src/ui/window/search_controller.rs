@@ -22,6 +22,9 @@ pub(super) enum VisualSummary {
         strength: Option<crate::visual_search::search::Strength>,
         /// More visual results wait behind "Show More".
         more: bool,
+        /// The good matches are in the chosen sort order (there were strong
+        /// visual matches); otherwise the closest come first.
+        sorted: bool,
         /// Images left out for looking like a negative word.
         excluded: usize,
         /// Why a negative word's visual part couldn't be applied.
@@ -51,35 +54,53 @@ struct RankedSnapshot {
 }
 
 impl RankedSnapshot {
-    /// The file-name matches and the `limit` closest images: which images
-    /// show is decided by closeness, their order by the chosen sort (user,
-    /// October 19).
+    /// One page of results (user, October 19): the file-name matches and the
+    /// strong visual matches, sorted in the chosen order, then weaker
+    /// matches closest first, which "Show More" adds a page at a time.
+    /// `limit` grows by one page per "Show More", starting at one page.
+    /// With no strong visual match the closest images show at once, closest
+    /// first, so a search never comes back empty.
     fn page(&self, limit: usize) -> BrowseResult {
-        let mut paths = self.by_name.clone();
-        paths.extend(self.visual.iter().take(limit).cloned());
-        let strong = paths
+        let (strong, weak): (Vec<&PathBuf>, Vec<&PathBuf>) = self
+            .visual
             .iter()
-            .enumerate()
-            .filter(|(i, path)| *i < self.by_name.len() || self.strong.contains(*path))
-            .map(|(_, path)| path.clone())
-            .collect();
-        let mut shown: Vec<_> = paths
+            .partition(|path| self.strong.contains(*path));
+        let good: Vec<PathBuf> = self
+            .by_name
             .iter()
-            .filter_map(|path| self.entries.get(path).cloned())
+            .chain(strong.iter().copied().take(limit))
+            .cloned()
             .collect();
-        if shown.len() == paths.len() {
-            crate::model::library::sort_raw_entries(&mut shown, self.order);
-            paths = shown.into_iter().map(|entry| entry.path).collect();
-        }
+        let weak_shown = if strong.is_empty() {
+            limit
+        } else {
+            limit.saturating_sub(crate::visual_search::search::PAGE)
+        };
+        let mut paths = self.sorted(good.clone());
+        paths.extend(weak.iter().take(weak_shown).map(|path| (*path).clone()));
         let mut summary = self.summary.clone();
-        if let VisualSummary::Ranked { more, .. } = &mut summary {
-            *more = self.visual.len() > limit;
+        if let VisualSummary::Ranked { more, sorted, .. } = &mut summary {
+            *more = strong.len() > limit || weak.len() > weak_shown;
+            *sorted = !strong.is_empty();
         }
         BrowseResult {
             paths,
             visual: Some(summary),
-            strong,
+            strong: good,
         }
+    }
+
+    /// `paths` in the chosen sort order.
+    fn sorted(&self, paths: Vec<PathBuf>) -> Vec<PathBuf> {
+        let mut entries: Vec<_> = paths
+            .iter()
+            .filter_map(|path| self.entries.get(path).cloned())
+            .collect();
+        if entries.len() != paths.len() {
+            return paths;
+        }
+        crate::model::library::sort_raw_entries(&mut entries, self.order);
+        entries.into_iter().map(|entry| entry.path).collect()
     }
 }
 
@@ -1029,6 +1050,7 @@ impl SharprWindow {
                             eligible: ranked.eligible,
                             strength: ranked.strength,
                             more: false,
+                            sorted: false,
                             excluded,
                             not_applied,
                         },
@@ -1142,11 +1164,12 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
             strength,
             excluded,
             not_applied,
-            ..
+            sorted,
+            more,
         } => {
             let mut parts = Vec::new();
             if *name_matches > 0 {
-                parts.push(format!("{name_matches} by file name first"));
+                parts.push(format!("{name_matches} by file name"));
             }
             parts.push(
                 match strength {
@@ -1160,6 +1183,13 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
                 }
                 .to_string(),
             );
+            if *sorted {
+                parts.push(if *more {
+                    "sorted; Show More adds weaker matches".to_string()
+                } else {
+                    "sorted".to_string()
+                });
+            }
             if indexed < eligible {
                 parts.push(format!("{indexed} of {eligible} images indexed"));
             } else {
@@ -1343,15 +1373,12 @@ mod tests {
 
         std::fs::remove_dir_all(root).unwrap();
     }
-    #[test]
-    fn a_page_shows_the_closest_images_in_the_chosen_order() {
+    fn snapshot(strong: &[&str]) -> RankedSnapshot {
         use crate::model::library::{RawImageEntry, SortOrder};
-        // Closest first: z, b, y, a, x. The file-name match is "m".
-        let visual: Vec<PathBuf> = ["z", "b", "y", "a", "x"]
-            .iter()
-            .map(|n| PathBuf::from(format!("/l/{n}.jpg")))
-            .collect();
-        let by_name = vec![PathBuf::from("/l/m-tower.jpg")];
+        let path = |n: &str| PathBuf::from(format!("/l/{n}.jpg"));
+        // Closest first: z, b, y, a, x. The file-name match is "m-tower".
+        let visual: Vec<PathBuf> = ["z", "b", "y", "a", "x"].map(path).to_vec();
+        let by_name = vec![path("m-tower")];
         let entries = by_name
             .iter()
             .chain(&visual)
@@ -1367,48 +1394,74 @@ mod tests {
                 (path.clone(), entry)
             })
             .collect();
-        let snapshot = RankedSnapshot {
+        RankedSnapshot {
             key: (1, "tower".into(), SortOrder::NameAsc),
             by_name,
             visual,
-            strong: [PathBuf::from("/l/z.jpg"), PathBuf::from("/l/a.jpg")].into(),
+            strong: strong.iter().map(|n| path(n)).collect(),
             summary: VisualSummary::Ranked {
                 name_matches: 1,
                 indexed: 6,
                 eligible: 6,
                 strength: None,
                 more: false,
+                sorted: false,
                 excluded: 0,
                 not_applied: None,
             },
             entries,
             order: SortOrder::NameAsc,
-        };
-        let names = |page: &BrowseResult| {
-            page.paths
-                .iter()
-                .map(|p| p.file_stem().unwrap().to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-        };
-        // The two closest join the name match, and all three sort by name.
-        let first = snapshot.page(2);
-        assert_eq!(names(&first), ["b", "m-tower", "z"]);
+        }
+    }
+
+    fn names(page: &BrowseResult) -> Vec<String> {
+        page.paths
+            .iter()
+            .map(|p| p.file_stem().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn good_matches_show_sorted_and_show_more_adds_weaker_ones_closest_first() {
+        use crate::visual_search::search::PAGE;
+        let snapshot = snapshot(&["z", "a"]);
+        // The name match and the strong matches, sorted by name.
+        let first = snapshot.page(PAGE);
+        assert_eq!(names(&first), ["a", "m-tower", "z"]);
         assert!(matches!(
             first.visual,
-            Some(VisualSummary::Ranked { more: true, .. })
+            Some(VisualSummary::Ranked {
+                more: true,
+                sorted: true,
+                ..
+            })
         ));
         let mut strong = first.strong.clone();
         strong.sort();
         assert_eq!(
-            strong,
-            vec![PathBuf::from("/l/m-tower.jpg"), PathBuf::from("/l/z.jpg")],
-            "name matches and strong visual results on the page; a.jpg isn't shown yet"
+            names(&BrowseResult {
+                paths: strong,
+                visual: None,
+                strong: vec![]
+            }),
+            ["a", "m-tower", "z"]
         );
-        // Show More adds the next closest, sorted in among them.
-        assert_eq!(names(&snapshot.page(4)), ["a", "b", "m-tower", "y", "z"]);
+        // Show More: weaker matches below, closest first.
+        let more = snapshot.page(2 * PAGE);
+        assert_eq!(names(&more), ["a", "m-tower", "z", "b", "y", "x"]);
         assert!(matches!(
-            snapshot.page(5).visual,
+            more.visual,
             Some(VisualSummary::Ranked { more: false, .. })
+        ));
+    }
+
+    #[test]
+    fn without_strong_matches_the_closest_show_closest_first() {
+        let page = snapshot(&[]).page(crate::visual_search::search::PAGE);
+        assert_eq!(names(&page), ["m-tower", "z", "b", "y", "a", "x"]);
+        assert!(matches!(
+            page.visual,
+            Some(VisualSummary::Ranked { sorted: false, .. })
         ));
     }
 

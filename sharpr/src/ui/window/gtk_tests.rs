@@ -1020,7 +1020,7 @@ fn visual_search_ranks_by_content() {
     window.show_inline_search();
     entry.set_text("green");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while status_text().is_none_or(|t| !t.contains("by file name first")) {
+    while status_text().is_none_or(|t| !t.contains("by file name")) {
         assert!(std::time::Instant::now() < deadline, "search timed out");
         let context = glib::MainContext::default();
         while context.pending() {
@@ -1028,27 +1028,39 @@ fn visual_search_ranks_by_content() {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    // The name match and the strong match (the green image), sorted by
+    // name; the weaker matches wait behind Show More (user, October 19).
     let found = paths();
-    assert_eq!(found.len(), 4, "{found:?}");
-    assert_eq!(found[0], root.join("green-notes.png"), "name match first");
-    assert_eq!(found[1], root.join("three.png"), "then the green image");
+    assert_eq!(
+        found,
+        vec![root.join("green-notes.png"), root.join("three.png")],
+        "good matches only, sorted"
+    );
     let status = status_text().unwrap();
     assert!(status.contains("all 4 images searched"), "{status}");
-    assert!(status.contains("Closest first"), "{status}");
+    assert!(status.contains("Show More adds weaker matches"), "{status}");
     assert_eq!(
         window.imp().state.borrow().library.selected_index,
         Some(0),
         "ranked results start at the top"
     );
     let status = window.imp().search_status.borrow().clone().unwrap();
-    assert!(!status.more.is_visible());
+    assert!(status.more.is_visible());
     assert!(
         status.add.is_visible(),
         "ranked results can go into a bucket"
     );
+    status.more.emit_clicked();
+    pump_until(|| paths().len() == 4);
+    assert_eq!(&paths()[..2], &found[..], "the good matches stay on top");
+    assert!(!status.more.is_visible());
 
     entry.set_text("red");
     pump_until(|| paths().first() == Some(&root.join("one.png")));
+    if paths().len() < 4 {
+        window.show_more_visual_results();
+        pump_until(|| paths().len() == 4);
+    }
     let settle = std::time::Instant::now();
     pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
     screenshot(&window, &root.parent().unwrap().join("visual-search.png"));
@@ -1088,53 +1100,32 @@ fn visual_search_ranks_by_content() {
     });
     filmstrip.clear_multi_selection();
     window.add_search_results_to_bucket();
-    pump_until(|| window.visible_dialog().is_some());
-    let choice = window
-        .visible_dialog()
-        .unwrap()
-        .downcast::<libadwaita::AlertDialog>()
-        .unwrap();
-    assert_eq!(
-        choice.heading().unwrap().as_str(),
-        "Add Search Results to a Bucket"
+    // A small popup at the pointer (I7) offers the strong matches or all
+    // shown; the bucket picker follows.
+    let choice = || {
+        find_widgets::<gtk4::Popover>(window.upcast_ref())
+            .into_iter()
+            .find(|p| {
+                p.is_visible()
+                    && find_widgets::<gtk4::Label>(p.upcast_ref())
+                        .iter()
+                        .any(|l| l.text() == "Add which results?")
+            })
+    };
+    pump_until(|| choice().is_some());
+    let buttons: Vec<String> = find_widgets::<gtk4::Button>(choice().unwrap().upcast_ref())
+        .iter()
+        .filter_map(|b| b.label().map(|l| l.to_string()))
+        .collect();
+    assert!(
+        buttons.iter().any(|l| l.starts_with("Strong Matches (")),
+        "{buttons:?}"
     );
-    choice.emit_by_name::<()>("response", &[&"all"]);
-    choice.close();
-    pump_until(|| {
-        window.visible_dialog().is_some_and(|d| {
-            d.downcast_ref::<libadwaita::AlertDialog>()
-                .and_then(|d| d.heading())
-                .is_some_and(|h| h.as_str() == "Add to Bucket")
-        })
-    });
-    // Clicking a bucket only ticks it; "Add" adds.
-    let picker = window
-        .visible_dialog()
-        .unwrap()
-        .downcast::<libadwaita::AlertDialog>()
-        .unwrap();
-    let mut widget = picker.extra_child();
-    let list = loop {
-        let w = widget.expect("the picker has a list");
-        if let Ok(list) = w.clone().downcast::<gtk4::ListBox>() {
-            break list;
-        }
-        widget = w.first_child();
-    };
-    let members = || {
-        let index = window.imp().state.borrow().library_index.clone().unwrap();
-        index.all_bucket_members().unwrap().len()
-    };
-    let before = members();
-    let row = list.row_at_index(1).expect("a bucket row after New Bucket");
-    list.emit_by_name::<()>("row-activated", &[&row]);
-    let settle = std::time::Instant::now();
-    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(300));
-    assert_eq!(members(), before, "a click alone adds nothing");
-    picker.emit_by_name::<()>("response", &[&"add"]);
-    picker.close();
-    pump_until(|| members() > before);
-    pump_until(|| window.visible_dialog().is_none());
+    assert!(
+        buttons.contains(&"All Shown (4)".to_string()),
+        "{buttons:?}"
+    );
+    choice().unwrap().popdown();
 
     // A negative word leaves out the most alike images (here 1 of 4) and
     // file names containing it.
