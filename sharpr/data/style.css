@@ -333,13 +333,6 @@ window.sharpr .metadata-osd-buckets {
   color: rgba(255, 255, 255, 0.6);
 }
 
-window.sharpr .survey-tile {
-  padding: 8px;
-  border-radius: 4px;
-  color: white;
-}
-window.sharpr gridview.sharpr-survey { background: var(--sharpr-canvas-bg); }
-
 /* Key hints in Compare and crop. */
 /* A wide handle in a tight column: Libadwaita's trough margin and transparent
    slider border would otherwise pad it to about 46 px. */
@@ -408,10 +401,10 @@ window.sharpr .sharpr-keys-osd {
   box-shadow: inset 0 0 0 1px alpha(currentColor, 0.06);
   border-radius: 4px;
 }
-.sharpr-filmstrip listview > row:hover, .sharpr-survey > child:hover {
+.sharpr-filmstrip listview > row:hover {
   background-color: alpha(currentColor, 0.06);
 }
-.sharpr-filmstrip listview > row:active, .sharpr-survey > child:active {
+.sharpr-filmstrip listview > row:active {
   background-color: alpha(currentColor, 0.12);
 }
 window.sharpr.sharpr-high-contrast .metadata-osd, window.sharpr.sharpr-high-contrast .zoom-osd,

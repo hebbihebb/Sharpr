@@ -39,7 +39,6 @@ mod library_root;
 pub(crate) mod mode_header;
 mod rename_sheet;
 mod root_watch;
-mod survey_controller;
 /// Gets Compare's survivors when someone else opened it (Find Copies).
 type CompareDone = Box<dyn FnOnce(Vec<PathBuf>)>;
 pub(crate) use compare_controller::file_actions_blocked;
@@ -73,7 +72,7 @@ pub(super) fn apply_scope_to_sidebar(scope: &ViewScope, sidebar: &SidebarPane) {
         ViewScope::Collection(id) => {
             sidebar.set_collection_selected(*id);
         }
-        ViewScope::Duplicates | ViewScope::Search | ViewScope::Compare | ViewScope::Survey => {
+        ViewScope::Duplicates | ViewScope::Search | ViewScope::Compare => {
             sidebar.clear_collection_selection();
         }
     }
@@ -461,7 +460,6 @@ mod imp {
         pub presentation_outer_split: RefCell<Option<libadwaita::OverlaySplitView>>,
         pub presentation_inner_split: RefCell<Option<libadwaita::OverlaySplitView>>,
         pub compare_page: RefCell<Option<crate::ui::compare_page::ComparePage>>,
-        pub(crate) survey_page: RefCell<Option<Rc<crate::ui::survey::SurveyPage>>>,
         pub content_stack: RefCell<Option<gtk4::Stack>>,
         pub open_folder_cb: RefCell<Option<OpenFolderCallback>>,
         /// File-system monitors and the debounce for changes under the roots.
@@ -537,7 +535,6 @@ mod imp {
                 presentation_outer_split: RefCell::new(None),
                 presentation_inner_split: RefCell::new(None),
                 compare_page: RefCell::new(None),
-                survey_page: RefCell::new(None),
                 content_stack: RefCell::new(None),
                 open_folder_cb: RefCell::new(None),
                 root_watch: RefCell::default(),
@@ -1266,7 +1263,6 @@ impl SharprWindow {
                 let current_page = content_stack.visible_child_name().unwrap_or_default();
                 if current_page == "viewer"
                     || current_page == "compare"
-                    || current_page == "survey"
                     || current_page == "welcome"
                 {
                     content_stack.set_visible_child_name("viewer");
@@ -1984,7 +1980,6 @@ impl SharprWindow {
         *self.imp().compare_page.borrow_mut() = Some(compare_page.clone());
         content_stack.add_named(&viewer, Some("viewer"));
         content_stack.add_named(&compare_page, Some("compare"));
-        self.setup_survey(&content_stack);
 
         {
             let window_weak = self.downgrade();
@@ -2053,12 +2048,6 @@ impl SharprWindow {
                 compare_action.set_enabled(count >= 2);
                 if let Some(win) = weak.upgrade() {
                     win.show_search_selection(count);
-                    if let Some(action) = win
-                        .lookup_action("survey")
-                        .and_downcast::<gio::SimpleAction>()
-                    {
-                        action.set_enabled(count >= 2);
-                    }
                 }
             });
         }

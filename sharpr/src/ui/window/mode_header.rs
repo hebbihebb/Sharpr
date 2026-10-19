@@ -142,10 +142,6 @@ impl SharprWindow {
                 }
                 return glib::Propagation::Stop;
             }
-        } else if super::survey_controller::is_surveying(self.upcast_ref()) {
-            if let Some(page) = self.imp().survey_page.borrow().as_ref() {
-                return page.handle_key(key, modifiers);
-            }
         } else if is_comparing(self.upcast_ref()) {
             if let Some(page) = self.imp().compare_page.borrow().as_ref() {
                 return page.handle_key(key, modifiers);

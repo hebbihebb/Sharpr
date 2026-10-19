@@ -17,7 +17,5 @@ pub mod ops_indicator;
 pub mod preferences;
 pub mod sidebar;
 pub mod state;
-pub(crate) mod survey;
-mod survey_selection;
 pub mod viewer;
 pub mod window;

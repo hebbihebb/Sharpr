@@ -23,7 +23,7 @@ removed means the control is absent, with stored user data retained.
 | Window | Preparing library state | Added for background bucket upgrades; verified backup/count checks stay; bucket edits wait for success, with persistent failure feedback | D3, D4 |
 | Window | Transient operation indicator | Kept for operations that last; does not navigate | D27 |
 | Window | Presentation menu item | Removed; double-click and F11 retain fullscreen | D11, D27 |
-| Filmstrip | Thumbnail list, labels and index pills | Kept, virtualized; placeholders use a paintable-driven loading class shared with Survey/Compare; hover/press feedback uses CSS | D27, D30 |
+| Filmstrip | Thumbnail list, labels and index pills | Kept, virtualized; placeholders use a paintable-driven loading class shared with Compare; hover/press feedback uses CSS | D27, D30 |
 | Filmstrip | Small scrollbar handle | Changed to a wider, always-available native handle | D30 |
 | Filmstrip | Single selection / Ctrl-click / Shift-click / Ctrl+A | Kept; explicit action selection is visible, including one survivor | D25 |
 | Filmstrip | Scroll, row activation and arrow navigation | Kept; visible rows retain thumbnail priority and generations | D27, D30 |
@@ -93,8 +93,7 @@ removed means the control is absent, with stored user data retained.
 | Compare | Candidate badges, filenames and details | Kept; L/R identify the current pair | D29 |
 | Compare | Keep Left/Keep Right / old [ and ] keys | Changed to labelled Keep buttons and arrow keys; old dismiss keys removed | D28 |
 | Compare | Count / Undo / Done | Kept with simple remaining count; Ctrl+Z and Escape | D28 |
-| Survey | Grid / dismiss × / Delete / arrow navigation | Added for narrowing a selection without file changes | D30 |
-| Survey | Undo / Ctrl+Z / Done / Escape | Added; restores original order and returns survivors selected | D30 |
+| Survey | Grid, dismiss, Undo and Done | Removed; Compare narrows a selection | D30, D43 |
 | Crop | Small preview dialog | Replaced by the full viewer canvas | D28 |
 | Crop | 16:9/Free / live dimensions / destination | Kept in the contextual bar | D28 |
 | Crop | Drag selection/corners and key hints | Kept; hints below canvas | D28 |
@@ -120,7 +119,7 @@ removed means the control is absent, with stored user data retained.
 
 - GTK regression tests cover the shared viewer menu/action target, Help→Shortcuts,
   retired metadata preference remaining inert, seven bundled icons, root data
-  preservation, Compare/Survey survivors and unchanged originals, export chooser
+  preservation, Compare survivors and unchanged originals, export chooser
   Select/Cancel and output bytes, minimum/wide layouts and fixed menu placement.
 - `data/style.css` is the only static stylesheet. `ui/look.rs` owns the sole
   application provider and appends only validated user-colour rules.

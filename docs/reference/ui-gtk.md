@@ -66,10 +66,9 @@ See `architecture.md`. In UI code this means:
 - Crop's header contains aspect, live output dimensions, destination, Cancel and Save Copy; zoom/pan/drag/Enter/Escape hints float at the bottom of the canvas. The destination label ellipsizes and its tooltip names the full path.
 - Mode keys are routed from the window so header focus works. Text fields, picker popups and modal sheets keep their own keys. Ctrl+F and type-to-search leave an active mode alone. Fullscreen retains the active mode controls.
 
-## Survey (D30)
+## Survey (retired, D43)
 
-- Select two or more images, then image menu → Survey Selected Images (no shortcut; Ctrl+Shift+S was dropped on October 19, 2026). A virtualized adaptive GtkGridView replaces browsing, with a contextual remaining count, Undo and Done. Delete dismisses the selected tile; Ctrl+Z restores the last dismissal in original order; Escape finishes with survivors selected. Dismissal changes no files or bucket memberships. Search and chips return unchanged.
-- Survey and Compare share a serial viewport-fed thumbnail lane through the existing cache/decoder, with session generations and recycled-row checks. Filmstrip pools and visible-thumbnail priority stay unchanged. File actions and search are guarded during review.
+- Survey was removed on October 19, 2026; Compare narrows a selection. Compare's serial viewport-fed thumbnail lane through the existing cache/decoder, with session generations and recycled-row checks, stays. Filmstrip pools and visible-thumbnail priority are unchanged.
 
 ## One library root (D32)
 

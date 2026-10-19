@@ -13,7 +13,7 @@
       <li>Browse real folders in a fast filmstrip and a large viewer.</li>
       <li>Find images by describing them in words, with an optional local model, plus format, resolution and aspect filters.</li>
       <li>Keep favourites in nested buckets that survive files being moved outside Sharpr.</li>
-      <li>Compare and survey selections, and find exact, resized and converted copies.</li>
+      <li>Compare selections, and find exact, resized and converted copies.</li>
       <li>Crop a copy and batch-export lossless or lossy WebP.</li>
     </ul>
     <p>Sharpr makes no network connections.</p>

@@ -25,6 +25,8 @@ Main Menu → Library → **Open Library Root…** chooses the one library folde
 | Double-click or F11 | Toggle fullscreen presentation; Escape exits after closing Info |
 | Delete | Move selected images to trash |
 
+The corner readout appears on pointer movement. Hover expands that same card into Info; leaving collapses it. Click or Ctrl+I pins it; Escape closes it. Right-click the large image for the same menu as the filmstrip. The keyboard image menu also works in fullscreen.
+
 ## Visual Search
 
 Start typing anywhere, or press Ctrl+F, and describe what you are looking for: `mountains at dusk`, `woman on a sofa`, `watercolor`. Images whose file names contain the words come first, then the closest images by content, 200 at a time; **Show More** adds the next 200. Search covers the current folder or bucket unless **Whole library** is on. Updating a bucket keeps your current search and filters; clearing the search shows its updated members. Filter words such as `4k`, `png` or `16:9` become chips and narrow the results first.
@@ -65,12 +67,6 @@ Select two or more images (Ctrl-click, Shift-click, or Ctrl+A), then right-click
 - **Done** (or **Escape**) returns to browsing with the images you didn't dismiss selected.
 
 The side panels make way while Compare is open. Delete, Rename (F2), Duplicate (Ctrl+D), and the image menu (Shift+F10) are off, as they are while cropping. An image that can't be read shows an error beside its filename. Search and filter chips make way for the mode controls in the top bar; returning restores them.
-
-## Survey
-
-Select two or more images and choose **Survey Selected Images** in the image menu. The adaptive grid lets you dismiss a tile with its × button or Delete, use Ctrl+Z or Undo to restore it in original order, and finish with Done or Escape. Only the remaining selection changes; files and bucket membership stay untouched. Arrow keys move between tiles.
-
-The corner readout appears on pointer movement. Hover expands that same card into Info; leaving collapses it. Click or Ctrl+I pins it; Escape closes it. Right-click the large image for the same menu as the filmstrip. The keyboard image menu also works in fullscreen.
 
 ## Export As WebP
 

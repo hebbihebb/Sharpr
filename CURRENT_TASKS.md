@@ -1,5 +1,14 @@
 # Current Tasks
 
+## Active: retire Survey (Work Order item 31, D43)
+
+Branch `feature/retire-survey`. Survey is removed: its page, selection model,
+controller, `ViewScope::Survey`, the image-menu item, its styles, Shortcuts
+help section, manual section, README line and its GTK test. Compare, the
+shared thumbnail lane and `ordered_selection` stay. Survey stored nothing, so
+no data changes. `./check.sh` (316 tests) and all 40 GTK workflows pass off
+screen. Waiting for the user's acceptance.
+
 ## Accepted: AVIF and HEIC filmstrip thumbnails (Work Order item 30)
 
 Branch `fix/avif-thumbnails`. The thumbnail worker decodes AVIF and HEIC/HEIF
