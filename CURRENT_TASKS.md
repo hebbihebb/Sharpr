@@ -1,6 +1,6 @@
 # Current Tasks
 
-## Active: Compare zoom floor and AVIF/HEIC Crop Copy (Work Order items 35, 34)
+## Accepted: Compare zoom floor and AVIF/HEIC Crop Copy (Work Order items 35, 34)
 
 Branch `fix/compare-zoom-avif-crop`.
 - Item 35: Compare's zoom never goes below Fit, as in the viewer and crop.
@@ -12,6 +12,8 @@ Branch `fix/compare-zoom-avif-crop`.
   their own format through glycin at quality 100, 8-bit (`prepare::encode_heif`),
   as D37 does for JPEG. Test: AVIF and HEIC crops keep the format, size and
   region; originals unchanged. A real 1920×1337 AVIF cropped in 0.25 s.
+
+Deployed as `d275c54`; accepted by the user October 19 and merged to `main`.
 
 ## Accepted: AVIF and HEIC in Compare (Work Order item 32)
 

@@ -807,8 +807,8 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 31 | ~~Retire Survey (D43)~~ **Done October 19, 2026**, accepted by the user (build `8343c3c`) | Sonnet medium (done by Opus) |
 | 32 | ~~AVIF and HEIC don't load in Compare~~ **Done October 19, 2026**, accepted by the user (build `e24032b`): `export::decode_oriented` decodes them through glycin | Sonnet medium (done by Opus) |
 | 33 | Compare layout redesign (user, October 19): the filename/Keep rows, the Replace Left/Right control and the candidate thumbnails sit off to the sides, which is confusing. Centre the controls and candidate strip under the images, and make the Replace control contextual. Design with the user before building | Opus medium |
-| 34 | Bug (user, October 19): Crop Copy fails on AVIF ("Could not read image dimensions"). The size reader and Crop Copy's source-format encoders (D37) lacked AVIF and HEIC | Sonnet medium (done by Opus) |
-| 35 | Bug (user, October 19): Compare zooms out past Fit, so the images shrink inside their panes. Sharpr's rule, as in the viewer and crop: zoom in freely, but never below Fit | Sonnet medium (done by Opus) |
+| 34 | ~~Crop Copy fails on AVIF~~ **Done October 19, 2026**, accepted by the user (build `d275c54`): sizes read through glycin; AVIF and HEIC crops keep their format at the highest quality (D37) | Sonnet medium (done by Opus) |
+| 35 | ~~Compare zooms out past Fit~~ **Done October 19, 2026**, accepted by the user (build `d275c54`): Fit is the floor, as in the viewer and crop | Sonnet medium (done by Opus) |
 
 Audit fixes `codex/audit-0.5.0-2` (A01–A09): **Done October 19, 2026**,
 accepted by the user and merged. Cleanup now retains uncertain members, legacy
