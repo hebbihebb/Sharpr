@@ -18,22 +18,49 @@ impl SharprWindow {
             window.show_similar(PathBuf::from(path));
         });
         self.add_action(&action);
+        // Info's "N close images" (item 29): Close, over the whole library.
+        let action = gio::SimpleAction::new("show-close-images", Some(glib::VariantTy::STRING));
+        let weak = self.downgrade();
+        action.connect_activate(move |_, parameter| {
+            let Some(window) = weak.upgrade() else { return };
+            let Some(path) = parameter.and_then(|p| p.get::<String>()) else {
+                return;
+            };
+            window.show_similar_at(PathBuf::from(path), Some(Level::Close), true);
+        });
+        self.add_action(&action);
     }
 
     /// Lists the images like `path`, keeping the level last chosen in this
     /// search.
     pub(crate) fn show_similar(&self, path: PathBuf) {
+        self.show_similar_at(path, None, false);
+    }
+
+    /// Lists the images like `path` at `level`, or the level last chosen in
+    /// this search; `whole_library` ticks the Whole library box.
+    fn show_similar_at(&self, path: PathBuf, level: Option<Level>, whole_library: bool) {
         if file_actions_blocked(self.upcast_ref()) {
             return;
         }
         {
             let mut options = self.imp().browse_options.borrow_mut();
-            let level = options
-                .similar
-                .as_ref()
-                .map(|(_, c)| *c)
-                .unwrap_or_default();
+            let level = level.unwrap_or_else(|| {
+                options
+                    .similar
+                    .as_ref()
+                    .map(|(_, c)| *c)
+                    .unwrap_or_default()
+            });
             options.similar = Some((path, level));
+            options.whole_library |= whole_library;
+        }
+        if whole_library {
+            self.imp().inline_search_suppressed.set(true);
+            if let Some(button) = self.imp().search_whole_library.borrow().as_ref() {
+                button.set_active(true);
+            }
+            self.imp().inline_search_suppressed.set(false);
         }
         // The search bar shows the chip; the keys stay with the filmstrip.
         if let Some(revealer) = self.imp().inline_search_revealer.borrow().as_ref() {

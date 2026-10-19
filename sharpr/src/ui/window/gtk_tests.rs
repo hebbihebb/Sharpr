@@ -5891,6 +5891,43 @@ fn show_similar_lists_close_images_through_search() {
         .unwrap();
     remove.emit_clicked();
     pump_until(|| shown().len() == 5 && window.imp().browse_options.borrow().similar.is_none());
+    // Info's close count (item 29): over the whole library, the backup
+    // elsewhere; the copy here is only under Exact, and nothing stands out
+    // from the nearest pictures in so small a library.
+    let shot = window
+        .app_state()
+        .borrow()
+        .library
+        .index_of_path(&here.join("shot.png"))
+        .unwrap();
+    window
+        .imp()
+        .filmstrip
+        .borrow()
+        .clone()
+        .unwrap()
+        .navigate_to(shot);
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+    pump_until(|| viewer.current_path() == Some(here.join("shot.png")));
+    viewer.show_info();
+    let close = viewer.imp().metadata_chip.imp().close_button.clone();
+    pump_until(|| close.is_visible());
+    assert_eq!(close.label().as_deref(), Some("1 close image"));
+    // Clicking it opens Show Similar at Close, Whole library ticked.
+    close.emit_clicked();
+    pump_until(|| {
+        shown()
+            == [
+                "shot.png",
+                "shot-backup.png",
+                "retake.png",
+                "near.png",
+                "lava.png",
+                "other.png",
+            ]
+    });
+    assert!(switch("Close").is_active());
+    assert!(whole.is_active());
     for (path, bytes) in all.iter().zip(originals) {
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }

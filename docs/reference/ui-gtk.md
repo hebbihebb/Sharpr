@@ -69,6 +69,7 @@ See `architecture.md`. In UI code this means:
 ## Show Similar (D44)
 
 - Image menu → Show Similar (single image) runs a search through `BrowseOptions::similar`: the chip bar shows a "similar to <name>" chip (click selects the image, × ends it) and a linked Exact / Close / Similar toggle. Scope follows the Whole library box like any search. The worker ranks the scope closest first; the levels nest. Exact keeps versions (`copies::version_of`); Close adds the `CLOSE_AT_LEAST` (12) nearest distinct pictures and any at or above `similar::close_cutoff` (3 standard deviations above the image's mean similarity to the library); Similar pages 200 at a time with Show More. Versions in the image's own folder show only under Exact. The status line counts them; the selection starts on the image. Escape and clearing the search end it like any search.
+- Info's close count (item 29): while the Info card is open, the viewer counts once per image, off the GTK thread (`similar::close_count_in_library`), what Close lists over the whole library less the nearest few (`similar::counts_as_close`). The vectors load only when Info first opens. A cancelled or stale count never shows. The "N close images" button runs `win.show-close-images`: Show Similar at Close with Whole library ticked.
 
 ## Survey (retired, D43)
 

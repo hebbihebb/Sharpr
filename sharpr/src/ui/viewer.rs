@@ -69,6 +69,12 @@ mod imp {
         pub full_res_requested: Cell<bool>,
         pub info_pending: Cell<bool>,
         pub membership_gen: Cell<u64>,
+        /// Info's close-images count (item 29): the searcher for the stored
+        /// vectors, the image counted (or being counted), and a generation
+        /// that cancels a count once the image changes.
+        pub visual_searcher: RefCell<Option<crate::visual_search::search::Searcher>>,
+        pub close_counted: RefCell<Option<PathBuf>>,
+        pub close_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
         /// Handle for submitting metadata load requests to the shared metadata worker.
         pub metadata_handle: RefCell<Option<crate::image_pipeline::worker::MetadataHandle>>,
         /// Last metadata-only quality score set for the displayed image, kept so
@@ -169,6 +175,9 @@ mod imp {
                 full_res_requested: Cell::new(false),
                 info_pending: Cell::new(false),
                 membership_gen: Cell::new(0),
+                visual_searcher: RefCell::new(None),
+                close_counted: RefCell::new(None),
+                close_gen: Default::default(),
                 metadata_handle: RefCell::new(None),
                 base_quality: RefCell::new(None),
             }
@@ -361,7 +370,18 @@ impl ViewerPane {
         let widget: Self = glib::Object::new();
         *widget.imp().state.borrow_mut() = Some(state);
         widget.build_ui();
+        let weak = widget.downgrade();
+        widget.imp().metadata_chip.connect_info_opened(move || {
+            if let Some(viewer) = weak.upgrade() {
+                viewer.refresh_close_count();
+            }
+        });
         widget
+    }
+
+    /// Visual search's searcher, for Info's close-images count.
+    pub fn set_visual_searcher(&self, searcher: Option<crate::visual_search::search::Searcher>) {
+        *self.imp().visual_searcher.borrow_mut() = searcher;
     }
 
     /// Look prototype: shows the corner chip, then fades it after 1.5 s
@@ -809,6 +829,7 @@ impl ViewerPane {
         imp.metadata_chip.clear();
         imp.metadata_chip.update_collections(&[]);
         imp.metadata_chip.update_duplicate_count(0);
+        self.forget_close_count();
         self.set_quality_score(None);
         imp.spinner.stop();
         imp.spinner.set_visible(false);
@@ -845,6 +866,7 @@ impl ViewerPane {
         imp.metadata_chip.update_location(&path);
         imp.metadata_chip.update_collections(&[]);
         imp.metadata_chip.update_duplicate_count(0);
+        self.forget_close_count();
         imp.error_label.set_visible(false);
         self.set_quality_score(None);
         self.refresh_membership();
@@ -1345,6 +1367,84 @@ impl ViewerPane {
                     crate::bench_warn!("viewer.membership.fail", serde_json::json!({"error":error}))
                 }
             }
+        });
+    }
+
+    /// Drops the close-images count and cancels one under way.
+    fn forget_close_count(&self) {
+        let imp = self.imp();
+        imp.close_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        imp.close_counted.borrow_mut().take();
+        imp.metadata_chip.clear_close_count();
+    }
+
+    /// Counts the pictures close to the image (item 29, D44) while Info is
+    /// open, once per image, off the GTK thread. The vectors load only when
+    /// Info first opens, not for every image flipped past.
+    pub(crate) fn refresh_close_count(&self) {
+        let imp = self.imp();
+        if !imp.metadata_chip.is_info_open() {
+            return;
+        }
+        let Some(path) = imp.current_path.borrow().clone() else {
+            return;
+        };
+        if imp.close_counted.borrow().as_ref() == Some(&path) {
+            return;
+        }
+        let Some(searcher) = imp.visual_searcher.borrow().clone() else {
+            return;
+        };
+        let (index, roots, disabled) = imp
+            .state
+            .borrow()
+            .as_ref()
+            .map(|state| {
+                let st = state.borrow();
+                (
+                    st.library_index.clone(),
+                    st.settings.library_roots(),
+                    st.disabled_folders.clone(),
+                )
+            })
+            .unwrap_or_default();
+        let Some(index) = index else { return };
+        self.forget_close_count();
+        *imp.close_counted.borrow_mut() = Some(path.clone());
+        let canceled = imp.close_gen.clone();
+        let generation = canceled.load(std::sync::atomic::Ordering::Relaxed);
+        let worker_path = path.clone();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let superseded = || canceled.load(std::sync::atomic::Ordering::Relaxed) != generation;
+            let count = searcher.vectors(&superseded).ok().and_then(|vectors| {
+                crate::visual_search::similar::close_count_in_library(
+                    &index,
+                    &worker_path,
+                    &roots,
+                    &disabled,
+                    &vectors,
+                    &superseded,
+                )
+            });
+            let _ = tx.send_blocking(count);
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(count) = rx.recv().await else { return };
+            let Some(viewer) = weak.upgrade() else { return };
+            let imp = viewer.imp();
+            if imp.close_gen.load(std::sync::atomic::Ordering::Relaxed) != generation
+                || imp.current_path.borrow().as_ref() != Some(&path)
+            {
+                return;
+            }
+            // Not indexed yet: Info tries again the next time it opens.
+            if count.is_none() {
+                imp.close_counted.borrow_mut().take();
+            }
+            imp.metadata_chip.update_close_count(&path, count);
         });
     }
 

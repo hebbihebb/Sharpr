@@ -1319,22 +1319,25 @@ fn similar_result(
             neighbour.score,
             &readers,
         );
-        let keep = if version {
-            let here = neighbour.path.parent() == folder;
-            if here && level != Level::Exact {
-                copies_left_out += 1;
-            }
-            level == Level::Exact || !here
-        } else {
+        let here = neighbour.path.parent() == folder;
+        if version && here && level != Level::Exact {
+            copies_left_out += 1;
+        }
+        // Versions take no rank.
+        let rank = (!version).then(|| {
             let next = ranks.len();
-            let rank = *ranks.entry(neighbour.fingerprint.clone()).or_insert(next);
-            match level {
-                Level::Exact => false,
-                Level::Close => {
-                    crate::visual_search::similar::is_close(rank, neighbour.score, cutoff)
-                }
-                Level::Similar => true,
-            }
+            *ranks.entry(neighbour.fingerprint.clone()).or_insert(next)
+        });
+        let keep = match level {
+            Level::Exact => version,
+            Level::Close => crate::visual_search::similar::in_close(
+                version,
+                here,
+                rank.unwrap_or(0),
+                neighbour.score,
+                cutoff,
+            ),
+            Level::Similar => !(version && here),
         };
         if keep {
             listed.push(neighbour.path);

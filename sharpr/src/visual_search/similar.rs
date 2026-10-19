@@ -7,7 +7,7 @@
 //! and more, so no single cutoff finds both. The order is what holds up.
 //! The levels nest: Exact ⊂ Close ⊂ Similar.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::search::Vectors;
 use super::similarity;
@@ -81,6 +81,113 @@ pub fn close_cutoff(target: &str, vectors: &Vectors) -> Option<f32> {
 /// counted) belongs in Close.
 pub fn is_close(rank: usize, score: f32, cutoff: f32) -> bool {
     rank < CLOSE_AT_LEAST || score >= cutoff
+}
+
+/// Whether Close lists a picture: a version unless it is in the image's own
+/// folder (only Exact lists those), any other picture by `is_close`.
+pub fn in_close(version: bool, same_folder: bool, rank: usize, score: f32, cutoff: f32) -> bool {
+    if version {
+        !same_folder
+    } else {
+        is_close(rank, score, cutoff)
+    }
+}
+
+/// Whether Info's close count (item 29) takes a picture: what Close lists,
+/// leaving out the nearest few, which every picture has.
+pub fn counts_as_close(version: bool, same_folder: bool, score: f32, cutoff: f32) -> bool {
+    in_close(version, same_folder, CLOSE_AT_LEAST, score, cutoff)
+}
+
+/// How many of `others` (other current files: path, fingerprint, and
+/// similarity to the image) Info counts as close to `target` (path,
+/// fingerprint). `None` when `superseded`.
+pub fn close_count(
+    target: (&Path, &str),
+    cutoff: f32,
+    others: &[(PathBuf, String, f32)],
+    read: &crate::copies::Readers,
+    superseded: &dyn Fn() -> bool,
+) -> Option<usize> {
+    let folder = target.0.parent();
+    let mut count = 0;
+    for (path, fingerprint, score) in others {
+        if superseded() {
+            return None;
+        }
+        let version = crate::copies::version_of(target, (path, fingerprint), *score, read);
+        if counts_as_close(version, path.parent() == folder, *score, cutoff) {
+            count += 1;
+        }
+    }
+    Some(count)
+}
+
+/// Info's close count for the image at `path` over the whole library
+/// (`roots` less `disabled`), as Show Similar's Close finds them with the
+/// Whole library box ticked. `None` when the image isn't indexed or has no
+/// vector yet, or when `superseded`.
+pub fn close_count_in_library(
+    index: &crate::library_index::LibraryIndex,
+    path: &Path,
+    roots: &[PathBuf],
+    disabled: &[PathBuf],
+    vectors: &Vectors,
+    superseded: &dyn Fn() -> bool,
+) -> Option<usize> {
+    let current = |path: &Path, size: u64, mtime: i64| {
+        std::fs::metadata(path).is_ok_and(|m| crate::fingerprint::file_stamp(&m) == (size, mtime))
+    };
+    if !crate::buckets::visible(path, roots, disabled) {
+        return None;
+    }
+    let (size, mtime) = crate::fingerprint::file_stamp(&std::fs::metadata(path).ok()?);
+    let target = index.fresh_fingerprint(path, size, mtime).ok()??;
+    let query = vectors.get(&target)?;
+    let cutoff = close_cutoff(&target, vectors)?;
+    // Only pictures this alike can count: versions are at least
+    // `MAYBE_SAME` alike, unless they are the same file.
+    let floor = cutoff.min(crate::copies::MAYBE_SAME);
+    let scores: std::collections::HashMap<String, f32> = vectors
+        .iter()
+        .filter_map(|(fingerprint, vector)| {
+            let score = similarity(query, vector);
+            (score >= floor || *fingerprint == target).then(|| (fingerprint.clone(), score))
+        })
+        .collect();
+    let hashes: Vec<String> = scores.keys().cloned().collect();
+    let files = index.files_with_fingerprints(&hashes).ok()?;
+    let mut others = Vec::new();
+    for (fingerprint, files) in files {
+        for (other, size, mtime) in files {
+            if superseded() {
+                return None;
+            }
+            if other != path
+                && crate::buckets::visible(&other, roots, disabled)
+                && current(&other, size, mtime)
+            {
+                others.push((other, fingerprint.clone(), scores[&fingerprint]));
+            }
+        }
+    }
+    let target_tiny = std::sync::OnceLock::new();
+    let tiny = |file: &Path| {
+        if file == path {
+            target_tiny
+                .get_or_init(|| crate::copies::tiny_version(file))
+                .clone()
+        } else {
+            crate::copies::tiny_version(file)
+        }
+    };
+    let readers = crate::copies::Readers {
+        size_of: &|_| None,
+        tiny: &tiny,
+        canceled: &|| false,
+        progress: &|_, _| {},
+    };
+    close_count((path, &target), cutoff, &others, &readers, superseded)
 }
 
 /// One candidate: its path, fingerprint and similarity to the image.
@@ -196,5 +303,52 @@ mod tests {
             "a series beyond them"
         );
         assert!(close_cutoff("unindexed", &vectors).is_none());
+    }
+
+    /// Info's count (item 29) takes versions outside the image's folder and
+    /// pictures that stand out, but not the nearest few below the cutoff or
+    /// the versions only Exact lists.
+    #[test]
+    fn close_count_takes_versions_elsewhere_and_what_stands_out() {
+        let target = Path::new("/l/here/shot.jpg");
+        let others: Vec<(PathBuf, String, f32)> = [
+            ("/l/here/shot-copy.jpg", "shot", 1.0),
+            ("/l/else/shot-backup.jpg", "shot", 1.0),
+            ("/l/else/crop.jpg", "crop", 0.97),
+            ("/l/here/take.jpg", "take", 0.96),
+            ("/l/here/near.jpg", "near", 0.85),
+        ]
+        .iter()
+        .map(|(p, f, s)| (PathBuf::from(p), f.to_string(), *s))
+        .collect();
+        // The crop's small version matches the shot's; the take's doesn't.
+        let tiny = |path: &Path| {
+            let shade = if path.ends_with("take.jpg") { 200 } else { 10 };
+            Some(vec![shade; 32 * 32 * 3])
+        };
+        let read = crate::copies::Readers {
+            size_of: &|_| None,
+            tiny: &tiny,
+            canceled: &|| false,
+            progress: &|_, _| {},
+        };
+        let count = |cutoff| close_count((target, "shot"), cutoff, &others, &read, &|| false);
+        assert_eq!(count(0.9), Some(3), "the backup, the crop and the take");
+        assert_eq!(count(0.99), Some(2), "the take no longer stands out");
+        assert_eq!(
+            close_count((target, "shot"), 0.9, &others, &read, &|| true),
+            None
+        );
+        // Close lists the same versions: not the copy in the image's folder.
+        assert!(in_close(true, false, 0, 1.0, 0.9));
+        assert!(!in_close(true, true, 0, 1.0, 0.9));
+        assert!(
+            in_close(false, true, 0, 0.85, 0.9),
+            "Close lists the nearest"
+        );
+        assert!(
+            !counts_as_close(false, true, 0.85, 0.9),
+            "the count doesn't"
+        );
     }
 }

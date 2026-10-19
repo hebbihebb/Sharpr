@@ -38,6 +38,8 @@ mod imp {
         pub popover_collections_label: gtk4::Label,
         pub popover_duplicates_label: gtk4::Label,
         pub duplicate_count: std::cell::Cell<usize>,
+        /// "6 close images" (item 29): opens Show Similar at Close.
+        pub close_button: gtk4::Button,
         pub enabled: std::cell::Cell<bool>,
         pub has_metadata: std::cell::Cell<bool>,
     }
@@ -133,6 +135,12 @@ mod imp {
             popover_collections_label.set_text("In no buckets");
             let popover_duplicates_label = info_label(None);
             popover_duplicates_label.set_visible(false);
+            let close_button = gtk4::Button::new();
+            close_button.add_css_class("flat");
+            close_button.set_halign(gtk4::Align::Start);
+            close_button.set_tooltip_text(Some("Show them, from the whole library"));
+            close_button.set_action_name(Some("win.show-close-images"));
+            close_button.set_visible(false);
 
             let details = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
             details.set_margin_top(12);
@@ -147,6 +155,7 @@ mod imp {
                 quality_row.upcast_ref(),
                 popover_collections_label.upcast_ref(),
                 popover_duplicates_label.upcast_ref(),
+                close_button.upcast_ref(),
             ] {
                 details.append(widget);
             }
@@ -178,6 +187,7 @@ mod imp {
                 popover_collections_label,
                 popover_duplicates_label,
                 duplicate_count: std::cell::Cell::new(0),
+                close_button,
                 enabled: std::cell::Cell::new(true),
                 has_metadata: std::cell::Cell::new(false),
             }
@@ -235,8 +245,16 @@ impl MetadataChip {
         widget.add_controller(motion);
         let weak = widget.downgrade();
         let click = gtk4::GestureClick::new();
-        click.connect_pressed(move |_, _, _, _| {
+        click.connect_pressed(move |_, _, x, y| {
             if let Some(chip) = weak.upgrade() {
+                // A button in the card handles its own click.
+                let on_button = chip
+                    .pick(x, y, gtk4::PickFlags::DEFAULT)
+                    .and_then(|w| w.ancestor(gtk4::Button::static_type()))
+                    .is_some();
+                if on_button {
+                    return;
+                }
                 if chip.imp().pinned.get() {
                     chip.hide_info();
                 } else {
@@ -431,6 +449,34 @@ impl MetadataChip {
         }
     }
 
+    /// The close-images count for the image at `path` (item 29); nothing
+    /// shows for `None` or none.
+    pub fn update_close_count(&self, path: &Path, count: Option<usize>) {
+        let button = &self.imp().close_button;
+        match count {
+            Some(count) if count > 0 => {
+                let images = if count == 1 { "image" } else { "images" };
+                button.set_label(&format!("{count} close {images}"));
+                button.set_action_target_value(Some(&path.to_string_lossy().to_variant()));
+                button.set_visible(true);
+            }
+            _ => self.clear_close_count(),
+        }
+    }
+
+    pub fn clear_close_count(&self) {
+        self.imp().close_button.set_visible(false);
+    }
+
+    /// Runs `f` whenever the expanded Info card opens.
+    pub fn connect_info_opened(&self, f: impl Fn() + 'static) {
+        self.imp().details.connect_visible_notify(move |details| {
+            if details.is_visible() {
+                f();
+            }
+        });
+    }
+
     /// Hide and clear all labels (e.g. before a new image loads).
     pub fn clear(&self) {
         self.hide_info();
@@ -446,6 +492,7 @@ impl MetadataChip {
         self.update_quality(None);
         self.update_collections(&[]);
         self.update_duplicate_count(0);
+        self.clear_close_count();
         imp.card.set_visible(false);
     }
 

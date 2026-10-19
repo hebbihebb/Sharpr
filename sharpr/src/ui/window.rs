@@ -1174,6 +1174,8 @@ impl SharprWindow {
         *self.imp().sidebar.borrow_mut() = Some(sidebar.clone());
         *self.imp().filmstrip.borrow_mut() = Some(filmstrip.clone());
         *self.imp().viewer.borrow_mut() = Some(viewer.clone());
+        // Info's close-images count reads visual search's vectors.
+        viewer.set_visual_searcher(self.imp().visual_searcher.borrow().clone());
         if let Some(worker) = self.imp().thumbnail_worker.borrow().as_ref() {
             filmstrip.set_thumbnail_sender(
                 worker.visible_sender(),
