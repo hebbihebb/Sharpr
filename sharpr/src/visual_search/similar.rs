@@ -5,15 +5,23 @@
 //! bunch high (half of all pairs above 0.68), and ordinary similar pictures
 //! sit at 0.83–0.87 while the AI series first used to calibrate reach 0.94
 //! and more, so no single cutoff finds both. The order is what holds up.
+//! The levels nest: Exact ⊂ Close ⊂ Similar.
 
 use std::path::PathBuf;
 
 use super::search::Vectors;
 use super::similarity;
 
-/// From here up, a picture that isn't a copy is another take of the same
-/// scene: retakes, bursts and AI variants in the user's library.
-pub const CLOSE_FROM: f32 = 0.94;
+/// Close always lists at least this many of the nearest pictures, so it is
+/// never empty while Similar isn't. For a picture like nothing in
+/// particular (the user's lava wallpaper) no neighbour stands out.
+pub const CLOSE_AT_LEAST: usize = 12;
+
+/// How far above an image's average similarity, in standard deviations, a
+/// picture must be to stand out as close. In the user's library this kept
+/// whole series (39 renders of one prompt, 73 shots of one outing) and a
+/// handful for single pictures.
+pub const STANDS_OUT: f32 = 3.0;
 
 /// Which images Show Similar lists.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -21,7 +29,8 @@ pub enum Level {
     /// Versions of the image: copies, and resized, converted, cropped or
     /// lightly edited ones (`copies::version_of`).
     Exact,
-    /// Other takes of the same scene, at least `CLOSE_FROM` alike.
+    /// The versions, the `CLOSE_AT_LEAST` nearest pictures, and every
+    /// picture that stands out as close (`close_cutoff`).
     Close,
     /// Everything else, closest first.
     #[default]
@@ -42,10 +51,36 @@ impl Level {
     pub fn tooltip(self) -> &'static str {
         match self {
             Level::Exact => "This picture again: copies, and resized, cropped or edited versions",
-            Level::Close => "Other takes of the same scene",
+            Level::Close => "The nearest pictures, and whole series that stand out",
             Level::Similar => "Pictures that look like this one, closest first",
         }
     }
+}
+
+/// The score from which a picture stands out as close to the image with
+/// fingerprint `target`: `STANDS_OUT` standard deviations above its average
+/// similarity to every other indexed picture in the library, whatever the
+/// scope, so Close means the same in a folder as in the library.
+pub fn close_cutoff(target: &str, vectors: &Vectors) -> Option<f32> {
+    let query = vectors.get(target)?;
+    let scores: Vec<f32> = vectors
+        .iter()
+        .filter(|(fingerprint, _)| fingerprint.as_str() != target)
+        .map(|(_, vector)| similarity(query, vector))
+        .collect();
+    if scores.is_empty() {
+        return None;
+    }
+    let n = scores.len() as f32;
+    let mean = scores.iter().sum::<f32>() / n;
+    let spread = (scores.iter().map(|s| (s - mean).powi(2)).sum::<f32>() / n).sqrt();
+    Some(mean + STANDS_OUT * spread)
+}
+
+/// Whether the `rank`th nearest other picture (from 0, versions not
+/// counted) belongs in Close.
+pub fn is_close(rank: usize, score: f32, cutoff: f32) -> bool {
+    rank < CLOSE_AT_LEAST || score >= cutoff
 }
 
 /// One candidate: its path, fingerprint and similarity to the image.
@@ -131,7 +166,35 @@ mod tests {
                 "/l/other.jpg"
             ]
         );
-        assert!(ranked[2].score >= CLOSE_FROM && ranked[3].score < CLOSE_FROM);
         assert!(neighbours("unindexed", &list, &vectors).is_none());
+    }
+
+    /// Close keeps the nearest few whatever their score, and beyond them
+    /// only pictures that stand out from the image's usual similarity.
+    #[test]
+    fn close_keeps_the_nearest_and_whatever_stands_out() {
+        // One target, a burst of 3 close takes, and 40 unrelated pictures
+        // spread around 70°–90°.
+        let mut map = HashMap::from([("shot".to_string(), at(0.0))]);
+        for (k, degrees) in [10.0, 11.0, 12.0].into_iter().enumerate() {
+            map.insert(format!("take{k}"), at(degrees));
+        }
+        for k in 0..40 {
+            map.insert(format!("other{k}"), at(70.0 + k as f32 / 2.0));
+        }
+        let vectors: Vectors = Arc::new(map);
+        let cutoff = close_cutoff("shot", &vectors).unwrap();
+        assert!(
+            similarity(&at(0.0), &at(12.0)) >= cutoff,
+            "the burst stands out"
+        );
+        assert!(similarity(&at(0.0), &at(70.0)) < cutoff, "the rest doesn't");
+        assert!(is_close(CLOSE_AT_LEAST - 1, 0.1, cutoff), "the nearest few");
+        assert!(!is_close(CLOSE_AT_LEAST, 0.1, cutoff));
+        assert!(
+            is_close(CLOSE_AT_LEAST + 20, 0.99, cutoff),
+            "a series beyond them"
+        );
+        assert!(close_cutoff("unindexed", &vectors).is_none());
     }
 }

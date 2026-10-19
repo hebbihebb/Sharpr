@@ -5843,14 +5843,34 @@ fn show_similar_lists_close_images_through_search() {
     switch("Exact").set_active(true);
     pump_until(|| shown() == ["shot.png", "shot-copy.png"]);
     assert!(status().starts_with("1 version ·"), "{}", status());
+    // Close holds at least the nearest few, so in a small folder it is all
+    // of them; the copy here still shows only under Exact.
     switch("Close").set_active(true);
-    pump_until(|| shown() == ["shot.png", "retake.png"]);
-    assert!(status().starts_with("1 close take"), "{}", status());
+    pump_until(|| shown() == ["shot.png", "retake.png", "lava.png", "other.png"]);
+    assert!(status().starts_with("3 close images"), "{}", status());
     // The Whole library box widens it: the backup elsewhere and the near
     // picture join; the copy in the image's own folder stays out.
-    switch("Similar").set_active(true);
     let whole = window.imp().search_whole_library.borrow().clone().unwrap();
     whole.set_active(true);
+    pump_until(|| {
+        shown()
+            == [
+                "shot.png",
+                "shot-backup.png",
+                "retake.png",
+                "near.png",
+                "lava.png",
+                "other.png",
+            ]
+    });
+    // Identical copies tie, so their order is the library's.
+    switch("Exact").set_active(true);
+    pump_until(|| {
+        let mut versions = shown();
+        versions[1..].sort();
+        versions == ["shot.png", "shot-backup.png", "shot-copy.png"]
+    });
+    switch("Similar").set_active(true);
     pump_until(|| {
         shown()
             == [

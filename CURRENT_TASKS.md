@@ -5,16 +5,18 @@
 Branch `feature/show-similar`. First version (`4a9e574`) cut at fixed scores
 and always searched the whole library; the user found it listed only copies
 (October 19). Revised per D44 and the approved plan:
-- Ranked closest first by stored vectors (`visual_search::similar::neighbours`),
-  no cutoff for Similar; Close = non-versions ≥ 0.94; Exact = versions
+- Ranked closest first by stored vectors (`visual_search::similar::neighbours`).
+  Second revision (user found Close empty): levels nest. Close = versions +
+  12 nearest distinct pictures + any ≥ `close_cutoff` (mean + 3 sd of the
+  image's similarity to the library); Similar = all; Exact = versions
   (`copies::version_of`: same file, or ≥ 0.95 with 32×32 versions within 20,
   which takes crops and edits; Find Copies' D14 rule unchanged).
 - Scope follows the Whole library box; versions in the image's own folder are
-  left out of Similar; Show More pages Similar.
+  shown only under Exact; Show More pages Similar.
 - Trial on a copy of the user's data: the "(Edited)" lava wallpaper's Exact
-  finds its 4 versions across the library; Similar in Wallpapers lists other
-  lava and landscape wallpapers; an SDXL render's Close finds its 2 seed
-  siblings. 2–100 ms per search.
+  finds its 4 versions across the library and Close 18 images (versions +
+  12 nearest pictures and their copies); in Wallpapers Exact says to look
+  further and Close lists 12 lava and landscape wallpapers. 2–40 ms.
 - Tests: neighbours order; `version_of` (crop and edit in, other renders
   out); GTK test of folder scope, the three levels, the Whole library box,
   chip removal and unchanged files. Show More isn't covered by a test (needs

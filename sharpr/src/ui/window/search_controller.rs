@@ -43,6 +43,8 @@ pub(super) enum VisualSummary {
         more: bool,
         indexed: usize,
         eligible: usize,
+        /// Searched the whole library rather than the folder or bucket.
+        whole_library: bool,
     },
 }
 
@@ -1036,6 +1038,7 @@ impl SharprWindow {
                         return similar_result(
                             target,
                             *level,
+                            whole_library,
                             visual_limit,
                             raw,
                             &stamps,
@@ -1215,6 +1218,7 @@ impl SharprWindow {
 fn similar_result(
     target: &Path,
     level: crate::visual_search::similar::Level,
+    whole_library: bool,
     limit: usize,
     raw: Vec<RawImageEntry>,
     stamps: &[(u64, i64)],
@@ -1222,7 +1226,7 @@ fn similar_result(
     searcher: Option<&crate::visual_search::search::Searcher>,
     superseded: &dyn Fn() -> bool,
 ) -> Result<BrowseResult, String> {
-    use crate::visual_search::similar::{Level, CLOSE_FROM};
+    use crate::visual_search::similar::Level;
     let current = |path: &Path, stamp: (u64, i64)| {
         fingerprints
             .get(path.to_string_lossy().as_ref())
@@ -1266,6 +1270,7 @@ fn similar_result(
         more,
         indexed,
         eligible: candidates.len(),
+        whole_library,
     };
     let ranked = target_fingerprint.as_ref().and_then(|fingerprint| {
         crate::visual_search::similar::neighbours(fingerprint, &candidates, &vectors)
@@ -1291,9 +1296,16 @@ fn similar_result(
         canceled: &|| false,
         progress: &|_, _| {},
     };
+    let cutoff =
+        crate::visual_search::similar::close_cutoff(&target_fingerprint, &vectors).unwrap_or(1.0);
+    // The levels nest: Exact ⊂ Close ⊂ Similar. Versions in the image's own
+    // folder show only under Exact.
     let folder = target.parent();
     let mut listed = Vec::new();
     let mut copies_left_out = 0;
+    // Each other picture's rank, from its first file: further files of it
+    // (identical copies) share the rank.
+    let mut ranks: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for neighbour in ranked {
         if neighbour.path == target {
             continue;
@@ -1301,26 +1313,43 @@ fn similar_result(
         if superseded() {
             return Err(crate::visual_search::search::SUPERSEDED.into());
         }
-        let copy = crate::copies::version_of(
+        let version = crate::copies::version_of(
             (target, &target_fingerprint),
             (&neighbour.path, &neighbour.fingerprint),
             neighbour.score,
             &readers,
         );
-        let keep = match level {
-            Level::Exact => copy,
-            Level::Close => !copy && neighbour.score >= CLOSE_FROM,
-            Level::Similar if copy && neighbour.path.parent() == folder => {
+        let keep = if version {
+            let here = neighbour.path.parent() == folder;
+            if here && level != Level::Exact {
                 copies_left_out += 1;
-                false
             }
-            Level::Similar => true,
+            level == Level::Exact || !here
+        } else {
+            let next = ranks.len();
+            let rank = *ranks.entry(neighbour.fingerprint.clone()).or_insert(next);
+            match level {
+                Level::Exact => false,
+                Level::Close => {
+                    crate::visual_search::similar::is_close(rank, neighbour.score, cutoff)
+                }
+                Level::Similar => true,
+            }
         };
         if keep {
             listed.push(neighbour.path);
         }
-        // Past the copy and close bands only Similar lists anything.
-        if level != Level::Similar && neighbour.score < CLOSE_FROM.min(crate::copies::MAYBE_SAME) {
+        // Versions are at least `MAYBE_SAME` alike; Close ends once the
+        // nearest few are past and nothing stands out any more.
+        let done = match level {
+            Level::Exact => neighbour.score < crate::copies::MAYBE_SAME,
+            Level::Close => {
+                ranks.len() > crate::visual_search::similar::CLOSE_AT_LEAST
+                    && neighbour.score < cutoff.min(crate::copies::MAYBE_SAME)
+            }
+            Level::Similar => false,
+        };
+        if done {
             break;
         }
     }
@@ -1346,6 +1375,7 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
             more,
             indexed,
             eligible,
+            whole_library,
         } => {
             use crate::visual_search::similar::Level;
             let plural = |n: usize, one: &str, many: &str| match n {
@@ -1354,10 +1384,20 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
             };
             let mut parts = vec![match (level, found) {
                 (_, None) => "This image isn't indexed for visual search yet".to_string(),
-                (Level::Exact, Some(0)) => "No other versions of this picture".to_string(),
+                (Level::Exact, Some(0)) if *whole_library => {
+                    "No other versions of this picture".to_string()
+                }
+                (Level::Exact, Some(0)) => {
+                    "No other versions here; Whole library looks further".to_string()
+                }
                 (Level::Exact, Some(n)) => plural(*n, "version", "versions"),
-                (Level::Close, Some(0)) => "No other takes of this scene; try Similar".to_string(),
-                (Level::Close, Some(n)) => plural(*n, "close take", "close takes"),
+                (Level::Close, Some(0)) => "Nothing else to compare with".to_string(),
+                (Level::Close, Some(n)) => {
+                    format!(
+                        "{}, closest first",
+                        plural(*n, "close image", "close images")
+                    )
+                }
                 (Level::Similar, Some(_)) if *more => {
                     "Closest first; Show More adds the next".to_string()
                 }
