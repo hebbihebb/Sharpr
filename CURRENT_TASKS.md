@@ -1,6 +1,9 @@
 # Current Tasks
 
-## Audit fixes: verified and committed; awaiting acceptance
+## Accepted: audit 0.5.0-2 fixes (A01–A09)
+
+Deployed as `50ee6bc`; accepted by the user October 19 ("seems to be in working
+order"), merged to `main` and pushed.
 
 Branch: `codex/audit-0.5.0-2`, based on `bed0278` from `main`.
 The user agreed to A01–A09; review decisions are committed as `0ab1934`.
@@ -30,7 +33,6 @@ observed again; excluded/unreadable/changed locations retain membership.
 External filesystem writers cannot be locked into an atomic library snapshot.
 No new manual large-folder performance benchmark or Flatpak Undo trial.
 
-Acceptance, merge and push are pending. The installed launcher is unchanged.
 Findings, review decisions and detailed fix evidence remain in git history of
 `AUDIT.md`; the report is removed before merge, per the audit process.
 
