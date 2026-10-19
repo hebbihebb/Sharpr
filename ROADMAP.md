@@ -796,7 +796,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 18 | ~~Library Overview refresh, errors, and unsupported count~~ **Implemented October 19, 2026** on `feature/roadmap-batch`, awaiting acceptance | Codex (Sol medium) (done by Opus) |
 | 19 | Ctrl+Shift+S opens the GTK Inspector | Codex (Sol medium) |
 | 20 | ~~Make the flaky GTK navigation test deterministic~~ **Implemented October 19, 2026** on `feature/roadmap-batch`, awaiting acceptance (20 of 20 off-screen runs pass) | Sonnet high (done by Opus) |
-| 21 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal. **In progress October 19, 2026** on `feature/roadmap-batch`: 3 extractions done (background indexing, bucket sidebar, search chip bar; `setup` about 2,050 → 1,600 lines); paused for the user's go-ahead per the brief | Sonnet high |
+| 21 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal. **In progress October 19, 2026** on `feature/roadmap-batch`: 3 extractions done (background indexing, bucket sidebar, search chip bar; `setup` about 2,050 → 1,520 lines); paused for the user's go-ahead per the brief | Sonnet high |
 | 22 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
 | 23 | ~~Trash Undo in the Flatpak~~ **Implemented October 19, 2026** on `feature/roadmap-batch`, awaiting acceptance: verified in a real Flatpak build that the portal trashes into the host's `~/.local/share/Trash` (absolute `Path=`), which the sandbox can read and restore from; the sandbox `$XDG_DATA_HOME/Trash` does not exist | Sonnet high (done by Opus) |
 | 24 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
