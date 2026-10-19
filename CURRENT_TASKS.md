@@ -1,8 +1,9 @@
 # Current Tasks
 
-## Awaiting acceptance: AVIF and HEIC in visual search (Work Order item 22)
+## Accepted: AVIF and HEIC in visual search (Work Order item 22)
 
-Branch `feature/avif-heic-search`. AVIF and HEIC/HEIF are decoded for
+Deployed as `6ff4a78`; accepted by the user October 19, merged to `main` and
+pushed. AVIF and HEIC/HEIF are decoded for
 indexing by glycin's HEIF loader (`prepare::decode_with_glycin`), the loader
 the viewer already uses: sandboxed, no new dependency, and shipped by the
 GNOME 50 runtime (checked in the installed Flatpak), so the Flatpak size cost
@@ -11,7 +12,8 @@ the loader an image counts as unsupported and is retried each pass, as are
 images older builds turned away. Tests: glycin-written AVIF/HEIC samples
 prepare upright at 768 px; with the installed model, both index and "green"
 ranks them first. `./check.sh` (317 tests) and 41 GTK workflows pass.
-Found: filmstrip thumbnails can't decode AVIF/HEIC (Backlog; ask the user).
+Bug logged as Work Order item 30 (user confirmed): AVIF/HEIC show no
+filmstrip thumbnail, though the viewer opens them. Work stopped here for now.
 
 ## Accepted: audit 0.5.0-2 fixes (A01–A09)
 

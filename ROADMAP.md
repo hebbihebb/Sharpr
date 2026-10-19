@@ -795,7 +795,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 17 | ~~Merge the two thumbnail worker loops~~ **Done October 19, 2026**, accepted by the user (build `ba0ff78`) | Sonnet high (done by Opus) |
 | 18 | ~~Library Overview refresh, errors, and unsupported count~~ **Done October 19, 2026**, accepted by the user (build `ba0ff78`) | Codex (Sol medium) (done by Opus) |
 | 19 | Remove the Ctrl+Shift+S shortcut for Survey (user, October 19: the GTK Inspector still opens on it; nothing in Sharpr or GTK binds it there, so drop the key for now). Survey stays in the image menu with no shortcut shown; update the Shortcuts help and the test that covers the binding | Sonnet low |
-| 22 | ~~AVIF and HEIC/HEIF indexing~~ **Implemented October 19, 2026** on `feature/avif-heic-search`, awaiting acceptance: decoded through glycin's HEIF loader, which the viewer already uses and the GNOME 50 runtime ships, so the Flatpak size cost is nil | Sonnet high (done by Opus) |
+| 22 | ~~AVIF and HEIC/HEIF indexing~~ **Done October 19, 2026**, accepted by the user (build `6ff4a78`; filmstrip thumbnails are item 30): decoded through glycin's HEIF loader, which the viewer already uses and the GNOME 50 runtime ships, so the Flatpak size cost is nil | Sonnet high (done by Opus) |
 | 20 | ~~Make the flaky GTK navigation test deterministic~~ **Done October 19, 2026**, accepted by the user (build `ba0ff78`) (20 of 20 off-screen runs pass) | Sonnet high (done by Opus) |
 | 21 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal. **Paused October 19, 2026** for a planning session with the user before any filmstrip work (user); 3 extractions from `setup` merged (accepted with build `ba0ff78`) (background indexing, bucket sidebar, search chip bar; `setup` about 2,050 → 1,520 lines); paused for the user's go-ahead per the brief | Opus medium |
 | 23 | ~~Trash Undo in the Flatpak~~ **Done October 19, 2026**, accepted by the user (build `ba0ff78`): verified in a real Flatpak build that the portal trashes into the host's `~/.local/share/Trash` (absolute `Path=`), which the sandbox can read and restore from; the sandbox `$XDG_DATA_HOME/Trash` does not exist | Sonnet high (done by Opus) |
@@ -803,6 +803,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 25 | ~~More than one library root (user, October 18): keep Pictures as the root and add Downloads as a second top-level root in the folder list, below the first. Today one library is active and `set_single_library_root` replaces its root; `config/settings.rs` already holds several libraries with an overlap check, so decide first whether a second root is a second library or a second root of one library (buckets, tags, search, Find Copies and the index must span it). Adding and removing a root must never touch the files. Maybe: each root gets its own colour, so a root's folders and images read at a glance (user idea, October 18; decide with the design)~~ **Done October 18, 2026** (D41), accepted by the user ("deployed and working", build `90e594e`) | Opus medium |
 | 28 | Similar photos (user, October 19): group near-identical shots such as bursts and series from the visual-search vectors, and narrow each group with Compare. Nothing is trashed without the user choosing it | Opus medium |
 | 29 | Short image descriptions (user, October 19): a few words per image, such as "girl · pier · water · blue", in the Info panel. **Needs a product decision first:** it runs against "No generated tags" and the removal of AI tagging | Sonnet high |
+| 30 | Bug (user, October 19): AVIF (and HEIC) images show no filmstrip thumbnail, though they open normally in the viewer. The thumbnail worker decodes with the `image` crate, which reads neither; the viewer uses glycin, which does. Decode these formats with glycin in `generate_thumbnail`, bounded like the rest, extending the worker rather than rewriting it | Sonnet high |
 
 Audit fix candidate `codex/audit-0.5.0-2`: A01–A09 agreed by the user.
 Cleanup now retains uncertain members, legacy upgrades preserve unconverted
@@ -887,6 +888,11 @@ Open items only; the table above has the order and the model. Each brief adds on
 - **Done when:** the words appear for an indexed image, stay away when no word is close enough, and cost no extra model or indexing pass; the user judges a sample from their library.
 - **Guardrails:** **ask the user before building.** It conflicts with `AGENTS.md` ("No generated tags", and AI tagging under "Removed"), so it needs the user's approval and a decision-log entry in `product.md` that states the line between them: the words are computed on display, never stored as tags, and add no tag UI. EmbeddingGemma writes no text, so the words can only come from the list. A captioning model is a separate, heavier decision.
 
+**30. AVIF and HEIC filmstrip thumbnails.**
+- **Goal:** AVIF and HEIC images get filmstrip thumbnails like every other format.
+- **Done when:** a glycin-written AVIF and HEIC each produce a thumbnail through `generate_thumbnail` (a test), and the user sees them in the filmstrip.
+- **Guardrails:** filmstrip performance is non-negotiable: add a decode branch for these formats, keep the scheduler, generations and caches as they are, and check rapid scroll and folder switch on a folder with such files. `visual_search::prepare::decode_with_glycin` already decodes them off the GTK thread; reuse it rather than writing a second glycin path.
+
 ## Backlog
 
 Optional. Pick something up only when a phase touches that area, or the user asks. The suggested order and model are in the table above.
@@ -905,7 +911,6 @@ Optional. Pick something up only when a phase touches that area, or the user ask
 - Ctrl+Shift+S opened the GTK Inspector instead of Survey on the user's desktop (October 15). Find what claims the key, or choose another.
 - Re-link a bucket member moved outside Sharpr before the user opens its new folder. Today the bucket shows "image not found" until a pass reaches that folder (user, October 15).
 - Stop computing perceptual hashes in the thumbnail workers, now that "Find Copies…" (Phase 7) uses fingerprints and vectors; remove `duplicates/phash.rs` and `LibraryIndex::duplicate_groups` with it. Wrap or extend the thumbnail scheduler; don't rewrite it.
-- Filmstrip thumbnails for AVIF and HEIC (found October 19 with item 22): the thumbnail worker decodes with the `image` crate, which reads neither, so such a file shows a failed thumbnail unless the desktop already cached one. glycin could decode them; it touches the thumbnail worker, so ask the user first.
 - Library Overview: refresh the fingerprint, copy, bucket, and index-file figures while it is open, or label them as a snapshot; show gathering errors instead of "…"; count unsupported formats apart from unreadable files (Phases 6–8 audit, finding 12).
 - GTK test harness: `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs); make it deterministic. The dropdown selection test was replaced by direct candidate-row activation in D29. The screenshot timeout is solved (October 14): a window the compositor isn't drawing (covered, for example by a fullscreen video while the user works) gives no frame, so screenshots are now best-effort and never fail a test.
 
