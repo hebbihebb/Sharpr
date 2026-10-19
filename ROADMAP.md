@@ -807,6 +807,8 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 31 | ~~Retire Survey (D43)~~ **Done October 19, 2026**, accepted by the user (build `8343c3c`) | Sonnet medium (done by Opus) |
 | 32 | ~~AVIF and HEIC don't load in Compare~~ **Done October 19, 2026**, accepted by the user (build `e24032b`): `export::decode_oriented` decodes them through glycin | Sonnet medium (done by Opus) |
 | 33 | Compare layout redesign (user, October 19): the filename/Keep rows, the Replace Left/Right control and the candidate thumbnails sit off to the sides, which is confusing. Centre the controls and candidate strip under the images, and make the Replace control contextual. Design with the user before building | Opus medium |
+| 34 | Bug (user, October 19): Crop Copy fails on AVIF ("Could not read image dimensions"). The size reader and Crop Copy's source-format encoders (D37) lacked AVIF and HEIC | Sonnet medium (done by Opus) |
+| 35 | Bug (user, October 19): Compare zooms out past Fit, so the images shrink inside their panes. Sharpr's rule, as in the viewer and crop: zoom in freely, but never below Fit | Sonnet medium (done by Opus) |
 
 Audit fixes `codex/audit-0.5.0-2` (A01–A09): **Done October 19, 2026**,
 accepted by the user and merged. Cleanup now retains uncertain members, legacy
@@ -903,7 +905,7 @@ Open items only; the table above has the order and the model. Each brief adds on
 
 ## Backlog
 
-- AVIF and HEIC sizes (user's library, October 19, found with item 32): the `image` crate can't read their headers, so these images have no stored width and height. The resolution filters and the Library Overview's below-4K count skip them, and Crop Copy refuses them ("Could not read image dimensions"; it also has no AVIF encoder for the source-format rule, D37). Reading the size through glycin on the metadata worker would fix the first two.
+- AVIF and HEIC sizes (October 19): since item 34 their sizes are read through glycin, so the folder metadata pass stores them when their folder opens, as for other images. Check with the user that the resolution filters and the Library Overview count them once their folders have been opened.
 
 Optional. Pick something up only when a phase touches that area, or the user asks. The suggested order and model are in the table above.
 

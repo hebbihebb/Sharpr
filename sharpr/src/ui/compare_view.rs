@@ -38,7 +38,9 @@ impl Default for View {
 /// Where an image of `size` pixels is drawn in a pane of `pane` size:
 /// (x, y, width, height). `reference_width` makes zoom mean the same
 /// region for images of different resolutions: a 1080p and a 4K version
-/// of one picture show the same part of it at the same zoom.
+/// of one picture show the same part of it at the same zoom. The image is
+/// never drawn smaller than it fits the pane (as in the viewer), whether
+/// from 100% on a small image or the other side of a linked zoom.
 pub fn placement(
     pane: (f64, f64),
     size: (f64, f64),
@@ -48,7 +50,7 @@ pub fn placement(
     let fit = (pane.0 / size.0).min(pane.1 / size.1);
     let scale = view
         .zoom
-        .map(|zoom| zoom * reference_width / size.0)
+        .map(|zoom| (zoom * reference_width / size.0).max(fit))
         .unwrap_or(fit);
     let (w, h) = (size.0 * scale, size.1 * scale);
     let place = |pane: f64, extent: f64, center: f64| {
@@ -67,7 +69,8 @@ pub fn placement(
 }
 
 /// `view` zoomed by `factor` around the pane point `at`, keeping the
-/// picture point under it in place.
+/// picture point under it in place. As in the viewer, Fit is the floor:
+/// zooming out never makes the image smaller than its fitted size.
 pub fn zoomed(
     view: View,
     factor: f64,
@@ -78,7 +81,11 @@ pub fn zoomed(
 ) -> View {
     let (x, y, w, h) = placement(pane, size, view, reference_width);
     let current = w / size.0 * size.0 / reference_width;
-    let zoom = (current * factor).clamp(0.02, 32.0);
+    let zoom = (current * factor).min(32.0);
+    let fit = (pane.0 / size.0).min(pane.1 / size.1) * size.0 / reference_width;
+    if zoom <= fit * (1.0 + 1e-9) {
+        return View::default();
+    }
     // The picture point under the pointer, which must stay under it.
     let point = ((at.0 - x) / w, (at.1 - y) / h);
     let (new_w, new_h) = (w * factor, h * factor);
@@ -599,6 +606,39 @@ mod tests {
             (after.zoom.unwrap() - 0.5).abs() < 1e-9,
             "fit was 0.25; doubled"
         );
+    }
+
+    /// Fit is the floor, as in the viewer: zooming out stops at Fit, and no
+    /// zoom draws an image smaller than its pane fits.
+    #[test]
+    fn zooming_out_never_goes_below_fit() {
+        let pane = (1000.0, 800.0);
+        let size = (4000.0, 2000.0);
+        let at = (700.0, 300.0);
+        assert_eq!(
+            zoomed(View::default(), 0.8, at, pane, size, size.0),
+            View::default()
+        );
+        let zoomed_in = zoomed(View::default(), 1.25, at, pane, size, size.0);
+        assert!(zoomed_in.zoom.is_some());
+        let mut view = zoomed_in;
+        for _ in 0..10 {
+            view = zoomed(view, 0.8, at, pane, size, size.0);
+        }
+        assert_eq!(view, View::default());
+        // 1:1 on an image smaller than the pane, and a tiny linked zoom.
+        let small = (400.0, 200.0);
+        for zoom in [1.0, 0.01] {
+            let view = View {
+                zoom: Some(zoom),
+                center: (0.5, 0.5),
+            };
+            let (_, _, w, h) = placement(pane, small, view, small.0);
+            assert!(
+                (w - 1000.0).abs() < 1e-9 && (h - 500.0).abs() < 1e-9,
+                "{w}×{h}"
+            );
+        }
     }
 
     #[test]

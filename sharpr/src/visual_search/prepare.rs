@@ -122,16 +122,7 @@ pub(crate) fn decode_with_glycin(path: &Path, format: &str) -> Result<DynamicIma
         loader.accepted_memory_formats(
             glycin::MemoryFormatSelection::R8g8b8 | glycin::MemoryFormatSelection::R8g8b8a8,
         );
-        let image = loader.load().await.map_err(|e| {
-            // glycin appends its whole configuration; the first line says it.
-            let e = e.to_string();
-            let e = e.lines().next().unwrap_or_default().to_string();
-            if e.starts_with("Unknown image format") || e.starts_with("Could not spawn") {
-                format!("{format} {NO_LOADER} (glycin-loaders): {e}")
-            } else {
-                e
-            }
-        })?;
+        let image = loader.load().await.map_err(|e| glycin_error(&e, format))?;
         let details = image.details();
         let (width, height) = (details.width(), details.height());
         if !crate::jxl::fits_decode_budget(width, height) {
@@ -142,6 +133,63 @@ pub(crate) fn decode_with_glycin(path: &Path, format: &str) -> Result<DynamicIma
         }
         let frame = image.next_frame().await.map_err(|e| e.to_string())?;
         frame_to_image(&frame)
+    })
+}
+
+/// The upright size of an AVIF or HEIC image, which glycin reads without
+/// decoding the pixels. Blocks the calling worker thread.
+pub(crate) fn heif_dimensions(path: &Path, format: &str) -> Result<(u32, u32), String> {
+    use gtk4::{gio, glib};
+    let file = gio::File::for_path(path);
+    glib::MainContext::new().block_on(async move {
+        let image = glycin::Loader::new(file)
+            .load()
+            .await
+            .map_err(|e| glycin_error(&e, format))?;
+        let details = image.details();
+        let (width, height) = (details.width(), details.height());
+        Ok(
+            match image.transformation_orientation().rotate().degrees() {
+                90 | 270 => (height, width),
+                _ => (width, height),
+            },
+        )
+    })
+}
+
+/// A glycin load error as one line, marking a missing loader.
+fn glycin_error(error: &impl std::fmt::Display, format: &str) -> String {
+    // glycin appends its whole configuration; the first line says it.
+    let e = error.to_string();
+    let e = e.lines().next().unwrap_or_default().to_string();
+    if e.starts_with("Unknown image format") || e.starts_with("Could not spawn") {
+        format!("{format} {NO_LOADER} (glycin-loaders): {e}")
+    } else {
+        e
+    }
+}
+
+/// `image` encoded as `mime` (AVIF or HEIC) by glycin at its highest
+/// quality, as 8-bit RGB, or RGBA when it has transparency.
+pub(crate) fn encode_heif(mime: &'static str, image: &DynamicImage) -> Result<Vec<u8>, String> {
+    let (width, height) = (image.width(), image.height());
+    let (format, pixels) = if image.color().has_alpha() {
+        (glycin::MemoryFormat::R8g8b8a8, image.to_rgba8().into_raw())
+    } else {
+        (glycin::MemoryFormat::R8g8b8, image.to_rgb8().into_raw())
+    };
+    gtk4::glib::MainContext::new().block_on(async move {
+        let mut creator = glycin::Creator::new(mime.into())
+            .await
+            .map_err(|e| glycin_error(&e, mime))?;
+        creator
+            .add_frame(width, height, format, pixels)
+            .map_err(|e| e.to_string())?;
+        creator
+            .set_encoding_quality(100)
+            .map_err(|e| e.to_string())?;
+        let encoded = creator.create().await.map_err(|e| e.to_string())?;
+        encoded.data_full().map_err(|e| e.to_string())
     })
 }
 

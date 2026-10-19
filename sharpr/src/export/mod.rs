@@ -426,6 +426,11 @@ impl std::fmt::Display for ResizeError {
 impl std::error::Error for ResizeError {}
 
 pub fn oriented_source_dimensions(source: &Path) -> Result<(u32, u32), ResizeError> {
+    // The `image` crate can't read AVIF or HEIC headers; glycin can.
+    if let Some(format) = crate::visual_search::prepare::heif_format(source) {
+        return crate::visual_search::prepare::heif_dimensions(source, format)
+            .map_err(ResizeError::Decode);
+    }
     crate::metadata::exif::display_dimensions(source).ok_or_else(|| {
         ResizeError::Decode(format!(
             "Could not read image dimensions: {}",
@@ -776,6 +781,48 @@ mod tests {
             expected.to_rgba8()
         );
         assert_eq!(std::fs::read(source).unwrap(), original);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// AVIF and HEIC crops keep their format (D37, like JPEG at the highest
+    /// quality) and their size reads through glycin; the original is untouched.
+    #[test]
+    fn avif_and_heic_crops_keep_their_format() {
+        let dir = test_dir("crop-heif");
+        // Red on the left, blue on the right.
+        let pixels = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(128, 64, |x, _| {
+            if x < 64 {
+                image::Rgb([220, 30, 30])
+            } else {
+                image::Rgb([30, 30, 220])
+            }
+        }));
+        for (mime, extension) in [("image/avif", "avif"), ("image/heif", "heic")] {
+            let source = dir.join(format!("source.{extension}"));
+            let bytes = crate::visual_search::prepare::encode_heif(mime, &pixels).unwrap();
+            std::fs::write(&source, &bytes).unwrap();
+            assert_eq!(oriented_source_dimensions(&source).unwrap(), (128, 64));
+            let result = crop_copy(&CropConfig {
+                source: source.clone(),
+                destination_dir: dir.clone(),
+                rectangle: CropRect {
+                    x: 72,
+                    y: 8,
+                    width: 48,
+                    height: 40,
+                },
+            })
+            .unwrap();
+            assert_eq!(result.output.extension().unwrap(), extension);
+            assert_eq!(
+                oriented_source_dimensions(&result.output).unwrap(),
+                (48, 40)
+            );
+            let cropped = decode_oriented(&result.output).unwrap().to_rgb8();
+            let [r, g, b] = cropped.get_pixel(24, 20).0;
+            assert!(b > 170 && r < 80 && g < 80, "{extension}: {r},{g},{b}");
+            assert_eq!(std::fs::read(&source).unwrap(), bytes);
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

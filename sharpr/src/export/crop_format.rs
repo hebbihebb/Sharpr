@@ -10,12 +10,19 @@ use super::ResizeError;
 pub(super) enum CropFormat {
     Raster(ImageFormat),
     Jxl,
+    /// AVIF or HEIC, by MIME type, written by glycin.
+    Heif(&'static str),
 }
 
 impl CropFormat {
     pub fn detect(source: &Path) -> Result<Self, ResizeError> {
         if crate::jxl::is_jxl_path(source) {
             return Ok(Self::Jxl);
+        }
+        match crate::visual_search::prepare::heif_format(source) {
+            Some("AVIF") => return Ok(Self::Heif("image/avif")),
+            Some(_) => return Ok(Self::Heif("image/heif")),
+            None => {}
         }
         let format = image::ImageReader::open(source)
             .and_then(|reader| reader.with_guessed_format())
@@ -39,6 +46,12 @@ impl CropFormat {
     pub fn extension(self, source: &Path) -> String {
         match self {
             Self::Jxl => "jxl".into(),
+            // `detect` matched the extension, so it is kept as it is.
+            Self::Heif(_) => source
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_default(),
             Self::Raster(format) => source
                 .extension()
                 .and_then(|s| s.to_str())
@@ -66,6 +79,11 @@ impl CropFormat {
                 .write_to(&mut output, format)
                 .map_err(|e| ResizeError::Encode(e.to_string()))?,
             Self::Jxl => return jxl_bytes(image),
+            // Like JPEG, re-encoded at the highest quality.
+            Self::Heif(mime) => {
+                return crate::visual_search::prepare::encode_heif(mime, image)
+                    .map_err(ResizeError::Encode)
+            }
         }
         Ok(output.into_inner())
     }

@@ -97,7 +97,7 @@ removed means the control is absent, with stored user data retained.
 | Crop | Small preview dialog | Replaced by the full viewer canvas | D28 |
 | Crop | 16:9/Free / live dimensions / destination | Kept in the contextual bar | D28 |
 | Crop | Drag selection/corners and key hints | Kept; hints below canvas | D28 |
-| Crop | Cancel/Escape and Save Copy/Enter | Kept; unique source-format copy, original untouched; JPEG re-encoded at maximum quality | D28, D37 |
+| Crop | Cancel/Escape and Save Copy/Enter | Kept; unique source-format copy, original untouched; JPEG, AVIF and HEIC re-encoded at maximum quality | D28, D37 |
 | Export | Folder / chooser / Wallpapers | Kept in one in-window sheet through native chooser Select/Cancel | D13, D25 |
 | Export | Lossless / lossy quality / optional fit dimensions | Kept; only downscales | D13 |
 | Export | Export / Cancel / Escape / click-away | Kept; one start path and cancellation path | D25 |
