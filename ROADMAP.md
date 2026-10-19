@@ -802,7 +802,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 24 | Non-UTF-8 paths (low value; paths are stored as SQLite text). **Skipped for now by the user, October 19, 2026** | Opus high |
 | 25 | ~~More than one library root (user, October 18): keep Pictures as the root and add Downloads as a second top-level root in the folder list, below the first. Today one library is active and `set_single_library_root` replaces its root; `config/settings.rs` already holds several libraries with an overlap check, so decide first whether a second root is a second library or a second root of one library (buckets, tags, search, Find Copies and the index must span it). Adding and removing a root must never touch the files. Maybe: each root gets its own colour, so a root's folders and images read at a glance (user idea, October 18; decide with the design)~~ **Done October 18, 2026** (D41), accepted by the user ("deployed and working", build `90e594e`) | Opus medium |
 | 28 | Similar photos (user, October 19): group near-identical shots such as bursts and series from the visual-search vectors, and narrow each group with Compare. Nothing is trashed without the user choosing it | Opus medium |
-| 29 | Short image descriptions (user, October 19): a few words per image, such as "girl · pier · water · blue", in the Info panel. **Needs a product decision first:** it runs against "No generated tags" and the removal of AI tagging | Sonnet high |
+| 29 | Similar-image count in Info (user, October 19), the companion to item 28: the Info panel says how many similar images or close matches the image has (for example "38 similar images"), and clicking it shows them through item 28's similarity search. Replaces the earlier "short image descriptions" idea, which conflicted with "No generated tags". Do it after item 28 | Sonnet medium |
 | 30 | Bug (user, October 19): AVIF (and HEIC) images show no filmstrip thumbnail, though they open normally in the viewer. The thumbnail worker decodes with the `image` crate, which reads neither; the viewer uses glycin, which does. Decode these formats with glycin in `generate_thumbnail`, bounded like the rest, extending the worker rather than rewriting it | Sonnet high |
 
 Audit fix candidate `codex/audit-0.5.0-2`: A01–A09 agreed by the user.
@@ -883,15 +883,10 @@ Open items only; the table above has the order and the model. Each brief adds on
 - **Done when:** fixtures show a burst grouped and different pictures of the same subject kept apart; a copy of the user's library gives group counts the user judges useful; picking a group opens it in Compare.
 - **Guardrails:** this is not Find Copies. D14 keeps "copies" to exact, resized and converted ones, so similar photos get their own entry point and never feed Find Copies or its trash flow. Use the stored vectors (`visual_search`); no new model. Nothing leaves a group or goes to the trash without the user choosing it, and file actions keep using the existing trash and Undo. Trials run on a copy of the library. **Decisions for the user:** where it lives (beside Find Copies, or a search word) and how loose "similar" is; ask before building the UI.
 
-**29. Short image descriptions.**
-- **Goal:** the Info panel shows a few words about what is in the image, chosen by comparing its stored vector with the vectors of a fixed list of everyday words.
-- **Done when:** the words appear for an indexed image, stay away when no word is close enough, and cost no extra model or indexing pass; the user judges a sample from their library.
-- **Guardrails:** **ask the user before building.** It conflicts with `AGENTS.md` ("No generated tags", and AI tagging under "Removed"), so it needs the user's approval and a decision-log entry in `product.md` that states the line between them: the words are computed on display, never stored as tags, and add no tag UI. EmbeddingGemma writes no text, so the words can only come from the list. A captioning model is a separate, heavier decision.
-
-**30. AVIF and HEIC filmstrip thumbnails.**
-- **Goal:** AVIF and HEIC images get filmstrip thumbnails like every other format.
-- **Done when:** a glycin-written AVIF and HEIC each produce a thumbnail through `generate_thumbnail` (a test), and the user sees them in the filmstrip.
-- **Guardrails:** filmstrip performance is non-negotiable: add a decode branch for these formats, keep the scheduler, generations and caches as they are, and check rapid scroll and folder switch on a folder with such files. `visual_search::prepare::decode_with_glycin` already decodes them off the GTK thread; reuse it rather than writing a second glycin path.
+**29. Similar-image count in Info.**
+- **Goal:** the Info panel tells the user how many similar images or close matches the open image has, and one click shows them.
+- **Done when:** the count matches what item 28's similarity search returns for that image, it reads naturally ("38 similar images", "1 close match", nothing when there are none or the image isn't indexed yet), and clicking it opens those images; a test covers the count and the click.
+- **Guardrails:** build on item 28: the same stored vectors and the same notion of "similar", with no second threshold, no new model and no stored tags or words. Count off the GTK thread and keep the viewer responsive while flipping through images; a stale count never shows for the wrong image. Nothing is trashed or changed from here.
 
 ## Backlog
 
