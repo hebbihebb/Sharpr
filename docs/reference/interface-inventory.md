@@ -86,13 +86,13 @@ removed means the control is absent, with stored user data retained.
 | Viewer | Filename/location/dates/size/EXIF/resolution score | Kept in expanded Info; identical-copy counts exclude disabled/outside-root files; Escape closes it before fullscreen exits | D18, D31 |
 | Viewer | Canvas | Kept neutral in light, dark and high contrast | D27 |
 | Compare | Context action / Ctrl+Shift+C | Kept/added for at least two images, guarded while typing or in modes | D29 |
-| Compare | Side by Side / Split / Flip | Kept in the contextual top bar | D28 |
+| Compare | Side by Side / Split / Flip | Kept in the contextual top bar; Flip shows its Space key | D28, D45 |
 | Compare | Linked zoom / Fit / 100% | Kept in the same bar | D28 |
 | Compare | Split divider / zoom / pan / Space flip | Kept | D8, D28 |
-| Compare | Left/right image dropdowns | Replaced by a horizontal candidate row and Replace Left/Right target | D29 |
-| Compare | Candidate badges, filenames and details | Kept; L/R identify the current pair | D29 |
-| Compare | Keep Left/Keep Right / old [ and ] keys | Changed to labelled Keep buttons and arrow keys; old dismiss keys removed | D28 |
-| Compare | Count / Undo / Done | Kept with simple remaining count; Ctrl+Z and Escape | D28 |
+| Compare | Left/right image dropdowns | Replaced by a centred candidate row; each thumbnail's L/R halves (or the L/R keys) choose the side, with no standing Replace target; hidden with two left | D29, D45 |
+| Compare | Candidate badges, filenames and details | Kept; L/R identify the current pair; each image's caption is in its outer canvas corner, the larger resolution marked, and errors show in the image's own half | D29, D45 |
+| Compare | Keep Left/Keep Right / old [ and ] keys | Changed to labelled Keep buttons, mirrored on the centre line with their keys shown, and arrow keys; a side that can't be shown can't be kept | D28, D45 |
+| Compare | Count / Undo / Done | Kept; the remaining count sits beside the candidate row; Ctrl+Z and Escape in the tooltips; the key-hints line is removed | D28, D45 |
 | Survey | Grid, dismiss, Undo and Done | Removed; Compare narrows a selection | D30, D43 |
 | Crop | Small preview dialog | Replaced by the full viewer canvas | D28 |
 | Crop | 16:9/Free / live dimensions / destination | Kept in the contextual bar | D28 |

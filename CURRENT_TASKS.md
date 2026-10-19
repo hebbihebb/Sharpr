@@ -1,5 +1,23 @@
 # Current Tasks
 
+## Awaiting acceptance: Compare layout redesign (Work Order item 33, D45)
+
+Branch `feature/compare-layout`, the first screen built on `design.md`
+(D46). Captions in the outer canvas corners (filename; resolution, format,
+file size; the larger resolution marked), not targetable; errors centred in
+the image's own half, with that side's Keep off. `← Keep Left` and `Keep
+Right →` mirrored on the centre line; a "Last image left" line in their
+place at the end. The candidate strip is centred with the count beside it,
+only with three or more left; thumbnails show L | R halves on hover and
+focus; L/R keys and Enter (right) from the keyboard; no Replace toggle and
+no key-hints line. New tokens in `style.css` (`--sharpr-osd-*`,
+`--sharpr-text*`, `--sharpr-accent*` aliases), `look::keycap`, and
+`metadata::exif::file_size_text`. Tests: `compare_shows_captions_and_errors_in_the_image`
+(new), `compare_narrows_five_images_to_one` (halves, L/R/Enter, strip
+hidden at two, last-image line, screenshots of each mode with five and two
+images at 1024 and 1600, high contrast checked). `./check.sh` (323) and all
+42 GTK tests pass off screen.
+
 ## Accepted: close-images count in Info (Work Order item 29)
 
 Branch `feature/close-count`. While the Info card is open, the viewer counts
@@ -60,14 +78,3 @@ Branch `fix/compare-zoom-avif-crop`.
   region; originals unchanged. A real 1920×1337 AVIF cropped in 0.25 s.
 
 Deployed as `d275c54`; accepted by the user October 19 and merged to `main`.
-
-## Accepted: AVIF and HEIC in Compare (Work Order item 32)
-
-Branch `fix/compare-avif`. `export::decode_oriented` decodes AVIF and
-HEIC/HEIF through glycin (`prepare::decode_with_glycin`), so Compare shows
-them; WebP export and Copy Image of these formats work through the same
-path. Compare's summary takes the decoded size when the header can't be
-read. Test: glycin-written AVIF and HEIC decode at full size and the right
-colour, with "1600 × 900" in the summary (fails without the fix). Item 33
-(Compare layout redesign) and a Backlog note on AVIF/HEIC sizes added.
-Deployed as `e24032b`; accepted by the user October 19 and merged to `main`.

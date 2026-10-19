@@ -29,16 +29,16 @@ The tokens live in `sharpr/data/style.css`. New CSS uses token names, never colo
 | --- | --- | --- |
 | `--sharpr-canvas-bg` | `#1c1c1e` | Behind images: viewer, Compare, crop |
 | `--sharpr-canvas-fg` | white | Text drawn on the canvas |
-| OSD surface | `rgba(16, 16, 18, 0.84)`, inset hairline `rgba(255,255,255,0.08)` | Readout card, key hints, anything over an image |
-| Text, three levels | white at 0.92 / 0.70 / 0.60 | Main, secondary, dim |
-| Hairline | `alpha(currentColor, 0.10)` | Under bars, between panes |
-| Hover / press | `alpha(currentColor, 0.06)` / `0.12` | List rows, flat buttons |
-| Accent | the system accent, for now | Selection, current item, focus, chips |
+| `--sharpr-osd-bg`, `--sharpr-osd-line` | `rgba(16, 16, 18, 0.84)`, inset hairline `rgba(255,255,255,0.08)` | Readout card, captions, key hints, anything over an image |
+| `--sharpr-text`, `-2`, `-3` | white at 0.92 / 0.70 / 0.60 | Main, secondary and dim text over images. Chrome on the window background uses `alpha(currentColor, …)` until Sharpr is dark only (item 36) |
+| `--sharpr-hairline` | `alpha(currentColor, 0.10)` | Under bars, between panes |
+| `--sharpr-hover`, `--sharpr-press` | `alpha(currentColor, 0.06)` / `0.12` | List rows, flat buttons |
+| `--sharpr-accent`, `-bg`, `-fg` | Libadwaita's accent, for now (aliases) | Selection, current item, focus, chips, the marked value |
 | `--sharpr-warning` | `#f0a83a` | The below-4K hint and other cautions |
 | Error | Libadwaita's error colour, for now | Negative chips, failures |
 | Bucket colours | `palette.rs` | A bucket's own colour, its dots and pills |
 
-Still to define as tokens: the window and sidebar surfaces, the accent (for when Libadwaita's accent goes), error, and success.
+Still to define as tokens: the window and sidebar surfaces, error, and success. When Libadwaita's accent goes, only the `--sharpr-accent` aliases change.
 
 ### Shape and size
 
@@ -73,8 +73,10 @@ Each pattern lists where it lives today. Build new UI from these. If a pattern i
 | **Picker** | A popover for a quick choice (bucket, folder), dismissed by clicking away | `popover.sharpr-picker` |
 | **Sheet** | A focused editing surface in the main window with its own close control and Escape (Rename, D40; Preferences; export) | `.sharpr-sheet`, `ui/window/rename_sheet.rs` |
 | **Key hints** | A line of keys floating at the bottom of the canvas, only where keys aren't shown on controls (crop) | `.sharpr-keys`, `.sharpr-keys-osd` |
-| **Action with its key** | A button whose label carries its key (`← Keep Left`); the main decision on a screen is the clearest button | Planned for Compare (D45) |
-| **Candidate strip** | A centred horizontal thumbnail row, current items marked L/R, with the remaining count beside it; hovering a thumbnail shows halves to pick a side | Compare (D29, revised by D45) |
+| **Key cap** | A key in a small hairline box, in the mono face, on the control it triggers | `look::keycap`, `.sharpr-keycap` |
+| **Action with its key** | A button whose label carries its key cap (`← Keep Left`); the main decision on a screen is the clearest button | Compare's Keep bar (D45), Flip's Space |
+| **Caption** | An image's name and facts on the OSD surface in its outer canvas corner, not targetable, so pan and zoom pass through; a value that is better than the other image's is marked in the accent | `.sharpr-compare-caption` |
+| **Candidate strip** | A centred horizontal thumbnail row, current items marked L/R, with the remaining count beside it; hovering or focusing a thumbnail shows its L and R halves, and L/R pick from the keyboard | `ui/compare_page/candidates.rs` (D29, D45) |
 | **Status line** | One quiet line under the bar that says what a search or scan did and how much it covered (principle 5) | Search status |
 | **Notice** | A short message with an optional Undo (trash, moves) | Libadwaita toasts, to be replaced (D46) |
 | **Confirmation** | States the effect and names what is affected before anything destructive | Libadwaita alert dialogs, to be replaced (D46) |
