@@ -1,6 +1,6 @@
 # Current Tasks
 
-## Active: drop Ctrl+Shift+S for Survey (Work Order item 19)
+## Accepted: drop Ctrl+Shift+S for Survey (Work Order item 19)
 
 Branch `fix/survey-shortcut`. Sharpr no longer binds Ctrl+Shift+S: the
 window shortcut and the image menu's accelerator label are gone, and the
@@ -8,7 +8,8 @@ Shortcuts help, manual, README and `ui-gtk.md` no longer list it. Survey stays
 in the image menu with no shortcut. The Survey GTK test now proves no shortcut
 controller or application accelerator in the window claims the key (it fails
 with the old binding) and enters Survey through the menu action.
-`./check.sh` passes. Waiting for the user's acceptance.
+`./check.sh` passes. Deployed as `a886c27`; accepted by the user October 19
+and merged to `main`.
 
 ## Accepted: AVIF and HEIC in visual search (Work Order item 22)
 
