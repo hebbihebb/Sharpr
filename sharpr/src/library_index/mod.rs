@@ -64,36 +64,38 @@ pub struct LibraryIndex {
     dimensions: std::sync::Mutex<crate::model::browse::DimensionCache>,
 }
 
-fn sort_indexed_aspects(
+/// Sorts a folder listing by the one sort rule
+/// (`crate::model::library::compare_rows`). Aspect sorts read dimensions from
+/// the files' headers, cached, rather than the index.
+fn sort_indexed(
     rows: &mut [IndexedImage],
     order: SortOrder,
     cache: &std::sync::Mutex<crate::model::browse::DimensionCache>,
 ) {
-    if !matches!(
+    if matches!(
         order.field(),
         crate::model::library::SortField::Aspect | crate::model::library::SortField::WideScreen
     ) {
-        return;
+        let mut cache = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for row in rows.iter_mut() {
+            let dimensions = std::fs::metadata(&row.path)
+                .ok()
+                .and_then(|metadata| cache.get(&row.path, &metadata));
+            row.width = dimensions.map(|d| d.0);
+            row.height = dimensions.map(|d| d.1);
+        }
     }
-    let mut cache = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    for row in rows.iter_mut() {
-        let dimensions = std::fs::metadata(&row.path)
-            .ok()
-            .and_then(|metadata| cache.get(&row.path, &metadata));
-        row.width = dimensions.map(|d| d.0);
-        row.height = dimensions.map(|d| d.1);
+    fn key(row: &IndexedImage) -> crate::model::library::SortRow<'_> {
+        crate::model::library::SortRow {
+            path: &row.path,
+            filename: &row.filename,
+            modified_secs: row.modified_secs,
+            dimensions: row.width.zip(row.height),
+        }
     }
-    rows.sort_by(|a, b| {
-        crate::model::browse::compare_aspects(
-            a.width.zip(a.height),
-            b.width.zip(b.height),
-            order.field() == crate::model::library::SortField::WideScreen,
-            order.descending(),
-        )
-        .then_with(|| a.path.cmp(&b.path))
-    });
+    rows.sort_by(|a, b| crate::model::library::compare_rows(order, &key(a), &key(b)));
 }
 
 impl LibraryIndex {
@@ -325,27 +327,11 @@ impl LibraryIndex {
             tx.commit()?;
         }
 
-        let order = match sort_order {
-            SortOrder::NameAsc => "filename COLLATE NOCASE ASC",
-            SortOrder::NameDesc => "filename COLLATE NOCASE DESC",
-            SortOrder::DateModifiedAsc => {
-                "modified_secs ASC NULLS LAST, filename COLLATE NOCASE ASC"
-            }
-            SortOrder::DateModifiedDesc => {
-                "modified_secs DESC NULLS LAST, filename COLLATE NOCASE ASC"
-            }
-            SortOrder::FileTypeAsc => "extension COLLATE NOCASE ASC, filename COLLATE NOCASE ASC",
-            SortOrder::FileTypeDesc => "extension COLLATE NOCASE DESC, filename COLLATE NOCASE ASC",
-            SortOrder::AspectAsc => "CASE WHEN width > 0 AND height > 0 THEN 1.0*width/height END ASC NULLS LAST, filename COLLATE NOCASE ASC",
-            SortOrder::AspectDesc => "CASE WHEN width > 0 AND height > 0 THEN 1.0*width/height END DESC NULLS LAST, filename COLLATE NOCASE ASC",
-            SortOrder::WideScreenAsc => "CASE WHEN width > 0 AND height > 0 THEN ABS((1.0*width/height)/(16.0/9.0)-1.0) END ASC NULLS LAST, filename COLLATE NOCASE ASC",
-            SortOrder::WideScreenDesc => "CASE WHEN width > 0 AND height > 0 THEN ABS((1.0*width/height)/(16.0/9.0)-1.0) END DESC NULLS LAST, filename COLLATE NOCASE ASC",
-        };
         let mut rows: Vec<IndexedImage> = {
             let sql = format!(
                 "SELECT path, filename, extension, file_size, modified_secs,
                         width, height, metadata_status
-                 FROM images WHERE folder_path = ?1 ORDER BY {order}"
+                 FROM images WHERE folder_path = ?1"
             );
             let mut stmt = conn.prepare(&sql)?;
             let collected = stmt
@@ -369,7 +355,7 @@ impl LibraryIndex {
             collected
         };
 
-        sort_indexed_aspects(&mut rows, sort_order, &self.dimensions);
+        sort_indexed(&mut rows, sort_order, &self.dimensions);
         Ok((rows, stale_count, metadata_pending))
     }
 
@@ -529,35 +515,18 @@ impl LibraryIndex {
         if self.is_folder_ignored(folder)? {
             return Ok(Vec::new());
         }
-        let order = match sort_order {
-            SortOrder::NameAsc => "filename COLLATE NOCASE ASC",
-            SortOrder::NameDesc => "filename COLLATE NOCASE DESC",
-            SortOrder::DateModifiedAsc => {
-                "modified_secs ASC NULLS LAST, filename COLLATE NOCASE ASC"
-            }
-            SortOrder::DateModifiedDesc => {
-                "modified_secs DESC NULLS LAST, filename COLLATE NOCASE ASC"
-            }
-            SortOrder::FileTypeAsc => "extension COLLATE NOCASE ASC, filename COLLATE NOCASE ASC",
-            SortOrder::FileTypeDesc => "extension COLLATE NOCASE DESC, filename COLLATE NOCASE ASC",
-            SortOrder::AspectAsc => "CASE WHEN width > 0 AND height > 0 THEN 1.0*width/height END ASC NULLS LAST, filename COLLATE NOCASE ASC",
-            SortOrder::AspectDesc => "CASE WHEN width > 0 AND height > 0 THEN 1.0*width/height END DESC NULLS LAST, filename COLLATE NOCASE ASC",
-            SortOrder::WideScreenAsc => "CASE WHEN width > 0 AND height > 0 THEN ABS((1.0*width/height)/(16.0/9.0)-1.0) END ASC NULLS LAST, filename COLLATE NOCASE ASC",
-            SortOrder::WideScreenDesc => "CASE WHEN width > 0 AND height > 0 THEN ABS((1.0*width/height)/(16.0/9.0)-1.0) END DESC NULLS LAST, filename COLLATE NOCASE ASC",
-        };
         let sql = format!(
             "
             SELECT path, filename, extension, file_size, modified_secs, width, height, metadata_status
             FROM images
             WHERE folder_path = ?1
-            ORDER BY {order}
             "
         );
         let conn = self.conn()?;
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![path_to_string(folder)], indexed_image_from_row)?;
         let mut rows: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
-        sort_indexed_aspects(&mut rows, sort_order, &self.dimensions);
+        sort_indexed(&mut rows, sort_order, &self.dimensions);
         Ok(rows)
     }
 
@@ -1493,6 +1462,103 @@ mod tests {
 
         assert!(!idx.is_folder_ignored(Path::new("/library")).unwrap());
         assert!(!idx.is_folder_ignored(Path::new("/library/child")).unwrap());
+    }
+
+    /// Work Order item 16: the folder listing, a row added later and search
+    /// results sort the same rows identically, ties included.
+    #[test]
+    fn every_listing_path_sorts_the_same_way() {
+        use crate::model::library::{insert_in_order, sort_raw_entries, RawImageEntry};
+        use crate::model::ImageEntry;
+        let dir = std::env::temp_dir().join(format!(
+            "sharpr-sort-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Name, size (None: unreadable), modified time. Ties on every key:
+        // names equal but for case, equal times and sizes, non-ASCII case.
+        let files: [(&str, Option<(u32, u32)>, Option<i64>); 7] = [
+            ("b.jpg", Some((100, 200)), Some(100)),
+            ("a.png", Some((200, 100)), Some(100)),
+            ("A.png", Some((200, 100)), Some(100)),
+            ("Écran.png", Some((160, 90)), Some(200)),
+            ("écran.jpg", Some((160, 90)), None),
+            ("broken.png", None, None),
+            ("C.JPG", Some((160, 90)), Some(200)),
+        ];
+        let idx = LibraryIndex::open_in_memory().unwrap();
+        let mut raw = Vec::new();
+        for (name, size, mtime) in files {
+            let path = dir.join(name);
+            match size {
+                Some((w, h)) => image::RgbImage::new(w, h)
+                    .save_with_format(&path, image::ImageFormat::Png)
+                    .unwrap(),
+                None => std::fs::write(&path, b"not an image").unwrap(),
+            }
+            let mut info = make_info(dir.to_str().unwrap(), name, 10, mtime);
+            info.extension = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            idx.upsert_image_basic(&info).unwrap();
+            let (width, height) = size.unwrap_or((0, 0));
+            raw.push(RawImageEntry {
+                path,
+                filename: name.to_string(),
+                file_size: 10,
+                modified: mtime
+                    .map(|secs| std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64)),
+                width,
+                height,
+            });
+        }
+        let entry = |row: &RawImageEntry| {
+            let entry = ImageEntry::new(row.path.clone());
+            if row.width > 0 {
+                entry.set_dimensions(row.width, row.height);
+            }
+            entry.set_modified_secs(
+                row.modified
+                    .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64),
+            );
+            entry
+        };
+        for order in [
+            SortOrder::NameAsc,
+            SortOrder::NameDesc,
+            SortOrder::DateModifiedAsc,
+            SortOrder::DateModifiedDesc,
+            SortOrder::FileTypeAsc,
+            SortOrder::FileTypeDesc,
+            SortOrder::AspectAsc,
+            SortOrder::AspectDesc,
+            SortOrder::WideScreenAsc,
+            SortOrder::WideScreenDesc,
+        ] {
+            let listing: Vec<PathBuf> = idx
+                .images_in_folder(&dir, order)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.path)
+                .collect();
+            let mut searched = raw.clone();
+            sort_raw_entries(&mut searched, order);
+            let searched: Vec<PathBuf> = searched.into_iter().map(|r| r.path).collect();
+            // Added one at a time, in reverse and in the given order.
+            for input in [raw.iter().rev().collect::<Vec<_>>(), raw.iter().collect()] {
+                let mut added = Vec::new();
+                for row in input {
+                    insert_in_order(&mut added, entry(row), order);
+                }
+                let added: Vec<PathBuf> = added.iter().map(|e| e.path()).collect();
+                assert_eq!(added, listing, "{order:?}: added later vs listing");
+            }
+            assert_eq!(searched, listing, "{order:?}: search vs listing");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -92,6 +92,7 @@ pub struct CachedImageData {
     pub quality: QualityScore,
 }
 
+#[derive(Clone)]
 pub struct RawImageEntry {
     pub path: PathBuf,
     pub filename: String,
@@ -887,51 +888,75 @@ fn path_sort_key(a: &Path, b: &Path) -> std::cmp::Ordering {
         .cmp(&b.to_string_lossy().to_lowercase())
 }
 
-/// Orders two rows as a folder listing does for `order` (the ORDER BY in
-/// `LibraryIndex::images_in_folder`), so a row added later lands where a
-/// reload would put it.
-pub fn compare_entries(order: SortOrder, a: &ImageEntry, b: &ImageEntry) -> std::cmp::Ordering {
+/// What the sort rule looks at in one row.
+pub struct SortRow<'a> {
+    pub path: &'a Path,
+    pub filename: &'a str,
+    pub modified_secs: Option<i64>,
+    pub dimensions: Option<(u32, u32)>,
+}
+
+/// The one sort rule for every listing (Work Order item 16): `order`'s own
+/// key, then the name ignoring case, then the full path, so rows that tie
+/// always come out the same way. Rows without a time or a size go last in
+/// either direction. Name Z–A reverses only the name; ties still go by path.
+pub fn compare_rows(order: SortOrder, a: &SortRow, b: &SortRow) -> std::cmp::Ordering {
     use std::cmp::Ordering;
-    let by_name = || {
-        a.filename()
-            .to_lowercase()
-            .cmp(&b.filename().to_lowercase())
-    };
-    let extension = |entry: &ImageEntry| {
-        entry
-            .path()
+    let by_name = || a.filename.to_lowercase().cmp(&b.filename.to_lowercase());
+    let extension = |row: &SortRow| {
+        row.path
             .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or_default()
             .to_lowercase()
     };
-    match order {
-        SortOrder::NameAsc => by_name().then_with(|| a.path().cmp(&b.path())),
-        SortOrder::NameDesc => by_name().reverse().then_with(|| a.path().cmp(&b.path())),
+    let key = match order {
+        SortOrder::NameAsc => by_name(),
+        SortOrder::NameDesc => by_name().reverse(),
         SortOrder::DateModifiedAsc | SortOrder::DateModifiedDesc => {
-            // Files with no known time come last either way.
-            let times = match (a.modified_secs(), b.modified_secs()) {
+            match (a.modified_secs, b.modified_secs) {
                 (Some(a), Some(b)) if order.descending() => b.cmp(&a),
                 (Some(a), Some(b)) => a.cmp(&b),
                 (Some(_), None) => Ordering::Less,
                 (None, Some(_)) => Ordering::Greater,
                 (None, None) => Ordering::Equal,
-            };
-            times.then_with(by_name)
+            }
         }
-        SortOrder::FileTypeAsc => extension(a).cmp(&extension(b)).then_with(by_name),
-        SortOrder::FileTypeDesc => extension(b).cmp(&extension(a)).then_with(by_name),
+        SortOrder::FileTypeAsc => extension(a).cmp(&extension(b)),
+        SortOrder::FileTypeDesc => extension(b).cmp(&extension(a)),
         SortOrder::AspectAsc
         | SortOrder::AspectDesc
         | SortOrder::WideScreenAsc
         | SortOrder::WideScreenDesc => crate::model::browse::compare_aspects(
-            a.dimensions(),
-            b.dimensions(),
+            a.dimensions,
+            b.dimensions,
             order.field() == SortField::WideScreen,
             order.descending(),
-        )
-        .then_with(|| a.path().cmp(&b.path())),
-    }
+        ),
+    };
+    key.then_with(by_name).then_with(|| a.path.cmp(b.path))
+}
+
+/// Orders two rows as a folder listing does for `order`, so a row added
+/// later lands where a reload would put it.
+pub fn compare_entries(order: SortOrder, a: &ImageEntry, b: &ImageEntry) -> std::cmp::Ordering {
+    let (a_path, b_path) = (a.path(), b.path());
+    let (a_name, b_name) = (a.filename(), b.filename());
+    compare_rows(
+        order,
+        &SortRow {
+            path: &a_path,
+            filename: &a_name,
+            modified_secs: a.modified_secs(),
+            dimensions: a.dimensions(),
+        },
+        &SortRow {
+            path: &b_path,
+            filename: &b_name,
+            modified_secs: b.modified_secs(),
+            dimensions: b.dimensions(),
+        },
+    )
 }
 
 /// Where `new` goes among `len` rows already in `order`: after any that
@@ -962,69 +987,31 @@ pub fn insert_in_order(entries: &mut Vec<ImageEntry>, entry: ImageEntry, order: 
 }
 
 pub fn sort_raw_entries(entries: &mut [RawImageEntry], order: SortOrder) {
-    match order {
-        SortOrder::AspectAsc
-        | SortOrder::AspectDesc
-        | SortOrder::WideScreenAsc
-        | SortOrder::WideScreenDesc => {
-            entries.sort_by(|a, b| {
-                crate::model::browse::compare_aspects(
-                    Some((a.width, a.height)),
-                    Some((b.width, b.height)),
-                    order.field() == SortField::WideScreen,
-                    order.descending(),
-                )
-                .then_with(|| a.path.cmp(&b.path))
-            });
-        }
-
-        SortOrder::NameAsc => entries.sort_by(|a, b| {
-            a.filename
-                .to_lowercase()
-                .cmp(&b.filename.to_lowercase())
-                .then_with(|| a.path.cmp(&b.path))
-        }),
-        SortOrder::NameDesc => entries.sort_by(|a, b| {
-            b.filename
-                .to_lowercase()
-                .cmp(&a.filename.to_lowercase())
-                .then_with(|| a.path.cmp(&b.path))
-        }),
-        SortOrder::DateModifiedAsc => entries.sort_by(|a, b| {
-            a.modified
-                .cmp(&b.modified)
-                .then_with(|| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()))
-        }),
-        SortOrder::DateModifiedDesc => entries.sort_by(|a, b| {
-            b.modified
-                .cmp(&a.modified)
-                .then_with(|| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()))
-        }),
-        SortOrder::FileTypeAsc => entries.sort_by(|a, b| {
-            let ext = |e: &RawImageEntry| {
-                e.path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_lowercase()
-            };
-            ext(a)
-                .cmp(&ext(b))
-                .then_with(|| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()))
-        }),
-        SortOrder::FileTypeDesc => entries.sort_by(|a, b| {
-            let ext = |e: &RawImageEntry| {
-                e.path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_lowercase()
-            };
-            ext(b)
-                .cmp(&ext(a))
-                .then_with(|| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()))
-        }),
-    }
+    let row = |entry: &RawImageEntry| -> (Option<i64>, Option<(u32, u32)>) {
+        let modified = entry
+            .modified
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|elapsed| elapsed.as_secs() as i64);
+        (modified, Some((entry.width, entry.height)))
+    };
+    entries.sort_by(|a, b| {
+        let ((a_time, a_size), (b_time, b_size)) = (row(a), row(b));
+        compare_rows(
+            order,
+            &SortRow {
+                path: &a.path,
+                filename: &a.filename,
+                modified_secs: a_time,
+                dimensions: a_size,
+            },
+            &SortRow {
+                path: &b.path,
+                filename: &b.filename,
+                modified_secs: b_time,
+                dimensions: b_size,
+            },
+        )
+    });
 }
 
 #[cfg(test)]
