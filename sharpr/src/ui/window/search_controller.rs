@@ -57,7 +57,8 @@ impl RankedSnapshot {
     /// One page of results (user, October 19): the file-name matches and the
     /// strong visual matches, sorted in the chosen order, then weaker
     /// matches closest first, which "Show More" adds a page at a time.
-    /// `limit` grows by one page per "Show More", starting at one page.
+    /// Every strong match is in the first block. `limit` grows by one page
+    /// per "Show More", starting at one page, and controls only weak results.
     /// With no strong visual match the closest images show at once, closest
     /// first, so a search never comes back empty.
     fn page(&self, limit: usize) -> BrowseResult {
@@ -68,7 +69,7 @@ impl RankedSnapshot {
         let good: Vec<PathBuf> = self
             .by_name
             .iter()
-            .chain(strong.iter().copied().take(limit))
+            .chain(strong.iter().copied())
             .cloned()
             .collect();
         let weak_shown = if strong.is_empty() {
@@ -80,7 +81,7 @@ impl RankedSnapshot {
         paths.extend(weak.iter().take(weak_shown).map(|path| (*path).clone()));
         let mut summary = self.summary.clone();
         if let VisualSummary::Ranked { more, sorted, .. } = &mut summary {
-            *more = strong.len() > limit || weak.len() > weak_shown;
+            *more = weak.len() > weak_shown;
             *sorted = !strong.is_empty();
         }
         BrowseResult {
@@ -1453,6 +1454,64 @@ mod tests {
             more.visual,
             Some(VisualSummary::Ranked { more: false, .. })
         ));
+    }
+
+    #[test]
+    fn all_strong_matches_form_a_fixed_sorted_block_before_weaker_pages() {
+        use crate::visual_search::search::PAGE;
+        let mut snapshot = snapshot(&[]);
+        let template = snapshot.entries.values().next().unwrap().clone();
+        let strong: Vec<_> = (0..2 * PAGE + 1)
+            .rev()
+            .map(|i| PathBuf::from(format!("/l/strong-{i:04}.jpg")))
+            .collect();
+        for path in &strong {
+            let mut entry = template.clone();
+            entry.path = path.clone();
+            entry.filename = path.file_name().unwrap().to_string_lossy().into_owned();
+            snapshot.entries.insert(path.clone(), entry);
+        }
+        snapshot.strong = strong.iter().cloned().collect();
+        snapshot.visual.splice(0..0, strong);
+        let first = snapshot.page(PAGE);
+        assert_eq!(
+            first.paths.len(),
+            2 * PAGE + 2,
+            "every strong match and the name match show immediately"
+        );
+        let mut expected = first.paths.clone();
+        expected.sort();
+        assert_eq!(first.paths, expected, "the entire good block is sorted");
+        assert_eq!(
+            first.strong.len(),
+            first.paths.len(),
+            "Strong Matches gets the entire good block"
+        );
+        let more = snapshot.page(2 * PAGE);
+        assert_eq!(
+            &more.paths[..first.paths.len()],
+            first.paths.as_slice(),
+            "Show More never moves the good block"
+        );
+        assert_eq!(
+            &more.paths[first.paths.len()..],
+            snapshot.visual[2 * PAGE + 1..].as_ref(),
+            "only weaker matches are appended, closest first"
+        );
+        assert!(matches!(
+            more.visual,
+            Some(VisualSummary::Ranked { more: false, .. })
+        ));
+        snapshot.visual.truncate(2 * PAGE + 1);
+        let only_good = snapshot.page(PAGE);
+        assert_eq!(only_good.paths, first.paths);
+        assert!(
+            matches!(
+                only_good.visual,
+                Some(VisualSummary::Ranked { more: false, .. })
+            ),
+            "Show More is hidden when all matches are strong"
+        );
     }
 
     #[test]
