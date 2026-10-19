@@ -9,7 +9,8 @@ The authoritative instructions for every coding agent working on this repository
 3. `docs/reference/product.md`: the approved product vision, workflows, UX principles, non-goals, and decision log. Read it before any user-facing change.
 4. `docs/reference/architecture.md`: modules, threading, persistence, and invariants. Read it before any non-trivial change.
 5. `docs/reference/development.md`: build, run, test, verification, packaging, and the native launcher.
-6. `docs/reference/ui-gtk.md`: read it before UI work.
+6. `docs/reference/design.md`: Sharpr's design language (tokens, components, layout). Read it before any user-facing change.
+7. `docs/reference/ui-gtk.md`: read it before UI work.
 
 `README.md` is for GitHub readers. `docs/archive/` is historical evidence, not instructions. If documents disagree, this file wins, then `product.md`, then `ROADMAP.md`. Product decisions change only with the user's approval and a decision-log entry.
 

@@ -2,7 +2,7 @@
 
 ## Design Direction
 
-Sharpr should feel like a calm, fast GNOME review desk. The workflows and the eight UX principles are in `product.md`:
+Sharpr should feel like a calm, fast, precise review desk with its own look. How it looks is `design.md` (D46: heading fully off Libadwaita, dark only); the workflows and the eight UX principles are in `product.md`:
 - find
 - curate in buckets
 - prepare wallpapers
@@ -14,7 +14,7 @@ This file covers how to build them in GTK.
 
 ## UI Rules
 
-- Prefer standard GTK and Libadwaita widgets, actions, dialogs, popovers, overlays, and accessibility behavior over custom UI.
+- Build UI from Sharpr's components (`design.md`) on plain GTK4: GTK widgets, actions, popovers, overlays and accessibility behavior. Add no new Libadwaita widgets (D46); one already in use stays until its replacement is done, styled to match.
 - Use `GAction`s for menu commands and their sensitivity.
 - Compare accepts N ≥ 2 selected images and shows two at a time (D8). Left/Right arrows and Keep Left/Keep Right retain that side and dismiss the other; Undo restores the last choice. Compare never changes files (D28).
 - Search, filters, and sort apply to the current folder or bucket unless the user explicitly picks the whole library. Clearing a search restores the scope, selection, scroll position, and current sort.
@@ -43,7 +43,7 @@ See `architecture.md`. In UI code this means:
 
 ## Styling And Layout
 
-- Prefer Adwaita style classes and theme variables. Overlays must stay readable in light, dark, and high-contrast themes.
+- Use Sharpr's tokens in `sharpr/data/style.css` (`design.md`), not colour literals or new Adwaita variables. Sharpr is dark only (D46); overlays must stay readable in dark and high contrast.
 - Support the 1024 × 600 logical-pixel minimum window size.
 
 ## Approved Look (D26–D27)

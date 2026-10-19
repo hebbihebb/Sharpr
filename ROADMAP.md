@@ -809,6 +809,8 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 33 | Compare layout redesign (user, October 19), **designed as D45**: Keep buttons mirrored on the centre line, captions on the images, a centred candidate strip with L \| R hover halves (hidden with two left), no key-hints line | Sonnet medium |
 | 34 | ~~Crop Copy fails on AVIF~~ **Done October 19, 2026**, accepted by the user (build `d275c54`): sizes read through glycin; AVIF and HEIC crops keep their format at the highest quality (D37) | Sonnet medium (done by Opus) |
 | 35 | ~~Compare zooms out past Fit~~ **Done October 19, 2026**, accepted by the user (build `d275c54`): Fit is the floor, as in the viewer and crop | Sonnet medium (done by Opus) |
+| 36 | Dark only (D46): Sharpr always runs dark whatever the desktop's setting; light-mode-only CSS and code paths go, high contrast stays; the off-screen GTK screenshots drop their light captures | Sonnet low |
+| 37 | Leave Libadwaita, piece by piece (D46): inventory what Libadwaita still provides (toasts with Undo, confirmation dialogs, split views and breakpoints, sheets and rows, the style manager, accent and high contrast) and propose, with the user, the order and the Sharpr component that replaces each; each replacement then becomes its own row. Toasts carry trash and move Undo, so their replacement keeps every Undo path working | Opus medium |
 
 Audit fixes `codex/audit-0.5.0-2` (A01–A09): **Done October 19, 2026**,
 accepted by the user and merged. Cleanup now retains uncertain members, legacy
@@ -901,7 +903,7 @@ Open items only; the table above has the order and the model. Each brief adds on
 **33. Compare layout redesign.**
 - **Goal:** Compare's controls read at a glance, as designed in D45 (approved by the user, October 19): Keep Left and Keep Right mirrored on the centre line with their keys, each image's caption in its own corner, a centred candidate strip with L | R hover halves and the remaining count beside it, hidden with two images left; no standing Replace toggle and no key-hints line.
 - **Done when:** off-screen screenshots in Side by Side, Split and Flip, with two and with several images, at the minimum and wide window sizes, match D45; a load error shows in its image's area with only that side's Keep disabled; choosing a thumbnail's L or R half replaces that side; Keep, Undo, Done, the arrow keys and the survivors returned work as before; the Compare GTK tests pass, updated for the new controls.
-- **Guardrails:** D45 is the layout; ask the user only where it leaves a real gap. Keep Compare's bounded decodes, its thumbnail lane and its generation checks. No file changes from Compare. Keyboard choice of a candidate must still work without hover.
+- **Guardrails:** D45 is the layout, built from `docs/reference/design.md` (its "Action with its key" and "Candidate strip" components, tokens rather than colour literals, no new Libadwaita widgets, D46); ask the user only where it leaves a real gap. Keep Compare's bounded decodes, its thumbnail lane and its generation checks. No file changes from Compare. Keyboard choice of a candidate must still work without hover.
 
 ## Backlog
 
