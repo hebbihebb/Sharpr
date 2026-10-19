@@ -102,9 +102,35 @@ pub fn restore_from_trash(original: &Path) -> Result<(), String> {
     restore_from_trashes(original, &trashes_for(original))
 }
 
+/// The home trash. In the Flatpak, `gio::File::trash` goes through the trash
+/// portal into the host's trash, not the sandbox's data folder (D25).
+fn home_trash() -> PathBuf {
+    home_trash_in(
+        Path::new("/.flatpak-info").exists(),
+        std::env::var_os("HOST_XDG_DATA_HOME").map(PathBuf::from),
+        &glib::home_dir(),
+        &glib::user_data_dir(),
+    )
+}
+
+fn home_trash_in(
+    sandboxed: bool,
+    host_data: Option<PathBuf>,
+    home: &Path,
+    data: &Path,
+) -> PathBuf {
+    if !sandboxed {
+        return data.join("Trash");
+    }
+    host_data
+        .filter(|dir| dir.is_absolute())
+        .unwrap_or_else(|| home.join(".local/share"))
+        .join("Trash")
+}
+
 /// The home trash, plus the trash directories of the drive holding `path`.
 fn trashes_for(path: &Path) -> Vec<(PathBuf, Option<PathBuf>)> {
-    let mut trashes = vec![(glib::user_data_dir().join("Trash"), None)];
+    let mut trashes = vec![(home_trash(), None)];
     if let Some(top) = mount_top(&lexical(path)) {
         // SAFETY: getuid has no preconditions and cannot fail.
         let uid = unsafe { libc::getuid() };
@@ -636,6 +662,28 @@ mod tests {
         assert_eq!(std::fs::read(&original).unwrap(), b"b");
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_flatpak_looks_in_the_hosts_trash() {
+        let (home, data) = (Path::new("/home/u"), Path::new("/home/u/.var/app/x/data"));
+        assert_eq!(
+            home_trash_in(false, None, home, data),
+            data.join("Trash"),
+            "natively, the user's data folder"
+        );
+        assert_eq!(
+            home_trash_in(true, None, home, data),
+            Path::new("/home/u/.local/share/Trash")
+        );
+        assert_eq!(
+            home_trash_in(true, Some("/data/u".into()), home, data),
+            Path::new("/data/u/Trash")
+        );
+        assert_eq!(
+            home_trash_in(true, Some("relative".into()), home, data),
+            Path::new("/home/u/.local/share/Trash")
+        );
     }
 
     #[test]
