@@ -1,5 +1,15 @@
 # Current Tasks
 
+## Audit fixes in progress
+
+Branch: `codex/audit-0.5.0-2`, from `bed0278` on main. Stage-1 report
+committed as `dadde87`; user agreed to A01–A09. Regression tests precede
+fixes; cleanup retains uncertain members, search keeps a fixed strong block,
+Preferences retains switch focus, old memberships survive upgrade, and legacy
+hash values remain untouched. Heavy checks run serially under the 9 GiB scope,
+with four jobs and isolated data; GTK runs off-screen. No push or merge.
+Acceptance pending; finding status and evidence are in `AUDIT.md`.
+
 ## Accepted: roadmap batch, search sorting and Preferences roots
 
 Deployed as `ba0ff78`; accepted by the user October 19 ("search works now"),

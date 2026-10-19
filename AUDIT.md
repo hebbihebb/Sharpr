@@ -4,8 +4,9 @@ Scope: `577defb..bed0278` (26 commits, 27 files), reviewed at
 `bed0278b7bdbadc68a7b415b1410a7376c07c042`, on
 `codex/audit-0.5.0-2` from `main`.
 
-Only this report changes. No fixes, migration trials against live data,
-deployment, merge, or push. All findings await the user's stage-2 decision.
+Stage 1 changed only this report. Stage 2: the user agreed to A01–A05,
+then explicitly agreed to A06–A09. All nine fixes are authorized on this
+branch; user acceptance, merge and push remain separate.
 Approved decisions, including retiring the old migration and D42's automatic
 cleanup, are not findings. Neither are existing Backlog requests, item 19,
 or the known Compare timeout.
@@ -35,7 +36,7 @@ deleted membership does not exist.
   or was outside positive scan coverage; preserve enough location/device
   provenance to distinguish an unmounted subtree from permanent loss. Keep the
   approved rule against crawling nested mounts. Add nested-mount regressions.
-- **Status:** Open — awaiting user review.
+- **Status:** Agreed — implementation pending.
 
 ### A02 — `failed == 0` can describe an incomplete search for a moved member
 
@@ -57,7 +58,7 @@ deleted membership does not exist.
   decisions when filesystem changes occur. Define conservative retention for
   moves into excluded/unsearched locations without widening the approved walk.
   Add tests for a move after collection, unreadable subtrees, and hidden moves.
-- **Status:** Open — awaiting user review.
+- **Status:** Agreed — implementation pending.
 
 ### A03 — A scope change cannot cancel deletion once the completion hook starts
 
@@ -74,7 +75,7 @@ deleted membership does not exist.
 - **Proposed fix:** carry a scope generation into cleanup and synchronize
   its validity with the final membership mutation, including after backup;
   cancel stale re-link writes too. Test scope changes during the hook.
-- **Status:** Open — awaiting user review.
+- **Status:** Agreed — implementation pending.
 
 ### A04 — A file inside a trashed directory is not protected
 
@@ -89,7 +90,7 @@ deleted membership does not exist.
 - **Proposed fix:** recognize descendant files of restorable directory trash
   entries, using component-aware paths and validating the corresponding trash
   payload; test trashing and restoring a directory containing bucket members.
-- **Status:** Open — awaiting user review.
+- **Status:** Agreed — implementation pending.
 
 ### A05 — An unreadable trash is treated as proof that no restore is possible
 
@@ -105,7 +106,7 @@ deleted membership does not exist.
 - **Proposed fix:** return trash coverage/errors and withhold cleanup for
   affected locations on read failure. Distinguish a nonexistent trash from a
   failed read; test unreadable metadata and recovery. Preserve error feedback.
-- **Status:** Open — awaiting user review.
+- **Status:** Agreed — implementation pending.
 
 ### A06 — The next startup upgrade hides unconverted version-1 membership
 
@@ -129,7 +130,7 @@ deleted membership does not exist.
   Test the full startup upgrade with an unconverted version-1 fixture. Explain
   the actual support/upgrade outcome in architecture and task documentation;
   saying merely that old rows survive omits the active-membership loss.
-- **Status:** Open — awaiting user review.
+- **Status:** Agreed — implementation pending.
 
 ### A07 — Show More re-sorts the strong block and mixes weak results in early
 
@@ -149,7 +150,7 @@ deleted membership does not exist.
   status text with the user. Add a test exceeding PAGE strong matches. Update
   the stale filename-first rule in `docs/reference/ui-gtk.md:20` alongside the
   final rule; architecture currently also promises weaker-only Show More.
-- **Status:** Open — awaiting user review.
+- **Status:** Agreed — implementation pending.
 
 ### A08 — Preferences destroys the focused switch after a root toggle
 
@@ -165,7 +166,7 @@ deleted membership does not exist.
 - **Proposed fix:** retain root rows and update state in place; when actual
   root removal requires replacement, restore focus to an appropriate control.
   Test a keyboard toggle across the timer refresh.
-- **Status:** Open — awaiting user review.
+- **Status:** Agreed — implementation pending.
 
 ### A09 — Retired perceptual hashes still incur index bookkeeping
 
@@ -182,7 +183,7 @@ deleted membership does not exist.
   regression is asserted.
 - **Proposed fix:** remove obsolete status reads and conflict-update work,
   preserving the legacy columns and stored values; align documentation.
-- **Status:** Open — awaiting user review.
+- **Status:** Agreed — implementation pending.
 
 ## Other inspected behavior and limits
 
@@ -261,5 +262,5 @@ deleted membership does not exist.
   isolated `.tmp/audit-0502*` data/config/cache/fixtures. The GTK suite uses
   `tools/gtk-offscreen.py`, a private compositor and D-Bus session.
 
-Stage 1 ends with this report committed. Stage 2 requires the user's decisions
-on A01–A09; no proposed fix is approved or implemented by this audit.
+Stage 2 is complete: A01–A09 agreed by the user. Stage 3 is in progress.
+No fixes have yet been verified; acceptance is pending.
