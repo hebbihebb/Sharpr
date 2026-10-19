@@ -139,9 +139,71 @@ fn trashes_for(path: &Path) -> Vec<(PathBuf, Option<PathBuf>)> {
     trashes
 }
 
-/// The original paths of everything in the trashes that can hold files
-/// from under `roots`: such a file can still be restored.
-pub fn trashed_originals(roots: &[PathBuf]) -> HashSet<PathBuf> {
+/// A checked view of restorable trash entries. A failed read is never an
+/// empty trash. Directory entries also protect their descendants.
+#[derive(Default)]
+pub struct TrashSnapshot {
+    originals: HashSet<PathBuf>,
+    directories: Vec<PathBuf>,
+    watched: Vec<(PathBuf, Option<TrashStamp>)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TrashStamp(u64, u64, i64, i64, i64, i64);
+
+fn trash_stamp(path: &Path) -> std::io::Result<TrashStamp> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::symlink_metadata(path)?;
+    Ok(TrashStamp(
+        m.dev(),
+        m.ino(),
+        m.mtime(),
+        m.mtime_nsec(),
+        m.ctime(),
+        m.ctime_nsec(),
+    ))
+}
+
+impl TrashSnapshot {
+    pub fn protects(&self, path: &Path) -> bool {
+        self.originals.contains(path) || self.directories.iter().any(|dir| path.starts_with(dir))
+    }
+
+    /// Rechecked after backup: a restore or trash edit invalidates absence.
+    pub fn is_current(&self) -> bool {
+        self.watched
+            .iter()
+            .all(|(path, before)| match trash_stamp(path) {
+                Ok(now) => *before == Some(now),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => before.is_none(),
+                Err(_) => false,
+            })
+    }
+
+    fn watch(&mut self, path: &Path) -> Result<(), String> {
+        let stamp = match trash_stamp(path) {
+            Ok(stamp) => Some(stamp),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("Couldn't inspect trash {}: {e}", path.display())),
+        };
+        self.watched.push((path.to_path_buf(), stamp));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_paths(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        let originals: HashSet<_> = paths.into_iter().collect();
+        Self {
+            directories: originals.iter().cloned().collect(),
+            originals,
+            watched: Vec::new(),
+        }
+    }
+}
+
+/// The trashes of the configured roots, including the host home trash in a
+/// Flatpak. Enumeration errors withhold destructive bucket cleanup.
+pub fn trashed_originals(roots: &[PathBuf]) -> Result<TrashSnapshot, String> {
     let mut trashes: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
     for root in roots {
         for trash in trashes_for(&root.join("_")) {
@@ -150,10 +212,36 @@ pub fn trashed_originals(roots: &[PathBuf]) -> HashSet<PathBuf> {
             }
         }
     }
-    trash_entries(&trashes)
-        .into_iter()
-        .map(|entry| entry.original)
-        .collect()
+    snapshot_from_trashes(&trashes)
+}
+
+fn snapshot_from_trashes(trashes: &[(PathBuf, Option<PathBuf>)]) -> Result<TrashSnapshot, String> {
+    let mut snapshot = TrashSnapshot::default();
+    for (trash, _) in trashes {
+        snapshot.watch(&trash.join("info"))?;
+    }
+    for entry in trash_entries(trashes)? {
+        snapshot.watch(&entry.info)?;
+        snapshot.watch(&entry.file)?;
+        let meta = match std::fs::symlink_metadata(&entry.file) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(format!(
+                    "Couldn't inspect trash payload {}: {e}",
+                    entry.file.display()
+                ))
+            }
+        };
+        if meta.is_dir() {
+            snapshot.directories.push(entry.original.clone());
+        }
+        snapshot.originals.insert(entry.original);
+    }
+    if !snapshot.is_current() {
+        return Err("The trash changed while it was being read; cleanup will wait".into());
+    }
+    Ok(snapshot)
 }
 
 /// One `.trashinfo` record: where the file came from and where it is now.
@@ -166,13 +254,17 @@ struct TrashEntry {
 
 /// Every readable record in `trashes`, each paired with the top directory
 /// its relative paths start from (`None` for the home trash).
-fn trash_entries(trashes: &[(PathBuf, Option<PathBuf>)]) -> Vec<TrashEntry> {
+fn trash_entries(trashes: &[(PathBuf, Option<PathBuf>)]) -> Result<Vec<TrashEntry>, String> {
     let mut found = Vec::new();
     for (trash, top) in trashes {
-        let Ok(entries) = std::fs::read_dir(trash.join("info")) else {
-            continue;
+        let entries = match std::fs::read_dir(trash.join("info")) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("Couldn't read trash {}: {e}", trash.display())),
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry =
+                entry.map_err(|e| format!("Couldn't read trash {}: {e}", trash.display()))?;
             let info = entry.path();
             let Some(name) = info
                 .file_name()
@@ -181,9 +273,8 @@ fn trash_entries(trashes: &[(PathBuf, Option<PathBuf>)]) -> Vec<TrashEntry> {
             else {
                 continue;
             };
-            let Ok(text) = std::fs::read_to_string(&info) else {
-                continue;
-            };
+            let text = std::fs::read_to_string(&info)
+                .map_err(|e| format!("Couldn't read trash record {}: {e}", info.display()))?;
             let (mut path, mut date) = (None, String::new());
             for line in text.lines() {
                 if let Some(value) = line.strip_prefix("Path=") {
@@ -192,22 +283,31 @@ fn trash_entries(trashes: &[(PathBuf, Option<PathBuf>)]) -> Vec<TrashEntry> {
                     date = value.to_string();
                 }
             }
-            let Some(path) = path else {
-                continue;
-            };
+            let path = path.ok_or_else(|| {
+                format!(
+                    "Couldn't read trash record {}: missing Path",
+                    info.display()
+                )
+            })?;
             let original = match top {
                 Some(top) if path.is_relative() => top.join(path),
                 _ => path,
             };
+            if !original.is_absolute() {
+                return Err(format!(
+                    "Couldn't read trash record {}: relative home path",
+                    info.display()
+                ));
+            }
             found.push(TrashEntry {
-                original,
+                original: lexical(&original),
                 date,
                 file: trash.join("files").join(name),
                 info,
             });
         }
     }
-    found
+    Ok(found)
 }
 
 /// `path` without `.` and `..` components, resolved as text the way GIO
@@ -250,7 +350,7 @@ fn restore_from_trashes(
     let original = lexical(original);
     let original = original.as_path();
     let mut newest: Option<(String, PathBuf, PathBuf)> = None;
-    for entry in trash_entries(trashes) {
+    for entry in trash_entries(trashes)? {
         // ISO 8601 dates sort as text.
         if entry.original == original && newest.as_ref().is_none_or(|(d, _, _)| entry.date > *d) {
             newest = Some((entry.date, entry.file, entry.info));
@@ -679,6 +779,77 @@ mod tests {
             home_trash_in(true, Some("relative".into()), home, data),
             Path::new("/home/u/.local/share/Trash")
         );
+    }
+
+    #[test]
+    fn trash_snapshot_protects_directory_descendants_and_detects_restore() {
+        let dir = temp_dir("trash-directory");
+        let trash = dir.join("Trash");
+        let original = dir.join("Pictures/Set");
+        std::fs::create_dir_all(trash.join("info")).unwrap();
+        std::fs::create_dir_all(trash.join("files/Set")).unwrap();
+        std::fs::write(trash.join("files/Set/a.jpg"), b"irreplaceable image").unwrap();
+        std::fs::write(
+            trash.join("info/Set.trashinfo"),
+            format!(
+                "[Trash Info]\nPath={}\nDeletionDate=2026-10-19T01:00:00\n",
+                original.display()
+            ),
+        )
+        .unwrap();
+        let snapshot = snapshot_from_trashes(&[(trash.clone(), None)]).unwrap();
+        assert!(snapshot.protects(&original.join("a.jpg")));
+        assert!(!snapshot.protects(&dir.join("Pictures/Set Other/a.jpg")));
+        assert!(snapshot.is_current());
+        std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+        restore_from_trashes(&original, &[(trash.clone(), None)]).unwrap();
+        assert_eq!(
+            std::fs::read(original.join("a.jpg")).unwrap(),
+            b"irreplaceable image"
+        );
+        assert!(
+            !snapshot.is_current(),
+            "a restore invalidates the cleanup snapshot"
+        );
+        assert!(!snapshot_from_trashes(&[(trash, None)])
+            .unwrap()
+            .protects(&original.join("a.jpg")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn trash_snapshot_refuses_bad_records_and_ignores_emptied_payloads() {
+        let dir = temp_dir("trash-snapshot-errors");
+        let trash = dir.join("Trash");
+        let original = dir.join("a.jpg");
+        assert!(snapshot_from_trashes(&[(trash.clone(), None)]).is_ok());
+        std::fs::create_dir_all(trash.join("info/broken.trashinfo")).unwrap();
+        assert!(snapshot_from_trashes(&[(trash.clone(), None)]).is_err());
+        std::fs::remove_dir(trash.join("info/broken.trashinfo")).unwrap();
+        trash_entry(
+            &trash,
+            "a.jpg",
+            original.to_str().unwrap(),
+            "2026-10-19T01:00:00",
+            b"a",
+        );
+        std::fs::remove_file(trash.join("files/a.jpg")).unwrap();
+        assert!(!snapshot_from_trashes(&[(trash, None)])
+            .unwrap()
+            .protects(&original));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unreadable_trash_records_are_reported_instead_of_claiming_absence() {
+        let dir = temp_dir("trash-read-error");
+        let trash = dir.join("Trash");
+        std::fs::create_dir_all(trash.join("info/broken.trashinfo")).unwrap();
+        // A directory in place of a record gives a deterministic read error,
+        // including when a test runner has elevated filesystem privileges.
+        let error = restore_from_trashes(&dir.join("missing.jpg"), &[(trash, None)]).unwrap_err();
+        assert!(error.contains("Couldn't read trash record"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! here touches a file.
 use super::*;
 
-type RootChange = fn(&SharprWindow, PathBuf) -> Result<(), String>;
+type RootChange = fn(&SharprWindow, PathBuf) -> Result<bool, String>;
 
 impl SharprWindow {
     pub(super) fn setup_library_root(&self) {
@@ -28,12 +28,13 @@ impl SharprWindow {
                 return;
             };
             let message = match window.remove_library_root(&root) {
-                Ok(()) => format!(
+                Ok(true) => format!(
                     "Removed “{}” from the library; its files are untouched",
                     root.file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_else(|| root.display().to_string())
                 ),
+                Ok(false) => return,
                 Err(error) => error,
             };
             window.add_toast(libadwaita::Toast::new(&message));
@@ -91,7 +92,8 @@ impl SharprWindow {
                             return;
                         }
                         match result.and_then(|root| apply(&window, root)) {
-                            Ok(()) => window.add_toast(libadwaita::Toast::new(done)),
+                            Ok(true) => window.add_toast(libadwaita::Toast::new(done)),
+                            Ok(false) => {}
                             Err(error) => window.add_toast(libadwaita::Toast::new(&error)),
                         }
                     },
@@ -103,7 +105,7 @@ impl SharprWindow {
 
     /// Changes the first root. The chooser validates directory availability
     /// on its worker first.
-    pub(crate) fn change_library_root(&self, root: PathBuf) -> Result<(), String> {
+    pub(crate) fn change_library_root(&self, root: PathBuf) -> Result<bool, String> {
         if self
             .app_state()
             .borrow()
@@ -111,20 +113,31 @@ impl SharprWindow {
             .active_library()
             .is_some_and(|library| library.root == root)
         {
-            return Ok(());
+            return Ok(true);
         }
-        self.edit_library_roots(|settings| settings.set_single_library_root(root))
+        self.edit_library_roots(
+            move |settings| settings.set_single_library_root(root),
+            "Library root changed".into(),
+        )
     }
 
     /// Adds another root, listed below the others (D41).
-    pub(crate) fn add_library_root(&self, root: PathBuf) -> Result<(), String> {
-        self.edit_library_roots(|settings| settings.add_library_root(root))
+    pub(crate) fn add_library_root(&self, root: PathBuf) -> Result<bool, String> {
+        self.edit_library_roots(
+            move |settings| settings.add_library_root(root),
+            "Library root added".into(),
+        )
     }
 
     /// Forgets a root. Its files, fingerprints, vectors and bucket rows stay;
     /// its bucket members are hidden until the root is added back.
-    pub(crate) fn remove_library_root(&self, root: &Path) -> Result<(), String> {
-        self.edit_library_roots(|settings| settings.remove_library_root(root))
+    pub(crate) fn remove_library_root(&self, root: &Path) -> Result<bool, String> {
+        let root = root.to_path_buf();
+        let message = format!(
+            "Removed “{}” from the library; its files are untouched",
+            root.display()
+        );
+        self.edit_library_roots(move |settings| settings.remove_library_root(&root), message)
     }
 
     /// Applies a change to the roots, then shows the library afresh: browse
@@ -132,10 +145,33 @@ impl SharprWindow {
     /// rescanned and new fingerprint and visual-index scopes requested.
     fn edit_library_roots(
         &self,
-        edit: impl FnOnce(&mut crate::config::AppSettings) -> Result<(), String>,
-    ) -> Result<(), String> {
+        edit: impl FnOnce(&mut crate::config::AppSettings) -> Result<(), String> + 'static,
+        done: String,
+    ) -> Result<bool, String> {
         if file_actions_blocked(self.upcast_ref()) {
             return Err("Finish the current review or crop first".into());
+        }
+        let service = self.imp().fingerprints.borrow().clone();
+        let gate = service.as_ref().map(|service| service.scope_gate());
+        let _guard = match gate.as_ref().map(|gate| gate.try_lock()) {
+            Some(Err(std::sync::TryLockError::WouldBlock)) => {
+                let weak = self.downgrade();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(16), move || {
+                    let Some(window) = weak.upgrade() else { return };
+                    match window.edit_library_roots(edit, done.clone()) {
+                        Ok(true) => window.add_toast(libadwaita::Toast::new(&done)),
+                        Ok(false) => {}
+                        Err(error) => window.add_toast(libadwaita::Toast::new(&error)),
+                    }
+                });
+                return Ok(false);
+            }
+            Some(Err(std::sync::TryLockError::Poisoned(error))) => Some(error.into_inner()),
+            Some(Ok(guard)) => Some(guard),
+            None => None,
+        };
+        if let Some(service) = service.as_ref() {
+            service.invalidate();
         }
         {
             let state = self.app_state();
@@ -146,6 +182,7 @@ impl SharprWindow {
             state.selection_explicit = false;
             let _ = state.library.load_virtual(&[]);
         }
+        drop(_guard);
         self.clear_inline_search(true);
         self.bump_thumbnail_generation("library.root");
         self.complete_thumbnail_ops();
@@ -168,6 +205,6 @@ impl SharprWindow {
         }
         self.library_scope_changed();
         self.update_empty_title();
-        Ok(())
+        Ok(true)
     }
 }

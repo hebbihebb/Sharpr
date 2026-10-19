@@ -415,11 +415,22 @@ const BULK_RELINK: usize = 10;
 ///
 /// Moving `BULK_RELINK` or more members at once first backs up the index to
 /// a new folder under `backups`; if that fails nothing is changed.
+#[cfg(test)]
 pub fn relink(
     index: &LibraryIndex,
     roots: &[PathBuf],
     disabled: &[PathBuf],
     backups: &Path,
+) -> Result<RelinkSummary, String> {
+    relink_guarded(index, roots, disabled, backups, None)
+}
+
+pub fn relink_guarded(
+    index: &LibraryIndex,
+    roots: &[PathBuf],
+    disabled: &[PathBuf],
+    backups: &Path,
+    guard: Option<&crate::fingerprint::PassGuard>,
 ) -> Result<RelinkSummary, String> {
     // Excluded members remain stored, untouched, without even a metadata probe.
     let rows: Vec<(MemberRow, Option<String>, bool)> = index
@@ -486,20 +497,39 @@ pub fn relink(
     if moves.len() >= BULK_RELINK {
         back_up_members(index, backups, "before-relink")?;
     }
-    for (id, path, fingerprint) in &fingerprints {
-        index
-            .set_member_fingerprint(*id, path, fingerprint)
-            .map_err(|e| e.to_string())?;
+    if moves.is_empty() && fingerprints.is_empty() {
+        return Ok(RelinkSummary::default());
     }
-    for (id, from, to) in &moves {
-        index
-            .move_member(*id, from, to)
-            .map_err(|e| e.to_string())?;
+    let _gate = guard.map(|g| g.scope_gate.lock().unwrap_or_else(|e| e.into_inner()));
+    if !index
+        .apply_bucket_relinks(&fingerprints, &moves, &|| {
+            guard.is_none_or(|g| g.is_current())
+        })
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(RelinkSummary::default());
     }
     Ok(RelinkSummary {
         fingerprinted: fingerprints.len(),
         relinked: moves.len(),
     })
+}
+
+/// Only positive observations in this process may establish a missing
+/// member's filesystem. Unknown legacy/missing locations remain recoverable.
+#[derive(Default)]
+pub struct CleanupState {
+    observed: HashMap<(i64, PathBuf), ObservedLocation>,
+    #[cfg(test)]
+    after_backup: Option<Box<dyn FnMut() + Send>>,
+}
+
+struct ObservedLocation {
+    fingerprint: String,
+    root: PathBuf,
+    // Bind mounts can share st_dev with the root. Every containing directory
+    // must remain the same object, including an otherwise-empty mountpoint.
+    ancestors: Vec<(PathBuf, u64, u64)>,
 }
 
 /// Whether `root` looks present: a folder with something in it. The mount
@@ -519,24 +549,91 @@ fn root_available(root: &Path) -> bool {
 /// members left each bucket.
 pub fn drop_missing(
     index: &LibraryIndex,
-    roots: &[PathBuf],
-    disabled: &[PathBuf],
-    trashed: &HashSet<PathBuf>,
+    job: &crate::fingerprint::Job,
+    pass: &crate::fingerprint::PassSummary,
+    trashed: &crate::file_ops::TrashSnapshot,
     backups: &Path,
+    state: &mut CleanupState,
+    guard: &crate::fingerprint::PassGuard,
 ) -> Result<BTreeMap<i64, usize>, String> {
+    let (roots, disabled) = (&job.roots, &job.disabled);
+    if !guard.is_current()
+        || pass.failed > 0
+        || !pass.coverage.unchanged_and_complete()
+        || !trashed.is_current()
+    {
+        return Ok(BTreeMap::new());
+    }
+    let members = index.all_bucket_members().map_err(|e| e.to_string())?;
+    let keys: HashSet<_> = members
+        .iter()
+        .map(|row| (row.collection_id, row.last_path.as_path()))
+        .collect();
+    state
+        .observed
+        .retain(|(id, path), _| keys.contains(&(*id, path.as_path())));
+    // Observe only files actually read/cached in this complete pass. An
+    // unmounted directory cannot manufacture provenance for its missing files.
+    for row in &members {
+        if !guard.is_current() {
+            return Ok(BTreeMap::new());
+        }
+        if let Some(hash) = pass.observed.get(&row.last_path) {
+            if row.fingerprint.as_ref() == Some(hash) {
+                if let Some(root) = roots.iter().find(|root| row.last_path.starts_with(root)) {
+                    let ancestors: Option<Vec<_>> = row
+                        .last_path
+                        .parent()
+                        .into_iter()
+                        .flat_map(Path::ancestors)
+                        .take_while(|parent| parent.starts_with(root))
+                        .map(|parent| {
+                            pass.coverage
+                                .directories
+                                .get(parent)
+                                .map(|stamp| (parent.to_path_buf(), stamp.device, stamp.inode))
+                        })
+                        .collect();
+                    if let Some(ancestors) = ancestors.filter(|ancestors| {
+                        ancestors.last().is_some_and(|(path, _, _)| path == root)
+                    }) {
+                        state.observed.insert(
+                            (row.collection_id, row.last_path.clone()),
+                            ObservedLocation {
+                                fingerprint: hash.clone(),
+                                root: root.clone(),
+                                ancestors,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
     let available: Vec<&PathBuf> = roots.iter().filter(|r| root_available(r)).collect();
     if available.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let rows: Vec<MemberRow> = index
-        .all_bucket_members()
-        .map_err(|e| e.to_string())?
+    let rows: Vec<MemberRow> = members
         .into_iter()
         .filter(|row| {
-            visible(&row.last_path, roots, disabled)
+            guard.is_current()
+                && visible(&row.last_path, roots, disabled)
                 && available.iter().any(|root| row.last_path.starts_with(root))
                 && stamp(&row.last_path).is_none()
-                && !trashed.contains(&row.last_path)
+                && !trashed.protects(&row.last_path)
+                && state
+                    .observed
+                    .get(&(row.collection_id, row.last_path.clone()))
+                    .is_some_and(|observed| {
+                        row.fingerprint.as_ref() == Some(&observed.fingerprint)
+                            && roots.contains(&observed.root)
+                            && observed.ancestors.iter().all(|(path, device, inode)| {
+                                pass.coverage.directories.get(path).is_some_and(|stamp| {
+                                    stamp.device == *device && stamp.inode == *inode
+                                })
+                            })
+                    })
         })
         .collect();
     let hashes: Vec<String> = rows
@@ -566,7 +663,22 @@ pub fn drop_missing(
         return Ok(BTreeMap::new());
     }
     back_up_members(index, backups, "before-drop-missing")?;
-    index.remove_members(&gone).map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    if let Some(hook) = state.after_backup.as_mut() {
+        hook();
+    }
+    // An external file manager cannot share our commit lock. Recheck its
+    // effects just before arbitration; monitor events also retire the epoch.
+    if !pass.coverage.unchanged_and_complete() || !trashed.is_current() {
+        return Ok(BTreeMap::new());
+    }
+    let _gate = guard.scope_gate.lock().unwrap_or_else(|e| e.into_inner());
+    let removed = index
+        .remove_members_checked(&gone, &|| guard.is_current())
+        .map_err(|e| e.to_string())?;
+    if removed == 0 {
+        return Ok(BTreeMap::new());
+    }
     let mut dropped = BTreeMap::new();
     for (id, _) in &gone {
         *dropped.entry(*id).or_insert(0) += 1;
@@ -645,6 +757,9 @@ pub fn migrate(
         return Ok(None);
     }
     let collections = index.list_collections().map_err(|e| e.to_string())?;
+    let legacy = index
+        .unconverted_bucket_members()
+        .map_err(|e| e.to_string())?;
     let backup = if collections.is_empty() {
         None
     } else {
@@ -668,6 +783,14 @@ pub fn migrate(
         } else {
             tags.stored_paths_for_all_tags_checked(&effective)?
         };
+        // Carry unconverted legacy rows directly into membership. The retired
+        // tag-writing conversion stays retired; both source stores stay intact.
+        let paths: Vec<PathBuf> = paths
+            .into_iter()
+            .chain(legacy.get(&bucket.id).into_iter().flatten().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         for path in &paths {
             // Only cached fingerprints: hashing waits for the background pass.
             if let Some((size, mtime)) = stamp(path) {
@@ -710,6 +833,21 @@ fn verify_backup(
         return Err(format!(
             "backup has {stored} buckets instead of {collections}"
         ));
+    }
+    for (id, paths) in legacy {
+        let stored: i64 = index
+            .query_row(
+                "SELECT COUNT(*) FROM collection_items WHERE collection_id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("backup legacy members unreadable: {e}"))?;
+        if stored as usize != paths.len() {
+            return Err(format!(
+                "backup has {stored} legacy members for bucket {id} instead of {}",
+                paths.len()
+            ));
+        }
     }
     open("tags.sqlite3")?
         .query_row("SELECT COUNT(*) FROM file_tags", [], |row| {
@@ -761,9 +899,6 @@ fn tag_candidates(
     for paths in candidates.values_mut() {
         paths.sort();
     }
-    let legacy = index
-        .unconverted_bucket_members()
-        .map_err(|e| e.to_string())?;
     Ok(candidates)
 }
 
@@ -787,14 +922,6 @@ pub fn tag_offers(
 
 /// Makes a bucket named `tag` from exactly the images its offer counted,
 /// with the bucket and all its members written in one transaction: on any
-        // Carry unconverted legacy rows directly into membership. The retired
-        // tag-writing conversion stays retired; both source stores stay intact.
-        let paths: Vec<PathBuf> = paths
-            .into_iter()
-            .chain(legacy.get(&bucket.id).into_iter().flatten().cloned())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
 /// failure nothing is created. The tag rows are not touched. Returns the
 /// bucket and its member count.
 pub fn bucket_from_tag(
@@ -834,21 +961,6 @@ mod tests {
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-    for (id, paths) in legacy {
-        let stored: i64 = index
-            .query_row(
-                "SELECT COUNT(*) FROM collection_items WHERE collection_id = ?1",
-                [id],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("backup legacy members unreadable: {e}"))?;
-        if stored as usize != paths.len() {
-            return Err(format!(
-                "backup has {stored} legacy members for bucket {id} instead of {}",
-                paths.len()
-            ));
-        }
-    }
                     .unwrap()
                     .as_nanos()
             ));
@@ -1602,154 +1714,337 @@ mod tests {
             .all(|m| !m.last_path.starts_with(f.root.join("off"))));
     }
 
-    #[test]
-    fn a_member_gone_from_the_library_leaves_its_buckets_after_a_pass() {
-        let f = Fixture::migrated("drop-missing");
-        let none = HashSet::new();
-        let keep = f.bucket("Keep", None);
-        let other = f.bucket("Other", None);
-        let gone = f.image("a/gone.jpg");
-        let stays = f.image("a/stays.jpg");
-        add_to_bucket(&f.index, keep, &[gone.clone(), stays.clone()]).unwrap();
-        add_to_bucket(&f.index, other, std::slice::from_ref(&gone)).unwrap();
-        pass(&f);
-        std::fs::remove_file(&gone).unwrap();
-        pass(&f);
-
-        let backups = f.root.join("backups");
-        let dropped = drop_missing(
+    fn cleanup_pass(
+        f: &Fixture,
+        job: &crate::fingerprint::Job,
+        state: &mut CleanupState,
+        trash: &crate::file_ops::TrashSnapshot,
+        guard: &crate::fingerprint::PassGuard,
+    ) -> BTreeMap<i64, usize> {
+        let pass = crate::fingerprint::run_pass(
             &f.index,
-            std::slice::from_ref(&f.root),
-            &[],
-            &none,
-            &backups,
-        )
-        .unwrap();
-        assert_eq!(dropped, BTreeMap::from([(keep, 1), (other, 1)]));
-        let rows = f.index.bucket_members(&[keep, other]).unwrap();
-        assert_eq!(
-            rows.iter().map(|r| r.last_path.clone()).collect::<Vec<_>>(),
-            vec![stays.clone()]
-        );
-        let view = view(&f.index, keep, std::slice::from_ref(&f.root), &[]).unwrap();
-        assert_eq!((view.paths, view.missing), (vec![stays], 0));
-        assert!(std::fs::read_dir(&backups).unwrap().flatten().any(|e| e
-            .file_name()
-            .to_string_lossy()
-            .starts_with("before-drop-missing-")));
-        // Nothing left to drop: no second backup, no change.
-        let before = std::fs::read_dir(&backups).unwrap().count();
-        assert!(drop_missing(
-            &f.index,
-            std::slice::from_ref(&f.root),
-            &[],
-            &none,
-            &backups
-        )
-        .unwrap()
-        .is_empty());
-        assert_eq!(std::fs::read_dir(&backups).unwrap().count(), before);
-    }
-
-    #[test]
-    fn missing_members_stay_while_they_may_come_back() {
-        let f = Fixture::migrated("keep-missing");
-        let none = HashSet::new();
-        let bucket = f.bucket("Keep", None);
-        let backups = f.root.join("backups");
-        let members = |paths: &[PathBuf]| {
-            for path in paths {
-                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(path, format!("image {}", path.display())).unwrap();
-            }
-            add_to_bucket(&f.index, bucket, paths).unwrap();
-            for path in paths {
-                std::fs::remove_file(path).unwrap();
-            }
-        };
-        let count = || f.index.bucket_members(&[bucket]).unwrap().len();
-
-        // A root on an unplugged drive: its mount point is empty or gone.
-        let drive = f.root.join("drive");
-        members(&[drive.join("a.jpg")]);
-        for root in [drive.clone(), f.root.join("nowhere")] {
-            assert!(
-                drop_missing(&f.index, std::slice::from_ref(&root), &[], &none, &backups)
-                    .unwrap()
-                    .is_empty()
-            );
-        }
-        // No roots known, a removed root, or a disabled folder: hidden, not gone.
-        let library = f.root.join("library");
-        f.image("library/present.jpg");
-        assert!(drop_missing(&f.index, &[], &[], &none, &backups)
-            .unwrap()
-            .is_empty());
-        assert!(drop_missing(
-            &f.index,
-            std::slice::from_ref(&library),
-            &[],
-            &none,
-            &backups
-        )
-        .unwrap()
-        .is_empty());
-        let off = library.join("off");
-        members(&[off.join("b.jpg")]);
-        assert!(drop_missing(
-            &f.index,
-            std::slice::from_ref(&library),
-            std::slice::from_ref(&off),
-            &none,
-            &backups
-        )
-        .unwrap()
-        .is_empty());
-        assert_eq!(count(), 2);
-
-        // Moved to identical copies, which re-linking leaves alone: it is
-        // still shown, so it stays.
-        let photo = f.image("library/photo.jpg");
-        add_to_bucket(&f.index, bucket, std::slice::from_ref(&photo)).unwrap();
-        std::fs::copy(&photo, library.join("copy-1.jpg")).unwrap();
-        std::fs::copy(&photo, library.join("copy-2.jpg")).unwrap();
-        crate::fingerprint::run_pass(
-            &f.index,
-            std::slice::from_ref(&library),
-            &[],
+            &job.roots,
+            &job.disabled,
             &[],
             &|| false,
             &|_| {},
         )
         .unwrap();
-        std::fs::remove_file(&photo).unwrap();
-        let disabled = std::slice::from_ref(&off);
-        relink(&f.index, std::slice::from_ref(&library), disabled, &backups).unwrap();
-        assert!(drop_missing(
+        relink(&f.index, &job.roots, &job.disabled, &f.root.join("backups")).unwrap();
+        super::drop_missing(
             &f.index,
-            std::slice::from_ref(&library),
-            disabled,
-            &none,
-            &backups
+            job,
+            &pass,
+            trash,
+            &f.root.join("backups"),
+            state,
+            guard,
         )
         .unwrap()
-        .is_empty());
-        assert_eq!(count(), 3);
+    }
 
-        // In the trash: Undo or a restore brings it back.
-        let trashed = f.image("library/trashed.jpg");
-        add_to_bucket(&f.index, bucket, std::slice::from_ref(&trashed)).unwrap();
-        std::fs::remove_file(&trashed).unwrap();
-        assert!(drop_missing(
-            &f.index,
-            std::slice::from_ref(&library),
-            disabled,
-            &HashSet::from([trashed.clone()]),
-            &backups
-        )
-        .unwrap()
-        .is_empty());
-        assert_eq!(count(), 4);
+    fn cleanup_job(f: &Fixture) -> crate::fingerprint::Job {
+        let root = f.root.join("library");
+        std::fs::create_dir_all(&root).unwrap();
+        crate::fingerprint::Job {
+            roots: vec![root],
+            disabled: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn cleanup_retains_a_member_without_observed_filesystem() {
+        let f = Fixture::migrated("unknown-filesystem");
+        let job = cleanup_job(&f);
+        let bucket = f.bucket("Keep", None);
+        let missing = f.image("library/mount/photo.jpg");
+        add_to_bucket(&f.index, bucket, std::slice::from_ref(&missing)).unwrap();
+        std::fs::remove_file(&missing).unwrap();
+        f.image("library/present.jpg");
+        let dropped = cleanup_pass(
+            &f,
+            &job,
+            &mut CleanupState::default(),
+            &Default::default(),
+            &crate::fingerprint::PassGuard::for_test(),
+        );
+        assert!(dropped.is_empty());
+        assert_eq!(f.index.bucket_members(&[bucket]).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_member_gone_from_the_library_leaves_its_buckets_after_a_pass() {
+        let f = Fixture::migrated("drop-missing");
+        let job = cleanup_job(&f);
+        let mut state = CleanupState::default();
+        let guard = crate::fingerprint::PassGuard::for_test();
+        let keep = f.bucket("Keep", None);
+        let other = f.bucket("Other", None);
+        let gone = f.image("library/a/gone.jpg");
+        let stays = f.image("library/a/stays.jpg");
+        add_to_bucket(&f.index, keep, &[gone.clone(), stays.clone()]).unwrap();
+        add_to_bucket(&f.index, other, std::slice::from_ref(&gone)).unwrap();
+        assert!(cleanup_pass(&f, &job, &mut state, &Default::default(), &guard).is_empty());
+        std::fs::remove_file(&gone).unwrap();
+        let dropped = cleanup_pass(&f, &job, &mut state, &Default::default(), &guard);
+        assert_eq!(dropped, BTreeMap::from([(keep, 1), (other, 1)]));
+        assert_eq!(
+            f.index
+                .bucket_members(&[keep, other])
+                .unwrap()
+                .iter()
+                .map(|r| r.last_path.clone())
+                .collect::<Vec<_>>(),
+            vec![stays]
+        );
+        let backups = f.root.join("backups");
+        let before = std::fs::read_dir(&backups).unwrap().count();
+        assert!(before > 0);
+        assert!(cleanup_pass(&f, &job, &mut state, &Default::default(), &guard).is_empty());
+        assert_eq!(std::fs::read_dir(backups).unwrap().count(), before);
+    }
+
+    #[test]
+    fn missing_members_stay_while_they_may_come_back() {
+        let f = Fixture::migrated("keep-missing");
+        let mut job = cleanup_job(&f);
+        let mut state = CleanupState::default();
+        let guard = crate::fingerprint::PassGuard::for_test();
+        let bucket = f.bucket("Keep", None);
+        let missing = f.image("library/set/photo.jpg");
+        f.image("library/present.jpg");
+        add_to_bucket(&f.index, bucket, std::slice::from_ref(&missing)).unwrap();
+        cleanup_pass(&f, &job, &mut state, &Default::default(), &guard);
+        std::fs::remove_file(&missing).unwrap();
+        job.disabled.push(f.root.join("library/set"));
+        assert!(cleanup_pass(&f, &job, &mut state, &Default::default(), &guard).is_empty());
+        job.disabled.clear();
+        let trash = crate::file_ops::TrashSnapshot::from_paths([f.root.join("library/set")]);
+        assert!(
+            cleanup_pass(&f, &job, &mut state, &trash, &guard).is_empty(),
+            "trashed parent protects descendants"
+        );
+        assert_eq!(f.index.bucket_members(&[bucket]).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_hidden_move_or_changed_directory_cannot_prove_absence() {
+        let f = Fixture::migrated("hidden-move");
+        let job = cleanup_job(&f);
+        let mut state = CleanupState::default();
+        let guard = crate::fingerprint::PassGuard::for_test();
+        let bucket = f.bucket("Keep", None);
+        let photo = f.image("library/photo.jpg");
+        add_to_bucket(&f.index, bucket, std::slice::from_ref(&photo)).unwrap();
+        cleanup_pass(&f, &job, &mut state, &Default::default(), &guard);
+        let pass = crate::fingerprint::run_pass(&f.index, &job.roots, &[], &[], &|| false, &|_| {})
+            .unwrap();
+        move_file(&photo, &f.root.join("library/.hidden/photo.jpg"));
+        assert!(
+            super::drop_missing(
+                &f.index,
+                &job,
+                &pass,
+                &Default::default(),
+                &f.root.join("backups"),
+                &mut state,
+                &guard
+            )
+            .unwrap()
+            .is_empty(),
+            "directory changed after collection"
+        );
+        assert!(
+            cleanup_pass(&f, &job, &mut state, &Default::default(), &guard).is_empty(),
+            "hidden destination was not searched"
+        );
+        assert_eq!(f.index.bucket_members(&[bucket]).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn observed_members_survive_unavailable_or_excluded_roots() {
+        for scenario in ["empty", "missing", "removed", "disabled", "none"] {
+            let f = Fixture::migrated(scenario);
+            let mut job = cleanup_job(&f);
+            let mut state = CleanupState::default();
+            let guard = crate::fingerprint::PassGuard::for_test();
+            let bucket = f.bucket("Keep", None);
+            let photo = f.image("library/sub/photo.jpg");
+            let present = f.image("library/present.jpg");
+            add_to_bucket(&f.index, bucket, std::slice::from_ref(&photo)).unwrap();
+            cleanup_pass(&f, &job, &mut state, &Default::default(), &guard);
+            assert_eq!(
+                state.observed.len(),
+                1,
+                "positive provenance before {scenario}"
+            );
+            std::fs::remove_file(&photo).unwrap();
+            match scenario {
+                "empty" => {
+                    std::fs::remove_file(present).unwrap();
+                    std::fs::remove_dir(photo.parent().unwrap()).unwrap();
+                }
+                "missing" => {
+                    std::fs::remove_dir_all(&job.roots[0]).unwrap();
+                }
+                "removed" => {
+                    f.image("another/present.jpg");
+                    job.roots = vec![f.root.join("another")];
+                }
+                "disabled" => {
+                    job.disabled = vec![photo.parent().unwrap().to_path_buf()];
+                }
+                "none" => {}
+                _ => unreachable!(),
+            }
+            if scenario == "none" {
+                // Reuse the isolated scan, then remove its scope. Never let an
+                // empty-roots scan fall back to the real user's Home folder.
+                let pass = crate::fingerprint::run_pass(
+                    &f.index,
+                    &job.roots,
+                    &[],
+                    &[],
+                    &|| false,
+                    &|_| {},
+                )
+                .unwrap();
+                job.roots.clear();
+                assert!(super::drop_missing(
+                    &f.index,
+                    &job,
+                    &pass,
+                    &Default::default(),
+                    &f.root.join("backups"),
+                    &mut state,
+                    &guard
+                )
+                .unwrap()
+                .is_empty());
+            } else {
+                assert!(
+                    cleanup_pass(&f, &job, &mut state, &Default::default(), &guard).is_empty(),
+                    "{scenario}"
+                );
+            }
+            assert_eq!(
+                f.index.bucket_members(&[bucket]).unwrap().len(),
+                1,
+                "{scenario}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_observed_missing_member_with_multiple_cached_copies_stays() {
+        let f = Fixture::migrated("copies-survive");
+        let job = cleanup_job(&f);
+        let mut state = CleanupState::default();
+        let guard = crate::fingerprint::PassGuard::for_test();
+        let bucket = f.bucket("Keep", None);
+        let photo = f.image("library/photo.jpg");
+        add_to_bucket(&f.index, bucket, std::slice::from_ref(&photo)).unwrap();
+        cleanup_pass(&f, &job, &mut state, &Default::default(), &guard);
+        for name in ["copy-1.jpg", "copy-2.jpg"] {
+            std::fs::copy(&photo, job.roots[0].join(name)).unwrap();
+        }
+        std::fs::remove_file(&photo).unwrap();
+        assert!(cleanup_pass(&f, &job, &mut state, &Default::default(), &guard).is_empty());
+        let rows = f.index.bucket_members(&[bucket]).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].last_path, photo,
+            "multiple copies keep the stored location"
+        );
+        assert_eq!(
+            view(&f.index, bucket, &job.roots, &[]).unwrap().paths.len(),
+            2
+        );
+    }
+
+    #[test]
+    fn invalidation_during_backup_or_staged_delete_keeps_members() {
+        for change_scope in [false, true] {
+            let f = Fixture::migrated("backup-invalidation");
+            let job = cleanup_job(&f);
+            let mut state = CleanupState::default();
+            let guard = crate::fingerprint::PassGuard::for_test();
+            let bucket = f.bucket("Keep", None);
+            let photo = f.image("library/photo.jpg");
+            f.image("library/present.jpg");
+            add_to_bucket(&f.index, bucket, std::slice::from_ref(&photo)).unwrap();
+            cleanup_pass(&f, &job, &mut state, &Default::default(), &guard);
+            std::fs::remove_file(&photo).unwrap();
+            let stale = guard.clone();
+            let appeared = f.root.join("library/appeared.jpg");
+            state.after_backup = Some(Box::new(move || {
+                if change_scope {
+                    stale.invalidate_for_test();
+                } else {
+                    std::fs::write(&appeared, b"a possible moved copy").unwrap();
+                }
+            }));
+            assert!(cleanup_pass(&f, &job, &mut state, &Default::default(), &guard).is_empty());
+            assert_eq!(f.index.bucket_members(&[bucket]).unwrap().len(), 1);
+        }
+
+        let f = Fixture::migrated("transaction-invalidation");
+        let bucket = f.bucket("Keep", None);
+        let photo = f.image("photo.jpg");
+        add_to_bucket(&f.index, bucket, std::slice::from_ref(&photo)).unwrap();
+        let checked = std::cell::Cell::new(false);
+        let removed = f
+            .index
+            .remove_members_checked(&[(bucket, photo)], &|| !checked.replace(true))
+            .unwrap();
+        assert_eq!(removed, 0, "invalidating staged work rolls back its DELETE");
+        assert_eq!(f.index.bucket_members(&[bucket]).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_replaced_same_filesystem_member_parent_is_not_permanent_loss() {
+        let f = Fixture::migrated("same-device-mount");
+        let job = cleanup_job(&f);
+        let mut state = CleanupState::default();
+        let guard = crate::fingerprint::PassGuard::for_test();
+        let bucket = f.bucket("Keep", None);
+        let photo = f.image("library/mount/photo.jpg");
+        f.image("library/present.jpg");
+        add_to_bucket(&f.index, bucket, std::slice::from_ref(&photo)).unwrap();
+        cleanup_pass(&f, &job, &mut state, &Default::default(), &guard);
+        // A same-filesystem bind mount disappears without changing the root's
+        // device or inode. Keep its recoverable bytes outside the scanned root.
+        std::fs::rename(f.root.join("library/mount"), f.root.join("offline")).unwrap();
+        std::fs::create_dir(f.root.join("library/mount")).unwrap();
+        assert!(cleanup_pass(&f, &job, &mut state, &Default::default(), &guard).is_empty());
+        assert_eq!(f.index.bucket_members(&[bucket]).unwrap().len(), 1);
+        assert!(f.root.join("offline/photo.jpg").exists());
+    }
+
+    #[test]
+    fn changed_root_identity_or_stale_scope_cannot_drop_members() {
+        let f = Fixture::migrated("stale-scope");
+        let job = cleanup_job(&f);
+        let mut state = CleanupState::default();
+        let guard = crate::fingerprint::PassGuard::for_test();
+        let bucket = f.bucket("Keep", None);
+        let photo = f.image("library/photo.jpg");
+        add_to_bucket(&f.index, bucket, std::slice::from_ref(&photo)).unwrap();
+        cleanup_pass(&f, &job, &mut state, &Default::default(), &guard);
+        std::fs::rename(&job.roots[0], f.root.join("unmounted")).unwrap();
+        std::fs::create_dir(&job.roots[0]).unwrap();
+        f.image("library/present.jpg");
+        assert!(
+            cleanup_pass(&f, &job, &mut state, &Default::default(), &guard).is_empty(),
+            "replacement mountpoint is a different root identity"
+        );
+        std::fs::remove_dir_all(&job.roots[0]).unwrap();
+        std::fs::rename(f.root.join("unmounted"), &job.roots[0]).unwrap();
+        std::fs::remove_file(&photo).unwrap();
+        f.image("library/present.jpg");
+        guard.invalidate_for_test();
+        assert!(cleanup_pass(&f, &job, &mut state, &Default::default(), &guard).is_empty());
+        assert_eq!(f.index.bucket_members(&[bucket]).unwrap().len(), 1);
     }
 
     #[test]

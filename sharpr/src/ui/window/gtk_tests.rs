@@ -5265,6 +5265,111 @@ fn a_second_root_is_listed_below_the_first_and_removing_it_only_forgets_it() {
     window.close();
 }
 
+/// Root settings and destructive missing-member cleanup share a gate. The
+/// GTK thread must defer scope changes rather than block or save them early.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn root_scope_changes_wait_for_cleanup_without_blocking_gtk() {
+    let base = isolated_fixture("root-scope-gate");
+    let pictures = base.join("Pictures");
+    let downloads = base.join("Downloads");
+    for root in [&pictures, &downloads] {
+        std::fs::create_dir_all(root).unwrap();
+        image::RgbImage::from_pixel(160, 90, image::Rgb([90, 120, 200]))
+            .save(root.join("image.png"))
+            .unwrap();
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Scope gate", pictures.clone(), FolderMode::DrillDown)
+        .unwrap();
+    settings.add_library_root(downloads.clone()).unwrap();
+    settings.set_active_library_last_folder(Some(pictures.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.present();
+    pump_until(|| {
+        window.is_mapped()
+            && !window.app_state().borrow().bucket_migration_pending
+            && window.imp().fingerprints.borrow().is_some()
+            && window.app_state().borrow().library.image_count() == 1
+    });
+    let service = window.imp().fingerprints.borrow().clone().unwrap();
+    let gate = service.scope_gate();
+    let sidebar = window.imp().sidebar.borrow().clone().unwrap();
+    let roots = vec![pictures.clone(), downloads.clone()];
+    let is_disabled = |settings: &AppSettings| {
+        settings
+            .active_library()
+            .unwrap()
+            .ignored_folders
+            .contains(&downloads)
+    };
+    // A GTK timeout proves the main loop stays responsive through several
+    // retries while cleanup owns the gate. Check settings on every iteration.
+    let heartbeat = || {
+        let fired = std::rc::Rc::new(std::cell::Cell::new(false));
+        let fired_later = fired.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(100), move || {
+            fired_later.set(true);
+        });
+        fired
+    };
+    {
+        let cleanup = gate.lock().unwrap();
+        sidebar.change_folder_ignored(downloads.clone(), true);
+        let responsive = heartbeat();
+        pump_until(|| {
+            assert!(!is_disabled(&window.app_state().borrow().settings));
+            assert!(!is_disabled(&AppSettings::load()));
+            assert!(!window
+                .app_state()
+                .borrow()
+                .disabled_folders
+                .contains(&downloads));
+            responsive.get()
+        });
+        drop(cleanup);
+    }
+    pump_until(|| {
+        is_disabled(&window.app_state().borrow().settings)
+            && is_disabled(&AppSettings::load())
+            && window
+                .app_state()
+                .borrow()
+                .disabled_folders
+                .contains(&downloads)
+    });
+    {
+        let cleanup = gate.lock().unwrap();
+        assert!(
+            !window.remove_library_root(&downloads).unwrap(),
+            "root removal should be queued"
+        );
+        let responsive = heartbeat();
+        pump_until(|| {
+            assert_eq!(window.app_state().borrow().settings.library_roots(), roots);
+            assert_eq!(AppSettings::load().library_roots(), roots);
+            responsive.get()
+        });
+        drop(cleanup);
+    }
+    pump_until(|| {
+        window.app_state().borrow().settings.library_roots() == [pictures.clone()]
+            && AppSettings::load().library_roots() == [pictures.clone()]
+    });
+    assert!(downloads.join("image.png").is_file());
+    window.close();
+}
+
 /// Work Order item 11: a folder or image made outside Sharpr while it runs is
 /// listed, indexed and shown without a restart; hidden folders stay out.
 #[test]

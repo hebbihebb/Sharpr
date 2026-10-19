@@ -810,6 +810,51 @@ impl Default for LibraryManager {
 }
 
 /// Cancellation is cooperative between filesystem operations; no GTK work is done here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DirectoryStamp {
+    pub device: u64,
+    pub inode: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl DirectoryStamp {
+    pub(crate) fn read(path: &Path) -> std::io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(path)?;
+        if !m.is_dir() {
+            return Err(std::io::Error::other("not a directory"));
+        }
+        Ok(Self {
+            device: m.dev(),
+            inode: m.ino(),
+            modified: (m.mtime(), m.mtime_nsec()),
+            changed: (m.ctime(), m.ctime_nsec()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ScanCoverage {
+    pub directories: HashMap<PathBuf, DirectoryStamp>,
+    pub failed: usize,
+    pub excluded: usize,
+}
+
+impl ScanCoverage {
+    /// A skipped location might hold a moved copy. Never search it merely to
+    /// permit cleanup, and never mistake its absence from this walk for loss.
+    pub(crate) fn unchanged_and_complete(&self) -> bool {
+        self.failed == 0
+            && self.excluded == 0
+            && !self.directories.is_empty()
+            && self
+                .directories
+                .iter()
+                .all(|(path, before)| DirectoryStamp::read(path).is_ok_and(|now| now == *before))
+    }
+}
+
 /// Each start (a root, or the open folder) is walked on its own filesystem and
 /// without hidden folders, like the sidebar tree (`model::walk`).
 pub(crate) fn collect_library_image_paths_cancellable(
@@ -819,6 +864,24 @@ pub(crate) fn collect_library_image_paths_cancellable(
     disabled: &[PathBuf],
     canceled: &dyn Fn() -> bool,
 ) -> Vec<PathBuf> {
+    collect_library_image_paths_with_coverage(
+        library_roots,
+        folder_mode,
+        current_folder,
+        disabled,
+        canceled,
+    )
+    .0
+}
+
+pub(crate) fn collect_library_image_paths_with_coverage(
+    library_roots: &[PathBuf],
+    folder_mode: FolderMode,
+    current_folder: Option<&Path>,
+    disabled: &[PathBuf],
+    canceled: &dyn Fn() -> bool,
+) -> (Vec<PathBuf>, ScanCoverage) {
+    let mut coverage = ScanCoverage::default();
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home"));
     let roots = if library_roots.is_empty() {
         vec![home.join("Pictures"), home.join("Downloads"), home]
@@ -845,37 +908,68 @@ pub(crate) fn collect_library_image_paths_cancellable(
     let mut paths = Vec::new();
     while let Some((folder, depth, device)) = pending.pop() {
         if canceled() {
-            return Vec::new();
+            coverage.failed += 1;
+            return (Vec::new(), coverage);
         }
-        if path_is_disabled(&folder, disabled) || !seen.insert(folder.clone()) {
+        if path_is_disabled(&folder, disabled) {
+            coverage.excluded += 1;
             continue;
+        }
+        if !seen.insert(folder.clone()) {
+            continue;
+        }
+        match DirectoryStamp::read(&folder) {
+            Ok(stamp) => {
+                // A mount can appear after its parent queued this folder.
+                if Some(stamp.device) != device {
+                    coverage.excluded += 1;
+                    continue;
+                }
+                coverage.directories.insert(folder.clone(), stamp);
+            }
+            Err(_) => {
+                coverage.failed += 1;
+                continue;
+            }
         }
         let Ok(entries) = std::fs::read_dir(&folder) else {
+            coverage.failed += 1;
             continue;
         };
-        for entry in entries.filter_map(Result::ok) {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                coverage.failed += 1;
+                continue;
+            };
             if canceled() {
-                return Vec::new();
+                coverage.failed += 1;
+                return (Vec::new(), coverage);
             }
             let path = entry.path();
             if path_is_disabled(&path, disabled) {
+                coverage.excluded += 1;
                 continue;
             }
             let Ok(kind) = entry.file_type() else {
+                coverage.failed += 1;
                 continue;
             };
             if kind.is_dir() && depth < maximum_depth {
                 if walk::may_descend_into(&entry, device) {
                     pending.push((path, depth + 1, device));
+                } else {
+                    coverage.excluded += 1;
                 }
             } else if kind.is_file() && LibraryManager::is_image(&path) {
                 paths.push(path);
+            } else if kind.is_symlink() {
+                coverage.excluded += 1;
             }
         }
     }
     paths.sort_by(|a, b| path_sort_key(a, b));
     paths.dedup();
-    paths
+    (paths, coverage)
 }
 
 fn path_is_disabled(path: &Path, disabled: &[PathBuf]) -> bool {

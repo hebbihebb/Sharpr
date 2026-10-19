@@ -389,44 +389,17 @@ impl LibraryIndex {
         rows.collect()
     }
 
-    /// Records the current fingerprint of a member's file.
-    pub fn set_member_fingerprint(
-        &self,
-        collection_id: i64,
-        last_path: &Path,
-        fingerprint: &str,
-    ) -> rusqlite::Result<()> {
-        self.conn()?.execute(
-            "UPDATE bucket_members SET fingerprint = ?3 WHERE collection_id = ?1 AND last_path = ?2",
-            params![collection_id, path_to_string(last_path), fingerprint],
-        )?;
-        Ok(())
-    }
-
-    /// Points a member at the file's new path. If the bucket already has a
-    /// member there (an identical copy), the two merge into that one.
-    pub fn move_member(&self, collection_id: i64, from: &Path, to: &Path) -> rusqlite::Result<()> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
-        let moved = tx.execute(
-            "UPDATE OR IGNORE bucket_members SET last_path = ?3
-             WHERE collection_id = ?1 AND last_path = ?2",
-            params![collection_id, path_to_string(from), path_to_string(to)],
-        )?;
-        if moved == 0 {
-            tx.execute(
-                "DELETE FROM bucket_members WHERE collection_id = ?1 AND last_path = ?2
-                 AND EXISTS (SELECT 1 FROM bucket_members WHERE collection_id = ?1 AND last_path = ?3)",
-                params![collection_id, path_to_string(from), path_to_string(to)],
-            )?;
-        }
-        tx.commit()
-    }
-
     /// Deletes the given `(bucket, last_path)` member rows in one transaction.
-    pub fn remove_members(&self, rows: &[(i64, PathBuf)]) -> rusqlite::Result<usize> {
+    pub fn remove_members_checked(
+        &self,
+        rows: &[(i64, PathBuf)],
+        current: &dyn Fn() -> bool,
+    ) -> rusqlite::Result<usize> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
+        if !current() {
+            return Ok(0);
+        }
         let mut removed = 0;
         {
             let mut delete = tx.prepare(
@@ -436,8 +409,48 @@ impl LibraryIndex {
                 removed += delete.execute(params![id, path_to_string(path)])?;
             }
         }
+        if !current() {
+            return Ok(0);
+        }
         tx.commit()?;
         Ok(removed)
+    }
+
+    pub fn apply_bucket_relinks(
+        &self,
+        fingerprints: &[(i64, PathBuf, String)],
+        moves: &[(i64, PathBuf, PathBuf)],
+        current: &dyn Fn() -> bool,
+    ) -> rusqlite::Result<bool> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        if !current() {
+            return Ok(false);
+        }
+        for (id, path, fingerprint) in fingerprints {
+            tx.execute(
+                "UPDATE bucket_members SET fingerprint = ?3 WHERE collection_id = ?1 AND last_path = ?2",
+                params![id, path_to_string(path), fingerprint],
+            )?;
+        }
+        for (id, from, to) in moves {
+            let moved = tx.execute(
+                "UPDATE OR IGNORE bucket_members SET last_path = ?3 WHERE collection_id = ?1 AND last_path = ?2",
+                params![id, path_to_string(from), path_to_string(to)],
+            )?;
+            if moved == 0 {
+                tx.execute(
+                    "DELETE FROM bucket_members WHERE collection_id = ?1 AND last_path = ?2
+                     AND EXISTS (SELECT 1 FROM bucket_members WHERE collection_id = ?1 AND last_path = ?3)",
+                    params![id, path_to_string(from), path_to_string(to)],
+                )?;
+            }
+        }
+        if !current() {
+            return Ok(false);
+        }
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Cached files with each of `hashes`: `hash → [(path, size, mtime_ns)]`.

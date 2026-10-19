@@ -75,6 +75,8 @@ pub struct PassSummary {
     pub files: usize,
     pub hashed: usize,
     pub failed: usize,
+    pub(crate) coverage: crate::model::library::ScanCoverage,
+    pub(crate) observed: std::collections::HashMap<PathBuf, String>,
 }
 
 /// Fingerprints every image under the `roots` outside `disabled` folders that has
@@ -89,7 +91,7 @@ pub fn run_pass(
     canceled: &dyn Fn() -> bool,
     progress: &dyn Fn(Progress),
 ) -> Result<PassSummary, String> {
-    let mut paths = crate::model::library::collect_library_image_paths_cancellable(
+    let (mut paths, coverage) = crate::model::library::collect_library_image_paths_with_coverage(
         roots,
         FolderMode::DrillDown,
         None,
@@ -104,6 +106,8 @@ pub fn run_pass(
     let cached = index.cached_fingerprints().map_err(|e| e.to_string())?;
     let mut summary = PassSummary {
         files: paths.len(),
+        failed: coverage.failed,
+        coverage,
         ..Default::default()
     };
     let mut done = 0;
@@ -113,6 +117,7 @@ pub fn run_pass(
             break;
         }
         let Ok(metadata) = std::fs::metadata(path) else {
+            summary.failed += 1;
             done += 1;
             continue;
         };
@@ -124,10 +129,16 @@ pub fn run_pass(
         if !fresh {
             match hash_file(path) {
                 Ok(hash) => {
+                    summary.observed.insert(path.clone(), hash.clone());
                     batch.push((path.clone(), size, mtime, hash));
                     summary.hashed += 1;
                 }
                 Err(_) => summary.failed += 1,
+            }
+        }
+        if fresh {
+            if let Some((_, _, hash)) = cached.get(key.as_ref()) {
+                summary.observed.insert(path.clone(), hash.clone());
             }
         }
         done += 1;
@@ -182,11 +193,42 @@ struct Queue {
 pub struct Service {
     queue: std::sync::Arc<(std::sync::Mutex<Queue>, std::sync::Condvar)>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    scope_gate: std::sync::Arc<std::sync::Mutex<()>>,
     progress: std::sync::Arc<std::sync::Mutex<Option<Progress>>>,
 }
 
 /// Runs on the service thread after every completed pass.
-pub type PassDone = Box<dyn Fn(&Job, &PassSummary) + Send>;
+pub type PassDone = Box<dyn FnMut(&Job, &PassSummary, &PassGuard) + Send>;
+
+/// The GTK thread never waits on this gate. It defers scope changes while a
+/// membership transaction holds it; all scanning and backup work stays outside.
+#[derive(Clone)]
+pub struct PassGuard {
+    epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    expected: u64,
+    pub(crate) scope_gate: std::sync::Arc<std::sync::Mutex<()>>,
+}
+
+impl PassGuard {
+    pub fn is_current(&self) -> bool {
+        self.epoch.load(std::sync::atomic::Ordering::Acquire) == self.expected
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            epoch: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            expected: 0,
+            scope_gate: std::sync::Arc::new(std::sync::Mutex::new(())),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn invalidate_for_test(&self) {
+        self.epoch.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
 
 #[cfg(not(test))]
 const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
@@ -202,7 +244,7 @@ impl Service {
 
     fn start_spaced(
         index: std::sync::Arc<LibraryIndex>,
-        pass_done: PassDone,
+        mut pass_done: PassDone,
         interval: std::time::Duration,
     ) -> Self {
         let queue = std::sync::Arc::new((
@@ -210,6 +252,9 @@ impl Service {
             std::sync::Condvar::new(),
         ));
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let epoch = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let scope_gate = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let (thread_epoch, thread_gate) = (epoch.clone(), scope_gate.clone());
         let progress = std::sync::Arc::new(std::sync::Mutex::new(None));
         let (thread_queue, thread_cancel, thread_progress) =
             (queue.clone(), cancel.clone(), progress.clone());
@@ -224,7 +269,7 @@ impl Service {
                     // The pending job stays queued while it waits out the
                     // spacing, so a newer request replaces it and a soon one
                     // ends the wait.
-                    let job = {
+                    let (job, expected) = {
                         let (lock, ready) = &*thread_queue;
                         let mut queue = lock.lock().unwrap_or_else(|e| e.into_inner());
                         loop {
@@ -250,10 +295,15 @@ impl Service {
                             let job = queue.pending.take().expect("checked above");
                             queue.soon = false;
                             queue.running = Some(job.clone());
-                            break job;
+                            thread_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+                            break (job, thread_epoch.load(std::sync::atomic::Ordering::Acquire));
                         }
                     };
-                    thread_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+                    let guard = PassGuard {
+                        epoch: thread_epoch.clone(),
+                        expected,
+                        scope_gate: thread_gate.clone(),
+                    };
                     let started = std::time::Instant::now();
                     let canceled = || thread_cancel.load(std::sync::atomic::Ordering::Relaxed);
                     let report = |p: Progress| {
@@ -279,7 +329,7 @@ impl Service {
                                     "duration_ms": crate::bench::duration_ms(started),
                                 }),
                             );
-                            pass_done(&job, &summary);
+                            pass_done(&job, &summary, &guard);
                         }
                         Ok(_) => {}
                         Err(error) => crate::bench_warn!(
@@ -295,6 +345,8 @@ impl Service {
         Self {
             queue,
             cancel,
+            epoch,
+            scope_gate,
             progress,
         }
     }
@@ -313,6 +365,7 @@ impl Service {
     fn enqueue(&self, job: Job, soon: bool) {
         let (lock, ready) = &*self.queue;
         let mut queue = lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.invalidate();
         if queue
             .running
             .as_ref()
@@ -324,6 +377,14 @@ impl Service {
         queue.pending = Some(job);
         queue.soon |= soon;
         ready.notify_one();
+    }
+
+    pub fn invalidate(&self) {
+        self.epoch.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    pub(crate) fn scope_gate(&self) -> std::sync::Arc<std::sync::Mutex<()>> {
+        self.scope_gate.clone()
     }
 
     /// Progress of the latest pass, if one has started.
@@ -370,7 +431,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let service = Service::start_spaced(
             index,
-            Box::new(move |_, summary| {
+            Box::new(move |_, summary, _| {
                 let _ = tx.send(summary.hashed);
             }),
             std::time::Duration::from_secs(60),
@@ -388,6 +449,48 @@ mod tests {
         std::fs::write(root.join("b.jpg"), b"b").unwrap();
         service.request_soon(job);
         assert_eq!(wait(5000), Ok(1));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_member_moved_after_collection_makes_the_pass_incomplete() {
+        let root = temp_dir("mid-pass-move");
+        for i in 0..60 {
+            std::fs::write(root.join(format!("{i:03}.jpg")), b"image").unwrap();
+        }
+        let member = root.join("zzz.jpg");
+        std::fs::write(&member, b"member").unwrap();
+        let index = LibraryIndex::open_in_memory().unwrap();
+        let moved = std::cell::Cell::new(false);
+        let summary = run_pass(
+            &index,
+            std::slice::from_ref(&root),
+            &[],
+            &[],
+            &|| false,
+            &|p| {
+                if p.done == 50 && !moved.replace(true) {
+                    std::fs::rename(&member, root.join("new.jpg")).unwrap();
+                }
+            },
+        )
+        .unwrap();
+        assert!(moved.get());
+        assert!(
+            summary.failed > 0,
+            "metadata failure after the snapshot counts"
+        );
+        assert!(!summary.coverage.unchanged_and_complete());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_pass_reports_failed_directory_coverage() {
+        let root = temp_dir("unavailable-root");
+        let missing = root.join("unavailable");
+        let index = LibraryIndex::open_in_memory().unwrap();
+        let summary = run_pass(&index, &[missing], &[], &[], &|| false, &|_| {}).unwrap();
+        assert!(summary.failed > 0, "a failed walk is not proof of absence");
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -245,7 +245,7 @@ pub fn present(window: &SharprWindow) {
             "None".into()
         } else {
             format!(
-                "{} · removed after the next full scan unless they are in the trash or on an unplugged drive",
+                "{} · kept until a complete scan can safely establish loss; trash, unavailable locations and uncertain scans retain membership",
                 images(stats.bucket_missing)
             )
         });

@@ -45,14 +45,28 @@ impl SharprWindow {
                 }
             });
         }
+        let mut cleanup = crate::buckets::CleanupState::default();
+        let mut last_trash_error: Option<String> = None;
         let service = crate::fingerprint::Service::start(
             index,
-            Box::new(move |job, pass| {
-                visual_index.request(crate::visual_search::index::Job {
-                    roots: job.roots.clone(),
-                    disabled: job.disabled.clone(),
-                });
-                match crate::buckets::relink(&relink_index, &job.roots, &job.disabled, &backups) {
+            Box::new(move |job, pass, guard| {
+                {
+                    let _scope = guard.scope_gate.lock().unwrap_or_else(|e| e.into_inner());
+                    if !guard.is_current() {
+                        return;
+                    }
+                    visual_index.request(crate::visual_search::index::Job {
+                        roots: job.roots.clone(),
+                        disabled: job.disabled.clone(),
+                    });
+                }
+                match crate::buckets::relink_guarded(
+                    &relink_index,
+                    &job.roots,
+                    &job.disabled,
+                    &backups,
+                    Some(guard),
+                ) {
                     Ok(relinked) => {
                         crate::bench_event!(
                             "buckets.relink",
@@ -75,12 +89,33 @@ impl SharprWindow {
                 if pass.failed > 0 {
                     return;
                 }
+                let trashed = match crate::file_ops::trashed_originals(&job.roots) {
+                    Ok(snapshot) => {
+                        last_trash_error = None;
+                        snapshot
+                    }
+                    Err(error) => {
+                        crate::bench_warn!(
+                            "buckets.drop_missing.fail",
+                            serde_json::json!({"error":error})
+                        );
+                        if last_trash_error.as_ref() != Some(&error) {
+                            let _ = dropped_tx.send_blocking(format!(
+                                "Bucket cleanup paused: {error}. Memberships were kept."
+                            ));
+                            last_trash_error = Some(error);
+                        }
+                        return;
+                    }
+                };
                 match crate::buckets::drop_missing(
                     &relink_index,
-                    &job.roots,
-                    &job.disabled,
-                    &crate::file_ops::trashed_originals(&job.roots),
+                    job,
+                    pass,
+                    &trashed,
                     &backups,
+                    &mut cleanup,
+                    guard,
                 ) {
                     Ok(dropped) if !dropped.is_empty() => {
                         crate::bench_event!(

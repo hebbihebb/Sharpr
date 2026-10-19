@@ -272,6 +272,9 @@ impl SharprWindow {
                 let other = other.and_then(|other| other.path());
                 if is_relevant(event, &path, other.as_deref(), Path::is_dir) {
                     if let Some(window) = weak.upgrade() {
+                        if let Some(service) = window.imp().fingerprints.borrow().as_ref() {
+                            service.invalidate();
+                        }
                         window.schedule_roots_changed(QUIET);
                     }
                 }
@@ -283,6 +286,9 @@ impl SharprWindow {
     /// After a Move or Copy to Folder: the destination may be a folder the
     /// sidebar has not listed, which no monitor was watching.
     pub(super) fn destination_changed(&self) {
+        if let Some(service) = self.imp().fingerprints.borrow().as_ref() {
+            service.invalidate();
+        }
         self.schedule_roots_changed(AFTER_FILE_JOB);
     }
 }

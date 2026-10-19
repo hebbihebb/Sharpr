@@ -958,6 +958,89 @@ impl SharprWindow {
         self.request_fingerprints_with(true);
     }
 
+    fn apply_folder_ignored_guarded(&self, path: PathBuf, ignored: bool) {
+        let service = self.imp().fingerprints.borrow().clone();
+        let gate = service.as_ref().map(|service| service.scope_gate());
+        let _guard = match gate.as_ref().map(|gate| gate.try_lock()) {
+            Some(Err(std::sync::TryLockError::WouldBlock)) => {
+                let weak = self.downgrade();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(16), move || {
+                    if let Some(window) = weak.upgrade() {
+                        window.apply_folder_ignored_guarded(path, ignored);
+                    }
+                });
+                return;
+            }
+            Some(Err(std::sync::TryLockError::Poisoned(error))) => Some(error.into_inner()),
+            Some(Ok(guard)) => Some(guard),
+            None => None,
+        };
+        if let Some(service) = service.as_ref() {
+            service.invalidate();
+        }
+        let state_c = self.app_state();
+        let Some(sidebar_c) = self.imp().sidebar.borrow().clone() else {
+            return;
+        };
+        let Some(filmstrip_c) = self.imp().filmstrip.borrow().clone() else {
+            return;
+        };
+        let Some(viewer_c) = self.imp().viewer.borrow().clone() else {
+            return;
+        };
+        let window_weak = self.downgrade();
+        let disabled_folders = {
+            let mut st = state_c.borrow_mut();
+            if ignored {
+                if !st.disabled_folders.iter().any(|p| p == &path) {
+                    st.disabled_folders.push(path.clone());
+                }
+            } else {
+                st.disabled_folders.retain(|p| !path.starts_with(p));
+            }
+            let disabled_folders = st.disabled_folders.clone();
+            st.settings
+                .set_active_library_ignored_folders(disabled_folders.clone());
+            st.selected_paths
+                .retain(|selected| !path_is_disabled(selected, &disabled_folders));
+
+            if ignored
+                && st
+                    .library
+                    .current_folder
+                    .as_deref()
+                    .map(|folder| folder.starts_with(&path))
+                    .unwrap_or(false)
+            {
+                let _ = st.library.load_virtual(&[]);
+                st.scope = ViewScope::Search;
+            } else if !matches!(st.scope, ViewScope::Folder(_)) {
+                let visible_paths: Vec<PathBuf> = (0..st.library.image_count())
+                    .filter_map(|i| st.library.entry_at(i).map(|e| e.path()))
+                    .filter(|image_path| !path_is_disabled(image_path, &st.disabled_folders))
+                    .collect();
+                let _ = st.library.load_virtual(&visible_paths);
+            }
+            st.disabled_folders.clone()
+        };
+        drop(_guard);
+
+        sidebar_c.set_ignored_folders(&disabled_folders);
+        viewer_c.clear();
+        filmstrip_c.refresh_virtual();
+        if let Some(win) = window_weak.upgrade() {
+            let _ = win.bump_thumbnail_generation("folder.ignored_changed");
+            win.complete_thumbnail_ops();
+            win.library_scope_changed();
+        }
+        let label = if ignored {
+            "Folder disabled"
+        } else {
+            "Folder enabled"
+        };
+        self.add_toast(libadwaita::Toast::new(label));
+    }
+
     /// Asks for a fingerprint pass over the active library. Passes over the
     /// same library are coalesced and spaced out by the service.
     pub fn request_fingerprints(&self) {
@@ -1677,64 +1760,11 @@ impl SharprWindow {
         }
 
         {
-            let state_c = state.clone();
-            let sidebar_c = sidebar.clone();
-            let filmstrip_c = filmstrip.clone();
-            let viewer_c = viewer.clone();
-            let toast_overlay_c = toast_overlay.clone();
-            let window_weak = self.downgrade();
+            let weak = self.downgrade();
             sidebar.connect_folder_ignored_changed(move |path, ignored| {
-                let disabled_folders = {
-                    let mut st = state_c.borrow_mut();
-                    if ignored {
-                        if !st.disabled_folders.iter().any(|p| p == &path) {
-                            st.disabled_folders.push(path.clone());
-                        }
-                    } else {
-                        st.disabled_folders.retain(|p| !path.starts_with(p));
-                    }
-                    let disabled_folders = st.disabled_folders.clone();
-                    st.settings
-                        .set_active_library_ignored_folders(disabled_folders.clone());
-                    st.selected_paths
-                        .retain(|selected| !path_is_disabled(selected, &disabled_folders));
-
-                    if ignored
-                        && st
-                            .library
-                            .current_folder
-                            .as_deref()
-                            .map(|folder| folder.starts_with(&path))
-                            .unwrap_or(false)
-                    {
-                        let _ = st.library.load_virtual(&[]);
-                        st.scope = ViewScope::Search;
-                    } else if !matches!(st.scope, ViewScope::Folder(_)) {
-                        let visible_paths: Vec<PathBuf> = (0..st.library.image_count())
-                            .filter_map(|i| st.library.entry_at(i).map(|e| e.path()))
-                            .filter(|image_path| {
-                                !path_is_disabled(image_path, &st.disabled_folders)
-                            })
-                            .collect();
-                        let _ = st.library.load_virtual(&visible_paths);
-                    }
-                    st.disabled_folders.clone()
-                };
-
-                sidebar_c.set_ignored_folders(&disabled_folders);
-                viewer_c.clear();
-                filmstrip_c.refresh_virtual();
-                if let Some(win) = window_weak.upgrade() {
-                    let _ = win.bump_thumbnail_generation("folder.ignored_changed");
-                    win.complete_thumbnail_ops();
-                    win.library_scope_changed();
+                if let Some(window) = weak.upgrade() {
+                    window.apply_folder_ignored_guarded(path, ignored);
                 }
-                let label = if ignored {
-                    "Folder disabled"
-                } else {
-                    "Folder enabled"
-                };
-                toast_overlay_c.add_toast(libadwaita::Toast::new(label));
             });
         }
 
