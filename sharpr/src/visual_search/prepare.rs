@@ -112,8 +112,9 @@ fn decode_upright(path: &Path) -> Result<DynamicImage, String> {
 /// Decodes an AVIF or HEIC image with glycin, the loader the viewer uses. It
 /// decodes in a sandboxed process, turns the image upright, and its size is
 /// checked against `MAX_DECODE_BYTES` before the pixels are asked for. Runs
-/// on the indexing worker, blocking it until the image is decoded.
-fn decode_with_glycin(path: &Path, format: &str) -> Result<DynamicImage, String> {
+/// on the calling worker thread (indexing or thumbnails), blocking it until
+/// the image is decoded.
+pub(crate) fn decode_with_glycin(path: &Path, format: &str) -> Result<DynamicImage, String> {
     use gtk4::{gio, glib};
     let file = gio::File::for_path(path);
     glib::MainContext::new().block_on(async move {

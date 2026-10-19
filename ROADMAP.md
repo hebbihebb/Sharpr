@@ -804,6 +804,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 28 | Similar photos (user, October 19): group near-identical shots such as bursts and series from the visual-search vectors, and narrow each group with Compare. Nothing is trashed without the user choosing it | Opus medium |
 | 29 | Similar-image count in Info (user, October 19), the companion to item 28: the Info panel says how many similar images or close matches the image has (for example "38 similar images"), and clicking it shows them through item 28's similarity search. Replaces the earlier "short image descriptions" idea, which conflicted with "No generated tags". Do it after item 28 | Sonnet medium |
 | 30 | Bug (user, October 19): AVIF (and HEIC) images show no filmstrip thumbnail, though they open normally in the viewer. The thumbnail worker decodes with the `image` crate, which reads neither; the viewer uses glycin, which does. Decode these formats with glycin in `generate_thumbnail`, bounded like the rest, extending the worker rather than rewriting it | Sonnet high |
+| 31 | Retire Survey (D43, user, October 19): Compare does the same job, and Survey's tiles are blurry enlarged thumbnails | Sonnet medium |
 
 Audit fixes `codex/audit-0.5.0-2` (A01–A09): **Done October 19, 2026**,
 accepted by the user and merged. Cleanup now retains uncertain members, legacy
@@ -887,6 +888,11 @@ Open items only; the table above has the order and the model. Each brief adds on
 - **Goal:** the Info panel tells the user how many similar images or close matches the open image has, and one click shows them.
 - **Done when:** the count matches what item 28's similarity search returns for that image, it reads naturally ("38 similar images", "1 close match", nothing when there are none or the image isn't indexed yet), and clicking it opens those images; a test covers the count and the click.
 - **Guardrails:** build on item 28: the same stored vectors and the same notion of "similar", with no second threshold, no new model and no stored tags or words. Count off the GTK thread and keep the viewer responsive while flipping through images; a stale count never shows for the wrong image. Nothing is trashed or changed from here.
+
+**31. Retire Survey (D43).**
+- **Goal:** Survey is gone from Sharpr: no menu item, view, help entry or documentation; Compare is the way to narrow a selection.
+- **Done when:** the image menu, Shortcuts help, manual, README and reference docs no longer mention Survey; its page, controller, styles and tests are removed; the GTK tests and `./check.sh` pass.
+- **Guardrails:** Survey stored nothing, so no data changes. Keep Compare, multi-select and the selection-ordering helpers that other features still use. Remove dead code, but rewrite nothing else.
 
 ## Backlog
 

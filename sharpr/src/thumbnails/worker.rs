@@ -8,6 +8,8 @@ use async_channel::{Receiver, Sender};
 use gtk4::gio;
 use gtk4::prelude::*;
 
+use crate::visual_search::prepare::{decode_with_glycin, heif_format};
+
 use crate::metadata::orientation::{
     apply_exif_orientation, apply_exif_orientation_value, extract_exif_data,
 };
@@ -446,6 +448,16 @@ pub(crate) fn generate_thumbnail(path: &Path) -> Option<ThumbnailResult> {
         let img = decode_webp_scaled(path, THUMB_HEIGHT)?;
         let img = apply_exif_orientation(img, path);
         let mut result = build_thumbnail_and_cache(path, img, "decoded_webp")?;
+        result.worker_ms = crate::bench::duration_ms(started);
+        return Some(result);
+    }
+
+    // AVIF and HEIC: the `image` crate reads neither, so decode them with
+    // glycin's HEIF loader, as the viewer and visual search do. It returns
+    // the image upright and checks its size before decoding (item 30).
+    if let Some(format) = heif_format(path) {
+        let img = decode_with_glycin(path, format).ok()?;
+        let mut result = build_thumbnail_and_cache(path, img, "decoded_glycin")?;
         result.worker_ms = crate::bench::duration_ms(started);
         return Some(result);
     }
@@ -1069,6 +1081,43 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    /// Work Order item 30: AVIF and HEIC thumbnails decode through glycin,
+    /// which the `image` crate can't stand in for.
+    #[test]
+    fn avif_and_heic_thumbnails_decode_through_glycin() {
+        let dir = std::env::temp_dir().join(format!(
+            "sharpr-thumb-heif-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (mime, name) in [("image/avif", "green.avif"), ("image/heif", "green.heic")] {
+            let path = dir.join(name);
+            crate::visual_search::prepare::encode_with_glycin(
+                mime,
+                &path,
+                (1600, 900),
+                [20, 200, 40],
+            );
+            let cache_path = thumbnail_cache_path(&path);
+            let result = generate_thumbnail(&path).unwrap_or_else(|| panic!("{name}"));
+            if let Some(cache_path) = cache_path {
+                let _ = std::fs::remove_file(cache_path);
+            }
+            assert_eq!(result.source, "decoded_glycin", "{name}");
+            assert_eq!((result.width, result.height), (284, THUMB_HEIGHT), "{name}");
+            let middle = ((result.height / 2 * result.width + result.width / 2) * 4) as usize;
+            let [r, g, b, _] = result.rgba_bytes[middle..middle + 4] else {
+                unreachable!()
+            };
+            assert!(g > 150 && r < 80 && b < 90, "{name}: {r},{g},{b}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -23,7 +23,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `ui/state.rs` | `AppState` (`Rc<RefCell<_>>`, GTK thread only) and `ViewScope` |
 | `model/library.rs` | `LibraryManager`: list store, path index, selection, and metadata caches |
 | `model/browse.rs` | Pure aspect, resolution, and orientation filter and sort logic |
-| `thumbnails/` | Visible and preload worker pools, and the memory and disk thumbnail caches |
+| `thumbnails/` | Visible and preload worker pools, and the memory and disk thumbnail caches. AVIF and HEIC/HEIF thumbnails decode through glycin's HEIF loader (`prepare::decode_with_glycin`, upright and size-checked), since the `image` crate reads neither (Work Order item 30) |
 | `image_pipeline/` | Viewer preview, metadata, and a lazy serial clipboard decoder with one coalesced pending request |
 | `library_index/` | SQLite index of folders, images, and buckets (`schema.rs` sets up new databases) |
 | `tags/db.rs` | SQLite manual tags and sharpness store |
