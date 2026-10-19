@@ -792,7 +792,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 27 | ~~Missing bucket members leave their buckets with one toast (D42)~~ **Done October 18, 2026**, accepted by the user (build `bf351ab`); members whose files are in a trash stay | Opus medium |
 | 15 | ~~Stop computing perceptual hashes in the thumbnail workers~~ **Implemented October 18, 2026** on `feature/roadmap-batch`, awaiting acceptance | Sonnet medium (done by Opus) |
 | 16 | Use one sort implementation | Codex (Sol medium) |
-| 17 | Merge the two thumbnail worker loops | Sonnet high |
+| 17 | ~~Merge the two thumbnail worker loops~~ **Implemented October 18, 2026** on `feature/roadmap-batch`, awaiting acceptance | Sonnet high (done by Opus) |
 | 18 | Library Overview refresh, errors, and unsupported count | Codex (Sol medium) |
 | 19 | Ctrl+Shift+S opens the GTK Inspector | Codex (Sol medium) |
 | 20 | Make the flaky GTK navigation test deterministic | Sonnet high |

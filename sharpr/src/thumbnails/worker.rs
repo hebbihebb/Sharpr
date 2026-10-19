@@ -140,196 +140,31 @@ impl ThumbnailWorker {
         let generation = Arc::new(AtomicU64::new(0));
         let pending_paths = Arc::new(Mutex::new(HashSet::new()));
 
-        // Visible workers — service in-viewport tile requests at normal priority.
-        for _ in 0..visible_workers {
-            let request_rx = visible_rx.clone();
-            let result_tx = result_tx.clone();
-            let sharpness_tx = sharpness_tx.clone();
-            let db = db.clone();
-            let gen_arc = generation.clone();
-            let pending_paths = pending_paths.clone();
-            std::thread::spawn(move || {
-                loop {
-                    match request_rx.recv_blocking() {
-                        Ok(WorkerRequest::Thumbnail { mut path, mut gen }) => {
-                            // Skip stale requests immediately — no decode needed.
-                            if gen != gen_arc.load(Ordering::Relaxed) {
-                                // Aggressively drain other stale requests from the channel
-                                // to prevent "loading stops" behavior during rapid folder switching.
-                                let drained = match pending_paths.lock() {
-                                    Ok(mut pending) => {
-                                        pending.remove(&path);
-                                        drain_stale(&request_rx, &gen_arc, &mut pending)
-                                    }
-                                    Err(_) => Drained::Empty,
-                                };
-                                match drained {
-                                    Drained::Fresh(p, g) => {
-                                        path = p;
-                                        gen = g;
-                                    }
-                                    Drained::Empty => continue,
-                                    Drained::Shutdown => break,
-                                }
-                            }
-                            crate::bench_event!(
-                                "thumbnail.start",
-                                serde_json::json!({
-                                    "path": path.display().to_string(),
-                                    "pool": "visible",
-                                    "gen": gen,
-                                }),
-                            );
-                            if let Some(result) = generate_thumbnail(&path) {
-                                if gen != gen_arc.load(Ordering::Relaxed) {
-                                    crate::bench_event!(
-                                        "thumbnail.stale_result",
-                                        serde_json::json!({
-                                            "path": path.display().to_string(),
-                                            "pool": "visible",
-                                            "gen": gen,
-                                            "duration_ms": result.worker_ms,
-                                        }),
-                                    );
-                                    if let Ok(mut pending) = pending_paths.lock() {
-                                        pending.remove(&path);
-                                    }
-                                    continue;
-                                }
-                                crate::bench_event!(
-                                    "thumbnail.finish",
-                                    serde_json::json!({
-                                        "path": path.display().to_string(),
-                                        "pool": "visible",
-                                        "gen": gen,
-                                        "source": result.source,
-                                        "width": result.width,
-                                        "height": result.height,
-                                        "duration_ms": result.worker_ms,
-                                    }),
-                                );
-                                let sharpness = maybe_score_sharpness(&path, &result, &db);
-                                let _ = result_tx.send_blocking(ThumbnailWorkerResponse::Success {
-                                    result,
-                                    gen,
-                                });
-                                if let Some(sr) = sharpness {
-                                    let _ = sharpness_tx.send_blocking(sr);
-                                }
-                            } else {
-                                crate::bench_warn!(
-                                    "thumbnail.fail",
-                                    serde_json::json!({
-                                        "path": path.display().to_string(),
-                                        "pool": "visible",
-                                        "gen": gen,
-                                        "error": "decode_failed",
-                                    }),
-                                );
-                                report_failure(&result_tx, &gen_arc, &path, gen, "visible");
-                            }
-
-                            if let Ok(mut pending) = pending_paths.lock() {
-                                pending.remove(&path);
-                            }
-                        }
-                        Ok(WorkerRequest::Shutdown) | Err(_) => break,
-                    }
-                }
-            });
-        }
-
-        // Preload workers — generate off-screen thumbnails at background priority.
-        for _ in 0..preload_workers {
-            let request_rx = preload_rx.clone();
-            let result_tx = result_tx.clone();
-            let sharpness_tx = sharpness_tx.clone();
-            let db = db.clone();
-            let gen_arc = generation.clone();
-            let pending_paths = pending_paths.clone();
-            std::thread::spawn(move || loop {
-                match request_rx.recv_blocking() {
-                    Ok(WorkerRequest::Thumbnail { mut path, mut gen }) => {
-                        if gen != gen_arc.load(Ordering::Relaxed) {
-                            // Aggressively drain other stale requests from the channel.
-                            let drained = match pending_paths.lock() {
-                                Ok(mut pending) => {
-                                    pending.remove(&path);
-                                    drain_stale(&request_rx, &gen_arc, &mut pending)
-                                }
-                                Err(_) => Drained::Empty,
-                            };
-                            match drained {
-                                Drained::Fresh(p, g) => {
-                                    path = p;
-                                    gen = g;
-                                }
-                                Drained::Empty => continue,
-                                Drained::Shutdown => break,
-                            }
-                        }
-                        crate::bench_event!(
-                            "thumbnail.start",
-                            serde_json::json!({
-                                "path": path.display().to_string(),
-                                "pool": "preload",
-                                "gen": gen,
-                            }),
-                        );
-                        if let Some(result) = generate_thumbnail(&path) {
-                            if gen != gen_arc.load(Ordering::Relaxed) {
-                                crate::bench_event!(
-                                    "thumbnail.stale_result",
-                                    serde_json::json!({
-                                        "path": path.display().to_string(),
-                                        "pool": "preload",
-                                        "gen": gen,
-                                        "duration_ms": result.worker_ms,
-                                    }),
-                                );
-                                if let Ok(mut pending) = pending_paths.lock() {
-                                    pending.remove(&path);
-                                }
-                                continue;
-                            }
-                            crate::bench_event!(
-                                "thumbnail.finish",
-                                serde_json::json!({
-                                    "path": path.display().to_string(),
-                                    "pool": "preload",
-                                    "gen": gen,
-                                    "source": result.source,
-                                    "width": result.width,
-                                    "height": result.height,
-                                    "duration_ms": result.worker_ms,
-                                }),
-                            );
-                            let sharpness = maybe_score_sharpness(&path, &result, &db);
-                            let _ = result_tx
-                                .send_blocking(ThumbnailWorkerResponse::Success { result, gen });
-                            if let Some(sr) = sharpness {
-                                let _ = sharpness_tx.send_blocking(sr);
-                            }
-                        } else {
-                            crate::bench_warn!(
-                                "thumbnail.fail",
-                                serde_json::json!({
-                                    "path": path.display().to_string(),
-                                    "pool": "preload",
-                                    "gen": gen,
-                                    "error": "decode_failed",
-                                }),
-                            );
-                            report_failure(&result_tx, &gen_arc, &path, gen, "preload");
-                        }
-
-                        if let Ok(mut pending) = pending_paths.lock() {
-                            pending.remove(&path);
-                        }
-                    }
-                    Ok(WorkerRequest::Shutdown) | Err(_) => break,
-                }
-            });
+        // Visible workers serve in-viewport tiles; preload workers make
+        // off-screen thumbnails. Each pool has its own queue.
+        for (pool, request_rx, count) in [
+            ("visible", &visible_rx, visible_workers),
+            ("preload", &preload_rx, preload_workers),
+        ] {
+            for _ in 0..count {
+                let request_rx = request_rx.clone();
+                let result_tx = result_tx.clone();
+                let sharpness_tx = sharpness_tx.clone();
+                let db = db.clone();
+                let gen_arc = generation.clone();
+                let pending_paths = pending_paths.clone();
+                std::thread::spawn(move || {
+                    run_worker(
+                        pool,
+                        request_rx,
+                        result_tx,
+                        sharpness_tx,
+                        db,
+                        gen_arc,
+                        pending_paths,
+                    )
+                });
+            }
         }
 
         (
@@ -393,6 +228,105 @@ impl ThumbnailWorker {
             .lock()
             .map(|pending| pending.len())
             .unwrap_or(0)
+    }
+}
+
+/// One thumbnail worker: serves `request_rx` until shut down. Both pools run
+/// this loop; the visible pool wins only by having its own queue and more
+/// threads. `pool` labels the bench events.
+fn run_worker(
+    pool: &'static str,
+    request_rx: Receiver<WorkerRequest>,
+    result_tx: Sender<ThumbnailWorkerResponse>,
+    sharpness_tx: Sender<SharpnessResult>,
+    db: Option<Arc<crate::tags::TagDatabase>>,
+    gen_arc: Arc<AtomicU64>,
+    pending_paths: Arc<Mutex<HashSet<PathBuf>>>,
+) {
+    loop {
+        match request_rx.recv_blocking() {
+            Ok(WorkerRequest::Thumbnail { mut path, mut gen }) => {
+                // Skip stale requests immediately — no decode needed.
+                if gen != gen_arc.load(Ordering::Relaxed) {
+                    // Aggressively drain other stale requests from the channel
+                    // to prevent "loading stops" behavior during rapid folder switching.
+                    let drained = match pending_paths.lock() {
+                        Ok(mut pending) => {
+                            pending.remove(&path);
+                            drain_stale(&request_rx, &gen_arc, &mut pending)
+                        }
+                        Err(_) => Drained::Empty,
+                    };
+                    match drained {
+                        Drained::Fresh(p, g) => {
+                            path = p;
+                            gen = g;
+                        }
+                        Drained::Empty => continue,
+                        Drained::Shutdown => break,
+                    }
+                }
+                crate::bench_event!(
+                    "thumbnail.start",
+                    serde_json::json!({
+                        "path": path.display().to_string(),
+                        "pool": pool,
+                        "gen": gen,
+                    }),
+                );
+                if let Some(result) = generate_thumbnail(&path) {
+                    if gen != gen_arc.load(Ordering::Relaxed) {
+                        crate::bench_event!(
+                            "thumbnail.stale_result",
+                            serde_json::json!({
+                                "path": path.display().to_string(),
+                                "pool": pool,
+                                "gen": gen,
+                                "duration_ms": result.worker_ms,
+                            }),
+                        );
+                        if let Ok(mut pending) = pending_paths.lock() {
+                            pending.remove(&path);
+                        }
+                        continue;
+                    }
+                    crate::bench_event!(
+                        "thumbnail.finish",
+                        serde_json::json!({
+                            "path": path.display().to_string(),
+                            "pool": pool,
+                            "gen": gen,
+                            "source": result.source,
+                            "width": result.width,
+                            "height": result.height,
+                            "duration_ms": result.worker_ms,
+                        }),
+                    );
+                    let sharpness = maybe_score_sharpness(&path, &result, &db);
+                    let _ =
+                        result_tx.send_blocking(ThumbnailWorkerResponse::Success { result, gen });
+                    if let Some(sr) = sharpness {
+                        let _ = sharpness_tx.send_blocking(sr);
+                    }
+                } else {
+                    crate::bench_warn!(
+                        "thumbnail.fail",
+                        serde_json::json!({
+                            "path": path.display().to_string(),
+                            "pool": pool,
+                            "gen": gen,
+                            "error": "decode_failed",
+                        }),
+                    );
+                    report_failure(&result_tx, &gen_arc, &path, gen, pool);
+                }
+
+                if let Ok(mut pending) = pending_paths.lock() {
+                    pending.remove(&path);
+                }
+            }
+            Ok(WorkerRequest::Shutdown) | Err(_) => break,
+        }
     }
 }
 
@@ -1046,8 +980,7 @@ mod tests {
     fn overfilled_queue_never_stalls_workers_or_leaves_paths_pending() {
         // A flood through a tiny queue: every request still gets a result
         // and leaves the pending set.
-        let (worker, result_rx, _sharp_rx) =
-            ThumbnailWorker::spawn_with_queue_capacity(2, None, 2);
+        let (worker, result_rx, _sharp_rx) = ThumbnailWorker::spawn_with_queue_capacity(2, None, 2);
         let gen = worker.current_generation();
         let tx = worker.visible_sender();
         let pending = worker.pending_set();
