@@ -113,12 +113,7 @@ fn home_trash() -> PathBuf {
     )
 }
 
-fn home_trash_in(
-    sandboxed: bool,
-    host_data: Option<PathBuf>,
-    home: &Path,
-    data: &Path,
-) -> PathBuf {
+fn home_trash_in(sandboxed: bool, host_data: Option<PathBuf>, home: &Path, data: &Path) -> PathBuf {
     if !sandboxed {
         return data.join("Trash");
     }

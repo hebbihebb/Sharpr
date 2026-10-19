@@ -374,12 +374,7 @@ pub fn present(window: &SharprWindow) {
                             .push_str(&format!(" · {rate:.1} images/s · {} left", duration(left)));
                     }
                     (
-                        format!(
-                            "{} of {}{}",
-                            count(c.indexed),
-                            images(c.images),
-                            failed(c)
-                        ),
+                        format!("{} of {}{}", count(c.indexed), images(c.images), failed(c)),
                         activity,
                     )
                 }
@@ -400,12 +395,7 @@ pub fn present(window: &SharprWindow) {
                         })
                         .unwrap_or_default();
                     (
-                        format!(
-                            "{} of {}{}",
-                            count(c.indexed),
-                            images(c.images),
-                            failed(c)
-                        ),
+                        format!("{} of {}{}", count(c.indexed), images(c.images), failed(c)),
                         format!("Idle{finished}"),
                     )
                 }

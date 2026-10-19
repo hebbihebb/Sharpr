@@ -328,12 +328,11 @@ impl LibraryIndex {
         }
 
         let mut rows: Vec<IndexedImage> = {
-            let sql = format!(
+            let mut stmt = conn.prepare(
                 "SELECT path, filename, extension, file_size, modified_secs,
                         width, height, metadata_status
-                 FROM images WHERE folder_path = ?1"
-            );
-            let mut stmt = conn.prepare(&sql)?;
+                 FROM images WHERE folder_path = ?1",
+            )?;
             let collected = stmt
                 .query_map(params![path_to_string(folder)], indexed_image_from_row)?
                 .filter_map(Result::ok)
@@ -515,15 +514,14 @@ impl LibraryIndex {
         if self.is_folder_ignored(folder)? {
             return Ok(Vec::new());
         }
-        let sql = format!(
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
             "
             SELECT path, filename, extension, file_size, modified_secs, width, height, metadata_status
             FROM images
             WHERE folder_path = ?1
-            "
-        );
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare(&sql)?;
+            ",
+        )?;
         let rows = stmt.query_map(params![path_to_string(folder)], indexed_image_from_row)?;
         let mut rows: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
         sort_indexed(&mut rows, sort_order, &self.dimensions);
@@ -1470,15 +1468,13 @@ mod tests {
     fn every_listing_path_sorts_the_same_way() {
         use crate::model::library::{insert_in_order, sort_raw_entries, RawImageEntry};
         use crate::model::ImageEntry;
-        let dir = std::env::temp_dir().join(format!(
-            "sharpr-sort-{}-{}",
-            std::process::id(),
-            now_secs()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("sharpr-sort-{}-{}", std::process::id(), now_secs()));
         std::fs::create_dir_all(&dir).unwrap();
         // Name, size (None: unreadable), modified time. Ties on every key:
         // names equal but for case, equal times and sizes, non-ASCII case.
-        let files: [(&str, Option<(u32, u32)>, Option<i64>); 7] = [
+        type File<'a> = (&'a str, Option<(u32, u32)>, Option<i64>);
+        let files: [File; 7] = [
             ("b.jpg", Some((100, 200)), Some(100)),
             ("a.png", Some((200, 100)), Some(100)),
             ("A.png", Some((200, 100)), Some(100)),
@@ -1509,8 +1505,9 @@ mod tests {
                 path,
                 filename: name.to_string(),
                 file_size: 10,
-                modified: mtime
-                    .map(|secs| std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64)),
+                modified: mtime.map(|secs| {
+                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64)
+                }),
                 width,
                 height,
             });

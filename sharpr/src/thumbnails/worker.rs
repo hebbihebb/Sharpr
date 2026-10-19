@@ -243,89 +243,84 @@ fn run_worker(
     gen_arc: Arc<AtomicU64>,
     pending_paths: Arc<Mutex<HashSet<PathBuf>>>,
 ) {
-    loop {
-        match request_rx.recv_blocking() {
-            Ok(WorkerRequest::Thumbnail { mut path, mut gen }) => {
-                // Skip stale requests immediately — no decode needed.
-                if gen != gen_arc.load(Ordering::Relaxed) {
-                    // Aggressively drain other stale requests from the channel
-                    // to prevent "loading stops" behavior during rapid folder switching.
-                    let drained = match pending_paths.lock() {
-                        Ok(mut pending) => {
-                            pending.remove(&path);
-                            drain_stale(&request_rx, &gen_arc, &mut pending)
-                        }
-                        Err(_) => Drained::Empty,
-                    };
-                    match drained {
-                        Drained::Fresh(p, g) => {
-                            path = p;
-                            gen = g;
-                        }
-                        Drained::Empty => continue,
-                        Drained::Shutdown => break,
-                    }
+    // A shutdown request or a closed queue ends the loop.
+    while let Ok(WorkerRequest::Thumbnail { mut path, mut gen }) = request_rx.recv_blocking() {
+        // Skip stale requests immediately — no decode needed.
+        if gen != gen_arc.load(Ordering::Relaxed) {
+            // Aggressively drain other stale requests from the channel
+            // to prevent "loading stops" behavior during rapid folder switching.
+            let drained = match pending_paths.lock() {
+                Ok(mut pending) => {
+                    pending.remove(&path);
+                    drain_stale(&request_rx, &gen_arc, &mut pending)
                 }
+                Err(_) => Drained::Empty,
+            };
+            match drained {
+                Drained::Fresh(p, g) => {
+                    path = p;
+                    gen = g;
+                }
+                Drained::Empty => continue,
+                Drained::Shutdown => break,
+            }
+        }
+        crate::bench_event!(
+            "thumbnail.start",
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "pool": pool,
+                "gen": gen,
+            }),
+        );
+        if let Some(result) = generate_thumbnail(&path) {
+            if gen != gen_arc.load(Ordering::Relaxed) {
                 crate::bench_event!(
-                    "thumbnail.start",
+                    "thumbnail.stale_result",
                     serde_json::json!({
                         "path": path.display().to_string(),
                         "pool": pool,
                         "gen": gen,
+                        "duration_ms": result.worker_ms,
                     }),
                 );
-                if let Some(result) = generate_thumbnail(&path) {
-                    if gen != gen_arc.load(Ordering::Relaxed) {
-                        crate::bench_event!(
-                            "thumbnail.stale_result",
-                            serde_json::json!({
-                                "path": path.display().to_string(),
-                                "pool": pool,
-                                "gen": gen,
-                                "duration_ms": result.worker_ms,
-                            }),
-                        );
-                        if let Ok(mut pending) = pending_paths.lock() {
-                            pending.remove(&path);
-                        }
-                        continue;
-                    }
-                    crate::bench_event!(
-                        "thumbnail.finish",
-                        serde_json::json!({
-                            "path": path.display().to_string(),
-                            "pool": pool,
-                            "gen": gen,
-                            "source": result.source,
-                            "width": result.width,
-                            "height": result.height,
-                            "duration_ms": result.worker_ms,
-                        }),
-                    );
-                    let sharpness = maybe_score_sharpness(&path, &result, &db);
-                    let _ =
-                        result_tx.send_blocking(ThumbnailWorkerResponse::Success { result, gen });
-                    if let Some(sr) = sharpness {
-                        let _ = sharpness_tx.send_blocking(sr);
-                    }
-                } else {
-                    crate::bench_warn!(
-                        "thumbnail.fail",
-                        serde_json::json!({
-                            "path": path.display().to_string(),
-                            "pool": pool,
-                            "gen": gen,
-                            "error": "decode_failed",
-                        }),
-                    );
-                    report_failure(&result_tx, &gen_arc, &path, gen, pool);
-                }
-
                 if let Ok(mut pending) = pending_paths.lock() {
                     pending.remove(&path);
                 }
+                continue;
             }
-            Ok(WorkerRequest::Shutdown) | Err(_) => break,
+            crate::bench_event!(
+                "thumbnail.finish",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "pool": pool,
+                    "gen": gen,
+                    "source": result.source,
+                    "width": result.width,
+                    "height": result.height,
+                    "duration_ms": result.worker_ms,
+                }),
+            );
+            let sharpness = maybe_score_sharpness(&path, &result, &db);
+            let _ = result_tx.send_blocking(ThumbnailWorkerResponse::Success { result, gen });
+            if let Some(sr) = sharpness {
+                let _ = sharpness_tx.send_blocking(sr);
+            }
+        } else {
+            crate::bench_warn!(
+                "thumbnail.fail",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "pool": pool,
+                    "gen": gen,
+                    "error": "decode_failed",
+                }),
+            );
+            report_failure(&result_tx, &gen_arc, &path, gen, pool);
+        }
+
+        if let Ok(mut pending) = pending_paths.lock() {
+            pending.remove(&path);
         }
     }
 }
