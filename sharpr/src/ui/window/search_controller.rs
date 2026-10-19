@@ -35,8 +35,9 @@ pub(super) enum VisualSummary {
 /// without ranking again, so results already shown never move while
 /// indexing adds vectors. A new query replaces it.
 struct RankedSnapshot {
-    /// The browse session and the search box's text it answers.
-    key: (u64, String),
+    /// The browse session, the search box's text and the sort order it
+    /// answers.
+    key: (u64, String, crate::model::library::SortOrder),
     by_name: Vec<PathBuf>,
     /// Visual results, closest first, without the file-name matches.
     visual: Vec<PathBuf>,
@@ -821,7 +822,8 @@ impl SharprWindow {
                     if superseded() {
                         return Err("Search superseded".into());
                     }
-                    let snapshot_key = (session, snapshot_query);
+                    // The sort order is part of the key: a new order sorts again.
+                    let snapshot_key = (session, snapshot_query, order);
                     if extend {
                         if let Some(snapshot) = &cache.ranked {
                             if snapshot.key == snapshot_key {
@@ -976,6 +978,20 @@ impl SharprWindow {
                         Some(map) => map,
                         None => index.cached_fingerprints().map_err(|e| e.to_string())?,
                     };
+                    // Sorted first, so equally close images follow the order.
+                    let mut order_of: Vec<(crate::model::library::RawImageEntry, (u64, i64))> =
+                        raw.into_iter().zip(stamps).collect();
+                    {
+                        let mut entries: Vec<_> = order_of.iter().map(|(e, _)| e.clone()).collect();
+                        crate::model::library::sort_raw_entries(&mut entries, order);
+                        let rank_of: std::collections::HashMap<PathBuf, usize> = entries
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, e)| (e.path, i))
+                            .collect();
+                        order_of.sort_by_key(|(e, _)| rank_of[&e.path]);
+                    }
+                    let (raw, stamps): (Vec<_>, Vec<_>) = order_of.into_iter().unzip();
                     let mut by_name = Vec::new();
                     let mut candidates = Vec::with_capacity(raw.len());
                     for (entry, stamp) in raw.into_iter().zip(stamps) {
@@ -1326,7 +1342,7 @@ mod tests {
     #[test]
     fn show_more_extends_one_ranking_without_reordering() {
         let snapshot = RankedSnapshot {
-            key: (1, "tower".into()),
+            key: (1, "tower".into(), crate::model::library::SortOrder::NameAsc),
             by_name: vec![PathBuf::from("/l/tower-notes.jpg")],
             visual: (0..5)
                 .map(|i| PathBuf::from(format!("/l/{i}.jpg")))

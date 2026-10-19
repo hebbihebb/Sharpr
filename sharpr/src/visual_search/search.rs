@@ -136,7 +136,9 @@ pub struct Ranked {
     pub strength: Option<Strength>,
 }
 
-/// Ranks `candidates`, each with its current fingerprint if known.
+/// Ranks `candidates`, each with its current fingerprint if known, closest
+/// first. Equally close candidates (identical copies share a vector) keep
+/// the order they came in, so callers pass them in the chosen sort order.
 pub fn rank(candidates: &[(PathBuf, Option<String>)], prepared: &Prepared) -> Ranked {
     let mut scored: Vec<(f32, &PathBuf, &Vec<f32>)> = candidates
         .iter()
@@ -146,7 +148,8 @@ pub fn rank(candidates: &[(PathBuf, Option<String>)], prepared: &Prepared) -> Ra
         })
         .collect();
     let indexed = scored.len();
-    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+    // A stable sort: ties stay in candidate order.
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     let specific: Vec<f32> = scored
         .iter()
         .map(|(_, _, vector)| similarity(&prepared.specific, vector))
@@ -462,12 +465,13 @@ mod tests {
         assert_eq!(
             ranked.paths,
             vec![
-                PathBuf::from("/a/copy-of-near.jpg"),
                 PathBuf::from("/a/near.jpg"),
+                PathBuf::from("/a/copy-of-near.jpg"),
                 PathBuf::from("/a/mid.jpg"),
                 PathBuf::from("/a/far.jpg"),
             ],
-            "closest first; an image outside the candidates never appears"
+            "closest first, equally close ones in candidate (sort) order; an image \
+             outside the candidates never appears"
         );
         assert_eq!((ranked.indexed, ranked.eligible), (4, 6));
         assert_eq!(ranked.strength, None, "too few images to judge");
