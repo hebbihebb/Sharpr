@@ -805,11 +805,11 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 29 | Similar-image count in Info (user, October 19), the companion to item 28: the Info panel says how many similar images or close matches the image has (for example "38 similar images"), and clicking it shows them through item 28's similarity search. Replaces the earlier "short image descriptions" idea, which conflicted with "No generated tags". Do it after item 28 | Sonnet medium |
 | 30 | Bug (user, October 19): AVIF (and HEIC) images show no filmstrip thumbnail, though they open normally in the viewer. The thumbnail worker decodes with the `image` crate, which reads neither; the viewer uses glycin, which does. Decode these formats with glycin in `generate_thumbnail`, bounded like the rest, extending the worker rather than rewriting it | Sonnet high |
 
-Audit fix candidate `codex/audit-0.5.0-2`: A01–A09 agreed by the user.
-Cleanup now retains uncertain members, legacy upgrades preserve unconverted
-membership, search keeps all strong matches together, Preferences retains
-switch focus, and retired hash values stay untouched. Fixes are committed;
-acceptance and merge are pending. Verification is in `CURRENT_TASKS.md`.
+Audit fixes `codex/audit-0.5.0-2` (A01–A09): **Done October 19, 2026**,
+accepted by the user and merged. Cleanup now retains uncertain members, legacy
+upgrades preserve unconverted membership, search keeps all strong matches
+together, Preferences retains switch focus, and retired hash values stay
+untouched. Verification is in `CURRENT_TASKS.md`.
 
 ## Item Briefs
 
