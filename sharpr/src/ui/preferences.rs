@@ -1,13 +1,14 @@
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
-use crate::config::AppSettings;
 use crate::ui::window::SharprWindow;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
-pub fn build_preferences_dialog(
-    settings: &AppSettings,
-    parent: &SharprWindow,
-) -> libadwaita::PreferencesDialog {
+pub fn build_preferences_dialog(parent: &SharprWindow) -> libadwaita::PreferencesDialog {
     let dialog = libadwaita::PreferencesDialog::new();
     dialog.set_title("Preferences");
     dialog.add_css_class("sharpr-sheet");
@@ -17,33 +18,51 @@ pub fn build_preferences_dialog(
     library_page.set_icon_name(Some("folder-symbolic"));
 
     let library_group = libadwaita::PreferencesGroup::new();
-    library_group.set_title("Library");
-    let root_row = libadwaita::ActionRow::new();
-    show_roots(&root_row, &settings.library_roots());
-    let choose = gtk4::Button::with_label("Choose…");
-    choose.set_valign(gtk4::Align::Center);
-    choose.set_tooltip_text(Some("Change the first library root"));
-    choose.set_action_name(Some("win.choose-library-root"));
-    root_row.add_suffix(&choose);
-    root_row.set_activatable_widget(Some(&choose));
+    library_group.set_title("Library Roots");
+    library_group.set_description(Some(
+        "Browse these folders and all their subfolders. Turning a root off or \
+         removing it never touches its files.",
+    ));
     let add = gtk4::Button::with_label("Add…");
+    add.add_css_class("flat");
     add.set_valign(gtk4::Align::Center);
     add.set_tooltip_text(Some("Add another library root"));
     add.set_action_name(Some("win.add-library-root"));
-    root_row.add_suffix(&add);
-    library_group.add(&root_row);
-    library_group.set_description(Some(
-        "Browse these folders and all their subfolders. Disabled folders stay excluded.",
-    ));
+    library_group.set_header_suffix(Some(&add));
     library_page.add(&library_group);
-    let weak_row = root_row.downgrade();
-    let weak_parent = parent.downgrade();
+    // One row per root, rebuilt when the roots or their on/off state change.
+    let rows: Rc<RefCell<Vec<libadwaita::ActionRow>>> = Rc::default();
+    let shown: Rc<RefCell<Option<RootsShown>>> = Rc::default();
+    let refresh = {
+        let group = library_group.downgrade();
+        let parent = parent.downgrade();
+        move || {
+            let (Some(group), Some(parent)) = (group.upgrade(), parent.upgrade()) else {
+                return false;
+            };
+            let now = roots_shown(&parent);
+            if shown.borrow().as_ref() == Some(&now) {
+                return true;
+            }
+            for row in rows.borrow_mut().drain(..) {
+                group.remove(&row);
+            }
+            for (index, (root, enabled)) in now.iter().enumerate() {
+                let row = root_row(&parent, root, *enabled, index == 0, now.len() > 1);
+                group.add(&row);
+                rows.borrow_mut().push(row);
+            }
+            *shown.borrow_mut() = Some(now);
+            true
+        }
+    };
+    refresh();
     gtk4::glib::timeout_add_seconds_local(1, move || {
-        let (Some(row), Some(parent)) = (weak_row.upgrade(), weak_parent.upgrade()) else {
-            return gtk4::glib::ControlFlow::Break;
-        };
-        show_roots(&row, &parent.app_state().borrow().settings.library_roots());
-        gtk4::glib::ControlFlow::Continue
+        if refresh() {
+            gtk4::glib::ControlFlow::Continue
+        } else {
+            gtk4::glib::ControlFlow::Break
+        }
     });
 
     library_page.add(&build_visual_search_group(parent));
@@ -120,13 +139,74 @@ fn gpu_subtitle() -> String {
     }
 }
 
-/// One root per subtitle line, first first (D41).
-fn show_roots(row: &libadwaita::ActionRow, roots: &[std::path::PathBuf]) {
-    row.set_title(if roots.len() > 1 {
-        "Library Roots"
-    } else {
-        "Library Root"
+/// Each root of the active library, first first, and whether it is on.
+type RootsShown = Vec<(PathBuf, bool)>;
+
+fn roots_shown(parent: &SharprWindow) -> RootsShown {
+    let state = parent.app_state();
+    let state = state.borrow();
+    state
+        .settings
+        .library_roots()
+        .into_iter()
+        .map(|root| {
+            let off = state.disabled_folders.iter().any(|d| root.starts_with(d));
+            (root, !off)
+        })
+        .collect()
+}
+
+/// A root's row: its name and path, a switch that turns it off and on as
+/// "Disable Folder" in the sidebar does, "Choose…" on the first root and
+/// "Remove" while another root remains (D41).
+fn root_row(
+    parent: &SharprWindow,
+    root: &Path,
+    enabled: bool,
+    first: bool,
+    removable: bool,
+) -> libadwaita::ActionRow {
+    let row = libadwaita::ActionRow::new();
+    row.set_title(
+        &root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.display().to_string()),
+    );
+    row.set_subtitle(&root.display().to_string());
+    if first {
+        let choose = gtk4::Button::with_label("Choose…");
+        choose.add_css_class("flat");
+        choose.set_valign(gtk4::Align::Center);
+        choose.set_tooltip_text(Some("Change the first library root"));
+        choose.set_action_name(Some("win.choose-library-root"));
+        row.add_suffix(&choose);
+    }
+    if removable {
+        let remove = gtk4::Button::with_label("Remove");
+        remove.add_css_class("flat");
+        remove.set_valign(gtk4::Align::Center);
+        remove.set_tooltip_text(Some("Forget this root; its files are untouched"));
+        remove.set_action_name(Some("win.remove-library-root"));
+        remove.set_action_target_value(Some(&root.to_string_lossy().to_variant()));
+        row.add_suffix(&remove);
+    }
+    let switch = gtk4::Switch::new();
+    switch.set_active(enabled);
+    switch.set_valign(gtk4::Align::Center);
+    switch.set_tooltip_text(Some("Include this root in the library"));
+    let parent = parent.downgrade();
+    let root = root.to_path_buf();
+    switch.connect_active_notify(move |switch| {
+        let Some(parent) = parent.upgrade() else {
+            return;
+        };
+        let sidebar = parent.imp().sidebar.borrow().clone();
+        if let Some(sidebar) = sidebar {
+            sidebar.change_folder_ignored(root.clone(), !switch.is_active());
+        }
     });
-    let shown: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
-    row.set_subtitle(&shown.join("\n"));
+    row.add_suffix(&switch);
+    row.set_activatable_widget(Some(&switch));
+    row
 }

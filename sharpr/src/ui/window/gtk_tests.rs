@@ -2910,7 +2910,7 @@ fn preferences_and_shortcuts_share_the_main_window() {
             // checking a class that might not reach the dialog's contents.
             let label = find_widgets::<gtk4::Label>(prefs.upcast_ref())
                 .into_iter()
-                .find(|l| l.text() == "Library Root")
+                .find(|l| l.text() == "Library Roots")
                 .unwrap();
             assert!(label
                 .pango_context()
@@ -3765,7 +3765,12 @@ fn one_root_preserves_library_identity_members_fingerprints_and_vectors() {
     gio::prelude::ActionGroupExt::activate_action(&window, "show-preferences", None);
     pump_until(|| window.visible_dialog().is_some());
     let rows = find_widgets::<libadwaita::ActionRow>(window.visible_dialog().unwrap().upcast_ref());
-    assert!(rows.iter().any(|row| row.title() == "Library Root"));
+    // The root is listed on its own row, with its switch on.
+    assert!(rows.iter().any(|row| {
+        find_widgets::<gtk4::Switch>(row.upcast_ref())
+            .first()
+            .is_some_and(|switch| switch.is_active())
+    }));
     assert!(!rows.iter().any(|row| matches!(
         row.title().as_str(),
         "Add Library" | "Export Buckets" | "Import Buckets"
@@ -5168,13 +5173,58 @@ fn a_second_root_is_listed_below_the_first_and_removing_it_only_forgets_it() {
         state.scope == ViewScope::Folder(downloads.clone()) && state.library.image_count() == 1
     });
 
-    // Removing it only forgets it.
-    gtk4::prelude::ActionGroupExt::activate_action(
-        &window,
-        "remove-library-root",
-        Some(&downloads.to_string_lossy().to_variant()),
+    // Preferences lists each root; its switch turns it off and on as
+    // "Disable Folder" does, and Remove forgets it (user, October 19).
+    gtk4::prelude::ActionGroupExt::activate_action(&window, "show-preferences", None);
+    pump_until(|| window.visible_dialog().is_some());
+    let dialog: gtk4::Widget = window.visible_dialog().unwrap().upcast();
+    let root_row = |title: &str| {
+        find_widgets::<libadwaita::ActionRow>(&dialog)
+            .into_iter()
+            .find(|row| row.title() == title)
+    };
+    pump_until(|| root_row("Pictures").is_some() && root_row("Downloads").is_some());
+    assert!(
+        find_widgets::<gtk4::Button>(root_row("Downloads").unwrap().upcast_ref())
+            .iter()
+            .any(|b| b.label().as_deref() == Some("Remove")),
+        "a root is removable while another remains"
     );
+    let disabled = || {
+        window
+            .app_state()
+            .borrow()
+            .disabled_folders
+            .contains(&downloads)
+    };
+    let switch = || {
+        find_widgets::<gtk4::Switch>(root_row("Downloads").unwrap().upcast_ref())
+            .pop()
+            .unwrap()
+    };
+    assert!(switch().is_active());
+    switch().set_active(false);
+    pump_until(disabled);
+    switch().set_active(true);
+    pump_until(|| !disabled());
+
+    // Removing it only forgets it.
+    find_widgets::<gtk4::Button>(root_row("Downloads").unwrap().upcast_ref())
+        .into_iter()
+        .find(|b| b.label().as_deref() == Some("Remove"))
+        .unwrap()
+        .emit_clicked();
     pump_until(|| rows() == vec![pictures.clone(), pictures.join("Art")]);
+    pump_until(|| root_row("Downloads").is_none());
+    assert!(
+        !find_widgets::<gtk4::Button>(root_row("Pictures").unwrap().upcast_ref())
+            .iter()
+            .any(|b| b.label().as_deref() == Some("Remove")),
+        "the last root has no Remove"
+    );
+    if let Some(dialog) = window.visible_dialog() {
+        dialog.force_close();
+    }
     assert!(downloads.join("c.png").is_file(), "files are untouched");
     assert_eq!(AppSettings::load().library_roots(), vec![pictures.clone()]);
     assert_eq!(

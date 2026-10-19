@@ -1896,7 +1896,7 @@ impl SharprWindow {
         *self.imp().presentation_inner_split.borrow_mut() = Some(inner_split.clone());
         *self.imp().presentation_header.borrow_mut() = Some(viewer_header.clone());
 
-        self.setup_actions(&viewer, state.clone());
+        self.setup_actions(&viewer);
         filmstrip.attach_viewer_menu(&viewer);
 
         let viewer_toolbar = libadwaita::ToolbarView::new();
@@ -3244,7 +3244,7 @@ impl SharprWindow {
         btn
     }
 
-    fn setup_actions(&self, viewer: &ViewerPane, state: Rc<RefCell<AppState>>) {
+    fn setup_actions(&self, viewer: &ViewerPane) {
         let w = self.downgrade();
         let toggle_presentation_action = gio::SimpleAction::new("toggle-presentation", None);
         toggle_presentation_action.connect_activate(move |_, _| {
@@ -3330,13 +3330,11 @@ impl SharprWindow {
         let pref_action = gio::SimpleAction::new("show-preferences", None);
         {
             let window_weak = self.downgrade();
-            let state_c = state.clone();
             pref_action.connect_activate(move |_, _| {
                 let Some(window) = window_weak.upgrade() else {
                     return;
                 };
-                let settings = state_c.borrow().settings.clone();
-                let prefs = build_preferences_dialog(&settings, &window);
+                let prefs = build_preferences_dialog(&window);
                 prefs.present(Some(&window));
             });
         }

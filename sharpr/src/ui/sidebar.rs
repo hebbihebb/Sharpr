@@ -674,6 +674,13 @@ impl SidebarPane {
         }
     }
 
+    /// Disables or enables a folder as its row's menu does, from elsewhere
+    /// (Preferences lists the roots).
+    pub fn change_folder_ignored(&self, path: PathBuf, ignored: bool) {
+        self.set_folder_ignored(&path, ignored);
+        self.emit_folder_ignored_changed(path, ignored);
+    }
+
     fn emit_folder_ignored_changed(&self, path: PathBuf, ignored: bool) {
         if let Some(cb) = self.imp().folder_ignored_changed_cb.borrow().as_ref() {
             cb(path, ignored);
