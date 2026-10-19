@@ -1,6 +1,6 @@
 # Current Tasks
 
-## Awaiting acceptance: Compare layout redesign (Work Order item 33, D45)
+## Accepted: Compare layout redesign (Work Order item 33, D45)
 
 Branch `feature/compare-layout`, the first screen built on `design.md`
 (D46). Captions in the outer canvas corners (filename; resolution, format,
@@ -16,7 +16,8 @@ no key-hints line. New tokens in `style.css` (`--sharpr-osd-*`,
 (new), `compare_narrows_five_images_to_one` (halves, L/R/Enter, strip
 hidden at two, last-image line, screenshots of each mode with five and two
 images at 1024 and 1600, high contrast checked). `./check.sh` (323) and all
-42 GTK tests pass off screen.
+42 GTK tests pass off screen. Deployed as `a4ff062`; accepted by the user
+October 19 and merged to `main`.
 
 ## Accepted: close-images count in Info (Work Order item 29)
 
