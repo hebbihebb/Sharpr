@@ -1,6 +1,6 @@
 # Current Tasks
 
-## Active: Show Similar (Work Order item 28, D44)
+## Accepted: Show Similar (Work Order item 28, D44)
 
 Branch `feature/show-similar`. First version (`4a9e574`) cut at fixed scores
 and always searched the whole library; the user found it listed only copies
@@ -21,6 +21,7 @@ and always searched the whole library; the user found it listed only copies
   out); GTK test of folder scope, the three levels, the Whole library box,
   chip removal and unchanged files. Show More isn't covered by a test (needs
   more than 200 images).
+- Deployed as `cdd57bd`; accepted by the user October 19 and merged to `main`.
 
 ## Accepted: Compare zoom floor and AVIF/HEIC Crop Copy (Work Order items 35, 34)
 
