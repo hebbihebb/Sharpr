@@ -90,6 +90,15 @@ Ask for an independent review only when the risk justifies it (user data, concur
 
 Hand back a working candidate, not homework: the evidence (what passed, failed or was not tested), a short explanation, and one sentence on what the user should try by hand. Ask the user only for decisions: design choices, usability, and acceptance. Before handing work back, always run `cargo build` in `sharpr/`. The desktop launcher runs an installed release build of one commit (`~/.local/opt/sharpr/current`), so a `cargo build` in the checkout does not change what the user launches. Deploying means running `tools/install-native-launcher.py` on a committed candidate. Standing approval (user, October 18, 2026): deploy without asking when Sharpr is not running (`pgrep -x sharpr` finds nothing); if it is running, ask first, because the user may be mid-session.
 
+## Shell on This Machine
+
+- `cp`, `mv`, and `rm` are interactive aliases, which silently do nothing without a terminal. Write `command cp -f`, `command mv -f`, and `command rm -f`.
+- There is no `sqlite3` command and no numpy. Use Python's built-in `sqlite3` module.
+- Never `pkill -f` or `pgrep -f` a pattern that appears in your own command line, or it kills your own shell. Use `pkill -x <name>`, or bracket a letter (`pkill -f '[l]lama-server'`).
+- `cargo` and `./check.sh` run from `sharpr/`. After a `cd`, prefer absolute paths.
+- `git branch -d` compares a pushed branch with its remote copy and refuses when that copy is behind. Confirm `git merge-base --is-ancestor <branch> main`, then use `git branch -D`. Remove a worktree from outside it.
+- End optional probes (`ls`, `which`) with `|| true`, so a miss does not mark the whole command failed.
+
 ## Documentation
 
 - `CURRENT_TASKS.md`: update it at every checkpoint. Keep it under one page.
