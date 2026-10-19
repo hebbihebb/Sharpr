@@ -1,17 +1,22 @@
-//! The virtualized candidate row and its visible-thumbnail requests (D29).
+//! The virtualized candidate row and its visible-thumbnail requests (D29),
+//! centred under the images with the remaining count beside it (D45).
+//! Hovering or focusing a thumbnail shows its L and R halves, which send it
+//! to that side; there is no standing Replace target.
 use super::*;
 use crate::model::ImageEntry;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+/// A thumbnail row's width: the 96 px picture, the card's 4 px padding and
+/// 1 px border, and the row's 2 px padding (`style.css`).
+const ROW_WIDTH: i32 = 96 + 2 * (4 + 1 + 2);
+
 pub(crate) struct CandidateStrip {
     pub root: gtk4::Box,
     pub list: gtk4::ListView,
     pub store: gtk4::gio::ListStore,
     pub scroll: gtk4::ScrolledWindow,
-    pub replace: [gtk4::ToggleButton; 2],
-    pub target: Cell<Side>,
     entries: RefCell<Vec<(usize, PathBuf)>>,
     rows: RefCell<Vec<glib::WeakRef<gtk4::ListItem>>>,
     textures: RefCell<HashMap<PathBuf, gdk4::Texture>>,
@@ -28,17 +33,14 @@ impl Default for CandidateStrip {
         let selection = gtk4::NoSelection::new(Some(store.clone()));
         let list = gtk4::ListView::new(Some(selection), None::<gtk4::ListItemFactory>);
         list.set_orientation(gtk4::Orientation::Horizontal);
-        list.set_single_click_activate(true);
+        // Only the halves act on a click; Enter (or a double-click) sends
+        // the thumbnail to the right, as the old default target did.
+        list.set_single_click_activate(false);
         Self {
             root: gtk4::Box::new(gtk4::Orientation::Horizontal, 12),
             list,
             store,
             scroll: gtk4::ScrolledWindow::new(),
-            replace: [
-                gtk4::ToggleButton::with_label("Left"),
-                gtk4::ToggleButton::with_label("Right"),
-            ],
-            target: Cell::new(Side::Right),
             entries: RefCell::new(Vec::new()),
             rows: RefCell::new(Vec::new()),
             textures: RefCell::new(HashMap::new()),
@@ -58,38 +60,18 @@ impl CandidateStrip {
         self.root.set_margin_end(12);
         self.root.set_margin_top(4);
         self.root.set_margin_bottom(4);
-        let controls = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-        controls.set_valign(gtk4::Align::Center);
-        controls.append(&gtk4::Label::new(Some("Replace")));
-        let targets = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-        targets.add_css_class("linked");
-        self.replace[1].set_group(Some(&self.replace[0]));
-        for (button, side) in self.replace.iter().zip([Side::Left, Side::Right]) {
-            button.set_tooltip_text(Some(match side {
-                Side::Left => "Choose a thumbnail to replace the left image",
-                Side::Right => "Choose a thumbnail to replace the right image",
-            }));
-            let weak = page.downgrade();
-            button.connect_toggled(move |button| {
-                if button.is_active() {
-                    if let Some(page) = weak.upgrade() {
-                        page.imp().candidates.target.set(side);
-                    }
-                }
-            });
-            targets.append(button);
-        }
-        controls.append(&targets);
-        counter.add_css_class("caption");
-        counter.add_css_class("dim-label");
-        controls.append(counter);
-        self.root.append(&controls);
+        // Centred under the images; wider than the page, it scrolls.
+        self.root.set_halign(gtk4::Align::Center);
         let scroll = &self.scroll;
         scroll.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Never);
-        scroll.set_hexpand(true);
+        scroll.set_propagate_natural_width(true);
         scroll.set_min_content_height(94);
         scroll.set_child(Some(&self.list));
         self.root.append(scroll);
+        counter.add_css_class("numeric");
+        counter.add_css_class("sharpr-compare-count");
+        counter.set_valign(gtk4::Align::Center);
+        self.root.append(counter);
         self.list
             .update_property(&[gtk4::accessible::Property::Label("Compare candidates")]);
 
@@ -109,6 +91,35 @@ impl CandidateStrip {
             picture.set_can_shrink(true);
             picture.set_content_fit(gtk4::ContentFit::Contain);
             overlay.set_child(Some(&picture));
+            // The halves come before the badge, which `update_row` finds
+            // as the overlay's last child.
+            let halves = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            halves.set_homogeneous(true);
+            halves.add_css_class("compare-halves");
+            for (side, text, tip) in [
+                (Side::Left, "L", "Show on the left (L)"),
+                (Side::Right, "R", "Show on the right (R)"),
+            ] {
+                let half = gtk4::Button::with_label(text);
+                half.add_css_class("flat");
+                half.add_css_class("compare-half");
+                half.set_focusable(false);
+                half.set_tooltip_text(Some(tip));
+                half.update_property(&[gtk4::accessible::Property::Label(tip)]);
+                let page = page.downgrade();
+                let row = item.downgrade();
+                half.connect_clicked(move |_| {
+                    let (Some(page), Some(row)) = (page.upgrade(), row.upgrade()) else {
+                        return;
+                    };
+                    let number = page.imp().candidates.number_at(row.position());
+                    if let Some(number) = number {
+                        page.choose(side, number);
+                    }
+                });
+                halves.append(&half);
+            }
+            overlay.add_overlay(&halves);
             let badge = gtk4::Label::new(None);
             badge.add_css_class("compare-side");
             badge.set_halign(gtk4::Align::End);
@@ -141,14 +152,8 @@ impl CandidateStrip {
         let weak = page.downgrade();
         self.list.connect_activate(move |_, position| {
             let Some(page) = weak.upgrade() else { return };
-            let strip = &page.imp().candidates;
-            let number = strip
-                .entries
-                .borrow()
-                .get(position as usize)
-                .map(|(i, _)| *i);
-            if let Some(number) = number {
-                page.choose(strip.target.get(), number);
+            if let Some(number) = page.imp().candidates.number_at(position) {
+                page.choose(Side::Right, number);
             }
         });
     }
@@ -157,8 +162,6 @@ impl CandidateStrip {
     /// the existing cache/decoder and never changes the filmstrip's scheduler.
     pub fn start(&self, page: &ComparePage) {
         self.clear();
-        self.replace[1].set_active(true);
-        self.target.set(Side::Right);
         let generation = self.generation.load(Ordering::Relaxed);
         let (request_tx, rx) =
             crate::thumbnails::worker::visible_requests(self.generation.clone(), generation);
@@ -222,14 +225,61 @@ impl CandidateStrip {
                 .iter()
                 .map(|(_, path)| ImageEntry::new(path.clone()))
                 .collect();
+            // A list view asks for far more width than its rows; as wide as
+            // the thumbnails, the strip centres, and wider it scrolls.
+            self.scroll
+                .set_max_content_width(ROW_WIDTH * entries.len() as i32);
             *self.entries.borrow_mut() = entries;
             self.store.splice(0, self.store.n_items(), &rows);
             self.visible_dirty.set(true);
         }
-        for button in &self.replace {
-            button.set_sensitive(knockout.remaining() > 1);
-        }
+        // With two left there is nothing to swap in (D45).
+        self.root.set_visible(knockout.remaining() >= 3);
         self.update_rows(page);
+    }
+
+    /// The image number of the row at `position`.
+    fn number_at(&self, position: u32) -> Option<usize> {
+        self.entries
+            .borrow()
+            .get(position as usize)
+            .map(|(number, _)| *number)
+    }
+
+    /// The image number of the thumbnail holding the keyboard focus.
+    pub fn focused_number(&self) -> Option<usize> {
+        let focus = self
+            .list
+            .root()
+            .and_downcast::<gtk4::Window>()
+            .and_then(|window| gtk4::prelude::GtkWindowExt::focus(&window))?;
+        let position = self.rows.borrow().iter().find_map(|weak| {
+            let item = weak.upgrade()?;
+            let row = item.child()?.parent()?;
+            (focus == row || focus.is_ancestor(&row)).then(|| item.position())
+        })?;
+        self.number_at(position)
+    }
+
+    /// The L or R half of the row at `position`, for tests.
+    #[cfg(test)]
+    pub fn half(&self, position: u32, side: Side) -> Option<gtk4::Button> {
+        self.rows.borrow().iter().find_map(|weak| {
+            let item = weak.upgrade()?;
+            if item.position() != position {
+                return None;
+            }
+            let overlay = item
+                .child()?
+                .first_child()
+                .and_downcast::<gtk4::Overlay>()?;
+            let halves = overlay.child()?.next_sibling()?;
+            let half = match side {
+                Side::Left => halves.first_child(),
+                Side::Right => halves.last_child(),
+            };
+            half.and_downcast()
+        })
     }
 
     pub fn has_keyboard_focus(&self) -> bool {

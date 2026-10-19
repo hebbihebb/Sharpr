@@ -52,14 +52,7 @@ impl ImageMetadata {
 
     /// Human-readable file size, e.g. "14.8 MB".
     pub fn file_size_display(&self) -> String {
-        let b = self.file_size_bytes as f64;
-        if b >= 1_000_000.0 {
-            format!("{:.1} MB", b / 1_000_000.0)
-        } else if b >= 1_000.0 {
-            format!("{:.1} KB", b / 1_000.0)
-        } else {
-            format!("{} B", self.file_size_bytes)
-        }
+        file_size_text(self.file_size_bytes)
     }
 
     /// "6016 × 4016" string.
@@ -118,4 +111,16 @@ fn read_dimensions_with_image(path: &Path) -> Option<(u32, u32)> {
         .with_guessed_format()
         .ok()?;
     reader.into_dimensions().ok()
+}
+
+/// A file size for people, e.g. "14.8 MB".
+pub fn file_size_text(bytes: u64) -> String {
+    let b = bytes as f64;
+    if b >= 1_000_000.0 {
+        format!("{:.1} MB", b / 1_000_000.0)
+    } else if b >= 1_000.0 {
+        format!("{:.1} KB", b / 1_000.0)
+    } else {
+        format!("{bytes} B")
+    }
 }

@@ -61,14 +61,15 @@ To find low-resolution images, type `below 4k` (or `<1080p`) in search; `4k` fin
 
 Select two or more images (Ctrl-click, Shift-click, or Ctrl+A), then right-click one and choose **Compare Selected Images**. Compare shows them two at a time, in filmstrip order, and never changes files.
 
-- **Side by Side**, **Split**, and **Flip** change how the pair is shown. In Split, drag the divider. In Flip, **Space** switches between the two; the badge of the hidden image is dimmed. Space also switches to Flip from the other modes.
+- **Side by Side**, **Split**, and **Flip** change how the pair is shown. In Split, drag the divider. In Flip, **Space** switches between the two, and only the shown image's caption appears. Space also switches to Flip from the other modes.
+- Each image's **caption** sits in its outer corner: the filename, then resolution, format and file size. The resolution of the image with more pixels is marked in the accent colour.
 - **Zoom:** scroll to zoom at the pointer, drag to pan, double-click for 100% or back to fit. **Fit** and **100%** do the same from the toolbar.
 - **Linked zoom** (on by default) keeps both images on the same region, even when they have different resolutions, as for a 4K original and its 1080p copy. Turn it off to zoom and pan each side separately in Side by Side.
-- **Choose** from the thumbnail row below the pair. Select Replace Left or Replace Right (Right is the default), then choose a thumbnail. L/R badges identify the pair. Choosing the opposite image swaps sides without dismissing either.
-- **Keep Left** (**←**) or **Keep Right** (**→**) keeps that side and dismisses the other image; the next candidate takes the other's place. These choices never trash files. **Undo** or **Ctrl+Z** brings back the last image dismissed. The footer shows how many images remain.
+- **Choose** from the thumbnail row centred below the pair, which shows while three or more images remain. Hover a thumbnail and click its **L** or **R** half to show it on that side. From the keyboard, Tab into the row, move with the arrow keys, and press **L** or **R**; **Enter** shows it on the right. L/R badges identify the pair, and choosing the opposite image swaps sides without dismissing either. The count beside the row says how many images remain.
+- **Keep Left** (**←**) or **Keep Right** (**→**), on the centre line under the images, keeps that side and dismisses the other image; the next candidate takes the other's place. These choices never trash files. **Undo** or **Ctrl+Z** brings back the last image dismissed. When one image is left, a line says so in place of the Keep buttons.
 - **Done** (or **Escape**) returns to browsing with the images you didn't dismiss selected.
 
-The side panels make way while Compare is open. Delete, Rename (F2), Duplicate (Ctrl+D), and the image menu (Shift+F10) are off, as they are while cropping. An image that can't be read shows an error beside its filename. Search and filter chips make way for the mode controls in the top bar; returning restores them.
+The side panels make way while Compare is open. Delete, Rename (F2), Duplicate (Ctrl+D), and the image menu (Shift+F10) are off, as they are while cropping. An image that can't be read shows its error in its own half of the canvas and can't be kept; the other image still can. Search and filter chips make way for the mode controls in the top bar; returning restores them.
 
 ## Export As WebP
 

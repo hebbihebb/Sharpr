@@ -126,3 +126,11 @@ pub fn thumbnail_feedback(picture: &gtk4::Picture) {
     update(picture);
     picture.connect_paintable_notify(update);
 }
+
+/// A key shown on the control it triggers (`design.md`, "Key cap").
+pub fn keycap(key: &str) -> gtk4::Label {
+    let label = gtk4::Label::new(Some(key));
+    label.add_css_class("sharpr-keycap");
+    label.set_valign(gtk4::Align::Center);
+    label
+}

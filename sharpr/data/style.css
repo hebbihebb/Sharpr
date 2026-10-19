@@ -117,6 +117,20 @@ window.sharpr {
   --sharpr-warning: #f0a83a;
   --sharpr-mono: "JetBrains Mono", "Adwaita Mono", monospace;
   --sharpr-radius: 4px;
+  /* Over images (design.md, Tokens). */
+  --sharpr-osd-bg: rgba(16, 16, 18, 0.84);
+  --sharpr-osd-line: rgba(255, 255, 255, 0.08);
+  /* Text: main, secondary, dim. */
+  --sharpr-text: rgba(255, 255, 255, 0.92);
+  --sharpr-text-2: rgba(255, 255, 255, 0.70);
+  --sharpr-text-3: rgba(255, 255, 255, 0.60);
+  --sharpr-hairline: alpha(currentColor, 0.10);
+  --sharpr-hover: alpha(currentColor, 0.06);
+  --sharpr-press: alpha(currentColor, 0.12);
+  /* The accent is Libadwaita's until it goes (D46); only these change then. */
+  --sharpr-accent: var(--accent-color);
+  --sharpr-accent-bg: var(--accent-bg-color);
+  --sharpr-accent-fg: var(--accent-fg-color);
 }
 
 /* The top row: one flat bar per column, all 42 px, so the hairline below
@@ -349,6 +363,8 @@ window.sharpr scrollbar.sharpr-fast-scroll.vertical slider {
   border: none;
   border-radius: 4px;
 }
+/* Compare (D45): captions in the outer corners, Keep on the centre line,
+   a centred candidate strip whose thumbnails show L and R halves. */
 window.sharpr .compare-candidates listview {
   background: transparent;
 }
@@ -358,17 +374,94 @@ window.sharpr .compare-candidates row {
 window.sharpr .compare-candidate {
   padding: 4px;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: var(--sharpr-radius);
 }
 window.sharpr .compare-candidate.compare-current {
-  border-color: var(--accent-color);
+  border-color: var(--sharpr-accent);
 }
 window.sharpr .compare-side {
   padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--accent-bg-color);
-  color: var(--accent-fg-color);
+  border-radius: var(--sharpr-radius);
+  background: var(--sharpr-accent-bg);
+  color: var(--sharpr-accent-fg);
   font-weight: bold;
+}
+window.sharpr .compare-halves {
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+window.sharpr .compare-candidate:hover .compare-halves,
+window.sharpr .compare-candidates row:focus-within .compare-halves {
+  opacity: 1;
+}
+window.sharpr .compare-half {
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  border-radius: 0;
+  font-family: var(--sharpr-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--sharpr-text);
+  background: alpha(black, 0.35);
+}
+window.sharpr .compare-half:first-child {
+  border-top-left-radius: 3px;
+  border-bottom-left-radius: 3px;
+  box-shadow: inset -1px 0 var(--sharpr-osd-line);
+}
+window.sharpr .compare-half:last-child {
+  border-top-right-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
+window.sharpr .compare-half:hover {
+  background: color-mix(in srgb, var(--sharpr-accent-bg) 70%, transparent);
+  color: var(--sharpr-accent-fg);
+}
+window.sharpr .sharpr-compare-count {
+  font-size: 11px;
+  color: alpha(currentColor, 0.65);
+  margin-left: 4px;
+}
+window.sharpr .sharpr-compare-caption,
+window.sharpr .sharpr-compare-error {
+  padding: 5px 9px;
+  border-radius: var(--sharpr-radius);
+  background-color: var(--sharpr-osd-bg);
+  box-shadow: inset 0 0 0 1px var(--sharpr-osd-line);
+  font-family: var(--sharpr-mono);
+  font-size: 12px;
+  color: var(--sharpr-text);
+}
+window.sharpr .sharpr-compare-caption-resolution,
+window.sharpr .sharpr-compare-caption-details {
+  font-size: 11px;
+  color: var(--sharpr-text-2);
+}
+window.sharpr .sharpr-compare-caption-resolution.marked {
+  color: var(--sharpr-accent);
+  font-weight: 700;
+}
+window.sharpr .sharpr-compare-error {
+  padding: 10px 14px;
+}
+window.sharpr .sharpr-compare-last {
+  font-size: 11px;
+  color: alpha(currentColor, 0.65);
+}
+window.sharpr button.sharpr-compare-keep {
+  min-height: 30px;
+  padding: 2px 14px;
+}
+/* A key on the control it triggers (design.md, Key cap). */
+window.sharpr .sharpr-keycap {
+  font-family: var(--sharpr-mono);
+  font-size: 11px;
+  min-width: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: alpha(currentColor, 0.70);
+  box-shadow: inset 0 0 0 1px alpha(currentColor, 0.25);
 }
 window.sharpr .sharpr-keys {
   font-size: 11px;
@@ -417,3 +510,15 @@ window.sharpr.sharpr-high-contrast .metadata-osd-meta, window.sharpr.sharpr-high
 window.sharpr.sharpr-high-contrast .sharpr-keys { color: inherit; opacity: 1; }
 window.sharpr.sharpr-high-contrast .filmstrip-index-label { box-shadow: inset 0 0 0 1px white; }
 window.sharpr.sharpr-high-contrast .multi-selected { outline-width: 3px; }
+window.sharpr.sharpr-high-contrast .sharpr-compare-caption,
+window.sharpr.sharpr-high-contrast .sharpr-compare-error {
+  background-color: black;
+  box-shadow: inset 0 0 0 1px white;
+}
+window.sharpr.sharpr-high-contrast .sharpr-compare-caption-resolution,
+window.sharpr.sharpr-high-contrast .sharpr-compare-caption-details,
+window.sharpr.sharpr-high-contrast .sharpr-compare-count,
+window.sharpr.sharpr-high-contrast .sharpr-compare-last,
+window.sharpr.sharpr-high-contrast .sharpr-keycap { color: white; }
+window.sharpr.sharpr-high-contrast .sharpr-keycap { box-shadow: inset 0 0 0 1px white; }
+window.sharpr.sharpr-high-contrast .compare-half { background: black; color: white; }

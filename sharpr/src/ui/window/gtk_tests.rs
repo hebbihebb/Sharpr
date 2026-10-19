@@ -1798,20 +1798,49 @@ fn compare_narrows_five_images_to_one() {
         focus.is_ancestor(&page) || focus == *page.upcast_ref::<gtk4::Widget>(),
         "focus is on {focus:?}"
     );
-    // Visible candidate activation changes only the explicit target side.
+    // A thumbnail's halves send it to that side (D45); there is no
+    // standing Replace target.
+    use crate::ui::compare_item::Side;
     let candidates = &page.imp().candidates;
-    assert_eq!(
-        candidates.target.get(),
-        crate::ui::compare_item::Side::Right
-    );
     assert_eq!(candidates.store.n_items(), 5);
-    candidates.list.emit_by_name::<()>("activate", &[&3u32]);
-    pump_until(|| page.imp().shown.borrow()[1].as_ref() == Some(&paths[3]));
+    assert!(candidates.root.is_visible(), "the strip shows with five");
+    let shown = |side: usize| page.imp().shown.borrow()[side].clone();
+    pump_until(|| candidates.half(3, Side::Right).is_some());
+    candidates.half(3, Side::Right).unwrap().emit_clicked();
+    pump_until(|| shown(1).as_ref() == Some(&paths[3]));
     assert_eq!(page.survivors(), paths, "choosing dismisses nobody");
-    candidates.replace[0].set_active(true);
-    candidates.list.emit_by_name::<()>("activate", &[&3u32]);
-    pump_until(|| page.imp().shown.borrow()[0].as_ref() == Some(&paths[3]));
-    assert_eq!(page.imp().shown.borrow()[1].as_ref(), Some(&paths[0]));
+    // Sending the right image to the left swaps the pair.
+    candidates.half(3, Side::Left).unwrap().emit_clicked();
+    pump_until(|| shown(0).as_ref() == Some(&paths[3]));
+    assert_eq!(shown(1).as_ref(), Some(&paths[0]));
+    // Enter on a thumbnail sends it to the right.
+    candidates.list.emit_by_name::<()>("activate", &[&2u32]);
+    pump_until(|| shown(1).as_ref() == Some(&paths[2]));
+    // From the keyboard: L and R send the focused thumbnail to that side;
+    // the arrows still move along the strip.
+    candidates.list.grab_focus();
+    candidates
+        .list
+        .scroll_to(4, gtk4::ListScrollFlags::FOCUS, None);
+    pump_until(|| candidates.focused_number() == Some(4));
+    super::gtk_tests::settle(200);
+    screenshot(
+        &window,
+        &root.parent().unwrap().join("compare-halves-focus.png"),
+    );
+    let none = gdk4::ModifierType::empty();
+    assert_eq!(page.handle_key(gdk4::Key::l, none), glib::Propagation::Stop);
+    pump_until(|| shown(0).as_ref() == Some(&paths[4]));
+    assert_eq!(page.handle_key(gdk4::Key::r, none), glib::Propagation::Stop);
+    pump_until(|| shown(1).as_ref() == Some(&paths[4]));
+    assert_eq!(
+        page.handle_key(gdk4::Key::Left, none),
+        glib::Propagation::Proceed
+    );
+    assert_eq!(page.survivors(), paths, "choosing dismisses nobody");
+    page.choose(Side::Left, 0);
+    page.choose(Side::Right, 1);
+    pump_until(|| shown(0).as_ref() == Some(&paths[0]) && shown(1).as_ref() == Some(&paths[1]));
     // Cold-cache rows acquire actual thumbnails off-thread.
     pump_until(|| {
         find_widgets::<gtk4::Picture>(&candidates.root.clone().upcast())
@@ -1836,6 +1865,18 @@ fn compare_narrows_five_images_to_one() {
                     .unwrap()
                     .join(format!("compare-candidates-{theme}-{width}.png")),
             );
+            // Item 33 (D45): the layout in each mode.
+            for (mode, name) in [(1, "split"), (2, "flip"), (0, "side-by-side")] {
+                page.imp().mode_buttons.borrow()[mode].set_active(true);
+                super::gtk_tests::settle(200);
+                screenshot(
+                    &window,
+                    &root
+                        .parent()
+                        .unwrap()
+                        .join(format!("compare-five-{name}-{theme}-{width}.png")),
+                );
+            }
         }
     }
     let all = page.survivors();
@@ -1855,16 +1896,39 @@ fn compare_narrows_five_images_to_one() {
         "candidate navigation cannot pick a winner"
     );
     page.view().grab_focus();
-    let none = gdk4::ModifierType::empty();
     for key in [
         gdk4::Key::bracketleft,
         gdk4::Key::bracketright,
         gdk4::Key::bracketleft,
-        gdk4::Key::bracketright,
     ] {
         assert_eq!(page.handle_key(key, none), glib::Propagation::Stop);
     }
+    // With two left there is nothing to swap in: the strip makes way.
+    assert_eq!(page.survivors().len(), 2);
+    assert!(!candidates.root.is_visible(), "no strip with two left");
+    assert!(page.imp().keep_bar.is_visible());
+    for (width, height) in [(1024, 600), (1600, 900)] {
+        window.set_default_size(width, height);
+        pump_until(|| window.width() == width && window.height() == height);
+        for (mode, name) in [(1, "split"), (2, "flip"), (0, "side-by-side")] {
+            page.imp().mode_buttons.borrow()[mode].set_active(true);
+            super::gtk_tests::settle(200);
+            screenshot(
+                &window,
+                &root
+                    .parent()
+                    .unwrap()
+                    .join(format!("compare-two-{name}-{width}.png")),
+            );
+        }
+    }
+    window.set_default_size(1024, 600);
+    page.handle_key(gdk4::Key::bracketright, none);
     assert_eq!(page.survivors().len(), 1, "five narrow down to one");
+    assert!(!page.imp().keep_bar.is_visible());
+    assert!(page.imp().last_line.is_visible(), "the last image says so");
+    super::gtk_tests::settle(200);
+    screenshot(&window, &root.parent().unwrap().join("compare-last.png"));
     assert_eq!(
         view.mode(),
         crate::ui::compare_view::Mode::Flip,
@@ -1932,10 +1996,6 @@ fn compare_narrows_five_images_to_one() {
         .ends_with("candidate-0499.png"));
     page.close();
     window.enter_compare_mode(paths.clone());
-    assert_eq!(
-        page.imp().candidates.target.get(),
-        crate::ui::compare_item::Side::Right
-    );
     assert_eq!(page.imp().candidates.store.n_items(), 5);
     super::gtk_tests::settle(200);
     page.close();
@@ -1948,6 +2008,107 @@ fn compare_narrows_five_images_to_one() {
         );
     }
     window.close();
+}
+
+/// Item 33 (D45): each image's caption sits in its outer corner with its
+/// filename, resolution, format and file size, the larger resolution
+/// marked; an image that can't be read shows its error in its own half and
+/// can't be kept, while the other side still can; Flip shows the shown
+/// image's caption only. No file changes.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn compare_shows_captions_and_errors_in_the_image() {
+    use crate::ui::compare_item::Side;
+    let root = isolated_fixture("compare-captions");
+    std::fs::create_dir_all(&root).unwrap();
+    let big = root.join("big.png");
+    let small = root.join("small.png");
+    let broken = root.join("broken.png");
+    image::RgbImage::from_pixel(1600, 1200, image::Rgb([30, 140, 90]))
+        .save(&big)
+        .unwrap();
+    image::RgbImage::from_pixel(800, 600, image::Rgb([140, 30, 90]))
+        .save(&small)
+        .unwrap();
+    std::fs::write(&broken, b"not a picture").unwrap();
+    let paths = vec![big.clone(), small.clone(), broken.clone()];
+    let originals: Vec<_> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let page = crate::ui::compare_page::ComparePage::new();
+    let host = gtk4::Window::new();
+    host.set_default_size(1024, 600);
+    host.set_child(Some(&page));
+    host.present();
+    pump_until(|| page.view().width() > 0);
+    page.start(paths.clone());
+    let captions = &page.imp().captions;
+    pump_until(|| {
+        captions[0].resolution.text() == "1600 × 1200"
+            && captions[1].resolution.text() == "800 × 600"
+    });
+    assert_eq!(captions[0].name.text(), "big.png");
+    assert_eq!(captions[1].name.text(), "small.png");
+    assert!(
+        captions[0].details.text().starts_with(" · PNG · "),
+        "{}",
+        captions[0].details.text()
+    );
+    assert!(
+        captions[0].resolution.has_css_class("marked"),
+        "more pixels"
+    );
+    assert!(!captions[1].resolution.has_css_class("marked"));
+    assert!(captions[0].root.is_visible() && captions[1].root.is_visible());
+    assert_eq!(captions[0].root.halign(), gtk4::Align::Start);
+    assert_eq!(captions[1].root.halign(), gtk4::Align::End);
+    assert!(
+        !captions[0].root.can_target(),
+        "pan and zoom reach the canvas"
+    );
+
+    // The broken file on the right: its error shows in its half, and only
+    // its Keep stands down.
+    page.choose(Side::Right, 2);
+    pump_until(|| page.imp().failed.get()[1]);
+    assert!(captions[1].error.is_visible());
+    assert!(captions[1].error.text().contains("Could not load"));
+    assert_eq!(captions[1].resolution.text(), "Could not load");
+    assert!(!captions[0].error.is_visible());
+    assert!(!page.imp().keep[1].is_sensitive());
+    assert!(page.imp().keep[0].is_sensitive());
+    assert!(
+        !captions[0].resolution.has_css_class("marked"),
+        "nothing to be better than"
+    );
+    let none = gdk4::ModifierType::empty();
+    assert_eq!(
+        page.handle_key(gdk4::Key::Right, none),
+        glib::Propagation::Stop
+    );
+    assert_eq!(page.survivors().len(), 3, "the broken side can't be kept");
+    page.handle_key(gdk4::Key::Left, none);
+    assert_eq!(page.survivors(), vec![big.clone(), small.clone()]);
+    page.undo();
+    pump_until(|| page.imp().failed.get()[1]);
+
+    // Flip: only the shown image's caption and error.
+    page.imp().mode_buttons.borrow()[2].set_active(true);
+    assert!(captions[0].root.is_visible());
+    assert!(!captions[1].root.is_visible() && !captions[1].column.is_visible());
+    page.handle_key(gdk4::Key::space, none);
+    assert!(!captions[0].root.is_visible());
+    assert!(captions[1].root.is_visible() && captions[1].column.is_visible());
+    page.close();
+    host.close();
+    for (path, bytes) in paths.iter().zip(originals) {
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            bytes,
+            "Compare changes no file"
+        );
+    }
 }
 
 /// Item 8: Compare decodes at most one image per side at a time, drops the

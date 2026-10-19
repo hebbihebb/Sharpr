@@ -125,12 +125,6 @@ impl ComparePage {
     /// focus is: arrows keep a side, Space flips, Ctrl+Z undoes, Escape closes.
     /// Brackets remain as unadvertised aliases for the old dismiss controls.
     pub fn handle_key(&self, key: gdk4::Key, modifiers: gdk4::ModifierType) -> glib::Propagation {
-        if self.imp().candidates.has_keyboard_focus()
-            && matches!(key, gdk4::Key::Left | gdk4::Key::Right | gdk4::Key::space)
-        {
-            return glib::Propagation::Proceed;
-        }
-        let view = &self.imp().view;
         let control = modifiers.contains(gdk4::ModifierType::CONTROL_MASK);
         let plain = !modifiers.intersects(
             gdk4::ModifierType::CONTROL_MASK
@@ -139,15 +133,44 @@ impl ComparePage {
                 | gdk4::ModifierType::META_MASK
                 | gdk4::ModifierType::SHIFT_MASK,
         );
+        let candidates = &self.imp().candidates;
+        if candidates.has_keyboard_focus() {
+            // L and R send the focused thumbnail to that side (D45).
+            let side = match key {
+                gdk4::Key::l if plain => Some(Side::Left),
+                gdk4::Key::r if plain => Some(Side::Right),
+                _ => None,
+            };
+            if let Some(side) = side {
+                if let Some(number) = candidates.focused_number() {
+                    self.choose(side, number);
+                }
+                return glib::Propagation::Stop;
+            }
+            if matches!(key, gdk4::Key::Left | gdk4::Key::Right | gdk4::Key::space) {
+                return glib::Propagation::Proceed;
+            }
+        }
+        let view = &self.imp().view;
+        let failed = self.imp().failed.get();
         match key {
-            gdk4::Key::Left if plain => self.keep(Side::Left),
-            gdk4::Key::Right if plain => self.keep(Side::Right),
+            // A side that couldn't be shown can't be kept.
+            gdk4::Key::Left if plain => {
+                if !failed[0] {
+                    self.keep(Side::Left)
+                }
+            }
+            gdk4::Key::Right if plain => {
+                if !failed[1] {
+                    self.keep(Side::Right)
+                }
+            }
             gdk4::Key::space if plain => {
                 if view.mode() != Mode::Flip {
                     self.imp().mode_buttons.borrow()[2].set_active(true);
                 } else {
                     view.flip();
-                    self.update_badges();
+                    self.update_sides();
                 }
             }
             gdk4::Key::bracketleft if plain => self.dismiss(Side::Left),
@@ -188,6 +211,16 @@ impl ComparePage {
         imp.previews.borrow_mut()[side] = None;
         imp.held.borrow_mut()[side] = Held::Preview;
         imp.view.clear_texture(side);
+        let mut failed = imp.failed.get();
+        failed[side] = false;
+        imp.failed.set(failed);
+        let mut sizes = imp.sizes.get();
+        sizes[side] = None;
+        imp.sizes.set(sizes);
+        let caption = &imp.captions[side];
+        caption.error.set_visible(false);
+        imp.keep[side].set_sensitive(true);
+        self.mark_better();
     }
 
     /// Shows the current pair, decoding whichever image is new.
@@ -211,29 +244,31 @@ impl ComparePage {
             "Started with {total} images; choosing a side never changes files"
         )));
         imp.undo.set_sensitive(can_undo);
-        for side in 0..2 {
-            let label = &imp.labels[side];
-            let dismiss = &imp.keep[side];
-            match &pair[side] {
-                Some(path) => {
-                    if imp.shown.borrow()[side].as_ref() != Some(path) {
-                        label.set_text("…");
-                    }
-                    imp.filenames[side]
-                        .set_text(&path.file_name().unwrap_or_default().to_string_lossy());
-                    imp.filenames[side].set_tooltip_text(Some(&path.display().to_string()));
-                    label.set_tooltip_text(Some(&path.display().to_string()));
-                    dismiss.set_visible(pair[1].is_some());
-                    imp.badges[side].set_visible(true);
+        // Two images: the Keep bar; the last one: a line saying so.
+        imp.keep_bar.set_visible(pair[1].is_some());
+        imp.last_line.set_visible(pair[1].is_none());
+        for (side, image) in pair.iter().enumerate() {
+            let caption = &imp.captions[side];
+            if let Some(path) = image {
+                if imp.shown.borrow()[side].as_ref() != Some(path) {
+                    caption.resolution.set_text("…");
+                    caption.details.set_text("");
                 }
-                None => imp.badges[side].set_visible(false),
+                caption
+                    .name
+                    .set_text(&path.file_name().unwrap_or_default().to_string_lossy());
+                let key = if side == 0 { "←" } else { "→" };
+                imp.keep[side].set_tooltip_text(Some(&format!(
+                    "Keep {} and dismiss the other ({key}); no files change",
+                    path.display()
+                )));
             }
-            if imp.shown.borrow()[side] == pair[side] {
+            if imp.shown.borrow()[side] == *image {
                 continue;
             }
-            imp.shown.borrow_mut()[side] = pair[side].clone();
+            imp.shown.borrow_mut()[side] = image.clone();
             self.forget(side);
-            if let Some(path) = pair[side].clone() {
+            if let Some(path) = image.clone() {
                 self.submit(
                     side,
                     Job {
@@ -254,16 +289,45 @@ impl ComparePage {
             }
             imp.mode_buttons.borrow()[2].set_active(true);
         }
-        self.update_badges();
+        self.update_sides();
     }
 
-    /// In Flip mode, the badge of the image not on screen is dimmed.
-    fn update_badges(&self) {
-        let view = &self.imp().view;
-        let shown = usize::from(view.flipped());
-        for (side, badge) in self.imp().badges.iter().enumerate() {
-            let hidden = view.mode() == Mode::Flip && side != shown;
-            badge.set_opacity(if hidden { 0.45 } else { 1.0 });
+    /// Each image on screen shows its caption, and its error in its own
+    /// half; in Flip only the shown image's.
+    fn update_sides(&self) {
+        let imp = self.imp();
+        let view = &imp.view;
+        let flipped = usize::from(view.flipped());
+        let shown = imp.shown.borrow();
+        for (side, caption) in imp.captions.iter().enumerate() {
+            let on_screen = shown[side].is_some() && (view.mode() != Mode::Flip || side == flipped);
+            caption.root.set_visible(on_screen);
+            caption.column.set_visible(on_screen);
+        }
+    }
+
+    /// The side with more pixels has its resolution marked (D45); equal or
+    /// unknown sizes, or a side that couldn't be shown, mark nothing.
+    fn mark_better(&self) {
+        let imp = self.imp();
+        let sizes = imp.sizes.get();
+        let failed = imp.failed.get();
+        let pixels = |side: usize| {
+            sizes[side]
+                .filter(|_| !failed[side])
+                .map(|(w, h)| u64::from(w) * u64::from(h))
+        };
+        let better = match (pixels(0), pixels(1)) {
+            (Some(a), Some(b)) if a > b => Some(0),
+            (Some(a), Some(b)) if b > a => Some(1),
+            _ => None,
+        };
+        for (side, caption) in imp.captions.iter().enumerate() {
+            if better == Some(side) {
+                caption.resolution.add_css_class("marked");
+            } else {
+                caption.resolution.remove_css_class("marked");
+            }
         }
     }
 
@@ -304,18 +368,31 @@ impl ComparePage {
             if imp.epochs.get()[side] != job.epoch {
                 return;
             }
-            if let Some(text) = text {
-                imp.labels[side].set_text(&text);
+            let caption = &imp.captions[side];
+            if let Some((resolution, details, size)) = text {
+                caption.resolution.set_text(&resolution);
+                caption.details.set_text(&details);
+                let mut sizes = imp.sizes.get();
+                sizes[side] = size;
+                imp.sizes.set(sizes);
             }
             match (result, job.tier) {
                 (Ok(decoded), tier) => page.show(side, decoded, tier),
                 (Err(message), Tier::Preview) => {
-                    imp.labels[side].set_text(&message);
+                    caption.resolution.set_text("Could not load");
+                    caption.details.set_text("");
+                    caption.error.set_text(&message);
+                    caption.error.set_visible(true);
                     imp.held.borrow_mut()[side] = Held::Failed;
+                    let mut failed = imp.failed.get();
+                    failed[side] = true;
+                    imp.failed.set(failed);
+                    imp.keep[side].set_sensitive(false);
                 }
                 // The preview stays, and the full image is not asked for again.
                 (Err(_), Tier::Full) => imp.held.borrow_mut()[side] = Held::Failed,
             }
+            page.mark_better();
         });
     }
 
@@ -387,15 +464,22 @@ impl Default for ComparePage {
     }
 }
 
-/// Size and format; the filename above it names the image. The decoded
-/// size stands in when the header can't be read (AVIF and HEIC).
-fn summary(path: &Path, decoded: Option<(u32, u32)>) -> String {
+/// The caption under the filename: the resolution, then format and file
+/// size, and the size to compare. The decoded size stands in when the
+/// header can't be read (AVIF and HEIC).
+fn summary(path: &Path, decoded: Option<(u32, u32)>) -> (String, String, Option<(u32, u32)>) {
     let size = crate::export::oriented_source_dimensions(path)
         .ok()
-        .or(decoded)
+        .or(decoded);
+    let resolution = size
         .map(|(w, h)| format!("{w} × {h}"))
         .unwrap_or_else(|| "size unknown".into());
-    format!("{size} · {}", compare_asset_format(path))
+    let mut details = format!(" · {}", compare_asset_format(path));
+    if let Ok(metadata) = std::fs::metadata(path) {
+        details.push_str(" · ");
+        details.push_str(&crate::metadata::exif::file_size_text(metadata.len()));
+    }
+    (resolution, details, size)
 }
 
 struct DecodedImage {
@@ -469,6 +553,59 @@ pub(crate) mod probe {
     }
 }
 
+/// One image's caption in its outer corner of the canvas (D45), and its
+/// error, centred in its half.
+pub(crate) struct Caption {
+    pub root: gtk4::Box,
+    pub name: gtk4::Label,
+    /// Marked on the side with more pixels.
+    pub resolution: gtk4::Label,
+    pub details: gtk4::Label,
+    /// This side's half of the canvas, holding the error.
+    pub column: gtk4::Box,
+    pub error: gtk4::Label,
+}
+
+impl Default for Caption {
+    fn default() -> Self {
+        let root = gtk4::Box::new(gtk4::Orientation::Vertical, 1);
+        root.add_css_class("sharpr-compare-caption");
+        let name = gtk4::Label::new(None);
+        name.add_css_class("sharpr-compare-caption-name");
+        name.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+        name.set_max_width_chars(36);
+        let resolution = gtk4::Label::new(None);
+        resolution.add_css_class("sharpr-compare-caption-resolution");
+        let details = gtk4::Label::new(None);
+        details.add_css_class("sharpr-compare-caption-details");
+        let line = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        line.append(&resolution);
+        line.append(&details);
+        root.append(&name);
+        root.append(&line);
+        let error = gtk4::Label::new(None);
+        error.add_css_class("sharpr-compare-error");
+        error.set_wrap(true);
+        error.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+        error.set_max_width_chars(48);
+        error.set_justify(gtk4::Justification::Center);
+        error.set_visible(false);
+        let column = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        column.set_hexpand(true);
+        column.set_valign(gtk4::Align::Center);
+        column.set_halign(gtk4::Align::Center);
+        column.append(&error);
+        Self {
+            root,
+            name,
+            resolution,
+            details,
+            column,
+            error,
+        }
+    }
+}
+
 mod imp {
     use super::*;
 
@@ -479,9 +616,17 @@ mod imp {
         pub knockout: RefCell<Option<Knockout>>,
         /// The image each side shows or is loading.
         pub shown: RefCell<[Option<PathBuf>; 2]>,
-        pub labels: [gtk4::Label; 2],
+        /// Per side: the caption in its outer corner, and its error.
+        pub(crate) captions: [Caption; 2],
         pub keep: [gtk4::Button; 2],
-        pub badges: [gtk4::Box; 2],
+        /// Keep Left and Keep Right, mirrored on the centre line.
+        pub keep_bar: gtk4::Box,
+        /// In the Keep bar's place once one image is left.
+        pub last_line: gtk4::Label,
+        /// Per side: the image couldn't be shown, so it can't be kept.
+        pub failed: Cell<[bool; 2]>,
+        /// Per side: the image's size, to mark the larger.
+        pub sizes: Cell<[Option<(u32, u32)>; 2]>,
         pub counter: gtk4::Label,
         pub undo: gtk4::Button,
         pub mode_buttons: RefCell<Vec<gtk4::ToggleButton>>,
@@ -496,7 +641,6 @@ mod imp {
         /// Per side: the screen-sized preview, kept to return to.
         pub previews: RefCell<[Option<gdk4::Texture>; 2]>,
         pub(crate) candidates: CandidateStrip,
-        pub filenames: [gtk4::Label; 2],
     }
 
     impl Default for ComparePage {
@@ -507,15 +651,12 @@ mod imp {
                 view: CompareView::default(),
                 knockout: RefCell::new(None),
                 shown: RefCell::new([None, None]),
-                labels: [gtk4::Label::new(None), gtk4::Label::new(None)],
-                keep: [
-                    gtk4::Button::with_label("Keep Left"),
-                    gtk4::Button::with_label("Keep Right"),
-                ],
-                badges: [
-                    gtk4::Box::new(gtk4::Orientation::Vertical, 3),
-                    gtk4::Box::new(gtk4::Orientation::Vertical, 3),
-                ],
+                captions: Default::default(),
+                keep: [gtk4::Button::new(), gtk4::Button::new()],
+                keep_bar: gtk4::Box::new(gtk4::Orientation::Horizontal, 0),
+                last_line: gtk4::Label::new(Some("Last image left · Done (Esc) keeps it selected")),
+                failed: Cell::new([false; 2]),
+                sizes: Cell::new([None; 2]),
                 counter: gtk4::Label::new(None),
                 undo: gtk4::Button::from_icon_name("edit-undo-symbolic"),
                 mode_buttons: RefCell::new(Vec::new()),
@@ -525,7 +666,6 @@ mod imp {
                 held: RefCell::new([Held::Preview; 2]),
                 previews: RefCell::new([None, None]),
                 candidates: CandidateStrip::default(),
-                filenames: [gtk4::Label::new(None), gtk4::Label::new(None)],
             }
         }
     }
@@ -559,7 +699,41 @@ fn build(page: &ComparePage) {
     let imp = page.imp();
     imp.root.set_parent(page);
     imp.view.set_vexpand(true);
-    imp.root.append(&imp.view);
+    // Each image's caption sits in its outer corner and its error in its
+    // own half, over the canvas but never in the way of pan and zoom.
+    let canvas = gtk4::Overlay::new();
+    canvas.set_child(Some(&imp.view));
+    let columns = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    columns.set_homogeneous(true);
+    columns.set_can_target(false);
+    for (side, caption) in imp.captions.iter().enumerate() {
+        columns.append(&caption.column);
+        let corner = if side == 0 {
+            gtk4::Align::Start
+        } else {
+            gtk4::Align::End
+        };
+        caption.root.set_halign(corner);
+        caption.root.set_valign(gtk4::Align::End);
+        caption.root.set_margin_start(12);
+        caption.root.set_margin_end(12);
+        caption.root.set_margin_bottom(12);
+        caption.root.set_can_target(false);
+        caption.root.set_visible(false);
+        caption.name.set_xalign(if side == 0 { 0.0 } else { 1.0 });
+        if side == 1 {
+            caption
+                .root
+                .last_child()
+                .unwrap()
+                .set_halign(gtk4::Align::End);
+        }
+    }
+    canvas.add_overlay(&columns);
+    for caption in &imp.captions {
+        canvas.add_overlay(&caption.root);
+    }
+    imp.root.append(&canvas);
     {
         let weak = page.downgrade();
         imp.view.connect_view_changed(move || {
@@ -590,7 +764,17 @@ fn build(page: &ComparePage) {
         ),
         ("Flip", "One image at a time; Space switches", Mode::Flip),
     ] {
-        let button = gtk4::ToggleButton::with_label(label);
+        let button = gtk4::ToggleButton::new();
+        if mode == Mode::Flip {
+            // Space flips: the key shows on the control it triggers.
+            let content = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            content.append(&gtk4::Label::new(Some(label)));
+            content.append(&crate::ui::look::keycap("Space"));
+            button.set_child(Some(&content));
+            button.update_property(&[gtk4::accessible::Property::Label(label)]);
+        } else {
+            button.set_label(label);
+        }
         button.set_tooltip_text(Some(tooltip));
         if let Some(first) = buttons.first() {
             button.set_group(Some(first));
@@ -599,7 +783,7 @@ fn build(page: &ComparePage) {
         button.connect_toggled(move |button| {
             if let (true, Some(page)) = (button.is_active(), weak.upgrade()) {
                 page.imp().view.set_mode(mode);
-                page.update_badges();
+                page.update_sides();
             }
         });
         modes.append(&button);
@@ -671,42 +855,29 @@ fn build(page: &ComparePage) {
     }
     toolbar.append(&close);
 
-    // Look prototype: the keys that work here, in one quiet line (D26).
-    let keys = gtk4::Label::new(None);
-    keys.set_markup(
-        "<b>←</b> keep left   <b>→</b> keep right   <b>Space</b> flip   \
-         <b>Ctrl+Z</b> undo   <b>Esc</b> done",
-    );
-    keys.add_css_class("sharpr-keys");
-    keys.set_hexpand(true);
-    keys.set_wrap(true);
-    keys.set_can_target(false);
-    let footer = gtk4::Box::new(gtk4::Orientation::Horizontal, 16);
-    footer.set_homogeneous(true);
-    footer.set_margin_start(12);
-    footer.set_margin_end(12);
-    footer.set_margin_top(6);
-    footer.set_margin_bottom(6);
-    imp.root.append(&footer);
-    let hints = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-    hints.set_margin_start(12);
-    hints.set_margin_end(12);
-    hints.set_margin_bottom(6);
-    imp.candidates.build(page, &imp.counter);
-    imp.root.append(&imp.candidates.root);
-    hints.append(&keys);
-    imp.root.append(&hints);
-
-    // Each image's filename and keep action stay with its side below the canvas.
-    for (side, key) in ["←", "→"].into_iter().enumerate() {
-        let badge = &imp.badges[side];
-        let label = &imp.labels[side];
-        label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
-        label.set_max_width_chars(48);
+    // Keep Left and Keep Right mirrored on the canvas's centre line, each
+    // showing its key (D45).
+    let bar = &imp.keep_bar;
+    bar.set_homogeneous(true);
+    bar.set_margin_top(8);
+    bar.set_margin_bottom(6);
+    for (side, (key, text)) in [("←", "Keep Left"), ("→", "Keep Right")]
+        .into_iter()
+        .enumerate()
+    {
         let keep = &imp.keep[side];
-        keep.set_tooltip_text(Some(&format!(
-            "Keep this image and dismiss the other ({key}); no files change"
-        )));
+        let content = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        let label = gtk4::Label::new(Some(text));
+        if side == 0 {
+            content.append(&crate::ui::look::keycap(key));
+            content.append(&label);
+        } else {
+            content.append(&label);
+            content.append(&crate::ui::look::keycap(key));
+        }
+        keep.set_child(Some(&content));
+        keep.add_css_class("sharpr-compare-keep");
+        keep.update_property(&[gtk4::accessible::Property::Label(text)]);
         let weak = page.downgrade();
         let which = if side == 0 { Side::Left } else { Side::Right };
         keep.connect_clicked(move |_| {
@@ -714,21 +885,27 @@ fn build(page: &ComparePage) {
                 page.keep(which);
             }
         });
-        let filename = &imp.filenames[side];
-        filename.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
-        filename.set_max_width_chars(32);
-        filename.set_hexpand(true);
-        filename.set_xalign(0.0);
-        let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-        row.append(filename);
-        row.append(keep);
-        badge.append(&row);
-        label.set_xalign(0.0);
-        label.add_css_class("caption");
-        label.add_css_class("dim-label");
-        badge.append(label);
-        footer.append(badge);
+        let cell = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        if side == 0 {
+            keep.set_halign(gtk4::Align::End);
+            keep.set_margin_end(6);
+        } else {
+            keep.set_halign(gtk4::Align::Start);
+            keep.set_margin_start(6);
+        }
+        keep.set_hexpand(true);
+        cell.append(keep);
+        bar.append(&cell);
     }
+    imp.root.append(bar);
+    let last = &imp.last_line;
+    last.add_css_class("sharpr-compare-last");
+    last.set_margin_top(8);
+    last.set_margin_bottom(6);
+    last.set_visible(false);
+    imp.root.append(last);
+    imp.candidates.build(page, &imp.counter);
+    imp.root.append(&imp.candidates.root);
 }
 
 #[cfg(test)]
@@ -784,10 +961,10 @@ mod tests {
             assert!(g > 150 && r < 80 && b < 90, "{name}: {r},{g},{b}");
             let preview = decode_image(&path, Tier::Preview).unwrap();
             assert_eq!(preview.image, (1600, 900), "{name}");
-            assert!(
-                summary(&path, Some(preview.image)).starts_with("1600 × 900"),
-                "{name}"
-            );
+            let (resolution, details, size) = summary(&path, Some(preview.image));
+            assert_eq!(resolution, "1600 × 900", "{name}");
+            assert_eq!(size, Some((1600, 900)), "{name}");
+            assert!(details.starts_with(" · "), "{name}: {details}");
             std::fs::remove_file(path).unwrap();
         }
     }
