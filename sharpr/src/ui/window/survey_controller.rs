@@ -74,26 +74,6 @@ impl SharprWindow {
             }
         });
         self.add_action(&action);
-        let shortcuts = gtk4::ShortcutController::new();
-        shortcuts.set_scope(gtk4::ShortcutScope::Managed);
-        shortcuts.add_shortcut(gtk4::Shortcut::new(
-            Some(gtk4::ShortcutTrigger::parse_string("<Control><Shift>s").unwrap()),
-            Some(gtk4::CallbackAction::new(|widget, _| {
-                let Some(window) = widget.downcast_ref::<SharprWindow>() else {
-                    return glib::Propagation::Proceed;
-                };
-                if !window.compare_selection_allowed()
-                    || !window
-                        .lookup_action("survey")
-                        .is_some_and(|action| action.is_enabled())
-                {
-                    return glib::Propagation::Proceed;
-                }
-                gio::prelude::ActionGroupExt::activate_action(window, "survey", None);
-                glib::Propagation::Stop
-            })),
-        ));
-        self.add_controller(shortcuts);
     }
 
     pub(crate) fn enter_survey(&self, paths: Vec<PathBuf>) {

@@ -82,7 +82,6 @@ Indexing then starts on its own. Main Menu → Library → Library Overview show
 | Ctrl+B | Add the selection to a bucket |
 | Ctrl+Shift+B | Add to the last bucket again |
 | Ctrl+Shift+C | Compare the selection |
-| Ctrl+Shift+S | Survey the selection |
 | Ctrl+A | Select all images shown |
 | Ctrl+E | Export the selection as WebP |
 | Ctrl+I | Image info |

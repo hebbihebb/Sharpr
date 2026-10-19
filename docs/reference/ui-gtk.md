@@ -68,7 +68,7 @@ See `architecture.md`. In UI code this means:
 
 ## Survey (D30)
 
-- Select two or more images, then Ctrl+Shift+S or image menu → Survey Selected Images. A virtualized adaptive GtkGridView replaces browsing, with a contextual remaining count, Undo and Done. Delete dismisses the selected tile; Ctrl+Z restores the last dismissal in original order; Escape finishes with survivors selected. Dismissal changes no files or bucket memberships. Search and chips return unchanged.
+- Select two or more images, then image menu → Survey Selected Images (no shortcut; Ctrl+Shift+S was dropped on October 19, 2026). A virtualized adaptive GtkGridView replaces browsing, with a contextual remaining count, Undo and Done. Delete dismisses the selected tile; Ctrl+Z restores the last dismissal in original order; Escape finishes with survivors selected. Dismissal changes no files or bucket memberships. Search and chips return unchanged.
 - Survey and Compare share a serial viewport-fed thumbnail lane through the existing cache/decoder, with session generations and recycled-row checks. Filmstrip pools and visible-thumbnail priority stay unchanged. File actions and search are guarded during review.
 
 ## One library root (D32)

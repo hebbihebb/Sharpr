@@ -138,6 +138,37 @@ fn window_shortcut(window: &SharprWindow, trigger: &str) -> bool {
     panic!("Compare shortcut is installed");
 }
 
+/// Whether any shortcut controller in the window, or an application
+/// accelerator, claims `trigger`.
+fn shortcut_bound_anywhere(window: &SharprWindow, trigger: &str) -> bool {
+    let expected = gtk4::ShortcutTrigger::parse_string(trigger)
+        .unwrap()
+        .to_str();
+    let mut widgets = find_widgets::<gtk4::Widget>(window.upcast_ref());
+    widgets.push(window.clone().upcast());
+    let in_controllers = widgets.iter().any(|widget| {
+        let controllers = widget.observe_controllers();
+        (0..controllers.n_items()).any(|i| {
+            controllers
+                .item(i)
+                .and_downcast::<gtk4::ShortcutController>()
+                .is_some_and(|controller| {
+                    (0..controller.n_items()).any(|j| {
+                        controller
+                            .item(j)
+                            .and_downcast::<gtk4::Shortcut>()
+                            .and_then(|shortcut| shortcut.trigger())
+                            .is_some_and(|t| t.to_str() == expected)
+                    })
+                })
+        })
+    });
+    let in_accels = window
+        .application()
+        .is_some_and(|app| !app.actions_for_accel(trigger).is_empty());
+    in_controllers || in_accels
+}
+
 fn render_node(widget: &gtk4::Widget) -> Option<gtk4::gsk::RenderNode> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
@@ -3481,7 +3512,6 @@ fn survey_narrows_selection_and_restores_browsing_without_file_changes() {
     pump_until(|| window.app_state().borrow().library.image_count() == 8 && window.is_mapped());
     let strip = window.imp().filmstrip.borrow().clone().unwrap();
     strip.imp().list_view.grab_focus();
-    assert!(!window_shortcut(&window, "<Control><Shift>s"));
     window.show_inline_search();
     let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
     entry.set_text("png ");
@@ -3506,7 +3536,11 @@ fn survey_narrows_selection_and_restores_browsing_without_file_changes() {
         })
         .collect();
     assert_eq!(window.app_state().borrow().selected_paths.len(), 8);
-    assert!(window_shortcut(&window, "<Control><Shift>s"));
+    // Ctrl+Shift+S belongs to nobody in Sharpr (Work Order item 19);
+    // Survey is reached from the image menu.
+    assert!(!shortcut_bound_anywhere(&window, "<Control><Shift>s"));
+    assert_ne!(window.app_state().borrow().scope, ViewScope::Survey);
+    gio::prelude::ActionGroupExt::activate_action(&window, "survey", None);
     assert_eq!(window.app_state().borrow().scope, ViewScope::Survey);
     let page = window.imp().survey_page.borrow().clone().unwrap();
     assert_eq!(page.survivors(), ordered);

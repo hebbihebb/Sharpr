@@ -17,7 +17,6 @@ Main Menu → Library → **Open Library Root…** chooses the one library folde
 | Ctrl + B | Add the selected images to a bucket |
 | Ctrl + Shift + B | Add to the last successful bucket again |
 | Ctrl + Shift + C | Compare the selected images |
-| Ctrl + Shift + S | Survey the selected images |
 | Ctrl + A | Select all images shown |
 | Ctrl + E | Export the selection as WebP |
 | Ctrl + I | Image info: file, folder, camera, resolution score, buckets |
@@ -69,7 +68,7 @@ The side panels make way while Compare is open. Delete, Rename (F2), Duplicate (
 
 ## Survey
 
-Select two or more images and press Ctrl+Shift+S, or use **Survey Selected Images** in the image menu. The adaptive grid lets you dismiss a tile with its × button or Delete, use Ctrl+Z or Undo to restore it in original order, and finish with Done or Escape. Only the remaining selection changes; files and bucket membership stay untouched. Arrow keys move between tiles.
+Select two or more images and choose **Survey Selected Images** in the image menu. The adaptive grid lets you dismiss a tile with its × button or Delete, use Ctrl+Z or Undo to restore it in original order, and finish with Done or Escape. Only the remaining selection changes; files and bucket membership stay untouched. Arrow keys move between tiles.
 
 The corner readout appears on pointer movement. Hover expands that same card into Info; leaving collapses it. Click or Ctrl+I pins it; Escape closes it. Right-click the large image for the same menu as the filmstrip. The keyboard image menu also works in fullscreen.
 
