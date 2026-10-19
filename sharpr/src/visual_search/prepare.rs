@@ -42,14 +42,26 @@ pub fn prepare_png(path: &Path) -> Result<Vec<u8>, String> {
     Ok(png)
 }
 
-/// Formats the library shows but indexing can't decode yet; reported as
-/// unsupported rather than unreadable (Phase 5 audit, finding 13).
-pub(crate) fn unsupported_format(path: &Path) -> Option<&'static str> {
+/// AVIF and HEIC, which decode through glycin's HEIF loader (Work Order
+/// item 22): the format's name, or `None` for any other file.
+pub(crate) fn heif_format(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "avif" => Some("AVIF"),
         "heic" | "heif" => Some("HEIC"),
         _ => None,
     }
+}
+
+/// Part of every error for an AVIF or HEIC image when glycin has no loader
+/// for it; such an image counts as unsupported, not unreadable, and is
+/// tried again on the next pass.
+pub(crate) const NO_LOADER: &str = "needs glycin's HEIF loader";
+
+/// Whether `error` says the image's format can't be decoded here, rather
+/// than that the file is unreadable. Older builds wrote "can't be indexed
+/// yet" for every AVIF and HEIC image.
+pub(crate) fn is_unsupported_error(error: &str) -> bool {
+    error.contains(NO_LOADER) || error.contains("images can't be indexed yet")
 }
 
 /// The size that fits `width`×`height` within `edge`×`edge`, keeping the
@@ -75,11 +87,8 @@ fn decode_upright(path: &Path) -> Result<DynamicImage, String> {
         crate::jxl::check_decode_budget(path).map_err(error)?;
         return crate::jxl::decode_path(path).map_err(error);
     }
-    if let Some(format) = unsupported_format(path) {
-        return Err(format!(
-            "{format} images can't be indexed yet: {}",
-            path.display()
-        ));
+    if let Some(format) = heif_format(path) {
+        return decode_with_glycin(path, format).map_err(error);
     }
     let image = decode_jpeg_reduced(path)
         .map(Ok)
@@ -98,6 +107,68 @@ fn decode_upright(path: &Path) -> Result<DynamicImage, String> {
     Ok(crate::metadata::orientation::apply_exif_orientation(
         image, path,
     ))
+}
+
+/// Decodes an AVIF or HEIC image with glycin, the loader the viewer uses. It
+/// decodes in a sandboxed process, turns the image upright, and its size is
+/// checked against `MAX_DECODE_BYTES` before the pixels are asked for. Runs
+/// on the indexing worker, blocking it until the image is decoded.
+fn decode_with_glycin(path: &Path, format: &str) -> Result<DynamicImage, String> {
+    use gtk4::{gio, glib};
+    let file = gio::File::for_path(path);
+    glib::MainContext::new().block_on(async move {
+        let mut loader = glycin::Loader::new(file);
+        loader.accepted_memory_formats(
+            glycin::MemoryFormatSelection::R8g8b8 | glycin::MemoryFormatSelection::R8g8b8a8,
+        );
+        let image = loader.load().await.map_err(|e| {
+            // glycin appends its whole configuration; the first line says it.
+            let e = e.to_string();
+            let e = e.lines().next().unwrap_or_default().to_string();
+            if e.starts_with("Unknown image format") || e.starts_with("Could not spawn") {
+                format!("{format} {NO_LOADER} (glycin-loaders): {e}")
+            } else {
+                e
+            }
+        })?;
+        let details = image.details();
+        let (width, height) = (details.width(), details.height());
+        if !crate::jxl::fits_decode_budget(width, height) {
+            return Err(format!(
+                "{width}×{height} is too large to open (over {} GB to decode)",
+                MAX_DECODE_BYTES >> 30
+            ));
+        }
+        let frame = image.next_frame().await.map_err(|e| e.to_string())?;
+        frame_to_image(&frame)
+    })
+}
+
+/// A glycin frame of 8-bit RGB or RGBA as an `image` image.
+fn frame_to_image(frame: &glycin::Frame) -> Result<DynamicImage, String> {
+    let (width, height, stride) = (frame.width(), frame.height(), frame.stride() as usize);
+    let channels = match frame.memory_format() {
+        glycin::MemoryFormat::R8g8b8 => 3,
+        glycin::MemoryFormat::R8g8b8a8 => 4,
+        other => return Err(format!("unexpected pixel format {other:?}")),
+    };
+    let row = width as usize * channels;
+    let bytes = frame.buf_slice();
+    let mut pixels = Vec::with_capacity(row * height as usize);
+    for y in 0..height as usize {
+        let start = y * stride;
+        pixels.extend_from_slice(
+            bytes
+                .get(start..start + row)
+                .ok_or("the decoded image is shorter than its size")?,
+        );
+    }
+    let image = if channels == 3 {
+        image::RgbImage::from_raw(width, height, pixels).map(DynamicImage::ImageRgb8)
+    } else {
+        image::RgbaImage::from_raw(width, height, pixels).map(DynamicImage::ImageRgba8)
+    };
+    image.ok_or_else(|| "the decoded image does not match its size".to_string())
 }
 
 /// A JPEG decoded at the smallest libjpeg-turbo scale that still leaves at
@@ -140,22 +211,75 @@ fn decode_jpeg_reduced(path: &Path) -> Option<DynamicImage> {
         .map(DynamicImage::ImageRgb8)
 }
 
+/// Writes a `width`×`height` image of one colour in `mime`, with glycin.
+#[cfg(test)]
+pub(crate) fn encode_with_glycin(
+    mime: &'static str,
+    path: &Path,
+    (width, height): (u32, u32),
+    rgb: [u8; 3],
+) {
+    let pixels: Vec<u8> = rgb.repeat((width * height) as usize);
+    let bytes = gtk4::glib::MainContext::new().block_on(async move {
+        let mut creator = glycin::Creator::new(mime.into()).await.unwrap();
+        creator
+            .add_frame(width, height, glycin::MemoryFormat::R8g8b8, pixels)
+            .unwrap();
+        creator.create().await.unwrap().data_full().unwrap()
+    });
+    std::fs::write(path, bytes).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn huge_images_and_unsupported_formats_are_turned_away_before_decoding() {
+    fn huge_images_are_turned_away_before_decoding() {
         assert!(crate::jxl::fits_decode_budget(12_000, 8_000));
         assert!(!crate::jxl::fits_decode_budget(60_000, 60_000));
-        assert_eq!(unsupported_format(Path::new("/l/a.AVIF")), Some("AVIF"));
-        assert_eq!(unsupported_format(Path::new("/l/a.heif")), Some("HEIC"));
-        assert_eq!(unsupported_format(Path::new("/l/a.jpg")), None);
+        assert_eq!(heif_format(Path::new("/l/a.AVIF")), Some("AVIF"));
+        assert_eq!(heif_format(Path::new("/l/a.heif")), Some("HEIC"));
+        assert_eq!(heif_format(Path::new("/l/a.HEIC")), Some("HEIC"));
+        assert_eq!(heif_format(Path::new("/l/a.jpg")), None);
         let error = prepare_png(Path::new("/l/missing.avif")).unwrap_err();
-        assert!(
-            error.starts_with("AVIF images can't be indexed yet"),
-            "{error}"
-        );
+        assert!(error.starts_with("Could not read"), "{error}");
+    }
+
+    #[test]
+    fn a_missing_loader_is_unsupported_not_unreadable() {
+        assert!(is_unsupported_error(&format!(
+            "AVIF {NO_LOADER} (glycin-loaders)"
+        )));
+        assert!(is_unsupported_error(
+            "HEIC images can't be indexed yet: /l/a.heic"
+        ));
+        assert!(!is_unsupported_error("Could not read /l/a.avif: truncated"));
+    }
+
+    /// Work Order item 22: AVIF and HEIC decode through glycin, upright and
+    /// within the edge, like every other format.
+    #[test]
+    fn avif_and_heic_images_are_prepared() {
+        let dir = std::env::temp_dir().join(format!(
+            "sharpr-prepare-heif-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (mime, name) in [("image/avif", "green.avif"), ("image/heif", "green.heic")] {
+            let path = dir.join(name);
+            encode_with_glycin(mime, &path, (1600, 900), [20, 200, 40]);
+            let png = prepare_png(&path).unwrap();
+            let image = image::load_from_memory(&png).unwrap().into_rgb8();
+            assert_eq!(image.dimensions(), (768, 432), "{name}");
+            let [r, g, b] = image.get_pixel(384, 216).0;
+            assert!(g > 150 && r < 80 && b < 90, "{name}: {r},{g},{b}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

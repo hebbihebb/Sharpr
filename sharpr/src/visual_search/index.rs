@@ -25,15 +25,16 @@ pub struct Coverage {
     pub indexed: usize,
     /// Images that could not be read.
     pub failed: usize,
-    /// Images in a format indexing can't decode yet (AVIF, HEIC), counted
-    /// apart from unreadable ones.
+    /// AVIF and HEIC images that could not be decoded because glycin has no
+    /// HEIF loader here, counted apart from unreadable ones.
     pub unsupported: usize,
 }
 
 impl Coverage {
-    /// Counts one image that failed, as unsupported or as unreadable.
-    fn add_failure(&mut self, path: &Path) {
-        if super::prepare::unsupported_format(path).is_some() {
+    /// Counts one image that failed with `error`, as unsupported (no
+    /// loader for its format here) or as unreadable.
+    fn add_failure(&mut self, error: &str) {
+        if super::prepare::is_unsupported_error(error) {
             self.unsupported += 1;
         } else {
             self.failed += 1;
@@ -280,9 +281,13 @@ pub fn run_pass(
         if (*size, *mtime) != stamp {
             continue;
         }
-        if failed.contains_key(hash) {
-            coverage.add_failure(path);
-        } else if done.contains(hash) {
+        // A format that had no loader is tried again: one may be installed
+        // now, and older builds turned every AVIF and HEIC image away.
+        let error = failed.get(hash);
+        let retry = error.is_some_and(|error| super::prepare::is_unsupported_error(error));
+        if let (Some(error), false) = (error, retry) {
+            coverage.add_failure(error);
+        } else if done.contains(hash) && !retry {
             coverage.indexed += 1;
         } else {
             let copies = todo.entry(hash.clone()).or_insert_with(|| {
@@ -328,8 +333,8 @@ pub fn run_pass(
                         serde_json::json!({"path": path.display().to_string(), "error": error}),
                     );
                     store.put_failure(model, &hash, &error)?;
-                    for (copy, _) in copies {
-                        coverage.add_failure(copy);
+                    for _ in copies {
+                        coverage.add_failure(&error);
                     }
                 }
                 Err(EmbedError::Runtime(error)) => return Err(error),
@@ -623,8 +628,11 @@ mod tests {
     impl Embedder for FakeEmbedder {
         fn embed_image(&mut self, path: &Path) -> Result<Vec<f32>, EmbedError> {
             self.calls.push(path.to_path_buf());
-            if let Some(format) = super::super::prepare::unsupported_format(path) {
-                return Err(EmbedError::Image(format!("{format} can't be indexed yet")));
+            if let Some(format) = super::super::prepare::heif_format(path) {
+                return Err(EmbedError::Image(format!(
+                    "{format} {}",
+                    super::super::prepare::NO_LOADER
+                )));
             }
             let bytes = std::fs::read(path).unwrap();
             match bytes.as_slice() {
@@ -725,8 +733,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             again.calls,
-            vec![root.join("new.jpg")],
-            "only new work, failures not retried"
+            vec![root.join("new.jpg"), root.join("photo.avif")],
+            "only new work; failures not retried, except a format that had no loader"
         );
         assert_eq!(
             (coverage.indexed, coverage.failed, coverage.unsupported),
@@ -1037,10 +1045,19 @@ mod tests {
                 .unwrap();
         }
         std::fs::write(root.join("broken.jpg"), b"not an image").unwrap();
+        // Work Order item 22: AVIF and HEIC index through glycin.
+        for (mime, name) in [("image/avif", "green.avif"), ("image/heif", "green.heic")] {
+            super::super::prepare::encode_with_glycin(
+                mime,
+                &root.join(name),
+                (64, 48),
+                [30, 200, 30],
+            );
+        }
         let index = Arc::new(LibraryIndex::open_in_memory().unwrap());
         fingerprint(&index, &root, &[]);
         let store_path = root.join("store/visual-search.sqlite");
-        let service = Service::start(index, store_path.clone(), true);
+        let service = Service::start(index.clone(), store_path.clone(), true);
         service.request(Job {
             roots: vec![root.clone()],
             disabled: Vec::new(),
@@ -1058,8 +1075,8 @@ mod tests {
         assert_eq!(
             coverage,
             Coverage {
-                images: 3,
-                indexed: 2,
+                images: 5,
+                indexed: 4,
                 failed: 1,
                 unsupported: 0
             }
@@ -1068,7 +1085,30 @@ mod tests {
         let store = Store::open(&store_path).unwrap();
         let files = super::super::files::locate().unwrap();
         let vectors = store.vectors(&store.model_key(&files).unwrap()).unwrap();
-        assert_eq!(vectors.len(), 2);
+        assert_eq!(vectors.len(), 4);
+        // Searching "green" finds the AVIF and the HEIC first.
+        let searcher = super::super::search::Searcher::start(
+            store_path.clone(),
+            service.vectors_version(),
+            Box::new(|| {}),
+        );
+        let prepared = searcher.prepare("green", &|| false).unwrap();
+        let cached = index.cached_fingerprints().unwrap();
+        let candidates: Vec<(PathBuf, Option<String>)> =
+            ["red.png", "blue.png", "green.avif", "green.heic"]
+                .iter()
+                .map(|name| {
+                    let path = root.join(name);
+                    let hash = cached
+                        .get(path.to_string_lossy().as_ref())
+                        .map(|(_, _, hash)| hash.clone());
+                    (path, hash)
+                })
+                .collect();
+        let ranked = super::super::search::rank(&candidates, &prepared);
+        let mut top: Vec<_> = ranked.paths[..2].to_vec();
+        top.sort();
+        assert_eq!(top, vec![root.join("green.avif"), root.join("green.heic")]);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

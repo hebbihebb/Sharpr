@@ -345,7 +345,7 @@ pub fn present(window: &SharprWindow) {
                 }
                 if c.unsupported > 0 {
                     text.push_str(&format!(
-                        " · {} in formats not supported yet (AVIF, HEIC)",
+                        " · {} AVIF or HEIC need glycin's HEIF loader (the glycin-loaders package)",
                         count(c.unsupported)
                     ));
                 }
