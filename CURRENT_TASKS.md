@@ -9,11 +9,12 @@ item 21 has three extractions merged and waits for the user's go-ahead. Also:
   sort order; Show More adds weaker matches closest first (user's choice).
 - Preferences lists each library root with an on/off switch, Choose… on the
   first and Remove while another remains.
-Left for the user: 12 (examples), 19 (nothing in Sharpr or GTK binds
-Ctrl+Shift+S to the Inspector; the desktop has GTK's
-`enable-inspector-keybinding` on; needs a reproduction), 21 (continue?),
-22 (decoder approval), 24 (ask first). Next: an audit by Sol of this
-session's work, if the user starts one.
+User decisions (October 19): item 12 dropped; item 19 becomes "remove the
+Ctrl+Shift+S Survey shortcut" (the Inspector bug persists, not chased); item
+21 waits for a planning session; item 22 decoders approved, Flatpak size no
+concern. Still open for the user: item 24 (do or skip), and pushing `main`.
+Sol is auditing this session's work on `codex/audit-0.5.0-2`; code work
+waits until it finishes (same checkout, and one heavy job at a time).
 
 ## Plan: split `SharprWindow::setup` and `filmstrip::build_ui` (Work Order item 21)
 

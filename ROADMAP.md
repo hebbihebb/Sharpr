@@ -794,14 +794,13 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 16 | ~~Use one sort implementation~~ **Done October 19, 2026**, accepted by the user (build `ba0ff78`): `model::library::compare_rows` is the one rule (the order's key, then name ignoring case, then full path; unknown times and sizes last) | Codex (Sol medium) (done by Opus) |
 | 17 | ~~Merge the two thumbnail worker loops~~ **Done October 19, 2026**, accepted by the user (build `ba0ff78`) | Sonnet high (done by Opus) |
 | 18 | ~~Library Overview refresh, errors, and unsupported count~~ **Done October 19, 2026**, accepted by the user (build `ba0ff78`) | Codex (Sol medium) (done by Opus) |
-| 19 | Ctrl+Shift+S opens the GTK Inspector | Codex (Sol medium) |
+| 19 | Remove the Ctrl+Shift+S shortcut for Survey (user, October 19: the GTK Inspector still opens on it; nothing in Sharpr or GTK binds it there, so drop the key for now). Survey stays in the image menu with no shortcut shown; update the Shortcuts help and the test that covers the binding | Sonnet low |
+| 22 | AVIF and HEIC/HEIF indexing. **Decoders approved by the user, October 19, 2026**; Flatpak size is not a concern (building the Flatpak is optional for users) | Sonnet high |
 | 20 | ~~Make the flaky GTK navigation test deterministic~~ **Done October 19, 2026**, accepted by the user (build `ba0ff78`) (20 of 20 off-screen runs pass) | Sonnet high (done by Opus) |
-| 21 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal. **In progress October 19, 2026**: 3 extractions merged (accepted with build `ba0ff78`) (background indexing, bucket sidebar, search chip bar; `setup` about 2,050 → 1,520 lines); paused for the user's go-ahead per the brief | Sonnet high |
-| 22 | AVIF and HEIC/HEIF indexing (the user approves the decoders first) | Sonnet high |
+| 21 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal. **Paused October 19, 2026** for a planning session with the user before any filmstrip work (user); 3 extractions from `setup` merged (accepted with build `ba0ff78`) (background indexing, bucket sidebar, search chip bar; `setup` about 2,050 → 1,520 lines); paused for the user's go-ahead per the brief | Opus medium |
 | 23 | ~~Trash Undo in the Flatpak~~ **Done October 19, 2026**, accepted by the user (build `ba0ff78`): verified in a real Flatpak build that the portal trashes into the host's `~/.local/share/Trash` (absolute `Path=`), which the sandbox can read and restore from; the sandbox `$XDG_DATA_HOME/Trash` does not exist | Sonnet high (done by Opus) |
 | 24 | Non-UTF-8 paths (low value; paths are stored as SQLite text) | Opus high |
 | 25 | ~~More than one library root (user, October 18): keep Pictures as the root and add Downloads as a second top-level root in the folder list, below the first. Today one library is active and `set_single_library_root` replaces its root; `config/settings.rs` already holds several libraries with an overlap check, so decide first whether a second root is a second library or a second root of one library (buckets, tags, search, Find Copies and the index must span it). Adding and removing a root must never touch the files. Maybe: each root gets its own colour, so a root's folders and images read at a glance (user idea, October 18; decide with the design)~~ **Done October 18, 2026** (D41), accepted by the user ("deployed and working", build `90e594e`) | Opus medium |
-| 12 | Tune Find Copies (ask the user for missed and false examples first). Deferred to the end by the user, October 18, 2026 | Sonnet high |
 
 ## Item Briefs
 
@@ -841,17 +840,17 @@ Open items only; the table above has the order and the model. Each brief adds on
 - **Goal:** the Overview's figures are trustworthy while it is open.
 - **Done when:** the figures refresh or say when they were taken; a gathering error shows text, not "…"; unsupported formats are counted apart from unreadable files.
 
-**19. Ctrl+Shift+S opens the GTK Inspector.**
-- **Goal:** Ctrl+Shift+S opens Survey on the user's desktop.
-- **Done when:** the user confirms it; a test covers the binding.
-- **Guardrails:** the app binds the key once, and GTK's own Inspector keys are normally Ctrl+Shift+I and Ctrl+Shift+D, so the cause may be the desktop (`GTK_DEBUG`, a compositor or `gsettings` shortcut). If nothing in the app claims it, say so and choose another key with the user.
+**19. Remove the Ctrl+Shift+S shortcut for Survey.**
+- **Goal:** Ctrl+Shift+S no longer belongs to Sharpr; Survey is reached from the image menu.
+- **Done when:** no binding, menu accelerator label or help entry mentions Ctrl+Shift+S, and a test proves the key does nothing in Sharpr.
+- **Guardrails:** the user saw the GTK Inspector open on this key (October 15, still on October 19); nothing in Sharpr or GTK binds it there and the desktop has `org.gtk.gtk4.Settings.Debug enable-inspector-keybinding` on. Do not chase that cause now (user). Do not pick a replacement key without the user.
 
 **20. Make the flaky GTK navigation test deterministic.**
 - **Goal:** `rapid_navigation_and_folder_switch_preserve_latest_view` stops failing at random.
 - **Done when:** it passes repeated runs (about 20); the fix waits on a condition, not a sleep.
 - **Guardrails:** do this before item 21; it is that refactor's safety net.
 
-**21. Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal.**
+**21. Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal.** Paused: the user wants a planning session first, since the next steps reach the filmstrip.
 - **Goal:** the two long functions become readable pieces with no change in behaviour.
 - **Done when:** one extraction per commit, the GTK suite green after each.
 - **Guardrails:** do not touch the factory or scheduling paths. Commit a short plan first. After a few extractions, stop and ask the user whether to continue.
@@ -859,7 +858,7 @@ Open items only; the table above has the order and the model. Each brief adds on
 **22. AVIF and HEIC/HEIF indexing.**
 - **Goal:** these formats become searchable by visual search through a bounded decoder on the worker.
 - **Done when:** a sample of each indexes; the Flatpak size cost is written down.
-- **Guardrails:** **Decision for the user:** approve the decoders before any code. The live library has none of these files.
+- **Guardrails:** approved by the user October 19, 2026; the Flatpak size cost need only be written down, not minimised, since building the Flatpak is optional for users. Decode on the worker, bounded like the other formats. The live library has none of these files, so make samples.
 
 **23. Trash Undo in the Flatpak.**
 - **Goal:** Undo restores a trashed file in the Flatpak build, or says plainly that it cannot.
@@ -887,7 +886,6 @@ Optional. Pick something up only when a phase touches that area, or the user ask
 - Support non-UTF-8 paths.
 - Ctrl+Shift+S opened the GTK Inspector instead of Survey on the user's desktop (October 15). Find what claims the key, or choose another.
 - Re-link a bucket member moved outside Sharpr before the user opens its new folder. Today the bucket shows "image not found" until a pass reaches that folder (user, October 15).
-- Tune Find Copies on the real library: the user found it "improved but not perfect" (October 15).
 - Stop computing perceptual hashes in the thumbnail workers, now that "Find Copies…" (Phase 7) uses fingerprints and vectors; remove `duplicates/phash.rs` and `LibraryIndex::duplicate_groups` with it. Wrap or extend the thumbnail scheduler; don't rewrite it.
 - Index AVIF and HEIC/HEIF for visual search, with a bounded decoder on the worker (Phase 5 audit, finding 13). The live library has none; weigh the Flatpak cost before adding decoders.
 - Library Overview: refresh the fingerprint, copy, bucket, and index-file figures while it is open, or label them as a snapshot; show gathering errors instead of "…"; count unsupported formats apart from unreadable files (Phases 6–8 audit, finding 12).
@@ -898,6 +896,8 @@ Optional. Pick something up only when a phase touches that area, or the user ask
 ### Considered, Not Planned
 
 Ideas weighed and set aside, with the reason, so they aren't proposed again without new facts.
+
+- **Tuning Find Copies** (Work Order item 12, October 19). Dropped by the user: it works well enough, and tuning needs hand-picked missed and false examples.
 
 - **Running the embedding model on another machine** (a LAN server or an internet API, October 14). It would break the offline invariant and would need a decision-log entry. Images would leave the machine, and a remote model can't prove which files it runs, so mismatched vectors could mix into the index. GPU indexing on the laptop covered the speed need. If it ever comes back: LAN only, opt-in, and checked against a reference image.
 - **Shorter vectors** (256 of the 768 numbers, Matryoshka truncation). The whole index is about 18 MB, too small for the saving to be worth the lost accuracy.
