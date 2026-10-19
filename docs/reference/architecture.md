@@ -15,7 +15,7 @@ The October 2026 browsing and copy modules are committed in the Phase 0 checkpoi
 | `ui/filmstrip.rs` | Filmstrip list, factory and bind callbacks, and the thumbnail scheduler (visible range, buffer, trickle) |
 | `ui/viewer.rs` | Full-image viewer (glycin decoding) and the info chip |
 | `display_scale.rs` | Screen-sized copies of very large images for the viewer (GTK-free) |
-| `library_overview.rs`, `ui/library_overview.rs` | The Library Overview: library size and formats, below-4K count, disabled folders, fingerprints and exact copies, buckets, and visual-search progress. Gathered on a worker when the window opens. |
+| `library_overview.rs`, `ui/library_overview.rs` | The Library Overview: library size and formats, below-4K count, disabled folders, fingerprints and exact copies, buckets, and visual-search progress. Gathered on a worker when the window opens and again every 30 seconds while it is open (one count at a time; the Library group says when); a gathering error shows in each row. Visual-search coverage counts AVIF/HEIC apart from unreadable images. |
 | `fingerprint.rs` | Content fingerprints (xxh3-128) and the background pass service (GTK-free) |
 | `ui/look.rs`, `palette.rs`, `data/style.css`, `ui/fonts.rs` | One stylesheet/provider, shared palette/drawing tokens and the embedded JetBrains Mono fonts. Fonts are registered once on GTK's Pango font map from anonymous `memfd` files; their handles stay alive on the UI thread, with `CLOEXEC` so inference children do not inherit them. |
 | `ui/sidebar.rs` | Folder tree and buckets (the Tags page was removed on 2026-10-13, D20) |

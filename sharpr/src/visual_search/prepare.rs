@@ -44,7 +44,7 @@ pub fn prepare_png(path: &Path) -> Result<Vec<u8>, String> {
 
 /// Formats the library shows but indexing can't decode yet; reported as
 /// unsupported rather than unreadable (Phase 5 audit, finding 13).
-fn unsupported_format(path: &Path) -> Option<&'static str> {
+pub(crate) fn unsupported_format(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "avif" => Some("AVIF"),
         "heic" | "heif" => Some("HEIC"),

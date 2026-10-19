@@ -793,7 +793,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 15 | ~~Stop computing perceptual hashes in the thumbnail workers~~ **Implemented October 18, 2026** on `feature/roadmap-batch`, awaiting acceptance | Sonnet medium (done by Opus) |
 | 16 | ~~Use one sort implementation~~ **Implemented October 19, 2026** on `feature/roadmap-batch`, awaiting acceptance: `model::library::compare_rows` is the one rule (the order's key, then name ignoring case, then full path; unknown times and sizes last) | Codex (Sol medium) (done by Opus) |
 | 17 | ~~Merge the two thumbnail worker loops~~ **Implemented October 18, 2026** on `feature/roadmap-batch`, awaiting acceptance | Sonnet high (done by Opus) |
-| 18 | Library Overview refresh, errors, and unsupported count | Codex (Sol medium) |
+| 18 | ~~Library Overview refresh, errors, and unsupported count~~ **Implemented October 19, 2026** on `feature/roadmap-batch`, awaiting acceptance | Codex (Sol medium) (done by Opus) |
 | 19 | Ctrl+Shift+S opens the GTK Inspector | Codex (Sol medium) |
 | 20 | Make the flaky GTK navigation test deterministic | Sonnet high |
 | 21 | Split `SharprWindow::setup` and `filmstrip::build_ui`, piecemeal | Sonnet high |

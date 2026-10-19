@@ -1338,6 +1338,11 @@ fn library_overview_counts_the_library() {
         row_subtitle(&dialog, "Exact Copies").unwrap(),
         "1 group of identical files (1 extra)"
     );
+    // While it stays open it counts again: a new image shows up.
+    image::RgbImage::from_pixel(64, 48, image::Rgb([40, 40, 200]))
+        .save(root.join("three.png"))
+        .unwrap();
+    pump_until(|| row_subtitle(&dialog, "Images").is_some_and(|s| s.starts_with("4 images")));
     let settle = std::time::Instant::now();
     pump_until(|| settle.elapsed() > std::time::Duration::from_millis(500));
     screenshot(

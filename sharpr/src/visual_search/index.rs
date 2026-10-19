@@ -23,7 +23,22 @@ use crate::library_index::LibraryIndex;
 pub struct Coverage {
     pub images: usize,
     pub indexed: usize,
+    /// Images that could not be read.
     pub failed: usize,
+    /// Images in a format indexing can't decode yet (AVIF, HEIC), counted
+    /// apart from unreadable ones.
+    pub unsupported: usize,
+}
+
+impl Coverage {
+    /// Counts one image that failed, as unsupported or as unreadable.
+    fn add_failure(&mut self, path: &Path) {
+        if super::prepare::unsupported_format(path).is_some() {
+            self.unsupported += 1;
+        } else {
+            self.failed += 1;
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -266,7 +281,7 @@ pub fn run_pass(
             continue;
         }
         if failed.contains_key(hash) {
-            coverage.failed += 1;
+            coverage.add_failure(path);
         } else if done.contains(hash) {
             coverage.indexed += 1;
         } else {
@@ -313,7 +328,9 @@ pub fn run_pass(
                         serde_json::json!({"path": path.display().to_string(), "error": error}),
                     );
                     store.put_failure(model, &hash, &error)?;
-                    coverage.failed += copies.len();
+                    for (copy, _) in copies {
+                        coverage.add_failure(copy);
+                    }
                 }
                 Err(EmbedError::Runtime(error)) => return Err(error),
                 Err(EmbedError::Skipped(error)) => {
@@ -544,7 +561,7 @@ impl Service {
                 let per_second = done as f64 / elapsed;
                 let left = coverage
                     .images
-                    .saturating_sub(coverage.indexed + coverage.failed);
+                    .saturating_sub(coverage.indexed + coverage.failed + coverage.unsupported);
                 pace.per_second = Some(per_second);
                 pace.remaining = Some(std::time::Duration::from_secs_f64(left as f64 / per_second));
             }
@@ -606,6 +623,9 @@ mod tests {
     impl Embedder for FakeEmbedder {
         fn embed_image(&mut self, path: &Path) -> Result<Vec<f32>, EmbedError> {
             self.calls.push(path.to_path_buf());
+            if let Some(format) = super::super::prepare::unsupported_format(path) {
+                return Err(EmbedError::Image(format!("{format} can't be indexed yet")));
+            }
             let bytes = std::fs::read(path).unwrap();
             match bytes.as_slice() {
                 b"bad" => Err(EmbedError::Image("unreadable".into())),
@@ -653,6 +673,7 @@ mod tests {
         std::fs::write(root.join("copy-of-a.jpg"), b"a").unwrap();
         std::fs::write(root.join("b.png"), b"bb").unwrap();
         std::fs::write(root.join("broken.jpg"), b"bad").unwrap();
+        std::fs::write(root.join("photo.avif"), b"bad avif").unwrap();
         std::fs::write(root.join("off/c.jpg"), b"ccc").unwrap();
         let disabled = vec![root.join("off")];
         let index = LibraryIndex::open_in_memory().unwrap();
@@ -675,13 +696,15 @@ mod tests {
         assert_eq!(
             coverage,
             Coverage {
-                images: 5,
+                images: 6,
                 indexed: 3,
-                failed: 1
+                failed: 1,
+                unsupported: 1
             },
-            "identical copies are embedded once and both count; the unfingerprinted image waits"
+            "identical copies are embedded once and both count; the unfingerprinted image \
+             waits; the AVIF is unsupported, not unreadable"
         );
-        assert_eq!(embedder.calls.len(), 3);
+        assert_eq!(embedder.calls.len(), 4);
         assert!(embedder
             .calls
             .iter()
@@ -705,7 +728,10 @@ mod tests {
             vec![root.join("new.jpg")],
             "only new work, failures not retried"
         );
-        assert_eq!((coverage.indexed, coverage.failed), (4, 1));
+        assert_eq!(
+            (coverage.indexed, coverage.failed, coverage.unsupported),
+            (4, 1, 1)
+        );
 
         let mut other_model = FakeEmbedder { calls: Vec::new() };
         run_pass(
@@ -721,7 +747,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             other_model.calls.len(),
-            4,
+            5,
             "a new model indexes every distinct image again"
         );
         std::fs::remove_dir_all(root).unwrap();
@@ -1034,7 +1060,8 @@ mod tests {
             Coverage {
                 images: 3,
                 indexed: 2,
-                failed: 1
+                failed: 1,
+                unsupported: 0
             }
         );
         assert!(service.vectors_version().load(Ordering::Relaxed) > 0);

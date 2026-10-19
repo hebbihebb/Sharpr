@@ -1,7 +1,10 @@
 //! The Library Overview: how big the library is and what its indexes hold
 //! (`ROADMAP.md` Phase 5). Statistics are gathered on a worker when the
-//! window opens; the visual-search figures update every second while it is
-//! open.
+//! window opens and every 30 seconds while it is open; the visual-search
+//! figures update every second.
+
+use std::cell::Cell;
+use std::rc::Rc;
 
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -9,7 +12,10 @@ use libadwaita::prelude::*;
 
 use crate::library_overview::LibraryStats;
 use crate::ui::window::SharprWindow;
-use crate::visual_search::index::Status;
+use crate::visual_search::index::{Coverage, Status};
+
+/// How often the open Overview counts again. Tests don't wait that long.
+const RECOUNT_SECONDS: u32 = if cfg!(test) { 1 } else { 30 };
 
 /// `12345` → `12,345`.
 pub fn count(n: usize) -> String {
@@ -79,9 +85,10 @@ pub fn present(window: &SharprWindow) {
 
     let library = libadwaita::PreferencesGroup::new();
     library.set_title("Library");
+    let roots_shown: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
+    let roots_shown = roots_shown.join("\n");
     if !roots.is_empty() {
-        let shown: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
-        library.set_description(Some(&shown.join("\n")));
+        library.set_description(Some(&roots_shown));
     }
     let size_row = row("Images");
     let formats_row = row("Formats");
@@ -149,6 +156,18 @@ pub fn present(window: &SharprWindow) {
     buckets.add(&missing_row);
     page.add(&buckets);
 
+    // The rows a gathering fills, so an error can be shown in each.
+    let stats_rows = [
+        size_row.clone(),
+        formats_row.clone(),
+        below_row.clone(),
+        disabled_row.clone(),
+        fingerprint_row.clone(),
+        copies_row.clone(),
+        file_row.clone(),
+        buckets_row.clone(),
+        missing_row.clone(),
+    ];
     let fill_stats = move |stats: &LibraryStats| {
         size_row.set_subtitle(&format!(
             "{} · {}",
@@ -226,37 +245,90 @@ pub fn present(window: &SharprWindow) {
             "None".into()
         } else {
             format!(
-                "{} · kept as members until they turn up",
+                "{} · removed after the next full scan unless they are in the trash or on an unplugged drive",
                 images(stats.bucket_missing)
             )
         });
     };
 
+    // The figures are counted on a worker when the dialog opens and again
+    // every 30 seconds while it stays open, one count at a time; the
+    // library group says when they were taken.
     let index = window.app_state().borrow().library_index.clone();
     if let (false, Some(index)) = (roots.is_empty(), index) {
-        let (tx, rx) = async_channel::bounded(1);
-        let vector_file = crate::visual_search::store::default_path();
-        std::thread::spawn(move || {
-            let _ = tx.send_blocking(crate::library_overview::gather(
-                &index,
-                &roots,
-                &disabled,
-                library_id.as_deref(),
-                &vector_file,
-            ));
-        });
-        let dialog_weak = dialog.downgrade();
-        glib::MainContext::default().spawn_local(async move {
-            let Ok(result) = rx.recv().await else { return };
-            if dialog_weak.upgrade().is_none() {
-                return;
-            }
-            match result {
-                Ok(stats) => fill_stats(&stats),
-                Err(error) => {
-                    crate::bench_warn!("library_overview.fail", serde_json::json!({"error": error}))
+        let counting = Rc::new(Cell::new(false));
+        let gather = {
+            let dialog = dialog.downgrade();
+            let library = library.clone();
+            let fill_stats = Rc::new(fill_stats);
+            move || {
+                if counting.replace(true) {
+                    return;
                 }
+                let (tx, rx) = async_channel::bounded(1);
+                let vector_file = crate::visual_search::store::default_path();
+                let (index, roots, disabled, library_id) = (
+                    index.clone(),
+                    roots.clone(),
+                    disabled.clone(),
+                    library_id.clone(),
+                );
+                std::thread::spawn(move || {
+                    let _ = tx.send_blocking(crate::library_overview::gather(
+                        &index,
+                        &roots,
+                        &disabled,
+                        library_id.as_deref(),
+                        &vector_file,
+                    ));
+                });
+                let (dialog, library, fill_stats, stats_rows, roots_shown, counting) = (
+                    dialog.clone(),
+                    library.clone(),
+                    fill_stats.clone(),
+                    stats_rows.clone(),
+                    roots_shown.clone(),
+                    counting.clone(),
+                );
+                glib::MainContext::default().spawn_local(async move {
+                    let result = rx.recv().await;
+                    counting.set(false);
+                    let Ok(result) = result else { return };
+                    if dialog.upgrade().is_none() {
+                        return;
+                    }
+                    match result {
+                        Ok(stats) => {
+                            fill_stats(&stats);
+                            let time = glib::DateTime::now_local()
+                                .and_then(|now| now.format("%H:%M"))
+                                .map(|t| t.to_string())
+                                .unwrap_or_default();
+                            library.set_description(Some(&format!(
+                                "{roots_shown}\nCounted at {time}; counted again every 30 seconds"
+                            )));
+                        }
+                        Err(error) => {
+                            crate::bench_warn!(
+                                "library_overview.fail",
+                                serde_json::json!({"error": error})
+                            );
+                            for row in &stats_rows {
+                                row.set_subtitle(&format!("Couldn't be counted: {error}"));
+                            }
+                        }
+                    }
+                });
             }
+        };
+        gather();
+        let dialog = dialog.downgrade();
+        glib::timeout_add_seconds_local(RECOUNT_SECONDS, move || {
+            if dialog.upgrade().is_none() {
+                return glib::ControlFlow::Break;
+            }
+            gather();
+            glib::ControlFlow::Continue
         });
     }
 
@@ -266,12 +338,18 @@ pub fn present(window: &SharprWindow) {
             let Some(window) = window.upgrade() else {
                 return;
             };
-            let failed = |n: usize| {
-                if n == 0 {
-                    String::new()
-                } else {
-                    format!(" · {} couldn't be read", count(n))
+            let failed = |c: Coverage| {
+                let mut text = String::new();
+                if c.failed > 0 {
+                    text.push_str(&format!(" · {} couldn't be read", count(c.failed)));
                 }
+                if c.unsupported > 0 {
+                    text.push_str(&format!(
+                        " · {} in formats not supported yet (AVIF, HEIC)",
+                        count(c.unsupported)
+                    ));
+                }
+                text
             };
             let (coverage, activity) = match window.visual_search_status() {
                 None | Some(Status::Waiting) => (
@@ -300,7 +378,7 @@ pub fn present(window: &SharprWindow) {
                             "{} of {}{}",
                             count(c.indexed),
                             images(c.images),
-                            failed(c.failed)
+                            failed(c)
                         ),
                         activity,
                     )
@@ -326,7 +404,7 @@ pub fn present(window: &SharprWindow) {
                             "{} of {}{}",
                             count(c.indexed),
                             images(c.images),
-                            failed(c.failed)
+                            failed(c)
                         ),
                         format!("Idle{finished}"),
                     )
