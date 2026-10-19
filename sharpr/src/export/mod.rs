@@ -543,12 +543,19 @@ where
 const MAX_DECODE_BYTES: u64 = 3 << 30;
 
 /// The whole image in its displayed orientation. libjxl orients JPEG XL
-/// itself; other formats follow their EXIF orientation.
+/// and glycin AVIF and HEIC itself; other formats follow their EXIF
+/// orientation.
 pub fn decode_oriented(source: &Path) -> Result<image::DynamicImage, ResizeError> {
     if crate::jxl::is_jxl_path(source) {
         // libjxl applies the orientation itself, outside the limits below.
         crate::jxl::check_decode_budget(source).map_err(ResizeError::Decode)?;
         return crate::jxl::decode_path(source).map_err(ResizeError::Decode);
+    }
+    // The `image` crate reads neither AVIF nor HEIC; glycin checks the size
+    // against the same budget before decoding (Compare, item 32).
+    if let Some(format) = crate::visual_search::prepare::heif_format(source) {
+        return crate::visual_search::prepare::decode_with_glycin(source, format)
+            .map_err(ResizeError::Decode);
     }
     let mut reader = image::ImageReader::open(source)
         .and_then(|reader| reader.with_guessed_format())

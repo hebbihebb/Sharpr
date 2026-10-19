@@ -283,9 +283,11 @@ impl ComparePage {
         std::thread::spawn(move || {
             #[cfg(test)]
             let _probe = probe::enter();
+            let decoded = decode_image(&worker_path, tier);
             // The summary reads the header and EXIF: off the GTK thread too.
-            let text = (tier == Tier::Preview).then(|| summary(&worker_path));
-            let _ = tx.send_blocking((text, decode_image(&worker_path, tier)));
+            let text = (tier == Tier::Preview)
+                .then(|| summary(&worker_path, decoded.as_ref().ok().map(|image| image.image)));
+            let _ = tx.send_blocking((text, decoded));
         });
         let weak = self.downgrade();
         glib::MainContext::default().spawn_local(async move {
@@ -385,11 +387,14 @@ impl Default for ComparePage {
     }
 }
 
-/// Size and format; the filename above it names the image.
-fn summary(path: &Path) -> String {
+/// Size and format; the filename above it names the image. The decoded
+/// size stands in when the header can't be read (AVIF and HEIC).
+fn summary(path: &Path, decoded: Option<(u32, u32)>) -> String {
     let size = crate::export::oriented_source_dimensions(path)
+        .ok()
+        .or(decoded)
         .map(|(w, h)| format!("{w} × {h}"))
-        .unwrap_or_else(|_| "size unknown".into());
+        .unwrap_or_else(|| "size unknown".into());
     format!("{size} · {}", compare_asset_format(path))
 }
 
@@ -756,5 +761,34 @@ mod tests {
         let error = decode_image(&path, Tier::Full).err().unwrap();
         assert!(error.contains("Could not load"));
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// Work Order item 32: AVIF and HEIC open in Compare through glycin,
+    /// and the summary gives their size though the header can't be read.
+    #[test]
+    fn avif_and_heic_decode_with_their_size() {
+        for (mime, name) in [("image/avif", "avif"), ("image/heif", "heic")] {
+            let path = test_path("green").with_extension(name);
+            crate::visual_search::prepare::encode_with_glycin(
+                mime,
+                &path,
+                (1600, 900),
+                [20, 200, 40],
+            );
+            let full = decode_image(&path, Tier::Full).unwrap();
+            assert_eq!((full.width, full.height), (1600, 900), "{name}");
+            let middle = ((450 * 1600 + 800) * 4) as usize;
+            let [r, g, b, _] = full.pixels[middle..middle + 4] else {
+                unreachable!()
+            };
+            assert!(g > 150 && r < 80 && b < 90, "{name}: {r},{g},{b}");
+            let preview = decode_image(&path, Tier::Preview).unwrap();
+            assert_eq!(preview.image, (1600, 900), "{name}");
+            assert!(
+                summary(&path, Some(preview.image)).starts_with("1600 × 900"),
+                "{name}"
+            );
+            std::fs::remove_file(path).unwrap();
+        }
     }
 }

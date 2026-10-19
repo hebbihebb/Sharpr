@@ -805,6 +805,8 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 29 | Similar-image count in Info (user, October 19), the companion to item 28: the Info panel says how many similar images or close matches the image has (for example "38 similar images"), and clicking it shows them through item 28's similarity search. Replaces the earlier "short image descriptions" idea, which conflicted with "No generated tags". Do it after item 28 | Sonnet medium |
 | 30 | ~~AVIF and HEIC show no filmstrip thumbnail~~ **Done October 19, 2026**, accepted by the user (build `637d98f`): the thumbnail worker decodes them through glycin's HEIF loader, as visual search does | Sonnet high (done by Opus) |
 | 31 | ~~Retire Survey (D43)~~ **Done October 19, 2026**, accepted by the user (build `8343c3c`) | Sonnet medium (done by Opus) |
+| 32 | Bug (user, October 19): AVIF and HEIC images don't load in Compare ("The image format Avif is not supported"), though their candidate thumbnails show. Compare decodes through `export::decode_oriented`, which used only the `image` crate | Sonnet medium (done by Opus) |
+| 33 | Compare layout redesign (user, October 19): the filename/Keep rows, the Replace Left/Right control and the candidate thumbnails sit off to the sides, which is confusing. Centre the controls and candidate strip under the images, and make the Replace control contextual. Design with the user before building | Opus medium |
 
 Audit fixes `codex/audit-0.5.0-2` (A01–A09): **Done October 19, 2026**,
 accepted by the user and merged. Cleanup now retains uncertain members, legacy
@@ -894,7 +896,14 @@ Open items only; the table above has the order and the model. Each brief adds on
 - **Done when:** the image menu, Shortcuts help, manual, README and reference docs no longer mention Survey; its page, controller, styles and tests are removed; the GTK tests and `./check.sh` pass.
 - **Guardrails:** Survey stored nothing, so no data changes. Keep Compare, multi-select and the selection-ordering helpers that other features still use. Remove dead code, but rewrite nothing else.
 
+**33. Compare layout redesign.**
+- **Goal:** Compare's controls read at a glance: the Keep buttons, the candidate strip and the remaining count are centred under the images, and replacing a side is offered only in context, not as a standing Left/Right toggle.
+- **Done when:** the user has approved a layout (sketch or off-screen screenshot) and the built page matches it in Side by Side, Split and Flip at the minimum and wide window sizes; Keep, Undo, Done, the arrow keys and the survivors returned stay as they are; the Compare GTK tests pass.
+- **Guardrails:** the user's call on the layout and on what "contextual" means for Replace (for example, choosing a candidate offers which side it replaces). Keep Compare's bounded decodes, its thumbnail lane and its generation checks. No file changes from Compare.
+
 ## Backlog
+
+- AVIF and HEIC sizes (user's library, October 19, found with item 32): the `image` crate can't read their headers, so these images have no stored width and height. The resolution filters and the Library Overview's below-4K count skip them, and Crop Copy refuses them ("Could not read image dimensions"; it also has no AVIF encoder for the source-format rule, D37). Reading the size through glycin on the metadata worker would fix the first two.
 
 Optional. Pick something up only when a phase touches that area, or the user asks. The suggested order and model are in the table above.
 
