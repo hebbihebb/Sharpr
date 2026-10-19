@@ -874,7 +874,7 @@ fn rapid_navigation_and_folder_switch_preserve_latest_view() {
     pump_until(|| scroll.page_size() > 0.0 && scroll.upper() > scroll.page_size());
     for fraction in [0.0, 0.8, 0.2, 1.0, 0.4, 0.0] {
         scroll.set_value((scroll.upper() - scroll.page_size()) * fraction);
-        settle(50);
+        drain_main_loop();
     }
     for i in (0..5000).step_by(97).rev() {
         filmstrip.navigate_to(i);
@@ -883,15 +883,19 @@ fn rapid_navigation_and_folder_switch_preserve_latest_view() {
     open(second.clone());
     open(first.clone());
     open(second.clone());
+    // The last folder asked for has finished loading, so the earlier opens
+    // can no longer replace its rows.
     pump_until(|| {
         let st = window.imp().state.borrow();
-        st.library.current_folder == Some(second.clone()) && st.library.image_count() == 40
+        st.library.current_folder == Some(second.clone())
+            && st.library.image_count() == 40
+            && !st.library.is_loading_folder()
     });
     for i in (0..40).rev() {
         filmstrip.navigate_to(i);
     }
-    let settled = std::time::Instant::now() + std::time::Duration::from_millis(400);
-    pump_until(|| std::time::Instant::now() > settled);
+    pump_until(|| window.imp().state.borrow().library.selected_index == Some(0));
+    drain_main_loop();
     let st = window.imp().state.borrow();
     assert_eq!(st.scope, ViewScope::Folder(second.clone()));
     assert_eq!(st.library.image_count(), 40);
@@ -2180,6 +2184,12 @@ fn find_widgets<T: IsA<gtk4::Widget>>(root: &gtk4::Widget) -> Vec<T> {
         child = c.next_sibling();
     }
     found
+}
+
+/// Runs every event the main loop has ready, without waiting for more.
+fn drain_main_loop() {
+    let context = glib::MainContext::default();
+    while context.iteration(false) {}
 }
 
 fn settle(ms: u64) {
