@@ -805,7 +805,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 29 | Similar-image count in Info (user, October 19), the companion to item 28: the Info panel says how many similar images or close matches the image has (for example "38 similar images"), and clicking it shows them through item 28's similarity search. Replaces the earlier "short image descriptions" idea, which conflicted with "No generated tags". Do it after item 28 | Sonnet medium |
 | 30 | ~~AVIF and HEIC show no filmstrip thumbnail~~ **Done October 19, 2026**, accepted by the user (build `637d98f`): the thumbnail worker decodes them through glycin's HEIF loader, as visual search does | Sonnet high (done by Opus) |
 | 31 | ~~Retire Survey (D43)~~ **Done October 19, 2026**, accepted by the user (build `8343c3c`) | Sonnet medium (done by Opus) |
-| 32 | Bug (user, October 19): AVIF and HEIC images don't load in Compare ("The image format Avif is not supported"), though their candidate thumbnails show. Compare decodes through `export::decode_oriented`, which used only the `image` crate | Sonnet medium (done by Opus) |
+| 32 | ~~AVIF and HEIC don't load in Compare~~ **Done October 19, 2026**, accepted by the user (build `e24032b`): `export::decode_oriented` decodes them through glycin | Sonnet medium (done by Opus) |
 | 33 | Compare layout redesign (user, October 19): the filename/Keep rows, the Replace Left/Right control and the candidate thumbnails sit off to the sides, which is confusing. Centre the controls and candidate strip under the images, and make the Replace control contextual. Design with the user before building | Opus medium |
 
 Audit fixes `codex/audit-0.5.0-2` (A01–A09): **Done October 19, 2026**,

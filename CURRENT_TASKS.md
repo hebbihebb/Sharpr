@@ -1,6 +1,6 @@
 # Current Tasks
 
-## Active: AVIF and HEIC in Compare (Work Order item 32)
+## Accepted: AVIF and HEIC in Compare (Work Order item 32)
 
 Branch `fix/compare-avif`. `export::decode_oriented` decodes AVIF and
 HEIC/HEIF through glycin (`prepare::decode_with_glycin`), so Compare shows
@@ -9,6 +9,7 @@ path. Compare's summary takes the decoded size when the header can't be
 read. Test: glycin-written AVIF and HEIC decode at full size and the right
 colour, with "1600 × 900" in the summary (fails without the fix). Item 33
 (Compare layout redesign) and a Backlog note on AVIF/HEIC sizes added.
+Deployed as `e24032b`; accepted by the user October 19 and merged to `main`.
 
 ## Accepted: retire Survey (Work Order item 31, D43)
 
