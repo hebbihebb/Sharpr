@@ -114,7 +114,7 @@ fn build_edit_buckets_group(parent: &SharprWindow) -> libadwaita::PreferencesGro
     let row = libadwaita::SwitchRow::new();
     row.set_title("Collect Edits in Buckets");
     row.set_subtitle(
-        "Crop Copy, WebP export and Duplicate add the original and the copy to \
+        "Crop Copy, export and Duplicate add the original and the copy to \
          Edits › Cropped, Exported or Duplicated, ready to compare",
     );
     row.set_active(parent.app_state().borrow().settings.edit_buckets);

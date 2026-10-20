@@ -61,7 +61,7 @@ removed means the control is absent, with stored user data retained.
 | Buckets | Drag images onto a bucket | Kept; same background writer as picker and repeat | D5, D31 |
 | Buckets | Add to Bucket picker / New Bucket inside picker | Kept as a compact click-away picker | D25, D27 |
 | Buckets | Add to last bucket / Ctrl+Shift+B | Added, named in image menu and persisted with library identity | D31 |
-| Buckets | Edits › Cropped / Exported / Duplicated | Added: Crop Copy, WebP export and Duplicate add the original and the copy; Preferences switch turns it off | D35 |
+| Buckets | Edits › Cropped / Exported / Duplicated | Added: Crop Copy, export and Duplicate add the original and the copy; Preferences switch turns it off | D35 |
 | Buckets | Import/export controls | Removed from Preferences; membership data stays intact | D11, D32 |
 | Image menu | Filmstrip right-click / Shift+F10 / Menu key | Kept, compact, with the current image/selection context | D21, D27 |
 | Image menu | Viewer right-click | Added using exactly the filmstrip menu and action group | D30, D33 |
@@ -72,7 +72,7 @@ removed means the control is absent, with stored user data retained.
 | Image menu | Show in File Manager | Kept | D21 |
 | Image menu | Copy to Clipboard / Ctrl+C | Kept; the menu decodes off-thread with newest-request protection and visible errors; GTK provides the viewer’s Ctrl+C; Compare has its own shortcut | D21, D29 |
 | Image menu | Crop Copy | Kept for one image, in the viewer | D28 |
-| Image menu | Export as WebP / Ctrl+E | Kept for one or many images | D13 |
+| Image menu | Export / Ctrl+E | PNG default; PNG / WebP / Original for one or many images | D13, D47 |
 | Image menu | Add / remove bucket membership | Kept in the shared menu and writer | D5, D31 |
 | Image menu | Copy/Move to Folder | Kept under File Actions; Move carries bucket membership and legacy tags and avoids retained names; disabled while reviewing/cropping | D21, D28 |
 | Image menu | Rename/F2 and Duplicate/Ctrl+D | Kept under File Actions for one image; Rename is a sheet with the name focused and the extension as a fixed chip (D40), and carries bucket membership and legacy tags and refuses retained names; Duplicate and Copy to Folder exclusively create unique outputs, never replacing files or links | D21 |
@@ -95,11 +95,11 @@ removed means the control is absent, with stored user data retained.
 | Compare | Count / Undo / Done | Kept; the remaining count sits beside the candidate row; Ctrl+Z and Escape in the tooltips; the key-hints line is removed | D28, D45 |
 | Survey | Grid, dismiss, Undo and Done | Removed; Compare narrows a selection | D30, D43 |
 | Crop | Small preview dialog | Replaced by the full viewer canvas | D28 |
-| Crop | 16:9/Free / live dimensions / destination | Kept in the contextual bar | D28 |
+| Crop | 16:9/Free / live dimensions / format / destination | Kept in the contextual bar | D28 |
 | Crop | Drag selection/corners and key hints | Kept; hints below canvas | D28 |
-| Crop | Cancel/Escape and Save Copy/Enter | Kept; unique source-format copy, original untouched; JPEG, AVIF and HEIC re-encoded at maximum quality | D28, D37 |
+| Crop | Cancel/Escape and Save Copy/Enter | PNG default, explicit WebP/Original, unique copy and original untouched; format-specific precision guidance | D28, D37, D47 |
 | Export | Folder / chooser / Wallpapers | Kept in one in-window sheet through native chooser Select/Cancel | D13, D25 |
-| Export | Lossless / lossy quality / optional fit dimensions | Kept; only downscales | D13 |
+| Export | Format / WebP lossless and quality / optional fit dimensions | PNG default; Original resolves per source; WebP-only options conditional; only downscales | D13, D47 |
 | Export | Export / Cancel / Escape / click-away | Kept; one start path and cancellation path | D25 |
 | Export | Progress/cancel/result notice | Kept; completed outputs survive cancellation, partials do not | D13 |
 | Copies | Find Copies / progress / close | Kept in Library; exact and indexed resized/converted copies | D14 |

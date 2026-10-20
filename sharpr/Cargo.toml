@@ -25,6 +25,8 @@ gdk4 = { version = "0.11", features = ["v4_16"] }
 pango = { version = "0.22", features = ["v1_56"] }
 
 # Image decoding and thumbnail generation (pure Rust, thread-safe)
+# Already bundled through image; direct access preserves PNG color metadata (D47).
+png = "0.18"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp", "ico"] }
 jpegxl-rs = { version = "0.14.0", features = ["vendored"] }
 jpegxl-sys = { version = "0.12.1", features = ["vendored"] }

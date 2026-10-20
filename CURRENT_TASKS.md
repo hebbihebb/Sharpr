@@ -1,44 +1,42 @@
 # Current Tasks
 
-## Planned: PNG defaults for crop and export (D47, Work Order item 38)
+## Implemented: PNG defaults for crop and export (D47, Work Order item 38)
 
-Branch `codex/png-output-plan`, from a clean `main` at `35f56fe`.
-The user approved PNG as the default for Crop Copy and single/batch export,
-with explicit WebP and Original format choices in both (October 20).
-The roadmap brief covers filmstrip/viewer menus, Ctrl+E, guide-based crop,
-Ctrl+Shift+G, mouse/keyboard save and cancel, mixed batches, legacy settings,
-format/depth/profile handling, naming, Edits buckets and all help surfaces.
-Duplicate, file copy/move, clipboard and internal image preparation keep
-separate semantics. Implementation has not started; the running app still
-exports WebP and crops to the source format (D37).
+Branch `codex/png-output`, including the D47 plan (`79e35db`).
+PNG is the initial crop/export default; explicit PNG / WebP / Original
+choices are remembered separately. Legacy destination, quality and fit
+settings remain. Both operations share the encoders and safe writers;
+Original resolves per image, and WebP-only controls are conditional.
+Menus, Ctrl+E, guide/keyboard crop, fullscreen, labels, export icon and help
+are updated. File copy/move, Duplicate and clipboard stay separate.
 
-Research context: an 8-bit PNG/lossless-WebP comparison had identical pixels;
-three controlled SeedVR tests did not conclusively reproduce the discarded
-problem outputs. PNG is the approved preparation policy, not a confirmed
-fix for SeedVR banding. PNG supports 16-bit samples, but the inspected
-ComfyUI workflow loads and saves color images at 8-bit.
+PNG retains decoded 8/16-bit samples, alpha, compatible raster ICC profiles
+and PNG color-definition chunks. Incompatible ICC color models and float
+samples fail explicitly. JPEG XL/AVIF/HEIC profile metadata is not retained;
+AVIF/HEIC decode at 8-bit. These limits are shown beside the format choice.
+The direct `png` dependency reuses the already bundled crate; the regenerated
+Flatpak source list is unchanged. No data migration or new crate was added.
 
-The decision and coverage are recorded in the roadmap and product log;
-agent instructions distinguish the planned policy from current behavior.
-Verified: `git diff --check`, decision/task IDs and referenced paths, and
-`cargo build --offline --locked`. Documentation only; nothing deployed.
-Work Order priority is unchanged; item 38 follows item 37. Next for this
-feature: implement item 38 on its own branch, then run its acceptance checks.
+Verified: `./check.sh` (330 tests, strict clippy, deny, machete),
+independent Python PNG decode of exact 16-bit crop pixels/alpha/ICC, and the
+all 43 off-screen GTK workflows (32 passed in the full run, then the last
+11 passed after updating the stale WebP-icon expectation). One independent
+review found ICC mismatch and gamma-loss cases;
+both have fixes and regression tests. Screenshots and check log are under
+`.tmp/png-output/`. Nothing deployed or accepted yet.
+
+PNG is a preparation policy, not a confirmed fix for the discarded SeedVR
+banding examples. Work Order priority is unchanged. The verified candidate is committed on
+its branch for user acceptance; no merge/push/deploy,
+as specified by the Work Order's standard effort.
 
 ## Recently accepted and merged
 
-- Compare layout (item 33, D45/D46): image-corner captions, mirrored Keep
-  controls, centered candidate strip with L/R halves, per-side errors.
-  Deployed `a4ff062`, accepted October 19. `./check.sh` (323 tests) and all
-  42 off-screen GTK tests passed.
-- Close-images count in Info (item 29): counts standout neighbors and versions
-  elsewhere; opens Show Similar at Close over the whole library. Includes
-  the focus fix that keeps results open. Deployed `fed0396`, accepted
-  October 19. `./check.sh` (323) and all 41 GTK tests passed.
-- Show Similar (item 28, D44): ranked stored-vector search with nested
-  Exact / Close / Similar and explicit library scope. Deployed `cdd57bd`,
-  accepted October 19. Verification and behavior are recorded in the roadmap.
-- Compare zoom floor and AVIF/HEIC Crop Copy (items 35/34): Fit is the zoom
-  floor; glycin reads sizes and writes source-format crops at quality 100,
-  8-bit. Deployed `d275c54`, accepted October 19. Format/region/original-byte
-  regressions passed. D47 retains these encoders under Original.
+- Compare layout (item 33, D45/D46): deployed `a4ff062`, accepted October 19;
+  `./check.sh` (323 tests) and 42 off-screen GTK tests passed.
+- Close-images count in Info (item 29): deployed `fed0396`, accepted October 19,
+  including the focus fix that keeps Show Similar results open.
+- Show Similar (item 28, D44): deployed `cdd57bd`, accepted October 19;
+  ranked stored-vector search with nested Exact / Close / Similar levels.
+- Compare zoom floor and AVIF/HEIC Crop Copy (items 35/34): deployed `d275c54`,
+  accepted October 19. Source-format encoders remain under Original (D47).

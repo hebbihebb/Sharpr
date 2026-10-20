@@ -27,7 +27,7 @@ type InfoRequestedCallback = Box<dyn Fn(PathBuf) + 'static>;
 pub enum CopyKind {
     /// Crop the clicked image.
     Crop,
-    /// Export the clicked image, or the selection, as WebP (Phase 6).
+    /// Export the clicked image, or the selection, in the chosen format (D47).
     Export,
 }
 type ActionSelectionChangedCallback = Box<dyn Fn(usize) + 'static>;
@@ -53,7 +53,7 @@ fn menu_item(label: &str, action: &str, accel: Option<&str>) -> gio::MenuItem {
         "filmstrip.remove-from-collection" => Some("sharpr-bucket-symbolic"),
         "win.compare" => Some("sharpr-compare-symbolic"),
         "filmstrip.crop-copy" => Some("sharpr-crop-symbolic"),
-        "filmstrip.export-webp" => Some("sharpr-webp-symbolic"),
+        "filmstrip.export" => Some("sharpr-export-symbolic"),
         _ => None,
     };
     if let Some(icon) = icon {
@@ -107,8 +107,8 @@ fn build_context_menu_model(
         image.append_item(&menu_item("Crop Copy\u{2026}", "filmstrip.crop-copy", None));
     }
     image.append_item(&menu_item(
-        "Export as WebP\u{2026}",
-        "filmstrip.export-webp",
+        "Export\u{2026}",
+        "filmstrip.export",
         Some("<Control>e"),
     ));
     menu.append_section(None, &image);
@@ -1016,10 +1016,7 @@ impl FilmstripPane {
         }
         group.add_action(&show_similar);
 
-        for (name, kind) in [
-            ("crop-copy", CopyKind::Crop),
-            ("export-webp", CopyKind::Export),
-        ] {
+        for (name, kind) in [("crop-copy", CopyKind::Crop), ("export", CopyKind::Export)] {
             let action = gio::SimpleAction::new(name, None);
             let w = self.downgrade();
             action.connect_activate(move |_, _| {
@@ -1867,7 +1864,7 @@ impl FilmstripPane {
     /// full multi-selection if more than one item is selected, otherwise the
     /// single currently focused image.
     /// Opens the bucket picker for the current selection (Ctrl+B).
-    /// Opens WebP export for the current selection (Ctrl+E).
+    /// Opens export for the current selection (Ctrl+E).
     pub fn request_export_selection(&self) -> bool {
         let paths = self.selected_paths_for_action();
         if paths.is_empty() {

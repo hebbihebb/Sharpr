@@ -1,5 +1,5 @@
-//! Batch WebP export (`ROADMAP.md` Phase 6, decision D13): the selection,
-//! as WebP files in one folder, lossless by default, optionally fitted
+//! Batch export (D47): PNG, WebP or each source format in one folder,
+//! PNG by default, optionally fitted
 //! within a box that only ever shrinks images.
 //!
 //! Originals are only read. Each output gets a new, unique name
@@ -11,12 +11,13 @@ use std::path::{Path, PathBuf};
 
 use image::imageops::FilterType;
 
-use super::{decode_oriented, webp_bytes, Pending, WEBP_MAX_DIMENSION};
+use super::{decode_oriented, OutputFormat, Pending, WEBP_MAX_DIMENSION};
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct WebpOptions {
+pub struct ExportOptions {
+    pub format: OutputFormat,
     pub destination: PathBuf,
-    /// Lossless keeps every pixel; otherwise `quality` (1–100) applies.
+    /// For explicit WebP: lossless preserves decoded 8-bit pixels; otherwise quality applies.
     pub lossless: bool,
     pub quality: u8,
     /// Shrink to fit within this width × height, keeping the aspect ratio.
@@ -50,9 +51,9 @@ pub fn fit_within((width, height): (u32, u32), (max_w, max_h): (u32, u32)) -> (u
 /// Exports `sources` one after another. `progress(done, total)` follows
 /// each image; `canceled` is checked between images and before an image's
 /// output is kept, so cancelling never leaves a partial file.
-pub fn export_webp(
+pub fn export_images(
     sources: &[PathBuf],
-    options: &WebpOptions,
+    options: &ExportOptions,
     canceled: &dyn Fn() -> bool,
     progress: &dyn Fn(usize, usize),
 ) -> BatchReport {
@@ -82,13 +83,14 @@ pub fn export_webp(
         progress(i + 1, sources.len());
     }
     crate::bench_event!(
-        "export.webp.batch",
+        "export.batch",
         serde_json::json!({
             "sources": sources.len(),
             "written": report.written.len(),
             "failed": report.failed.len(),
             "canceled": report.canceled,
             "lossless": options.lossless,
+            "format": options.format.key(),
         }),
     );
     report
@@ -97,16 +99,18 @@ pub fn export_webp(
 /// One image; `Ok(None)` when cancelled before its output was kept.
 fn export_one(
     source: &Path,
-    options: &WebpOptions,
+    options: &ExportOptions,
     canceled: &dyn Fn() -> bool,
 ) -> Result<Option<PathBuf>, String> {
+    let format = options.format.resolve(source).map_err(|e| e.to_string())?;
+    let extension = format.extension(source);
     let image = decode_oriented(source).map_err(|e| e.to_string())?;
     let size = (image.width(), image.height());
     let target = options
         .fit
         .map(|bounds| fit_within(size, bounds))
         .unwrap_or(size);
-    if target.0 > WEBP_MAX_DIMENSION || target.1 > WEBP_MAX_DIMENSION {
+    if extension == "webp" && (target.0 > WEBP_MAX_DIMENSION || target.1 > WEBP_MAX_DIMENSION) {
         return Err(format!(
             "{}×{} is larger than WebP allows ({WEBP_MAX_DIMENSION} pixels per side); \
              export it with Fit Within",
@@ -118,8 +122,10 @@ fn export_one(
     } else {
         image.resize_exact(target.0, target.1, FilterType::Lanczos3)
     };
-    let encoded =
-        webp_bytes(&image, options.lossless, options.quality).map_err(|e| e.to_string())?;
+    let encoded = options
+        .format
+        .encode(source, &image, options.lossless, options.quality)
+        .map_err(|e| e.to_string())?;
     drop(image);
 
     let stem = source
@@ -131,9 +137,9 @@ fn export_one(
     let destination = options.destination.clone();
     let mut pending = Pending::reserve(move |suffix| {
         destination.join(if suffix == 0 {
-            format!("{stem}.webp")
+            format!("{stem}.{extension}")
         } else {
-            format!("{stem}-{suffix}.webp")
+            format!("{stem}-{suffix}.{extension}")
         })
     })
     .map_err(|e| e.to_string())?;
@@ -149,6 +155,220 @@ fn export_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn png_crop_and_export_preserve_sixteen_bit_gradient_alpha_and_icc() {
+        use image::{ImageDecoder, ImageEncoder};
+        let dir = temp_dir("png-depth-profile");
+        let source = dir.join("gradient.png");
+        let pixels = image::RgbaImage::from_fn(96, 54, |x, y| {
+            image::Rgba([x as u8, y as u8, (x + y) as u8, 255])
+        });
+        let pixels = image::DynamicImage::ImageRgba8(pixels).to_rgba16();
+        let pixels = image::ImageBuffer::from_fn(96, 54, |x, y| {
+            let mut p = *pixels.get_pixel(x, y);
+            p.0[0] += (x % 255) as u16;
+            p.0[3] = (x * 500 + y * 100) as u16;
+            p
+        });
+        let icc = include_bytes!("../../tests/assets/srgb.icc").to_vec();
+        let mut encoder =
+            image::codecs::png::PngEncoder::new(std::fs::File::create(&source).unwrap());
+        encoder.set_icc_profile(icc.clone()).unwrap();
+        image::DynamicImage::ImageRgba16(pixels.clone())
+            .write_with_encoder(encoder)
+            .unwrap();
+        let before = std::fs::read(&source).unwrap();
+        let out = dir.join("out");
+        let mut opts = options(&out);
+        opts.format = OutputFormat::default();
+        opts.lossless = false; // A legacy lossy WebP setting must not affect PNG.
+        let report = export_images(std::slice::from_ref(&source), &opts, &|| false, &|_, _| {});
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        assert_eq!(report.written, vec![out.join("gradient.png")]);
+        let rect = super::super::CropRect {
+            x: 7,
+            y: 5,
+            width: 64,
+            height: 36,
+        };
+        let crop = super::super::crop_copy(&super::super::CropConfig {
+            source: source.clone(),
+            destination_dir: out.clone(),
+            rectangle: rect,
+            format: OutputFormat::Png,
+        })
+        .unwrap()
+        .output;
+        for (path, expected) in [
+            (&report.written[0], pixels.clone()),
+            (
+                &crop,
+                image::imageops::crop_imm(&pixels, 7, 5, 64, 36).to_image(),
+            ),
+        ] {
+            let actual = image::open(path).unwrap();
+            assert_eq!(actual.color(), image::ColorType::Rgba16);
+            assert_eq!(actual.to_rgba16(), expected);
+            let mut decoder = image::ImageReader::open(path)
+                .unwrap()
+                .into_decoder()
+                .unwrap();
+            assert_eq!(decoder.icc_profile().unwrap(), Some(icc.clone()));
+            assert_eq!(
+                decoder.orientation().unwrap(),
+                image::metadata::Orientation::NoTransforms
+            );
+        }
+        assert_eq!(std::fs::read(&source).unwrap(), before);
+        // Keep this fixture only when explicitly requested for an independent decoder check.
+        if let Some(destination) = std::env::var_os("SHARPR_OUTPUT_ORACLE") {
+            std::fs::create_dir_all(&destination).unwrap();
+            std::fs::copy(&source, Path::new(&destination).join("source.png")).unwrap();
+            std::fs::copy(&crop, Path::new(&destination).join("crop.png")).unwrap();
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn formats_handle_mixed_sources_names_failures_and_original_bytes() {
+        let dir = temp_dir("format-matrix");
+        let sources: Vec<_> = ["png", "jpg", "webp", "tiff", "bmp"]
+            .iter()
+            .map(|ext| {
+                let path = dir.join(format!("source.{ext}"));
+                pattern(64, 40).save(&path).unwrap();
+                path
+            })
+            .collect();
+        let before: Vec<_> = sources.iter().map(|p| std::fs::read(p).unwrap()).collect();
+        for format in [
+            OutputFormat::Png,
+            OutputFormat::Webp,
+            OutputFormat::Original,
+        ] {
+            let out = dir.join(format.key());
+            let mut opts = options(&out);
+            opts.format = format;
+            let report = export_images(&sources, &opts, &|| false, &|_, _| {});
+            assert!(report.failed.is_empty(), "{:?}", report.failed);
+            assert_eq!(report.written.len(), sources.len());
+            for (src, output) in sources.iter().zip(&report.written) {
+                let extension = if format == OutputFormat::Original {
+                    src.extension().unwrap().to_str().unwrap()
+                } else {
+                    format.key()
+                };
+                assert_eq!(output.extension().unwrap(), extension);
+                if extension != "jpg" {
+                    assert_eq!(
+                        image::open(output).unwrap().to_rgba8(),
+                        image::open(src).unwrap().to_rgba8()
+                    );
+                }
+                let crop = super::super::crop_copy(&super::super::CropConfig {
+                    source: src.clone(),
+                    destination_dir: out.clone(),
+                    format,
+                    rectangle: super::super::CropRect {
+                        x: 4,
+                        y: 3,
+                        width: 32,
+                        height: 18,
+                    },
+                })
+                .unwrap()
+                .output;
+                assert_eq!(crop.extension().unwrap(), extension);
+                assert_eq!(image::image_dimensions(crop).unwrap(), (32, 18));
+            }
+            let repeated = export_images(&sources, &opts, &|| false, &|_, _| {});
+            assert!(repeated.written.iter().all(|p| !report.written.contains(p)));
+        }
+        for (source, before) in sources.iter().zip(before) {
+            assert_eq!(std::fs::read(source).unwrap(), before);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn png_has_no_webp_limit_and_float_png_fails_without_partial_outputs() {
+        let dir = temp_dir("png-limits");
+        let wide = dir.join("wide.png");
+        pattern(WEBP_MAX_DIMENSION + 1, 1).save(&wide).unwrap();
+        let out = dir.join("out");
+        let mut opts = options(&out);
+        opts.format = OutputFormat::Png;
+        let report = export_images(std::slice::from_ref(&wide), &opts, &|| false, &|_, _| {});
+        assert_eq!(report.written.len(), 1);
+        opts.format = OutputFormat::Webp;
+        assert_eq!(
+            export_images(&[wide], &opts, &|| false, &|_, _| {})
+                .failed
+                .len(),
+            1
+        );
+        let source = dir.join("float.tiff");
+        image::DynamicImage::ImageRgb32F(image::Rgb32FImage::from_pixel(
+            32,
+            18,
+            image::Rgb([0.123, 1.4, 0.8]),
+        ))
+        .save(&source)
+        .unwrap();
+        let before = std::fs::read(&source).unwrap();
+        opts.format = OutputFormat::Png;
+        let report = export_images(std::slice::from_ref(&source), &opts, &|| false, &|_, _| {});
+        assert!(report.written.is_empty());
+        assert!(report.failed[0].1.contains("floating-point/HDR"));
+        assert_eq!(
+            std::fs::read_dir(&out).unwrap().count(),
+            1,
+            "only earlier wide PNG remains"
+        );
+        assert_eq!(std::fs::read(source).unwrap(), before);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn every_format_cleans_cancelled_partials_and_original_batches_keep_successes() {
+        let dir = temp_dir("format-cancel");
+        let source = dir.join("image.png");
+        pattern(32, 18).save(&source).unwrap();
+        for format in [
+            OutputFormat::Png,
+            OutputFormat::Webp,
+            OutputFormat::Original,
+        ] {
+            let out = dir.join(format.key());
+            let mut opts = options(&out);
+            opts.format = format;
+            // Allow the loop's initial check, cancel after encoding/writing.
+            let checks = std::cell::Cell::new(0);
+            let report = export_images(
+                std::slice::from_ref(&source),
+                &opts,
+                &|| {
+                    checks.set(checks.get() + 1);
+                    checks.get() > 1
+                },
+                &|_, _| {},
+            );
+            assert!(report.canceled);
+            assert!(report.written.is_empty());
+            assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+        }
+        let unsupported = dir.join("unsupported.ppm");
+        std::fs::write(&unsupported, b"P6\n1 1\n255\n\x00\x00\x00").unwrap();
+        let mut opts = options(&dir.join("mixed"));
+        opts.format = OutputFormat::Original;
+        let report = export_images(&[unsupported.clone(), source], &opts, &|| false, &|_, _| {});
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].0, unsupported);
+        assert_eq!(report.written.len(), 1);
+        assert_eq!(std::fs::read_dir(&opts.destination).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -169,8 +389,9 @@ mod tests {
         })
     }
 
-    fn options(destination: &Path) -> WebpOptions {
-        WebpOptions {
+    fn options(destination: &Path) -> ExportOptions {
+        ExportOptions {
+            format: OutputFormat::Webp,
             destination: destination.to_path_buf(),
             lossless: true,
             quality: 90,
@@ -193,7 +414,7 @@ mod tests {
         pattern(64, 40).save(&source).unwrap();
         let before = std::fs::read(&source).unwrap();
         let out = dir.join("out");
-        let report = export_webp(
+        let report = export_images(
             std::slice::from_ref(&source),
             &options(&out),
             &|| false,
@@ -223,7 +444,7 @@ mod tests {
         let mut opts = options(&out);
         opts.fit = Some((100, 100));
         opts.lossless = false;
-        let report = export_webp(&[big.clone(), broken.clone()], &opts, &|| false, &|_, _| {});
+        let report = export_images(&[big.clone(), broken.clone()], &opts, &|| false, &|_, _| {});
         assert_eq!(
             report.written,
             vec![out.join("big-1.webp")],
@@ -252,7 +473,7 @@ mod tests {
             .collect();
         let out = dir.join("out");
         let done = std::cell::Cell::new(0);
-        let report = export_webp(
+        let report = export_images(
             &sources,
             &options(&out),
             &|| done.get() >= 1,

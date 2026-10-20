@@ -1,6 +1,6 @@
-//! "Export as WebP…" (`ROADMAP.md` Phase 6, decision D13): where the
+//! "Export…" (`ROADMAP.md` Phase 6, decision D13): where the
 //! selection goes and how. The choices are remembered; the export itself
-//! runs in the background (`SharprWindow::start_webp_export`).
+//! runs in the background (`SharprWindow::start_export`).
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
 use crate::config::settings::{wallpapers_dir, WebpExportSettings};
-use crate::export::batch::WebpOptions;
+use crate::export::batch::ExportOptions;
 use crate::ui::window::SharprWindow;
 
 fn folder_label(dir: &std::path::Path) -> String {
@@ -67,9 +67,9 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
 
     let count = sources.len();
     let heading = gtk4::Label::new(Some(&if count == 1 {
-        "Export Image as WebP".to_string()
+        "Export Image".to_string()
     } else {
-        format!("Export {count} Images as WebP")
+        format!("Export {count} Images")
     }));
     heading.add_css_class("heading");
     heading.set_xalign(0.0);
@@ -85,30 +85,34 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
     dialog.set_content_width(460);
     dialog.set_presentation_mode(libadwaita::DialogPresentationMode::Floating);
 
-    let group = libadwaita::PreferencesGroup::new();
-    let folder_row = libadwaita::ActionRow::new();
-    folder_row.set_title("Folder");
-    folder_row.set_subtitle(&folder_label(&folder.borrow()));
-    folder_row.set_subtitle_lines(1);
-    folder_row.set_tooltip_text(Some(&folder.borrow().display().to_string()));
+    let group = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+    let format = super::output_format::picker(saved.format);
+    group.append(&super::output_format::row("Format", &format));
+    group.append(&super::output_format::note(
+        &format,
+        super::output_format::has_special_source(&sources),
+    ));
+    let folder_text = gtk4::Label::new(Some(&folder_label(&folder.borrow())));
+    folder_text.set_ellipsize(pango::EllipsizeMode::Middle);
+    folder_text.set_hexpand(true);
+    folder_text.set_xalign(0.0);
+    let folder_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    folder_row.append(&folder_text);
     let wallpapers = gtk4::Button::with_label("Wallpapers");
-    wallpapers.set_valign(gtk4::Align::Center);
     wallpapers.add_css_class("flat");
     wallpapers.set_tooltip_text(Some("Export to ~/Pictures/Wallpapers"));
     {
         let folder = folder.clone();
-        let row = folder_row.clone();
+        let text = folder_text.clone();
         wallpapers.connect_clicked(move |_| {
             *folder.borrow_mut() = wallpapers_dir();
-            row.set_subtitle(&folder_label(&folder.borrow()));
-            row.set_tooltip_text(Some(&folder.borrow().display().to_string()));
+            text.set_text(&folder_label(&folder.borrow()));
         });
     }
     let choose = gtk4::Button::with_label("Choose…");
-    choose.set_valign(gtk4::Align::Center);
     {
         let folder = folder.clone();
-        let row = folder_row.clone();
+        let text = folder_text.clone();
         let window = window.downgrade();
         choose.connect_clicked(move |_| {
             let Some(window) = window.upgrade() else {
@@ -117,50 +121,58 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
             let chooser = gtk4::FileDialog::new();
             chooser.set_initial_folder(Some(&gio::File::for_path(&*folder.borrow())));
             let folder = folder.clone();
-            let row = row.clone();
+            let text = text.clone();
             chooser.select_folder(Some(&window), None::<&gio::Cancellable>, move |result| {
                 if let Some(path) = result.ok().and_then(|file| file.path()) {
-                    row.set_subtitle(&folder_label(&path));
-                    row.set_tooltip_text(Some(&path.display().to_string()));
+                    text.set_text(&folder_label(&path));
                     *folder.borrow_mut() = path;
                 }
             });
         });
     }
-    folder_row.add_suffix(&wallpapers);
-    folder_row.add_suffix(&choose);
-    group.add(&folder_row);
-
-    let lossless = libadwaita::SwitchRow::new();
-    lossless.set_title("Lossless");
-    lossless.set_subtitle("Keeps every pixel; larger files");
+    folder_row.append(&wallpapers);
+    folder_row.append(&choose);
+    group.append(&folder_row);
+    let lossless = gtk4::CheckButton::with_label("Lossless WebP");
+    lossless.set_widget_name("export-lossless");
     lossless.set_active(saved.lossless);
-    group.add(&lossless);
-    let quality = libadwaita::SpinRow::with_range(1.0, 100.0, 1.0);
-    quality.set_title("Quality");
+    group.append(&lossless);
+    let quality = gtk4::SpinButton::with_range(1.0, 100.0, 1.0);
+    quality.set_widget_name("export-quality");
     quality.set_value(f64::from(saved.quality));
-    quality.set_sensitive(!saved.lossless);
-    lossless
-        .bind_property("active", &quality, "sensitive")
-        .invert_boolean()
-        .build();
-    group.add(&quality);
-
-    let fit = libadwaita::SwitchRow::new();
-    fit.set_title("Fit Within");
-    fit.set_subtitle("Shrinks larger images to fit; never enlarges");
+    let quality_row = super::output_format::row("WebP quality", &quality);
+    group.append(&quality_row);
+    let update_webp = {
+        let lossless = lossless.clone();
+        let quality_row = quality_row.clone();
+        move |picker: &gtk4::DropDown| {
+            let webp = super::output_format::selected(picker) == crate::export::OutputFormat::Webp;
+            lossless.set_visible(webp);
+            quality_row.set_visible(webp);
+            quality_row.set_sensitive(!lossless.is_active());
+        }
+    };
+    update_webp(&format);
+    format.connect_selected_notify(update_webp);
+    {
+        let row = quality_row.clone();
+        lossless.connect_toggled(move |lossless| row.set_sensitive(!lossless.is_active()));
+    }
+    let fit = gtk4::CheckButton::with_label("Fit Within — only shrinks larger images");
+    fit.set_widget_name("export-fit");
     fit.set_active(saved.fit);
-    group.add(&fit);
-    let width = libadwaita::SpinRow::with_range(16.0, 16_383.0, 1.0);
-    width.set_title("Width");
+    group.append(&fit);
+    let width = gtk4::SpinButton::with_range(16.0, 100_000.0, 1.0);
+    width.set_widget_name("export-width");
     width.set_value(f64::from(saved.fit_width));
-    let height = libadwaita::SpinRow::with_range(16.0, 16_383.0, 1.0);
-    height.set_title("Height");
+    let height = gtk4::SpinButton::with_range(16.0, 100_000.0, 1.0);
+    height.set_widget_name("export-height");
     height.set_value(f64::from(saved.fit_height));
-    for row in [&width, &height] {
+    for (title, spin) in [("Width", &width), ("Height", &height)] {
+        let row = super::output_format::row(title, spin);
         row.set_sensitive(saved.fit);
-        fit.bind_property("active", row, "sensitive").build();
-        group.add(row);
+        fit.bind_property("active", &row, "sensitive").build();
+        group.append(&row);
     }
     let cancel = gtk4::Button::with_label("Cancel");
     let export = gtk4::Button::with_label("Export");
@@ -212,6 +224,7 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
         let destination = folder.borrow().clone();
         let settings = WebpExportSettings {
             dir: (destination != wallpapers_dir()).then(|| destination.clone()),
+            format: super::output_format::selected(&format),
             lossless: lossless.is_active(),
             quality: quality.value() as u8,
             fit: fit.is_active(),
@@ -223,10 +236,11 @@ pub fn present(window: &SharprWindow, sources: Vec<PathBuf>) {
             .borrow_mut()
             .settings
             .set_webp_export(settings.clone());
-        window.start_webp_export(
+        window.start_export(
             sources.clone(),
-            WebpOptions {
+            ExportOptions {
                 destination,
+                format: settings.format,
                 lossless: settings.lossless,
                 quality: settings.quality,
                 fit: settings

@@ -1,4 +1,4 @@
-//! Crop copies retain their source container; batch export stays WebP.
+//! Existing encoders shared by explicit Original crop/export output (D47).
 use std::io::Cursor;
 use std::path::Path;
 
@@ -38,7 +38,7 @@ impl CropFormat {
             | ImageFormat::Bmp
             | ImageFormat::Ico => Ok(Self::Raster(format)),
             _ => Err(ResizeError::Encode(format!(
-                "Crop Copy cannot save {format:?} in its original format"
+                "Cannot save {format:?} in its original format"
             ))),
         }
     }

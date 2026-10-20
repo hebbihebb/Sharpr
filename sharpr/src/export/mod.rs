@@ -7,6 +7,8 @@ use crate::metadata::orientation::apply_exif_orientation;
 
 pub mod batch;
 mod crop_format;
+mod output_format;
+pub use output_format::OutputFormat;
 
 pub const WEBP_MAX_DIMENSION: u32 = 16_383;
 
@@ -200,14 +202,15 @@ impl CropRect {
 
 #[derive(Debug, Clone)]
 pub struct CropConfig {
+    pub format: OutputFormat,
     pub source: PathBuf,
     pub destination_dir: PathBuf,
     pub rectangle: CropRect,
 }
 
-/// Writes the displayed crop as a new copy in the source format.
+/// Writes the displayed crop as a new copy in the selected format (D47).
 pub fn crop_copy(config: &CropConfig) -> Result<ResizeResult, ResizeError> {
-    let format = crop_format::CropFormat::detect(&config.source)?;
+    let format = config.format.resolve(&config.source)?;
     let extension = format.extension(&config.source);
     let target = CopyTarget {
         source: config.source.clone(),
@@ -220,7 +223,7 @@ pub fn crop_copy(config: &CropConfig) -> Result<ResizeResult, ResizeError> {
         Some(config.rectangle),
         "cropped",
         &extension,
-        |image| format.encode(image),
+        |image| config.format.encode(&config.source, image, true, 100),
     )
 }
 
@@ -653,6 +656,7 @@ mod tests {
         let original = std::fs::read(&source).unwrap();
         assert_eq!(oriented_source_dimensions(&source).unwrap(), (18, 32));
         let result = crop_copy(&CropConfig {
+            format: OutputFormat::Original,
             source: source.clone(),
             destination_dir: dir.clone(),
             rectangle: CropRect {
@@ -696,6 +700,7 @@ mod tests {
             }
             let original = std::fs::read(&source).unwrap();
             let config = CropConfig {
+                format: OutputFormat::Original,
                 source: source.clone(),
                 destination_dir: dir.join("out"),
                 rectangle: CropRect {
@@ -734,6 +739,7 @@ mod tests {
                 .save(&source)
                 .unwrap();
             let result = crop_copy(&CropConfig {
+                format: OutputFormat::Original,
                 source,
                 destination_dir: dir.clone(),
                 rectangle: CropRect {
@@ -765,6 +771,7 @@ mod tests {
         let original = std::fs::read(&source).unwrap();
         let expected = decode_oriented(&source).unwrap().crop_imm(3, 2, 16, 9);
         let result = crop_copy(&CropConfig {
+            format: OutputFormat::Original,
             source: source.clone(),
             destination_dir: dir.clone(),
             rectangle: CropRect {
@@ -803,6 +810,7 @@ mod tests {
             std::fs::write(&source, &bytes).unwrap();
             assert_eq!(oriented_source_dimensions(&source).unwrap(), (128, 64));
             let result = crop_copy(&CropConfig {
+                format: OutputFormat::Original,
                 source: source.clone(),
                 destination_dir: dir.clone(),
                 rectangle: CropRect {
@@ -831,6 +839,7 @@ mod tests {
         let dir = test_dir("wide-png-crop");
         let source = source_image(&dir, (WEBP_MAX_DIMENSION + 1, 1));
         let result = crop_copy(&CropConfig {
+            format: OutputFormat::Original,
             source,
             destination_dir: dir.clone(),
             rectangle: CropRect {
@@ -855,6 +864,7 @@ mod tests {
         let mislabeled = source.with_extension("jpg");
         std::fs::rename(&source, &mislabeled).unwrap();
         let result = crop_copy(&CropConfig {
+            format: OutputFormat::Original,
             source: mislabeled,
             destination_dir: dir.clone(),
             rectangle: SIX_BY_FOUR,
@@ -876,6 +886,7 @@ mod tests {
         std::fs::write(&source, bytes).unwrap();
         let destination = dir.join("out");
         let result = crop_copy(&CropConfig {
+            format: OutputFormat::Original,
             source: source.clone(),
             destination_dir: destination.clone(),
             rectangle: CropRect {
@@ -917,6 +928,7 @@ mod tests {
                 "fixture samples are unchanged"
             );
             let result = crop_copy(&CropConfig {
+                format: OutputFormat::Original,
                 source,
                 destination_dir: dir.clone(),
                 rectangle: CropRect {
@@ -937,6 +949,7 @@ mod tests {
 
     fn crop(dir: &Path, rectangle: CropRect) -> CropConfig {
         CropConfig {
+            format: OutputFormat::Original,
             source: source_image(dir, (12, 8)),
             destination_dir: dir.join("out"),
             rectangle,
@@ -977,6 +990,7 @@ mod tests {
         let source = source_image(&dir, (WEBP_MAX_DIMENSION + 1, 1));
         let before = std::fs::read(&source).unwrap();
         let config = CropConfig {
+            format: OutputFormat::Original,
             source: source.clone(),
             destination_dir: dir.join("out"),
             rectangle: CropRect {
@@ -1063,6 +1077,7 @@ mod tests {
 
         let crop = |y| {
             let result = crop_copy(&CropConfig {
+                format: OutputFormat::Original,
                 source: jpeg.clone(),
                 destination_dir: dir.join("out"),
                 rectangle: CropRect {

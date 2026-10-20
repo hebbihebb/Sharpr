@@ -711,21 +711,21 @@ impl SharprWindow {
         }
     }
 
-    /// Exports `sources` as WebP in the background (ROADMAP Phase 6). A toast
+    /// Exports `sources` in the chosen format in the background (D47). A toast
     /// counts progress and can cancel; cancelling keeps finished images and
     /// leaves no partial file. The summary opens the folder, or lists
     /// failures.
-    pub fn start_webp_export(
+    pub fn start_export(
         &self,
         sources: Vec<PathBuf>,
-        options: crate::export::batch::WebpOptions,
+        options: crate::export::batch::ExportOptions,
     ) {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         let total = sources.len();
         let cancel = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicUsize::new(0));
-        let operation = self.imp().state.borrow().ops.add("Exporting WebP…");
-        let toast = libadwaita::Toast::new(&format!("Exporting {total} images as WebP…"));
+        let operation = self.imp().state.borrow().ops.add("Exporting images…");
+        let toast = libadwaita::Toast::new(&format!("Exporting {total} images…"));
         toast.set_timeout(0);
         toast.set_button_label(Some("Cancel"));
         {
@@ -742,7 +742,7 @@ impl SharprWindow {
                 // Export yields to browsing: lowest CPU and I/O priority.
                 #[cfg(not(test))]
                 crate::fingerprint::lower_thread_priority();
-                let report = crate::export::batch::export_webp(
+                let report = crate::export::batch::export_images(
                     &sources,
                     &options,
                     &|| cancel.load(Ordering::Relaxed),
@@ -760,10 +760,7 @@ impl SharprWindow {
                     return glib::ControlFlow::Break;
                 }
                 let finished = done.load(Ordering::Relaxed);
-                toast.set_title(&format!(
-                    "Exporting {} of {total} images as WebP…",
-                    finished + 1
-                ));
+                toast.set_title(&format!("Exporting {} of {total} images…", finished + 1));
                 glib::ControlFlow::Continue
             });
         }
@@ -850,7 +847,7 @@ impl SharprWindow {
         });
     }
 
-    /// Opens Crop Copy for the image the user right-clicked, or WebP
+    /// Opens Crop Copy for the image the user right-clicked, or
     /// export for the images the action covers (decision D21). Cropping the
     /// viewed image while the 16:9 guide is shown starts on the guide (D38).
     pub fn present_copy_dialog(&self, kind: crate::ui::filmstrip::CopyKind, sources: Vec<PathBuf>) {
@@ -2881,7 +2878,7 @@ impl SharprWindow {
             ));
         }
 
-        // Ctrl+E — export the selection as WebP.
+        // Ctrl+E — export the selection.
         {
             let filmstrip_e = filmstrip.clone();
             shortcuts.add_shortcut(gtk4::Shortcut::new(

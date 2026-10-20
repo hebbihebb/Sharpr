@@ -752,6 +752,7 @@ fn scoped_search_restores_folder_and_bucket_and_crop_dialog_renders() {
     );
     assert_eq!(image::image_dimensions(&cropped).unwrap(), (128, 72));
     let output = crate::export::crop_copy(&crate::export::CropConfig {
+        format: crate::export::OutputFormat::Original,
         source: sea.clone(),
         destination_dir: root.join("outputs"),
         rectangle: crate::export::CropRect {
@@ -1352,7 +1353,7 @@ fn library_overview_counts_the_library() {
 #[test]
 #[ignore = "requires isolated GSettings/data directories and a graphical session"]
 #[allow(deprecated)] // Inspect GTK's native-chooser fallback in this process only.
-fn webp_export_runs_in_the_background() {
+fn export_formats_run_in_the_background() {
     let root = isolated_fixture("export");
     // Exercise the real FileDialog callbacks without driving a host portal.
     std::env::set_var("GDK_DEBUG", "no-portals");
@@ -1391,7 +1392,7 @@ fn webp_export_runs_in_the_background() {
     pump_until(|| window.visible_dialog().is_some());
     let dialog = window.visible_dialog().unwrap();
     assert!(dialog.has_css_class("sharpr-sheet"));
-    assert_eq!(dialog.title(), "Export 2 Images as WebP");
+    assert_eq!(dialog.title(), "Export 2 Images");
     pump_until(|| dialog.is_mapped());
     let main_surface = window.surface().unwrap();
     assert_eq!(
@@ -1458,14 +1459,24 @@ fn webp_export_runs_in_the_background() {
     crate::ui::export_dialog::present(&window, sources.clone());
     pump_until(|| window.visible_dialog().is_some());
     let dialog = window.visible_dialog().unwrap();
-    let lossless = find_widgets::<libadwaita::SwitchRow>(dialog.upcast_ref())
+    let picker = find_widgets::<gtk4::DropDown>(dialog.upcast_ref())
         .into_iter()
-        .find(|row| row.title() == "Lossless")
+        .find(|w| w.widget_name() == "output-format")
+        .unwrap();
+    assert_eq!(
+        picker.selected(),
+        0,
+        "PNG is the default on an upgraded installation"
+    );
+    picker.set_selected(1);
+    let lossless = find_widgets::<gtk4::CheckButton>(dialog.upcast_ref())
+        .into_iter()
+        .find(|row| row.widget_name() == "export-lossless")
         .unwrap();
     lossless.set_active(false);
-    let quality = find_widgets::<libadwaita::SpinRow>(dialog.upcast_ref())
+    let quality = find_widgets::<gtk4::SpinButton>(dialog.upcast_ref())
         .into_iter()
-        .find(|row| row.title() == "Quality")
+        .find(|row| row.widget_name() == "export-quality")
         .unwrap();
     quality.set_value(83.0);
     let native_chooser = || {
@@ -1500,18 +1511,18 @@ fn webp_export_runs_in_the_background() {
         assert!(!lossless.is_active(), "folder choice keeps edited options");
         assert_eq!(quality.value(), 83.0);
     }
-    assert!(find_widgets::<libadwaita::ActionRow>(dialog.upcast_ref())
+    assert!(find_widgets::<gtk4::Label>(dialog.upcast_ref())
         .iter()
-        .any(|r| r.subtitle().is_some_and(|s| s.ends_with("/export-out"))));
+        .any(|r| r.text().ends_with("/export-out")));
     // Use lossless export below for an exact decoded-pixel comparison.
     lossless.set_active(true);
-    find_widgets::<libadwaita::SwitchRow>(dialog.upcast_ref())
+    find_widgets::<gtk4::CheckButton>(dialog.upcast_ref())
         .into_iter()
-        .find(|row| row.title() == "Fit Within")
+        .find(|row| row.widget_name() == "export-fit")
         .unwrap()
         .set_active(true);
-    for row in find_widgets::<libadwaita::SpinRow>(dialog.upcast_ref()) {
-        if row.title() == "Width" || row.title() == "Height" {
+    for row in find_widgets::<gtk4::SpinButton>(dialog.upcast_ref()) {
+        if row.widget_name() == "export-width" || row.widget_name() == "export-height" {
             row.set_value(48.0);
         }
     }
@@ -3874,7 +3885,7 @@ fn phase_nine_help_viewer_menu_and_theme_layouts() {
         "add-bucket",
         "compare",
         "crop",
-        "webp",
+        "export",
         "below-4k",
         "copies",
     ] {
@@ -4153,9 +4164,10 @@ fn edits_collect_originals_and_copies_in_buckets() {
     );
 
     // A batch export: every original and its WebP.
-    window.start_webp_export(
+    window.start_export(
         vec![a.clone(), b.clone()],
-        crate::export::batch::WebpOptions {
+        crate::export::batch::ExportOptions {
+            format: crate::export::OutputFormat::Webp,
             destination: root.join("export"),
             lossless: true,
             quality: 90,
@@ -6114,4 +6126,183 @@ fn show_similar_lists_close_images_through_search() {
     if placeholder {
         std::fs::remove_dir_all(&model_dir).unwrap();
     }
+}
+
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn crop_and_export_choices_cover_menus_guide_fullscreen_and_keyboard() {
+    use crate::export::{CropRect, OutputFormat};
+    let root = isolated_fixture("output-formats");
+    std::fs::create_dir_all(&root).unwrap();
+    let jpeg = root.join("a.jpg");
+    let png = root.join("b.png");
+    for p in [&jpeg, &png] {
+        image::RgbImage::from_fn(320, 180, |x, y| image::Rgb([x as u8, y as u8, 80]))
+            .save(p)
+            .unwrap();
+    }
+    let originals: Vec<_> = [&jpeg, &png]
+        .map(|p| std::fs::read(p).unwrap())
+        .into_iter()
+        .collect();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Outputs", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let mut export = settings.webp_export.clone();
+    export.dir = Some(root.join("out"));
+    export.format = OutputFormat::Png;
+    settings.set_webp_export(export);
+    settings.set_crop_output_format(OutputFormat::Png);
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1024, 600);
+    window.present();
+    pump_until(|| window.is_mapped() && window.imp().state.borrow().library.image_count() == 2);
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+    let strip = window.imp().filmstrip.borrow().clone().unwrap();
+    let picker = || {
+        find_widgets::<gtk4::DropDown>(window.upcast_ref())
+            .into_iter()
+            .find(|w| w.widget_name() == "output-format")
+            .unwrap()
+    };
+    let outputs = || {
+        std::fs::read_dir(root.join("out"))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| !p.file_name().unwrap().to_string_lossy().starts_with('.'))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    for (i, choice) in [0, 1, 2, 0].into_iter().enumerate() {
+        // Viewer menu, filmstrip menu (a different viewed image), guide key,
+        // and viewer menu with the guide visible in fullscreen.
+        viewer.load_image(if i == 1 { png.clone() } else { jpeg.clone() });
+        pump_until(|| viewer.imp().picture.paintable().is_some());
+        settle(200);
+        if i == 2 {
+            assert!(window_shortcut(&window, "<Control>g"));
+            assert!(window_shortcut(&window, "<Control><Shift>g"));
+        } else if i == 1 {
+            assert!(strip.open_context_menu_for_current());
+            strip.activate_action("filmstrip.crop-copy", None).unwrap();
+        } else {
+            if i == 3 {
+                window.fullscreen();
+                pump_until(|| window.is_fullscreen());
+            }
+            assert!(strip.open_viewer_menu(&viewer, 50.0, 50.0));
+            viewer.imp().image_menu.popdown();
+            viewer.activate_action("filmstrip.crop-copy", None).unwrap();
+        }
+        pump_until(|| window.crop_session().is_some());
+        let format = picker();
+        if i == 0 {
+            assert_eq!(format.selected(), 0, "JPEG crop defaults to PNG");
+        }
+        format.set_selected(choice);
+        let crop = window.crop_session().unwrap();
+        crop.set_rect(CropRect {
+            x: 8,
+            y: 6,
+            width: 160,
+            height: 90,
+        });
+        settle(150);
+        screenshot(
+            &window,
+            &root.parent().unwrap().join(format!("crop-format-{i}.png")),
+        );
+        let before = outputs();
+        if i % 2 == 0 {
+            find_widgets::<gtk4::Button>(window.upcast_ref())
+                .into_iter()
+                .find(|b| b.label().as_deref() == Some("Save Copy"))
+                .unwrap()
+                .emit_clicked();
+        } else {
+            assert_eq!(
+                window.handle_mode_key(gdk4::Key::Return, gdk4::ModifierType::empty()),
+                glib::Propagation::Stop
+            );
+        }
+        pump_until(|| outputs().len() == before.len() + 1);
+        let path = outputs().into_iter().find(|p| !before.contains(p)).unwrap();
+        let extension = match choice {
+            1 => "webp",
+            2 => "jpg",
+            _ => "png",
+        };
+        assert_eq!(path.extension().unwrap(), extension);
+        assert_eq!(image::image_dimensions(&path).unwrap(), (160, 90));
+        if choice != 2 {
+            assert_eq!(
+                image::open(&path).unwrap().to_rgb8(),
+                crate::export::decode_oriented(&jpeg)
+                    .unwrap()
+                    .crop_imm(8, 6, 160, 90)
+                    .to_rgb8()
+            );
+        }
+        assert!(window.crop_session().is_none());
+    }
+    window.unfullscreen();
+    pump_until(|| !window.is_fullscreen());
+    // Ctrl+E, the viewer menu and the filmstrip menu reach the same form.
+    for choice in [0, 1, 2] {
+        if choice == 0 {
+            assert!(window_shortcut(&window, "<Control>e"));
+        } else if choice == 1 {
+            assert!(strip.open_viewer_menu(&viewer, 50.0, 50.0));
+            viewer.imp().image_menu.popdown();
+            viewer.activate_action("filmstrip.export", None).unwrap();
+        } else {
+            assert!(strip.open_context_menu_for_current());
+            strip.activate_action("filmstrip.export", None).unwrap();
+        }
+        pump_until(|| window.visible_dialog().is_some());
+        let dialog = window.visible_dialog().unwrap();
+        pump_until(|| dialog.is_mapped());
+        settle(150);
+        let format = find_widgets::<gtk4::DropDown>(dialog.upcast_ref())
+            .into_iter()
+            .find(|w| w.widget_name() == "output-format")
+            .unwrap();
+        if choice == 0 {
+            assert_eq!(format.selected(), 0);
+        }
+        format.set_selected(choice);
+        let before = outputs().len();
+        let button = find_widgets::<gtk4::Button>(dialog.upcast_ref())
+            .into_iter()
+            .find(|b| b.label().as_deref() == Some("Export"))
+            .unwrap();
+        if choice == 1 {
+            button.grab_focus();
+            assert!(button.activate());
+        } else {
+            button.emit_clicked();
+        }
+        pump_until(|| outputs().len() == before + 1 && window.visible_dialog().is_none());
+    }
+    let reopened = AppSettings::load();
+    assert_eq!(reopened.webp_export.format, OutputFormat::Original);
+    assert_eq!(reopened.crop_output_format(), OutputFormat::Png);
+    for (p, original) in [&jpeg, &png].into_iter().zip(originals) {
+        assert_eq!(std::fs::read(p).unwrap(), original);
+    }
+    window.close();
 }

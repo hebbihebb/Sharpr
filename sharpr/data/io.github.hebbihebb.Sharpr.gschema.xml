@@ -14,7 +14,7 @@
     <key name="edit-buckets" type="b">
       <default>true</default>
       <summary>Collect edits in buckets</summary>
-      <description>Whether Crop Copy, WebP export and Duplicate add the original and the copy to a bucket under Edits (D35).</description>
+      <description>Whether Crop Copy, export and Duplicate add the original and the copy to a bucket under Edits (D35).</description>
     </key>
     <key name="metadata-visible" type="b">
       <default>true</default>
@@ -41,9 +41,17 @@
       <summary>Most recent successful bucket destination</summary>
       <description>JSON library identity and bucket id for the repeat-add action.</description>
     </key>
+    <key name="export-output-format" type="s">
+      <default>"png"</default>
+      <summary>Last explicitly chosen export format: png, webp or original</summary>
+    </key>
+    <key name="crop-output-format" type="s">
+      <default>"png"</default>
+      <summary>Last explicitly chosen crop format: png, webp or original</summary>
+    </key>
     <key name="webp-export-dir" type="s">
       <default>""</default>
-      <summary>Folder for WebP exports and crop copies</summary>
+      <summary>Folder for exports and crop copies</summary>
       <description>If empty, ~/Pictures/Wallpapers.</description>
     </key>
     <key name="webp-export-lossless" type="b">

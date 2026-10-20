@@ -14,6 +14,7 @@ pub mod library_overview;
 pub mod look;
 pub mod metadata_chip;
 pub mod ops_indicator;
+mod output_format;
 pub mod preferences;
 pub mod sidebar;
 pub mod state;

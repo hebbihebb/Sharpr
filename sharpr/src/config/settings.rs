@@ -79,7 +79,7 @@ pub struct AppSettings {
     pub active_library_id: Option<String>,
     /// Optional custom folder for resized copies.
     pub resize_output_dir: Option<PathBuf>,
-    /// The last choices in the WebP export dialog (ROADMAP Phase 6).
+    /// Remembered export choices; legacy WebP keys stay compatible (D47).
     pub webp_export: WebpExportSettings,
     /// Maximum thumbnail entries to retain in memory.
     pub thumbnail_cache_max: i32,
@@ -204,11 +204,14 @@ impl AppSettings {
             resize_output_dir: string_path(&settings, "resize-output-dir"),
             webp_export: WebpExportSettings {
                 dir: string_path(&settings, "webp-export-dir"),
+                format: crate::export::OutputFormat::from_key(
+                    &settings.string("export-output-format"),
+                ),
                 lossless: settings.boolean("webp-export-lossless"),
                 quality: settings.int("webp-export-quality").clamp(1, 100) as u8,
                 fit: settings.boolean("webp-export-fit"),
-                fit_width: settings.int("webp-export-fit-width").clamp(16, 16_383) as u32,
-                fit_height: settings.int("webp-export-fit-height").clamp(16, 16_383) as u32,
+                fit_width: settings.int("webp-export-fit-width").clamp(16, 100_000) as u32,
+                fit_height: settings.int("webp-export-fit-height").clamp(16, 100_000) as u32,
             },
             thumbnail_cache_max: settings.int("thumbnail-cache-max").clamp(100, 2000),
             settings,
@@ -420,7 +423,18 @@ impl AppSettings {
             .set_int("thumbnail-cache-max", self.thumbnail_cache_max);
     }
 
+    pub fn crop_output_format(&self) -> crate::export::OutputFormat {
+        crate::export::OutputFormat::from_key(&self.settings.string("crop-output-format"))
+    }
+
+    pub fn set_crop_output_format(&self, format: crate::export::OutputFormat) {
+        let _ = self.settings.set_string("crop-output-format", format.key());
+    }
+
     pub fn set_webp_export(&mut self, export: WebpExportSettings) {
+        let _ = self
+            .settings
+            .set_string("export-output-format", export.format.key());
         let dir = export
             .dir
             .as_ref()
@@ -458,11 +472,12 @@ fn library_by_id<'a>(libraries: &'a [LibraryConfig], id: &str) -> Option<&'a Lib
     libraries.iter().find(|library| library.id == id)
 }
 
-/// The WebP export dialog's remembered choices.
+/// Export choices; the legacy name and storage keys are retained (D47).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebpExportSettings {
     /// `None` means the Wallpapers folder.
     pub dir: Option<PathBuf>,
+    pub format: crate::export::OutputFormat,
     pub lossless: bool,
     pub quality: u8,
     pub fit: bool,
@@ -474,6 +489,7 @@ impl Default for WebpExportSettings {
     fn default() -> Self {
         Self {
             dir: None,
+            format: crate::export::OutputFormat::Png,
             lossless: true,
             quality: 90,
             fit: false,
@@ -621,6 +637,42 @@ fn roots_overlap(a: &Path, b: &Path) -> bool {
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
+
+    #[test]
+    fn png_defaults_preserve_legacy_export_options_and_explicit_choices() {
+        use crate::export::OutputFormat;
+        let backend = test_settings();
+        backend
+            .set_string("webp-export-dir", "/tmp/chosen-output")
+            .unwrap();
+        backend.set_boolean("webp-export-lossless", false).unwrap();
+        backend.set_int("webp-export-quality", 83).unwrap();
+        backend.set_boolean("webp-export-fit", true).unwrap();
+        let mut settings = AppSettings::load_from_settings(backend.clone());
+        assert_eq!(settings.webp_export.format, OutputFormat::Png);
+        assert_eq!(settings.crop_output_format(), OutputFormat::Png);
+        assert_eq!(
+            settings.webp_export.dir,
+            Some(PathBuf::from("/tmp/chosen-output"))
+        );
+        assert!(!settings.webp_export.lossless);
+        assert_eq!(settings.webp_export.quality, 83);
+        assert!(settings.webp_export.fit);
+        let mut export = settings.webp_export.clone();
+        export.format = OutputFormat::Original;
+        settings.set_webp_export(export);
+        settings.set_crop_output_format(OutputFormat::Webp);
+        let reopened = AppSettings::load_from_settings(backend.clone());
+        assert_eq!(reopened.webp_export.format, OutputFormat::Original);
+        assert_eq!(reopened.crop_output_format(), OutputFormat::Webp);
+        backend
+            .set_string("export-output-format", "unknown-future-format")
+            .unwrap();
+        assert_eq!(
+            AppSettings::load_from_settings(backend).webp_export.format,
+            OutputFormat::Png
+        );
+    }
 
     fn settings_test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

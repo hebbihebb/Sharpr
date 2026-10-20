@@ -76,7 +76,7 @@
         </child>
         <child>
           <object class="AdwShortcutsItem">
-            <property name="title">Export the selection as WebP</property>
+            <property name="title">Export the selection</property>
             <property name="accelerator">&lt;Control&gt;e</property>
           </object>
         </child>

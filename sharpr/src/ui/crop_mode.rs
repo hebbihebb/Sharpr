@@ -1,6 +1,6 @@
 //! Crop Copy in the viewer at full size (`ROADMAP.md` Phase 6): the image
 //! fills the viewer with a selection to move and resize, 16:9 or free, and
-//! saves a new copy in the source format. It opens on the viewer's zoom and
+//! saves a new copy in the chosen format (PNG by default). It opens on the viewer's zoom and
 //! position, and scrolling zooms at the pointer while the selection stays on
 //! the same pixels. The side panels make way while cropping; F11 makes it
 //! fullscreen. Originals are only read.
@@ -269,7 +269,22 @@ fn open(
     hints.set_margin_start(12);
     hints.set_margin_end(12);
     hints.set_can_target(false);
-    stage.add_overlay(&hints);
+    let format =
+        super::output_format::picker(window.app_state().borrow().settings.crop_output_format());
+    let format_note = super::output_format::note(
+        &format,
+        super::output_format::has_special_source(std::slice::from_ref(&crop.source)),
+    );
+    format_note.set_halign(gtk4::Align::Center);
+    format_note.set_max_width_chars(100);
+    format_note.set_can_target(false);
+    let footer = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    footer.set_halign(gtk4::Align::Center);
+    footer.set_valign(gtk4::Align::End);
+    footer.append(&format_note);
+    footer.append(&hints);
+    footer.set_can_target(false);
+    stage.add_overlay(&footer);
     let bar = &controls.end;
     let destination = Rc::new(RefCell::new(
         window
@@ -300,13 +315,12 @@ fn open(
         "Destination: {}",
         destination.borrow().display()
     )));
+    bar.append(&format);
     bar.append(&folder);
     let cancel = gtk4::Button::with_label("Cancel");
     let save = gtk4::Button::with_label("Save Copy");
     save.add_css_class("suggested-action");
-    save.set_tooltip_text(Some(
-        "Save the selection as a new copy in the source format (Enter)",
-    ));
+    save.set_tooltip_text(Some("Save the selection in the chosen format (Enter)"));
     bar.append(&cancel);
     bar.append(&save);
 
@@ -547,6 +561,7 @@ fn open(
         let crop = crop.clone();
         let destination = destination.clone();
         let close = close.clone();
+        let format = format.clone();
         Rc::new(move || {
             let Some(window) = window.upgrade() else {
                 return;
@@ -562,7 +577,9 @@ fn open(
                 return;
             }
             let folder = destination.borrow().clone();
+            let chosen_format = super::output_format::selected(&format);
             let config = CropConfig {
+                format: chosen_format,
                 source: crop.source.clone(),
                 destination_dir: folder.clone(),
                 rectangle: crop.rect.get(),
@@ -574,6 +591,7 @@ fn open(
                 export.dir =
                     (folder != crate::config::settings::wallpapers_dir()).then_some(folder);
                 st.settings.set_webp_export(export);
+                st.settings.set_crop_output_format(chosen_format);
             }
             close();
             let operation = window.app_state().borrow().ops.add("Saving cropped copy…");

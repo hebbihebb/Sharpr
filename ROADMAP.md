@@ -8,7 +8,7 @@ The product vision, firm requirements, workflows, UX principles, non-goals, and 
 
 - **Keep:** the filmstrip, viewer, folders, and buckets.
 - **Find:** visual search plus typed filters, replacing manual tags.
-- **Prepare:** crop and batch export; PNG defaults with WebP and Original choices are approved and planned in item 38 (D47). Today export is WebP and crop keeps the source format.
+- **Prepare:** crop and batch export; PNG defaults with WebP and Original choices are approved and planned in item 38 (D47). Implemented on `codex/png-output`, awaiting user acceptance.
 - **Hand off:** heavy image work stays in external tools.
 
 Tags are **frozen**: no improvements to tagging. They are retired only after visual search passes Phase 3 (D1). Until then, buckets still depend on tags, so the data-safety fixes for tags still apply.
@@ -723,8 +723,8 @@ If the result reaches the look the user wants, Libadwaita stays and the question
 
 ## Crop Copy source format (D37)
 
-**Follow-up approved October 20:** D47 / Work Order item 38 will make PNG
-the default and retain source-format output as an explicit Original choice.
+**Follow-up approved October 20:** D47 / Work Order item 38 makes PNG
+the default and retains source-format output as an explicit Original choice.
 The following describes the accepted implementation currently in the app.
 
 Requested October 16, 2026 for cropping before external upscaling. Crop Copy
@@ -815,7 +815,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 35 | ~~Compare zooms out past Fit~~ **Done October 19, 2026**, accepted by the user (build `d275c54`): Fit is the floor, as in the viewer and crop | Sonnet medium (done by Opus) |
 | 36 | Dark only (D46): Sharpr always runs dark whatever the desktop's setting; light-mode-only CSS and code paths go, high contrast stays; the off-screen GTK screenshots drop their light captures | Sonnet low |
 | 37 | Leave Libadwaita, piece by piece (D46): inventory what Libadwaita still provides (toasts with Undo, confirmation dialogs, split views and breakpoints, sheets and rows, the style manager, accent and high contrast) and propose, with the user, the order and the Sharpr component that replaces each; each replacement then becomes its own row. Toasts carry trash and move Undo, so their replacement keeps every Undo path working | Opus medium |
-| 38 | PNG by default for Crop Copy and single/batch export, with explicit WebP and Original choices everywhere (D47, user, October 20); cover all entry points, settings, output handling and help | Sonnet high |
+| 38 | PNG by default for Crop Copy and single/batch export, with explicit WebP and Original choices everywhere (D47, user, October 20); cover all entry points, settings, output handling and help. **Implemented on `codex/png-output`; verified; awaiting user acceptance.** | Sonnet high |
 
 Audit fixes `codex/audit-0.5.0-2` (A01–A09): **Done October 19, 2026**,
 accepted by the user and merged. Cleanup now retains uncertain members, legacy
@@ -911,6 +911,9 @@ Open items only; the table above has the order and the model. Each brief adds on
 - **Guardrails:** D45 is the layout, built from `docs/reference/design.md` (its "Action with its key" and "Candidate strip" components, tokens rather than colour literals, no new Libadwaita widgets, D46); ask the user only where it leaves a real gap. Keep Compare's bounded decodes, its thumbnail lane and its generation checks. No file changes from Compare. Keyboard choice of a candidate must still work without hover.
 
 **38. PNG defaults and output format choices (D47).**
+
+**Status:** implemented on `codex/png-output`, verified and awaiting user acceptance. Shared format dispatch, independent crop/export choices, generic export UI/icon/help, and PNG color-metadata handling are in place. `./check.sh` passes (330 tests); all 43 off-screen GTK workflows pass (32 in the initial run, the last 11 after correcting the stale WebP-icon expectation). Independent PNG decoding confirms exact 16-bit cropped pixels, alpha and ICC retention. The already bundled `png` crate is used directly to preserve color-definition chunks; no new crate or Flatpak download is added. Known decoder limits (JPEG XL/AVIF/HEIC profile metadata, AVIF/HEIC 8-bit decode) are disclosed beside the format choice and in the manual.
+
 - **Goal:** prepare images for external editing/upscaling without an unnecessary lossy re-encode: Crop Copy and single/batch export default to PNG, with PNG / WebP / Original available in both. Export is named generically rather than "Export as WebP". Original uses each input's actual format, so a mixed JPEG/PNG/WebP batch keeps the respective formats when explicitly selected. Selecting Original is not a promise of lossless output: JPEG, AVIF and HEIC retain their documented maximum-quality re-encoding tradeoff. WebP remains lossless by default, with the existing lossy export option available only when relevant.
 - **Done when:** every route in the coverage table below reaches the same format-aware operation; a new or upgraded installation defaults to PNG unless the user explicitly chooses another format. Existing destination, WebP quality and fit settings survive without silently selecting WebP. PNG retains decoded 8/16-bit samples and alpha where supported; orientation and color/profile handling are checked against an independent decoder, and unavoidable depth/profile conversions are made explicit. Choosing WebP exposes its 8-bit limitation. Crop saves the selected full-resolution region without resizing; export's optional Fit Within only shrinks. Actual file contents, extensions, unique names, completion/error messages, filmstrip refresh and Edits bucket membership agree with the chosen format. Unsupported Original encoders fail per image without falling back; a batch reports failures and keeps successful outputs. Lossless PNG/WebP pixel comparisons, 16-bit gradients, transparency, EXIF-rotated and supported source-format fixtures, mixed batches, collisions, cancellation, partial cleanup and unchanged original bytes pass regression checks. Off-screen GTK checks cover the routes and format controls with mouse and keyboard, normal and fullscreen viewing, and reopening/restarting with existing settings. `./check.sh` passes. The manual, shortcuts/help, interface inventory and product/architecture/agent references describe the implemented behavior consistently; no format-specific label or old default remains misleading.
 - **Guardrails:** extend the existing crop/export encoders and background writers, retaining exclusive outputs and cancellation. Preserve supported source-format encoders under Original, legacy settings and Edits buckets. PNG does not preserve floating-point/HDR samples as such: do not silently claim a lossless conversion of unsupported sample types. This is preparation, not a banding detector or a SeedVR integration; lossless WebP was not established as the cause of the reported artifacts. Follow D46 for UI being changed, without broad unrelated redesigns.
