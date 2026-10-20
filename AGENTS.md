@@ -18,7 +18,7 @@ The authoritative instructions for every coding agent working on this repository
 
 Sharpr is a fast, offline Linux app for finding, curating, and preparing wallpaper-grade images (Rust, GTK4, Libadwaita, SQLite). Its strengths are the viewer, filmstrip navigation, folders, and buckets. Buckets are hand-curated collections with their own member lists, keyed by content fingerprint (since Phase 4). Preserve all of these.
 
-Images will be found through visual search and typed filters, not manual tags, and preparation is crop plus batch WebP export. Details are in `docs/reference/product.md`.
+Images will be found through visual search and typed filters, not manual tags, and preparation is crop plus batch export. D47 plans PNG by default for both, with WebP and Original format choices (Work Order item 38; not implemented yet). Details are in `docs/reference/product.md`.
 
 ## Invariants
 
@@ -37,7 +37,7 @@ Images will be found through visual search and typed filters, not manual tags, a
 
 - **Established:** viewer, filmstrip, folders, buckets, search, filters, Compare, duplicates, Crop Copy, WebP export, and explicit trash.
 - **Retired:** manual tags (D1). Phase 5 removed the last tag UI (the tag popover, Ctrl+T, on-image pills, tag search, and the extra-tags field in bucket dialogs). Main menu → Help → Library Maintenance → "Turn Tags into Buckets…" offers each unused manual tag as a bucket. Tag rows stay in `tags.sqlite3`, unused; renames and moves still carry them along. Add no tag UI.
-- **Replaced:** quality views by resolution filters (Phase 2); Resize Copy by batch WebP export and crop in the viewer (Phase 6). Batch export writes WebP; Crop Copy keeps the source format (D37). Viewing JPEG XL stays.
+- **Replaced:** quality views by resolution filters (Phase 2); Resize Copy by batch export and crop in the viewer (Phase 6). Currently batch export writes WebP and Crop Copy keeps the source format (D37); D47 plans PNG defaults with explicit WebP and Original choices for both. Viewing JPEG XL stays.
 - **In progress:** the roadmap phases.
 - **Being built (Phase 5):** visual search, in `src/visual_search/`. It is on by default but does nothing until the user installs the model (D23); without it, search matches file names. The old trial wiring on the `visual-search-trial-wip` branch is reference only.
 - **Removed, do not reintroduce:** Tasks, processing queues, pipelines, and generation history; AI upscaling, enhancement, and tagging; ComfyUI and remote backends; model downloaders; rotate/flip pixel editing; metadata write-back; full-editor features; import workflow; saved searches; batch rename; splash screen; scripting. Enhancement and upscaling stay in external tools. The product non-goals in `product.md` also apply.

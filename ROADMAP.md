@@ -8,7 +8,7 @@ The product vision, firm requirements, workflows, UX principles, non-goals, and 
 
 - **Keep:** the filmstrip, viewer, folders, and buckets.
 - **Find:** visual search plus typed filters, replacing manual tags.
-- **Prepare:** crop and batch WebP export.
+- **Prepare:** crop and batch export; PNG defaults with WebP and Original choices are approved and planned in item 38 (D47). Today export is WebP and crop keeps the source format.
 - **Hand off:** heavy image work stays in external tools.
 
 Tags are **frozen**: no improvements to tagging. They are retired only after visual search passes Phase 3 (D1). Until then, buckets still depend on tags, so the data-safety fixes for tags still apply.
@@ -723,6 +723,10 @@ If the result reaches the look the user wants, Libadwaita stays and the question
 
 ## Crop Copy source format (D37)
 
+**Follow-up approved October 20:** D47 / Work Order item 38 will make PNG
+the default and retain source-format output as an explicit Original choice.
+The following describes the accepted implementation currently in the app.
+
 Requested October 16, 2026 for cropping before external upscaling. Crop Copy
 keeps the source format, including JPEG; batch Export as WebP stays unchanged.
 JPEG crops are re-encoded at maximum quality (tradeoff accepted by the user).
@@ -811,6 +815,7 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 35 | ~~Compare zooms out past Fit~~ **Done October 19, 2026**, accepted by the user (build `d275c54`): Fit is the floor, as in the viewer and crop | Sonnet medium (done by Opus) |
 | 36 | Dark only (D46): Sharpr always runs dark whatever the desktop's setting; light-mode-only CSS and code paths go, high contrast stays; the off-screen GTK screenshots drop their light captures | Sonnet low |
 | 37 | Leave Libadwaita, piece by piece (D46): inventory what Libadwaita still provides (toasts with Undo, confirmation dialogs, split views and breakpoints, sheets and rows, the style manager, accent and high contrast) and propose, with the user, the order and the Sharpr component that replaces each; each replacement then becomes its own row. Toasts carry trash and move Undo, so their replacement keeps every Undo path working | Opus medium |
+| 38 | PNG by default for Crop Copy and single/batch export, with explicit WebP and Original choices everywhere (D47, user, October 20); cover all entry points, settings, output handling and help | Sonnet high |
 
 Audit fixes `codex/audit-0.5.0-2` (A01–A09): **Done October 19, 2026**,
 accepted by the user and merged. Cleanup now retains uncertain members, legacy
@@ -904,6 +909,27 @@ Open items only; the table above has the order and the model. Each brief adds on
 - **Goal:** Compare's controls read at a glance, as designed in D45 (approved by the user, October 19): Keep Left and Keep Right mirrored on the centre line with their keys, each image's caption in its own corner, a centred candidate strip with L | R hover halves and the remaining count beside it, hidden with two images left; no standing Replace toggle and no key-hints line.
 - **Done when:** off-screen screenshots in Side by Side, Split and Flip, with two and with several images, at the minimum and wide window sizes, match D45; a load error shows in its image's area with only that side's Keep disabled; choosing a thumbnail's L or R half replaces that side; Keep, Undo, Done, the arrow keys and the survivors returned work as before; the Compare GTK tests pass, updated for the new controls.
 - **Guardrails:** D45 is the layout, built from `docs/reference/design.md` (its "Action with its key" and "Candidate strip" components, tokens rather than colour literals, no new Libadwaita widgets, D46); ask the user only where it leaves a real gap. Keep Compare's bounded decodes, its thumbnail lane and its generation checks. No file changes from Compare. Keyboard choice of a candidate must still work without hover.
+
+**38. PNG defaults and output format choices (D47).**
+- **Goal:** prepare images for external editing/upscaling without an unnecessary lossy re-encode: Crop Copy and single/batch export default to PNG, with PNG / WebP / Original available in both. Export is named generically rather than "Export as WebP". Original uses each input's actual format, so a mixed JPEG/PNG/WebP batch keeps the respective formats when explicitly selected. Selecting Original is not a promise of lossless output: JPEG, AVIF and HEIC retain their documented maximum-quality re-encoding tradeoff. WebP remains lossless by default, with the existing lossy export option available only when relevant.
+- **Done when:** every route in the coverage table below reaches the same format-aware operation; a new or upgraded installation defaults to PNG unless the user explicitly chooses another format. Existing destination, WebP quality and fit settings survive without silently selecting WebP. PNG retains decoded 8/16-bit samples and alpha where supported; orientation and color/profile handling are checked against an independent decoder, and unavoidable depth/profile conversions are made explicit. Choosing WebP exposes its 8-bit limitation. Crop saves the selected full-resolution region without resizing; export's optional Fit Within only shrinks. Actual file contents, extensions, unique names, completion/error messages, filmstrip refresh and Edits bucket membership agree with the chosen format. Unsupported Original encoders fail per image without falling back; a batch reports failures and keeps successful outputs. Lossless PNG/WebP pixel comparisons, 16-bit gradients, transparency, EXIF-rotated and supported source-format fixtures, mixed batches, collisions, cancellation, partial cleanup and unchanged original bytes pass regression checks. Off-screen GTK checks cover the routes and format controls with mouse and keyboard, normal and fullscreen viewing, and reopening/restarting with existing settings. `./check.sh` passes. The manual, shortcuts/help, interface inventory and product/architecture/agent references describe the implemented behavior consistently; no format-specific label or old default remains misleading.
+- **Guardrails:** extend the existing crop/export encoders and background writers, retaining exclusive outputs and cancellation. Preserve supported source-format encoders under Original, legacy settings and Edits buckets. PNG does not preserve floating-point/HDR samples as such: do not silently claim a lossless conversion of unsupported sample types. This is preparation, not a banding detector or a SeedVR integration; lossless WebP was not established as the cause of the reported artifacts. Follow D46 for UI being changed, without broad unrelated redesigns.
+
+Coverage checked against the app on October 20; recheck during implementation
+so any additional caller uses the same format choice and default.
+
+| Route or surface | Required behavior / acceptance |
+| --- | --- |
+| Filmstrip image menu → Crop Copy | PNG default and all three choices for the clicked image, including when it differs from the viewed image. |
+| Viewer image menu → Crop Copy, normal/fullscreen | Same crop controls and encoder choice as the filmstrip; no separate source-format default. |
+| Crop from the visible 16:9 guide, through Crop Copy or Ctrl+Shift+G | Keep the guide's selection and viewer zoom/pan; expose the same format choice. Ctrl+G alone remains a visual aid. |
+| Crop Save Copy button and Enter; Cancel/Escape | Both save triggers honor the chosen format; cancellation writes nothing. |
+| Filmstrip/viewer image menu → Export; Ctrl+E | Same generic export form and format choices for one image and multiple selections; preserve clicked-image versus selection targeting. |
+| Export button and keyboard activation; folder chooser, Wallpapers, Cancel/Escape/click-away | Destination changes retain the selected format; every start uses it, every dismissal cancels consistently. |
+| Background single/batch writer and result handling | PNG, WebP and per-source Original work with fit, progress/cancel, per-image errors, unique extensions/names, filmstrip updates and Edits collection. PNG does not inherit WebP's size limit. |
+| Settings and every format-specific label/help surface | Fresh and existing settings give PNG the default; preserve legacy values. Format-only quality controls are relevant to the selected encoder; menus, icons/tooltips, Preferences, shortcuts, manual and notices agree. |
+| Duplicate / Copy to Folder / Move to Folder / file drag-and-drop | Remain ordinary byte-preserving file operations; no implicit PNG conversion. |
+| Copy Image to clipboard, previews, thumbnails and search preparation | Remain separate from disk crop/export defaults; no new format picker or conversion policy leaks into these paths. |
 
 ## Backlog
 
