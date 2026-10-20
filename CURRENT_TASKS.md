@@ -1,8 +1,11 @@
 # Current Tasks
 
-## Implemented: PNG defaults for crop and export (D47, Work Order item 38)
+## Accepted: PNG defaults for crop and export (D47, Work Order item 38)
 
-Branch `codex/png-output`, including the D47 plan (`79e35db`).
+Accepted by the user October 20, 2026; merge, native deployment and push
+authorized. Implementation `be29be9`, fresh verification `7e26d73`, D47
+plan `79e35db`. No implementation remains; the installed commit is recorded
+in `~/.local/opt/sharpr/current/COMMIT`.
 PNG is the initial crop/export default; explicit PNG / WebP / Original
 choices are remembered separately. Legacy destination, quality and fit
 settings remain. Both operations share the encoders and safe writers;
@@ -29,12 +32,12 @@ checks of actual GTK outputs confirmed format/size and identical PNG/WebP
 crop pixels; the 16-bit RGBA/ICC crop is exact. JPEG comparison differed by
 at most 2/255 between independent decoders, not an added PNG loss. Screenshots
 checked; evidence is in `.tmp/png-output-retest/` and its adjacent test logs.
-Nothing deployed or accepted yet.
+User acceptance covers this verified candidate.
 
 PNG is a preparation policy, not a confirmed fix for the discarded SeedVR
-banding examples. Work Order priority is unchanged. The verified candidate is committed on
-its branch for user acceptance; no merge/push/deploy,
-as specified by the Work Order's standard effort.
+banding examples. Work Order priority is unchanged; follow its first open
+row for the next task. This user authorization supersedes the Work Order's
+standard stop before merge/push/deploy.
 
 ## Recently accepted and merged
 

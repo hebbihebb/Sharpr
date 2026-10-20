@@ -28,6 +28,22 @@ A compact record of how Sharpr got here. It is historical context, not instructi
 - The same day produced four documentation-only commits: a self-audit, an independent audit (`audit-2026-10-12.md`), and a next-steps plan (`next-steps-2026-10-12.md`). Meanwhile about 2,400 lines of implementation stayed uncommitted. This review-and-remediation chain is why `AGENTS.md` now says "finish, then stop".
 - Documentation realignment: `AGENTS.md` was rewritten to be concise and agent-neutral, `ROADMAP.md` was rebuilt from repository evidence, and `docs/reference/development.md` was added. The dated audit and plan documents moved here. `completed.md` was folded into this file. The unused `GEMINI.md` and `ANTIGRAVITY.md` stubs were removed. A clean V2 rewrite was evaluated and rejected in favor of refactoring areas as phases touch them (see `ROADMAP.md`).
 
+## October 20, 2026: PNG output defaults (D47, Work Order item 38)
+
+Accepted by the user: Crop Copy and single/batch export start with PNG,
+with explicit WebP and per-source Original choices remembered separately.
+Menus, shortcuts, guide crop, fullscreen, settings, generic export icon and
+help agree. Existing safe writers, file operations and Edits buckets stay.
+PNG keeps decoded 8/16-bit samples, alpha, compatible raster ICC profiles
+and PNG color-definition metadata; unsupported float/ICC cases fail explicitly.
+JPEG XL/AVIF/HEIC profile metadata and AVIF/HEIC 8-bit decoding limits are
+shown beside the format choice. The direct PNG API reuses an existing crate.
+Implementation `be29be9`; fresh verification `7e26d73`. `./check.sh` (330 tests)
+and all 43 off-screen GTK workflows pass; a fresh 31-regression/five-GTK run,
+screenshot inspection and independent pixel/profile decoding also pass.
+PNG is a preparation policy, not a confirmed fix for the discarded SeedVR
+banding examples. Merge, native deployment and push explicitly authorized.
+
 ## Lessons
 
 - Protect filmstrip and thumbnail responsiveness above speculative architecture.
