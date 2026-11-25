@@ -816,6 +816,8 @@ Rated October 17, 2026 at the user's request. The user launches a fresh Claude s
 | 36 | Dark only (D46): Sharpr always runs dark whatever the desktop's setting; light-mode-only CSS and code paths go, high contrast stays; the off-screen GTK screenshots drop their light captures | Sonnet low |
 | 37 | Leave Libadwaita, piece by piece (D46): inventory what Libadwaita still provides (toasts with Undo, confirmation dialogs, split views and breakpoints, sheets and rows, the style manager, accent and high contrast) and propose, with the user, the order and the Sharpr component that replaces each; each replacement then becomes its own row. Toasts carry trash and move Undo, so their replacement keeps every Undo path working | Opus medium |
 | 38 | ~~PNG defaults and output format choices (D47)~~ **Done October 20, 2026**, accepted by the user; implementation `be29be9`, fresh verification `7e26d73`: PNG defaults, explicit WebP/Original, all entry points and help updated | Sonnet high |
+| 39 | Real detail (D48): estimate each image's real detail, prove it on a gate first, then cache it in the background and show it in Info, an `upscaled` filter chip and a sort | Opus high |
+| 40 | Replace with upgrade (D49): pair upgraded images with their originals, review in a Compare replace mode, swap on confirmation with Undo and buckets following; Wallslæd favourites follow through a relink call | Opus high |
 
 Audit fixes `codex/audit-0.5.0-2` (A01–A09): **Done October 19, 2026**,
 accepted by the user and merged. Cleanup now retains uncertain members, legacy
@@ -910,6 +912,16 @@ Open items only; the table above has the order and the model. Each brief adds on
 - **Done when:** off-screen screenshots in Side by Side, Split and Flip, with two and with several images, at the minimum and wide window sizes, match D45; a load error shows in its image's area with only that side's Keep disabled; choosing a thumbnail's L or R half replaces that side; Keep, Undo, Done, the arrow keys and the survivors returned work as before; the Compare GTK tests pass, updated for the new controls.
 - **Guardrails:** D45 is the layout, built from `docs/reference/design.md` (its "Action with its key" and "Candidate strip" components, tokens rather than colour literals, no new Libadwaita widgets, D46); ask the user only where it leaves a real gap. Keep Compare's bounded decodes, its thumbnail lane and its generation checks. No file changes from Compare. Keyboard choice of a candidate must still work without hover.
 
+**39. Real detail (D48).**
+- **Goal:** for every indexed image Sharpr knows its estimated real detail, shown as a resolution, so the user finds fake-4K and soft images and sees why each was flagged.
+- **Done when:** a standalone gate (`tools/detail-gate.py`) on camera originals and synthetic fakes (plain, sharpened and JPEG-recompressed upscales from 1080p and 1440p, several resize filters) flags at least 90% of fakes, at most 10% of natives, within one ladder step of the true source, with numbers in `CURRENT_TASKS.md`; a contact sheet of the 50 lowest-detail Wallpapers images and a labelled-candidate sheet are in `.tmp/`; the estimate is computed in the background into a rebuildable fingerprint-keyed cache; Info shows it in words; `upscaled` becomes a "Looks upscaled" chip; there is a sort; unmeasured images say so; help and docs state the AI-upscaler limit; `./check.sh` and the GTK workflows pass, with a new one for filter, sort and Info.
+- **Guardrails:** prove the gate before any UI; if it can't pass after honest tuning, record what was learned and stop the item. Full decodes run off the GTK thread at background priority and give way to visible thumbnails. Disabled folders skipped. No generated tags. Library images never enter the repository.
+
+**40. Replace with upgrade (D49).**
+- **Goal:** after an external upscale the user selects the new images (or their folder or bucket); Sharpr pairs each with its original, the user reviews each pair in Compare and chooses Replace, Skip or Keep Both, and Replace puts the new file in the original's place with its buckets and trashes the original with a working Undo.
+- **Done when:** the flow works from a selection, a folder and a bucket; unindexed images get an honest message; weak matches are never paired; preflight (same drive, writable folder, fresh stamps) runs before anything destructive; every failure point is tested; Undo restores the original, its location and buckets; a GTK workflow covers the flow; Wallslæd favourites and bans follow a swap; product workflows 3 and 4, help and the interface inventory are updated; `./check.sh` passes.
+- **Guardrails:** originals are never modified, re-encoded or overwritten; the explicit trash is the only thing that happens to them. Back up and verify bucket counts in tests, in temporary data directories. Wallslæd work goes on its own branch in its own repository.
+
 ## Backlog
 
 - AVIF and HEIC sizes (October 19): since item 34 their sizes are read through glycin, so the folder metadata pass stores them when their folder opens, as for other images. Check with the user that the resolution filters and the Library Overview count them once their folders have been opened.
@@ -934,6 +946,12 @@ Optional. Pick something up only when a phase touches that area, or the user ask
 - GTK test harness: `rapid_navigation_and_folder_switch_preserve_latest_view` once saw 0 rows (Phase 5 audit, test runs); make it deterministic. The dropdown selection test was replaced by direct candidate-row activation in D29. The screenshot timeout is solved (October 14): a window the compositor isn't drawing (covered, for example by a fullscreen video while the user works) gives no frame, so screenshots are now best-effort and never fail a test.
 
 - GTK test harness: `compare_narrows_five_images_to_one` once timed out waiting for the chosen candidate during a full off-screen suite run (October 19); it passed 5 of 5 alone and the suite passed on rerun. Make the wait deterministic if it recurs.
+
+- Explained groups (user, November 25, 2026): grouping images by detail, colour and similarity, with the reason for each group shown.
+- Learning the user's taste from Wallslæd likes and "never show" choices (user, November 25). Wallslæd records no view or skip history today, so it would first have to.
+- An "Open in Sharpr" item in Wallslæd's menu (user, November 25). It would reopen D34 (Sharpr is library-only).
+- Replace with upgrade across drives (D49): today a pair on another filesystem is skipped; a copy-then-trash path would need its own safety design.
+- Wallslæd keeping favourites for files that are temporarily missing (its own DS-02 audit finding); D49's relink keeps a 10-minute tombstone only.
 
 ### Considered, Not Planned
 
