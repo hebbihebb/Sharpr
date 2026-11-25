@@ -57,6 +57,14 @@ Main Menu → Library → **Find Copies…** looks among the images in view (the
 
 To find low-resolution images, type `below 4k` (or `<1080p`) in search; `4k` finds images of at least 3840×2160 in either orientation.
 
+## Replace Originals With Upgrades
+
+After upscaling or editing images in another tool, select the new images and choose **Replace Originals With These…** on the image menu; the same item is on a folder's and a bucket's right-click menu, for all their images. Sharpr finds each new image's original through the visual-search index: only a strong match (a resized, converted or lightly cropped version of the same picture) is proposed. When several images could be the original, such as the Wallpapers file and a cropped copy, you choose. Images with no strong match are listed with the reason, and **Pick original…** reviews one beside its closest images, each labelled **weak match**; nothing is ever paired for you. Images not yet indexed for visual search say so.
+
+The review is Compare in replace mode: the original on the left, the new image on the right. **Replace** (R) chooses it, **Skip** (S) leaves both, **Keep Both** (B) keeps both where they are, and Ctrl+Z goes back one image. With several possible originals, put the one to replace beside the new image with the thumbnail strip; **Also trash the other matched copies** (off unless you tick it) trashes the rest too. Escape or **Done** ends the review early; images not reached are skipped.
+
+Nothing changes until you confirm the list at the end. Then each new image moves into its original's folder under the original's name with its own extension (`sunset.jpg` becomes `sunset.png`; a name already taken gets a suffix), takes over the original's buckets, and the original goes to the system trash. **Undo** puts the files, their places and their buckets back. A pair on another drive is skipped: move the new image next to the original first. The new file keeps its own modified date. If Wallslæd is running, its favourites and "never show" choices follow the file.
+
 ## Compare
 
 Select two or more images (Ctrl-click, Shift-click, or Ctrl+A), then right-click one and choose **Compare Selected Images**. Compare shows them two at a time, in filmstrip order, and never changes files.

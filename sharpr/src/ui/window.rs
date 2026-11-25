@@ -45,6 +45,7 @@ pub(crate) use compare_controller::file_actions_blocked;
 use compare_controller::is_comparing;
 #[cfg(test)]
 mod gtk_tests;
+mod replace_controller;
 mod search_controller;
 mod similar_controller;
 mod tag_controller;
@@ -494,6 +495,8 @@ mod imp {
         /// Who opened Compare and gets the survivors back instead of the
         /// browsing selection (Find Copies).
         pub compare_done: RefCell<Option<CompareDone>>,
+        /// The last Replace with upgrade's results, for its Undo (D49).
+        pub last_replaced: RefCell<Vec<crate::upgrade::Replaced>>,
     }
 
     impl Default for SharprWindow {
@@ -553,6 +556,7 @@ mod imp {
                 file_jobs_pending: RefCell::new(Default::default()),
                 review_panels: Cell::new(None),
                 compare_done: RefCell::new(None),
+                last_replaced: RefCell::new(Vec::new()),
             }
         }
     }
@@ -2038,6 +2042,7 @@ impl SharprWindow {
         }
         self.add_action(&compare_action);
         self.setup_show_similar();
+        self.setup_replace_originals();
         self.install_compare_shortcut();
         self.setup_bucket_repeat();
         self.setup_library_root();

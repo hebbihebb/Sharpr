@@ -18,6 +18,7 @@ mod candidates;
 use candidates::CandidateStrip;
 mod decodes;
 use decodes::{Gate, Held, Job, Step, Tier};
+pub mod replace;
 
 type CloseCallback = Box<dyn Fn(Vec<PathBuf>)>;
 
@@ -110,6 +111,10 @@ impl ComparePage {
     }
 
     pub fn undo(&self) {
+        if self.reviewing() {
+            self.review_undo();
+            return;
+        }
         let changed = self
             .imp()
             .knockout
@@ -125,6 +130,9 @@ impl ComparePage {
     /// focus is: arrows keep a side, Space flips, Ctrl+Z undoes, Escape closes.
     /// Brackets remain as unadvertised aliases for the old dismiss controls.
     pub fn handle_key(&self, key: gdk4::Key, modifiers: gdk4::ModifierType) -> glib::Propagation {
+        if let Some(propagation) = self.review_key(key, modifiers) {
+            return propagation;
+        }
         let control = modifiers.contains(gdk4::ModifierType::CONTROL_MASK);
         let plain = !modifiers.intersects(
             gdk4::ModifierType::CONTROL_MASK
@@ -290,6 +298,7 @@ impl ComparePage {
             imp.mode_buttons.borrow()[2].set_active(true);
         }
         self.update_sides();
+        self.update_review();
     }
 
     /// Each image on screen shows its caption, and its error in its own
@@ -641,6 +650,9 @@ mod imp {
         /// Per side: the screen-sized preview, kept to return to.
         pub previews: RefCell<[Option<gdk4::Texture>; 2]>,
         pub(crate) candidates: CandidateStrip,
+        /// Replace mode (D49), while reviewing upgrades.
+        pub(crate) review: RefCell<Option<replace::Review>>,
+        pub(crate) replace_bar: replace::ReplaceBar,
     }
 
     impl Default for ComparePage {
@@ -666,6 +678,8 @@ mod imp {
                 held: RefCell::new([Held::Preview; 2]),
                 previews: RefCell::new([None, None]),
                 candidates: CandidateStrip::default(),
+                review: RefCell::new(None),
+                replace_bar: replace::ReplaceBar::default(),
             }
         }
     }
@@ -849,7 +863,11 @@ fn build(page: &ComparePage) {
         let weak = page.downgrade();
         close.connect_clicked(move |_| {
             if let Some(page) = weak.upgrade() {
-                page.close();
+                if page.reviewing() {
+                    page.finish_review();
+                } else {
+                    page.close();
+                }
             }
         });
     }
@@ -904,6 +922,7 @@ fn build(page: &ComparePage) {
     last.set_margin_bottom(6);
     last.set_visible(false);
     imp.root.append(last);
+    replace::build(page);
     imp.candidates.build(page, &imp.counter);
     imp.root.append(&imp.candidates.root);
 }

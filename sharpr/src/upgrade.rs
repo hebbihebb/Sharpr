@@ -199,21 +199,6 @@ pub struct FileSystem<'a> {
     pub restore: &'a dyn Fn(&Path) -> Result<(), String>,
 }
 
-impl FileSystem<'static> {
-    pub fn real() -> Self {
-        FileSystem {
-            rename: &|from, to| crate::file_ops::rename_no_replace(from, to),
-            trash: &|path| {
-                use gtk4::gio::prelude::FileExt;
-                gtk4::gio::File::for_path(path)
-                    .trash(None::<&gtk4::gio::Cancellable>)
-                    .map_err(|e| e.to_string())
-            },
-            restore: &|path| crate::file_ops::restore_from_trash(path),
-        }
-    }
-}
-
 fn stamp(path: &Path) -> Option<(u64, i64)> {
     std::fs::metadata(path)
         .ok()

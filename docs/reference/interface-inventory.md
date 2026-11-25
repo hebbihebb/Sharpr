@@ -105,6 +105,9 @@ removed means the control is absent, with stored user data retained.
 | Copies | Find Copies / progress / close | Kept in Library; exact and indexed resized/converted copies | D14 |
 | Copies | Keep/tick controls / Compare / Done | Kept; Compare returns to the caller's decisions | D8, D14 |
 | Copies | Move to Trash / whole-group warning | Kept with explicit confirmation and changed-file protection | D14, D25 |
+| Replace | Image menu, folder menu and bucket menu: Replace Originals With These… | Added; matching on a worker, then a summary with each unmatched image's reason and an unticked Pick original… for weak candidates | D49 |
+| Replace | Compare replace mode: Replace (R) / Skip (S) / Keep Both (B), Ctrl+Z, Done/Escape; weak matches labelled; Also trash the other matched copies (unticked) | Added in the Keep bar's place; normal Compare unchanged | D45, D49 |
+| Replace | One confirmation, then progress, Undo toast | Added; originals to the trash only after confirming; Undo restores files, places and buckets | D25, D49 |
 | Library Overview | Library/format/low-resolution/disabled counts | Kept in Library Overview | D22 |
 | Library Overview | Fingerprints/copies/buckets/missing counts | Kept; moved out of Preferences | D22, D33 |
 | Library Overview | Index progress/device/model/rebuild/open model folder | Kept; rebuild still confirms | D22, D33 |

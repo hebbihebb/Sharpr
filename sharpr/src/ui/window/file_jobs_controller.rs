@@ -65,7 +65,7 @@ impl SharprWindow {
     /// Queues `job` behind earlier file jobs. It shows in the activity
     /// indicator; a job with more than one file also gets a toast that counts
     /// and can cancel. `on_done` runs on the GTK thread with the result.
-    fn queue_file_job(
+    pub(super) fn queue_file_job(
         &self,
         job: Job,
         title: String,
@@ -142,7 +142,7 @@ impl SharprWindow {
 
     /// Drops `removed` from the view. The selection moves on only if the
     /// image in view was one of them.
-    fn drop_paths_from_view(&self, removed: &[PathBuf]) {
+    pub(super) fn drop_paths_from_view(&self, removed: &[PathBuf]) {
         if removed.is_empty() {
             return;
         }

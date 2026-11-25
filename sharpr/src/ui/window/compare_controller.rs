@@ -61,6 +61,12 @@ impl SharprWindow {
 
     /// Compares `paths` (at least two) in this order.
     pub fn enter_compare_mode(&self, paths: Vec<PathBuf>) {
+        self.show_compare(move |page| page.start(paths));
+    }
+
+    /// Switches to Compare, letting `begin` start the page (a comparison,
+    /// or the replace review of D49).
+    pub(super) fn show_compare(&self, begin: impl FnOnce(&crate::ui::compare_page::ComparePage)) {
         if let Some(crop) = self.crop_session() {
             crop.close();
         }
@@ -73,8 +79,9 @@ impl SharprWindow {
             state.scope = ViewScope::Compare;
             state.previous_content_page = Some("viewer".to_string());
         }
-        if let Some(page) = self.imp().compare_page.borrow().as_ref() {
-            page.start(paths);
+        let page = self.imp().compare_page.borrow().clone();
+        if let Some(page) = page {
+            begin(&page);
             self.set_mode_header(Some(&page.header()));
         }
         // The side panels make way, which also keeps the filmstrip's file

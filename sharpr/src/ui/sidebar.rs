@@ -919,6 +919,15 @@ impl SidebarPane {
         );
         menu.append_section(None, &move_section);
 
+        let replace_section = gio::Menu::new();
+        let item = gio::MenuItem::new(Some("Replace Originals With These\u{2026}"), None);
+        item.set_action_and_target_value(
+            Some("win.replace-originals-in-bucket"),
+            Some(&id.to_variant()),
+        );
+        replace_section.append_item(&item);
+        menu.append_section(None, &replace_section);
+
         let delete_section = gio::Menu::new();
         delete_section.append(Some("Delete Bucket"), Some("collection.delete"));
         menu.append_section(None, &delete_section);
@@ -1189,6 +1198,13 @@ impl SidebarPane {
                     }),
                     Some("folder.toggle-ignore"),
                 );
+                // Replace with upgrade (D49) from this folder's images.
+                let item = gio::MenuItem::new(Some("Replace Originals With These\u{2026}"), None);
+                item.set_action_and_target_value(
+                    Some("win.replace-originals-in-folder"),
+                    Some(&row.path().to_string_lossy().to_variant()),
+                );
+                menu.append_item(&item);
                 // A root can be forgotten while another remains (D41).
                 let roots = widget_weak
                     .upgrade()

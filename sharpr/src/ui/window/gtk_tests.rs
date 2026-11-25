@@ -6306,3 +6306,193 @@ fn crop_and_export_choices_cover_menus_guide_fullscreen_and_keyboard() {
     }
     window.close();
 }
+
+/// Replace with upgrade (D49), whole flow: a bucket of upgrades without
+/// visual-search vectors gets the honest "not indexed" message; the review
+/// shows each pair in Compare's replace mode; Replace (R) and Skip (S) are
+/// chosen; after the one confirmation the upgrade takes the original's
+/// place and buckets, the original is in the trash, and Undo puts back the
+/// files and buckets.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn replace_with_upgrade_full_flow() {
+    use crate::ui::compare_page::replace::ReviewItem;
+    let root = isolated_fixture("replace-upgrade");
+    let walls = root.join("Wallpapers");
+    let upscale = root.join("upscale");
+    std::fs::create_dir_all(&walls).unwrap();
+    std::fs::create_dir_all(&upscale).unwrap();
+    let original = walls.join("sunset.jpg");
+    let other = walls.join("lake.png");
+    image::RgbImage::from_fn(96, 54, |x, y| {
+        image::Rgb([(x * 2) as u8, (y * 4) as u8, 90])
+    })
+    .save(&original)
+    .unwrap();
+    image::RgbImage::from_pixel(96, 54, image::Rgb([20, 60, 200]))
+        .save(&other)
+        .unwrap();
+    let new = upscale.join("sunset_seedvr2_00001.png");
+    let skipped = upscale.join("lake_x2.png");
+    image::RgbImage::from_fn(192, 108, |x, y| image::Rgb([x as u8, (y * 2) as u8, 90]))
+        .save(&new)
+        .unwrap();
+    image::RgbImage::from_pixel(192, 108, image::Rgb([20, 60, 200]))
+        .save(&skipped)
+        .unwrap();
+    let original_bytes = std::fs::read(&original).unwrap();
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(walls.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1280, 800);
+    window.present();
+    pump_until(|| window.is_mapped() && !window.imp().state.borrow().bucket_migration_pending);
+    let index = window.imp().state.borrow().library_index.clone().unwrap();
+    crate::fingerprint::run_pass(
+        &index,
+        std::slice::from_ref(&root),
+        &[],
+        &[],
+        &|| false,
+        &|_| {},
+    )
+    .unwrap();
+    let fingerprint = |p: &Path| {
+        index
+            .cached_fingerprints()
+            .unwrap()
+            .get(p.to_string_lossy().as_ref())
+            .map(|r| r.2.clone())
+    };
+    let kept = index
+        .create_collection("test", None, "Kept", &[], None, None)
+        .unwrap()
+        .id;
+    index
+        .add_bucket_members(kept, &[(original.clone(), fingerprint(&original))])
+        .unwrap();
+    let batch = index
+        .create_collection("test", None, "Batch", &[], None, None)
+        .unwrap()
+        .id;
+    index
+        .add_bucket_members(
+            batch,
+            &[
+                (new.clone(), fingerprint(&new)),
+                (skipped.clone(), fingerprint(&skipped)),
+            ],
+        )
+        .unwrap();
+    let members_before = index.all_bucket_members().unwrap();
+
+    // From the bucket: with no visual-search index the message says so.
+    gio::prelude::ActionGroupExt::activate_action(
+        &window,
+        "replace-originals-in-bucket",
+        Some(&batch.to_variant()),
+    );
+    pump_until(|| window.visible_dialog().is_some());
+    let alert = window
+        .visible_dialog()
+        .unwrap()
+        .downcast::<libadwaita::AlertDialog>()
+        .unwrap();
+    assert!(
+        alert.body().contains("aren't indexed for visual search"),
+        "{}",
+        alert.body()
+    );
+    assert!(!alert.has_response("review"), "nothing to review");
+    alert.close();
+    pump_until(|| window.visible_dialog().is_none());
+
+    // The review, as matching would hand it over.
+    window.review_upgrades(vec![
+        ReviewItem {
+            new: new.clone(),
+            candidates: vec![original.clone()],
+            weak: false,
+        },
+        ReviewItem {
+            new: skipped.clone(),
+            candidates: vec![other.clone()],
+            weak: true,
+        },
+    ]);
+    pump_until(|| window.imp().state.borrow().scope == ViewScope::Compare);
+    let page = window.imp().compare_page.borrow().clone().unwrap();
+    assert!(page.reviewing());
+    let bar_visible = || page.imp().replace_bar.root.is_visible();
+    pump_until(|| bar_visible() && page.imp().replace_bar.replace.is_sensitive());
+    assert!(
+        !page.imp().keep_bar.is_visible(),
+        "Keep gives way to Replace"
+    );
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(600));
+    screenshot(&window, &root.parent().unwrap().join("replace-review.png"));
+    page.handle_key(gdk4::Key::r, gdk4::ModifierType::empty());
+    // The second, weak pair is labelled so.
+    pump_until(|| page.imp().captions[0].name.text().contains("weak match"));
+    assert!(page.imp().replace_bar.note.text().contains("weak"));
+    page.handle_key(gdk4::Key::s, gdk4::ModifierType::empty());
+
+    // One confirmation for everything chosen.
+    pump_until(|| window.visible_dialog().is_some());
+    let confirm = window
+        .visible_dialog()
+        .unwrap()
+        .downcast::<libadwaita::AlertDialog>()
+        .unwrap();
+    assert_eq!(confirm.heading().as_deref(), Some("Replace 1 Original?"));
+    assert!(
+        original.exists() && new.exists(),
+        "nothing changes before confirming"
+    );
+    confirm.emit_by_name::<()>("response", &[&"replace"]);
+    let placed = walls.join("sunset.png");
+    pump_until(|| placed.exists() && !original.exists());
+    assert!(!new.exists());
+    assert!(
+        skipped.exists() && other.exists(),
+        "the skipped pair is untouched"
+    );
+    pump_until(|| !window.imp().last_replaced.borrow().is_empty());
+    let kept_paths: Vec<PathBuf> = index
+        .all_bucket_members()
+        .unwrap()
+        .into_iter()
+        .filter(|m| m.collection_id == kept)
+        .map(|m| m.last_path)
+        .collect();
+    assert_eq!(
+        kept_paths,
+        vec![placed.clone()],
+        "the bucket follows the upgrade"
+    );
+
+    // Undo puts back the files and the buckets.
+    let replaced = window.imp().last_replaced.borrow().clone();
+    window.undo_replacements(replaced);
+    pump_until(|| original.exists() && new.exists() && !placed.exists());
+    assert_eq!(std::fs::read(&original).unwrap(), original_bytes);
+    let mut after = index.all_bucket_members().unwrap();
+    let mut before = members_before;
+    after.sort_by(|a, b| a.last_path.cmp(&b.last_path));
+    before.sort_by(|a, b| a.last_path.cmp(&b.last_path));
+    assert_eq!(after, before, "bucket rows are back");
+    window.close();
+}

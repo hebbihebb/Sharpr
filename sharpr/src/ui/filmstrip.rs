@@ -111,6 +111,11 @@ fn build_context_menu_model(
         "filmstrip.export",
         Some("<Control>e"),
     ));
+    image.append_item(&menu_item(
+        "Replace Originals With These\u{2026}",
+        "filmstrip.replace-originals",
+        None,
+    ));
     menu.append_section(None, &image);
 
     let sec2 = gio::Menu::new();
@@ -1015,6 +1020,26 @@ impl FilmstripPane {
             });
         }
         group.add_action(&show_similar);
+
+        // Replace with upgrade (D49) is the window's: the images acted on.
+        let replace_originals = gio::SimpleAction::new("replace-originals", None);
+        {
+            let w = self.downgrade();
+            replace_originals.connect_activate(move |_, _| {
+                let Some(widget) = w.upgrade() else { return };
+                let paths: Option<Vec<String>> = widget.imp().menu_ctx.borrow().as_ref().map(|c| {
+                    c.action_paths
+                        .iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect()
+                });
+                if let Some(paths) = paths {
+                    let _ =
+                        widget.activate_action("win.replace-originals", Some(&paths.to_variant()));
+                }
+            });
+        }
+        group.add_action(&replace_originals);
 
         for (name, kind) in [("crop-copy", CopyKind::Crop), ("export", CopyKind::Export)] {
             let action = gio::SimpleAction::new(name, None);
