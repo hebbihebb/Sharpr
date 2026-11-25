@@ -47,8 +47,14 @@ State: **verified candidate**, all committed on this branch; not merged,
 pushed or deployed. Checks: fmt, strict clippy, machete clean; 354/358
 unit tests (4 glycin AVIF/HEIC sandbox tests fail on `main` too); deny
 fails only on RUSTSEC-2026-0459 (SQLite, pre-existing); GTK 44/45 then
-the one failure passed alone. Not done: a manual rapid-scroll check on
-the desktop while the detail pass runs (off-screen only by rule).
+the one failure passed alone. Final build re-measured the gate directly
+(no probe arithmetic): identical, 5% / 96% / 95%. Off-screen stand-in for
+the rapid-scroll check (`filmstrip_stays_responsive_while_measuring_detail`,
+debug build): longest main-loop iteration 57 ms with the pass held, 70 ms
+while it measured 4K images, giving way to thumbnails. Left for the user:
+the same check by hand on the desktop, and confirming the 10 labelled
+candidates in `.tmp/detail-gate/labelled-candidates.html` (all measured
+"looks upscaled").
 
 Choices for the user at acceptance: `upscaled` word and "Looks upscaled"
 chip, Info wording, original's stem with the new extension, R/S/B keys,

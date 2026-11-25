@@ -552,6 +552,9 @@ mod tests {
         };
         // Losses at other probe factors, for tuning without another run.
         let probes = |image: &DynamicImage| -> serde_json::Value {
+            if std::env::var_os("SHARPR_DETAIL_PROBES").is_some_and(|v| v == "0") {
+                return serde_json::Value::Null;
+            }
             let luma = image.to_luma32f();
             let (w, h) = luma.dimensions();
             [1.15, 1.25, 1.4]

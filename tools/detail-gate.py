@@ -151,7 +151,7 @@ def step_report(args):
     ladder_all = [540, 720, 1080, 1440, 2160, 2880, 4320, 5760, 8640, 11520]
 
     def evaluate(r):
-        losses = r.get("probes", {}).get(args.probe)
+        losses = (r.get("probes") or {}).get(args.probe)
         if losses is None:
             return r
         short_side = min(r["width"], r["height"])

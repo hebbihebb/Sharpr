@@ -6658,3 +6658,144 @@ fn real_detail_filter_sort_and_info() {
     pump_until(|| info_line() == "Real detail: not measured yet");
     window.close();
 }
+
+/// Real detail (D48) never stalls the filmstrip: the same rapid scrolling,
+/// navigation and folder switching run first with the detail pass held, then
+/// while it decodes and measures 4K images (giving way to visible thumbnails
+/// through the real probe). The longest single main-loop iteration in each
+/// phase is compared and printed, as the off-screen stand-in for the desktop
+/// rapid-scroll check.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn filmstrip_stays_responsive_while_measuring_detail() {
+    let fixtures = isolated_fixture("detail-responsive");
+    let root = fixtures.join("library");
+    let small = root.join("small");
+    let big = root.join("big");
+    std::fs::create_dir_all(&small).unwrap();
+    std::fs::create_dir_all(&big).unwrap();
+    for i in 0..1500 {
+        image::RgbImage::from_pixel(32, 18, image::Rgb([i as u8, 100, 150]))
+            .save(small.join(format!("image-{i:04}.bmp")))
+            .unwrap();
+    }
+    for i in 0..12u32 {
+        image::RgbImage::from_fn(3840, 2160, |x, y| {
+            let v = ((x.wrapping_mul(2654435761) ^ y.wrapping_mul(40503 + i)) >> 13) as u8;
+            image::Rgb([v, (v / 2).wrapping_add((x / 15) as u8), 128])
+        })
+        .save(big.join(format!("big-{i:02}.jpg")))
+        .unwrap();
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Responsive test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(small.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    let detail = window.imp().detail_index.borrow().clone().unwrap();
+    detail.set_busy(|| true);
+    window.present();
+    pump_until(|| window.imp().state.borrow().library.image_count() == 1500 && window.is_mapped());
+    let index = window.imp().state.borrow().library_index.clone().unwrap();
+    crate::fingerprint::run_pass(
+        &index,
+        std::slice::from_ref(&root),
+        &[],
+        &[],
+        &|| false,
+        &|_| {},
+    )
+    .unwrap();
+    detail.request(crate::detail_index::Job {
+        roots: vec![root.clone()],
+        disabled: Vec::new(),
+    });
+    let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
+    let scroll = filmstrip.imp().scroll.vadjustment();
+    pump_until(|| scroll.page_size() > 0.0 && scroll.upper() > scroll.page_size());
+    let open = window.imp().open_folder_cb.borrow().clone().unwrap();
+    // One round of rapid browsing; returns the longest main-loop iteration.
+    let browse = || -> std::time::Duration {
+        let context = glib::MainContext::default();
+        let mut longest = std::time::Duration::ZERO;
+        let mut step = || loop {
+            let started = std::time::Instant::now();
+            if !context.iteration(false) {
+                break;
+            }
+            longest = longest.max(started.elapsed());
+        };
+        for fraction in [0.0, 0.8, 0.2, 1.0, 0.4, 0.0, 0.6, 0.1] {
+            scroll.set_value((scroll.upper() - scroll.page_size()) * fraction);
+            step();
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            step();
+        }
+        for i in (0..1500).step_by(53).rev() {
+            filmstrip.navigate_to(i);
+            step();
+        }
+        open(big.clone());
+        open(small.clone());
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < until {
+            step();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        pump_until(|| {
+            let st = window.imp().state.borrow();
+            st.library.current_folder == Some(small.clone()) && !st.library.is_loading_folder()
+        });
+        longest
+    };
+    let held = browse();
+    assert_eq!(
+        detail.progress().measured,
+        0,
+        "held while the baseline runs"
+    );
+    // Now measuring for real, giving way to visible thumbnails.
+    let probe = window
+        .imp()
+        .thumbnail_worker
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .visible_busy_probe();
+    detail.set_busy(probe);
+    pump_until(|| {
+        detail.progress().running && detail.progress().measured < detail.progress().images
+    });
+    // Browse again and again until the pass has measured some 4K images
+    // in between, so the comparison covers real decodes.
+    let mut measuring = std::time::Duration::ZERO;
+    let mut rounds = 0;
+    while detail.progress().measured < 3 && rounds < 12 {
+        measuring = measuring.max(browse());
+        rounds += 1;
+    }
+    let progress = detail.progress();
+    assert!(
+        progress.measured >= 1,
+        "the pass measured nothing while browsing"
+    );
+    eprintln!(
+        "longest main-loop iteration: {held:?} with the detail pass held, {measuring:?} over {rounds} rounds while it measured ({} of {} measured)",
+        progress.measured, progress.images
+    );
+    assert!(
+        measuring <= held * 2 + std::time::Duration::from_millis(60),
+        "measuring stalled browsing: {measuring:?} against {held:?}"
+    );
+    window.close();
+}
