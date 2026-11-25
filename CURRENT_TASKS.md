@@ -64,7 +64,9 @@ Desktop trial (user allowed it; release build on a copy of the data in
 user browsed; 18 folder opens, Wallpapers (1526) in 100–183 ms; browsing
 stalls ≥50 ms: 5, of which two at window close (306, 59 ms) and one
 unexplained 192 ms in an idle moment; the user's own recent `main` sessions
-show at most 99 ms. Thumbnails p95 3 ms.
+show at most 99 ms. Thumbnails p95 3 ms. The user found scrolling and
+folder switching smooth and accepted the desktop check (November 25).
+Log kept as `.tmp/bench/desktop-trial.jsonl`.
 
 Choices for the user at acceptance: `upscaled` word and "Looks upscaled"
 chip, Info wording, original's stem with the new extension, R/S/B keys,
