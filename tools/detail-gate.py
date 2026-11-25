@@ -224,10 +224,10 @@ def step_report(args):
                   f"{sum(1 for r in ok if r['upscaled'])} look upscaled, "
                   f"{sum(1 for r in ok if r['estimate'] in ('little-texture', 'too-small'))} not measurable",
                   f"Time per image: median {statistics.median(seconds):.2f} s, mean {statistics.mean(seconds):.2f} s "
-                  "(measurement only; decoding adds to it)" if seconds else ""]
+                  "(decode and measure, one at a time)" if seconds else ""]
         total = len(library_images(args.library))
         lines.append(f"Library under {args.library}: {total} image files; a full pass at this mean is about "
-                     f"{total * statistics.mean(seconds) / 60:.0f} minutes plus decoding" if seconds else "")
+                     f"{total * statistics.mean(seconds) / 60:.0f} minutes at full speed (the background pass runs at idle priority)" if seconds else "")
         write_sheet(out, "contact-sheet.html", "Lowest real detail in the sample",
                     sorted(ok, key=detail_order)[:50])
     if labelled:
