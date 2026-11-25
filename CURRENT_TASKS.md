@@ -23,6 +23,23 @@ Priority order (stop only at a committed, verified boundary):
 
 Progress:
 - [x] Branch and docs (D48, D49, rows 39/40, briefs, Backlog).
+- [x] 40a/40b committed: matcher and swap with Undo (`ab39612`, `85d21d0`).
+- [x] 40c committed: Compare replace mode, entry points, GTK workflow
+  `replace_with_upgrade_full_flow` (`00f1145`).
+- [x] 40d committed: Sharpr calls Wallslæd `Relink` (`e2c46cf`); Wallslæd
+  branch `feature/relink` `ddb162c` (own repo, not merged). Tombstones were
+  dropped: Wallslæd `main` already never drops favourites or bans on a scan
+  (its DS-02 fix), and a test shows the rescan-first race is harmless.
+- [x] 39a gate **passed** (run 2, probe 1.4, near-lossless 0.25): 40 camera
+  images with ≥2900 px short side (Photo, Photo/Export, ARW) scaled to 4K;
+  natives falsely flagged 5% (2/40, limit 10%); fakes flagged 96% (692/720,
+  needed 90%); within one ladder step 95% (686/720). Weakest: 1440p
+  Triangle + sharpened 58%; 1080p sources 100%. Run 1 (camera grids with
+  too little headroom) flagged 19% of natives. Report
+  `.tmp/detail-gate/report.md`. Under about 1120 px short side: "too small".
+- [ ] 39b/39c implemented and verified (cache, `detail` thread, Overview,
+  Info line, `upscaled` chip, Real Detail sort, GTK workflow
+  `real_detail_filter_sort_and_info`); commit after the gate numbers.
 
 Choices for the user at acceptance: `upscaled` word and "Looks upscaled"
 chip, Info wording, original's stem with the new extension, R/S/B keys,

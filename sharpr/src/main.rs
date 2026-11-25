@@ -4,6 +4,7 @@ mod buckets;
 mod config;
 mod copies;
 mod db_version;
+mod detail;
 mod display_scale;
 mod export;
 mod file_jobs;
