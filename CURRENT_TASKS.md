@@ -1,6 +1,9 @@
 # Current Tasks
 
-## Active: Real detail (D48, item 39) and Replace with upgrade (D49, item 40)
+## Accepted: Real detail (D48, item 39) and Replace with upgrade (D49, item 40)
+
+Accepted by the user November 25, 2026; merge into `main`, native
+deployment and the Wallslæd merge and install authorized. Not pushed.
 
 Branch `feature/real-detail-and-replace` (one branch for both, the user's
 choice, November 25, 2026). Goal mode: finish a verified candidate, then stop;
