@@ -34,7 +34,7 @@ Sharpr is a fast, offline Linux app for finding, curating, and preparing wallpap
    - Batch-export to the Wallpapers folder, defaulting to PNG with WebP or Original available (D47).
    - After an external upscale, select the upgraded images (or their folder or bucket) and choose Replace Originals With These…: review each pair in Compare, then confirm, and each upgrade takes its original's place, name and buckets while the original goes to the trash with Undo (D49).
 4. **Clean up.**
-   - Find exact copies, resized or converted copies of the same picture, and images below 4K.
+   - Find exact copies, resized or converted copies of the same picture, images below 4K, and images that look upscaled (`upscaled`, D48; `4k upscaled` is fake 4K).
    - Replace a low-resolution original with its external upgrade (D49).
    - Keep the best copy, usually the highest resolution, and trash the rest after confirming.
 5. **View.** Double-click for fullscreen. There is no slideshow; the desktop screensaver does that.

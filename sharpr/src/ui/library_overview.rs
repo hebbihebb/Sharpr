@@ -148,6 +148,48 @@ pub fn present(window: &SharprWindow) {
     }
     page.add(&visual);
 
+    // Real detail (D48): how much of the library is measured, live.
+    let detail = libadwaita::PreferencesGroup::new();
+    detail.set_title("Real Detail");
+    let detail_row = row("Measured");
+    detail.add(&detail_row);
+    page.add(&detail);
+    let refresh_detail = {
+        let window = window.downgrade();
+        move || {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            let progress = window.detail_progress();
+            let text = match progress {
+                None => "Not started".to_string(),
+                Some(p) if p.images == 0 => "Waiting for fingerprints".to_string(),
+                Some(p) => {
+                    let mut text = format!("{} of {}", count(p.measured), images(p.images));
+                    if p.running {
+                        text.push_str(" · measuring");
+                        if let Some(rate) = p.per_second {
+                            text.push_str(&format!(" · {rate:.1} images/s"));
+                        }
+                    }
+                    text
+                }
+            };
+            detail_row.set_subtitle(&text);
+        }
+    };
+    refresh_detail();
+    {
+        let dialog = dialog.downgrade();
+        glib::timeout_add_seconds_local(1, move || {
+            if dialog.upgrade().is_none() {
+                return glib::ControlFlow::Break;
+            }
+            refresh_detail();
+            glib::ControlFlow::Continue
+        });
+    }
+
     let buckets = libadwaita::PreferencesGroup::new();
     buckets.set_title("Buckets");
     let buckets_row = row("Buckets");

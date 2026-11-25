@@ -25,6 +25,8 @@ pub enum SortField {
     FileType,
     Aspect,
     WideScreen,
+    /// Real detail (D48): lowest first by default.
+    RealDetail,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -40,6 +42,8 @@ pub enum SortOrder {
     AspectDesc,
     WideScreenAsc,
     WideScreenDesc,
+    RealDetailAsc,
+    RealDetailDesc,
 }
 
 impl SortOrder {
@@ -50,6 +54,7 @@ impl SortOrder {
             Self::FileTypeAsc | Self::FileTypeDesc => SortField::FileType,
             Self::AspectAsc | Self::AspectDesc => SortField::Aspect,
             Self::WideScreenAsc | Self::WideScreenDesc => SortField::WideScreen,
+            Self::RealDetailAsc | Self::RealDetailDesc => SortField::RealDetail,
         }
     }
 
@@ -61,6 +66,7 @@ impl SortOrder {
                 | Self::FileTypeDesc
                 | Self::AspectDesc
                 | Self::WideScreenDesc
+                | Self::RealDetailDesc
         )
     }
 
@@ -76,6 +82,8 @@ impl SortOrder {
             (SortField::Aspect, true) => Self::AspectDesc,
             (SortField::WideScreen, false) => Self::WideScreenAsc,
             (SortField::WideScreen, true) => Self::WideScreenDesc,
+            (SortField::RealDetail, false) => Self::RealDetailAsc,
+            (SortField::RealDetail, true) => Self::RealDetailDesc,
         }
     }
 }
@@ -988,6 +996,8 @@ pub struct SortRow<'a> {
     pub filename: &'a str,
     pub modified_secs: Option<i64>,
     pub dimensions: Option<(u32, u32)>,
+    /// The real detail's short side (D48), when measured.
+    pub detail: Option<u32>,
 }
 
 /// The one sort rule for every listing (Work Order item 16): `order`'s own
@@ -1027,6 +1037,13 @@ pub fn compare_rows(order: SortOrder, a: &SortRow, b: &SortRow) -> std::cmp::Ord
             order.field() == SortField::WideScreen,
             order.descending(),
         ),
+        SortOrder::RealDetailAsc | SortOrder::RealDetailDesc => match (a.detail, b.detail) {
+            (Some(a), Some(b)) if order.descending() => b.cmp(&a),
+            (Some(a), Some(b)) => a.cmp(&b),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        },
     };
     key.then_with(by_name).then_with(|| a.path.cmp(b.path))
 }
@@ -1043,12 +1060,14 @@ pub fn compare_entries(order: SortOrder, a: &ImageEntry, b: &ImageEntry) -> std:
             filename: &a_name,
             modified_secs: a.modified_secs(),
             dimensions: a.dimensions(),
+            detail: None,
         },
         &SortRow {
             path: &b_path,
             filename: &b_name,
             modified_secs: b.modified_secs(),
             dimensions: b.dimensions(),
+            detail: None,
         },
     )
 }
@@ -1081,6 +1100,15 @@ pub fn insert_in_order(entries: &mut Vec<ImageEntry>, entry: ImageEntry, order: 
 }
 
 pub fn sort_raw_entries(entries: &mut [RawImageEntry], order: SortOrder) {
+    sort_raw_entries_with(entries, order, &|_| None);
+}
+
+/// `sort_raw_entries` with each path's real detail (D48), for that sort.
+pub fn sort_raw_entries_with(
+    entries: &mut [RawImageEntry],
+    order: SortOrder,
+    detail: &dyn Fn(&Path) -> Option<u32>,
+) {
     let row = |entry: &RawImageEntry| -> (Option<i64>, Option<(u32, u32)>) {
         let modified = entry
             .modified
@@ -1097,12 +1125,14 @@ pub fn sort_raw_entries(entries: &mut [RawImageEntry], order: SortOrder) {
                 filename: &a.filename,
                 modified_secs: a_time,
                 dimensions: a_size,
+                detail: detail(&a.path),
             },
             &SortRow {
                 path: &b.path,
                 filename: &b.filename,
                 modified_secs: b_time,
                 dimensions: b_size,
+                detail: detail(&b.path),
             },
         )
     });
@@ -1640,5 +1670,39 @@ mod tests {
             "/tmp/example.ncnn-intermediate.webp"
         )));
         assert!(LibraryManager::is_image(Path::new("/tmp/example.webp")));
+    }
+
+    #[test]
+    fn real_detail_sorts_lowest_first_with_unmeasured_last() {
+        let paths = [
+            PathBuf::from("/w/native.jpg"),
+            PathBuf::from("/w/fake.jpg"),
+            PathBuf::from("/w/unknown.jpg"),
+        ];
+        let details = [Some(2160), Some(1080), None];
+        let rows: Vec<SortRow> = paths
+            .iter()
+            .zip(details)
+            .map(|(path, detail)| SortRow {
+                path,
+                filename: path.file_name().unwrap().to_str().unwrap(),
+                modified_secs: None,
+                dimensions: None,
+                detail,
+            })
+            .collect();
+        let order = |order: SortOrder| {
+            let mut sorted: Vec<&SortRow> = rows.iter().collect();
+            sorted.sort_by(|a, b| compare_rows(order, a, b));
+            sorted.iter().map(|r| r.filename).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            order(SortOrder::RealDetailAsc),
+            ["fake.jpg", "native.jpg", "unknown.jpg"]
+        );
+        assert_eq!(
+            order(SortOrder::RealDetailDesc),
+            ["native.jpg", "fake.jpg", "unknown.jpg"]
+        );
     }
 }

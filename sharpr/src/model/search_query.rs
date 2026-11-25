@@ -176,12 +176,21 @@ impl Aspect {
     }
 }
 
+/// The filter word for "Looks upscaled" (D48); `4k upscaled` finds fake 4K.
+pub const UPSCALED_WORD: &str = "upscaled";
+
+/// An image's real detail for the chips, `None` when not measured yet.
+pub type Detail<'a> = Option<&'a crate::detail::Stored>;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Chip {
     Format(Format),
     AtLeast(Resolution),
     Below(Resolution),
     Aspect(Aspect),
+    /// "Looks upscaled" (D48): measured detail clearly below the pixel
+    /// size. Images not measured yet never match.
+    Upscaled,
     /// A negated filter (`-png`, `-16:9`): every one must hold.
     Not(Box<Chip>),
     /// A negative word (`-water`), lowercase.
@@ -199,6 +208,7 @@ impl Chip {
             Self::AtLeast(resolution) => format!("{}+", resolution.label()),
             Self::Below(resolution) => format!("Below {}", resolution.label()),
             Self::Aspect(aspect) => aspect.label(),
+            Self::Upscaled => "Looks upscaled".into(),
             Self::Not(inner) => format!("Not {}", inner.label()),
             Self::Without(word) => format!("Not {word}"),
             Self::WithoutStrictly(word) => format!("Strictly not {word}"),
@@ -226,6 +236,7 @@ impl Chip {
         let word = match self {
             Self::Format(format) => format.extensions()[0].to_string(),
             Self::AtLeast(resolution) | Self::Below(resolution) => resolution.word.to_string(),
+            Self::Upscaled => UPSCALED_WORD.to_string(),
             Self::Aspect(aspect) => match aspect {
                 Aspect::Landscape => "landscape".into(),
                 Aspect::Portrait => "portrait".into(),
@@ -249,20 +260,34 @@ impl Chip {
             Self::AtLeast(_) | Self::Below(_) => Some(1),
             Self::Aspect(Aspect::Narrower(..) | Aspect::Wider(..)) => None,
             Self::Aspect(_) => Some(2),
+            Self::Upscaled => Some(3),
             Self::Not(_) | Self::Without(_) | Self::WithoutStrictly(_) => None,
+        }
+    }
+
+    fn needs_detail(&self) -> bool {
+        match self {
+            Self::Upscaled => true,
+            Self::Not(inner) => inner.needs_detail(),
+            _ => false,
         }
     }
 
     fn needs_dimensions(&self) -> bool {
         match self {
-            Self::Format(_) | Self::Without(_) | Self::WithoutStrictly(_) => false,
+            Self::Format(_) | Self::Without(_) | Self::WithoutStrictly(_) | Self::Upscaled => false,
             Self::Not(inner) => inner.needs_dimensions(),
             _ => true,
         }
     }
 
-    fn matches(&self, path: &Path, dimensions: Option<(u32, u32)>) -> bool {
+    fn matches(&self, path: &Path, dimensions: Option<(u32, u32)>, detail: Detail) -> bool {
         match self {
+            Self::Upscaled => detail.is_some_and(|d| d.looks_upscaled()),
+            // "Not upscaled" holds only for images measured as not upscaled.
+            Self::Not(inner) if **inner == Self::Upscaled => {
+                detail.is_some_and(|d| d.detail.is_some() && !d.looks_upscaled())
+            }
             Self::Format(format) => path
                 .extension()
                 .and_then(|e| e.to_str())
@@ -272,7 +297,7 @@ impl Chip {
             Self::Aspect(aspect) => dimensions
                 .filter(|(w, h)| *w > 0 && *h > 0)
                 .is_some_and(|d| aspect.matches(d)),
-            Self::Not(inner) => !inner.matches(path, dimensions),
+            Self::Not(inner) => !inner.matches(path, dimensions, detail),
             // The visual part of a negative word is applied by the search.
             Self::Without(word) | Self::WithoutStrictly(word) => !path
                 .file_name()
@@ -297,21 +322,37 @@ impl ChipFilters {
         self.chips.iter().any(Chip::needs_dimensions)
     }
 
+    /// Whether a chip needs each image's real detail (D48).
+    pub fn needs_detail(&self) -> bool {
+        self.chips.iter().any(Chip::needs_detail)
+    }
+
+    #[cfg(test)]
     pub fn matches(&self, path: &Path, dimensions: Option<(u32, u32)>) -> bool {
-        let positives = (0..3).all(|kind| {
+        self.matches_with(path, dimensions, None)
+    }
+
+    /// `matches` knowing the image's real detail (`None`: not measured).
+    pub fn matches_with(
+        &self,
+        path: &Path,
+        dimensions: Option<(u32, u32)>,
+        detail: Detail,
+    ) -> bool {
+        let positives = (0..4).all(|kind| {
             let mut of_kind = self
                 .chips
                 .iter()
                 .filter(|c| c.kind() == Some(kind))
                 .peekable();
-            of_kind.peek().is_none() || of_kind.any(|chip| chip.matches(path, dimensions))
+            of_kind.peek().is_none() || of_kind.any(|chip| chip.matches(path, dimensions, detail))
         });
         positives
             && self
                 .chips
                 .iter()
                 .filter(|c| c.kind().is_none())
-                .all(|chip| chip.matches(path, dimensions))
+                .all(|chip| chip.matches(path, dimensions, detail))
     }
 
     /// The negative words, and whether each is strict, whose visual part
@@ -369,6 +410,7 @@ fn parse_words(words: &[&str]) -> ParsedQuery {
                     .map(Chip::Format)
                     .or_else(|| Resolution::parse(rest).map(Chip::AtLeast))
                     .or_else(|| Aspect::parse(rest).map(Chip::Aspect))
+                    .or_else(|| (rest == UPSCALED_WORD).then_some(Chip::Upscaled))
                     .map(|chip| Chip::Not(Box::new(chip)))
                     .unwrap_or_else(|| Chip::Without(rest.to_string())),
             )
@@ -377,6 +419,7 @@ fn parse_words(words: &[&str]) -> ParsedQuery {
                 .map(Chip::Format)
                 .or_else(|| Resolution::parse(&lower).map(Chip::AtLeast))
                 .or_else(|| Aspect::parse(&lower).map(Chip::Aspect))
+                .or_else(|| (lower == UPSCALED_WORD).then_some(Chip::Upscaled))
         };
         match chip {
             Some(chip) => {
@@ -463,6 +506,7 @@ const SUGGESTED_WORDS: &[&str] = &[
     "8k",
     "720p",
     "below 4k",
+    "upscaled",
     "below 1440p",
     "below 1080p",
     "16:9",
@@ -776,5 +820,51 @@ mod tests {
         let (chips, remaining) = take_completed_chips("tower -water ");
         assert_eq!(chips, vec![Chip::Without("water".into())]);
         assert_eq!(remaining, "tower ");
+    }
+
+    #[test]
+    fn upscaled_is_a_chip_and_4k_upscaled_finds_fake_4k() {
+        use crate::detail::{Status, Stored};
+        let parsed = parse("4k upscaled");
+        assert_eq!(parsed.chips.len(), 2);
+        assert!(parsed.chips.contains(&Chip::Upscaled));
+        assert_eq!(Chip::Upscaled.label(), "Looks upscaled");
+        assert_eq!(Chip::Upscaled.as_literal(), "\"upscaled\"");
+        let filters = ChipFilters {
+            chips: parsed.chips,
+        };
+        assert!(filters.needs_detail());
+        let path = Path::new("/w/a.jpg");
+        let fake = Stored {
+            status: Status::Below,
+            size: (3840, 2160),
+            detail: Some((1920, 1080)),
+        };
+        let native = Stored {
+            status: Status::Full,
+            size: (3840, 2160),
+            detail: Some((3840, 2160)),
+        };
+        let soft_1440 = Stored {
+            status: Status::Below,
+            size: (2560, 1440),
+            detail: Some((1280, 720)),
+        };
+        assert!(filters.matches_with(path, Some((3840, 2160)), Some(&fake)));
+        assert!(!filters.matches_with(path, Some((3840, 2160)), Some(&native)));
+        // Not 4K pixels: not fake 4K, though it looks upscaled.
+        assert!(!filters.matches_with(path, Some((2560, 1440)), Some(&soft_1440)));
+        // Not measured yet: never matches, nothing is guessed.
+        assert!(!filters.matches_with(path, Some((3840, 2160)), None));
+        // "-upscaled" holds only for images measured as not upscaled.
+        let not = ChipFilters {
+            chips: parse("-upscaled").chips,
+        };
+        assert!(not.matches_with(path, None, Some(&native)));
+        assert!(!not.matches_with(path, None, Some(&fake)));
+        assert!(!not.matches_with(path, None, None));
+        let (chips, rest) = take_completed_chips("4k upscaled ");
+        assert_eq!(chips.len(), 2);
+        assert_eq!(rest, "");
     }
 }

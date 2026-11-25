@@ -432,11 +432,12 @@ impl FilmstripPane {
                         "type" => SortField::FileType,
                         "aspect" => SortField::Aspect,
                         "widescreen" => SortField::WideScreen,
+                        "detail" => SortField::RealDetail,
                         _ => SortField::Name,
                     };
                     let sort_order = SortOrder::from_parts(
                         field,
-                        if field == SortField::WideScreen {
+                        if matches!(field, SortField::WideScreen | SortField::RealDetail) {
                             false
                         } else {
                             f.imp().current_sort_order.get().descending()
@@ -504,6 +505,10 @@ impl FilmstripPane {
         sort_section.append(
             Some("Closest to 16:9"),
             Some("filmstrip-sort.sort-field::widescreen"),
+        );
+        sort_section.append(
+            Some("Real Detail"),
+            Some("filmstrip-sort.sort-field::detail"),
         );
         menu.append_section(Some("Sort By"), &sort_section);
 

@@ -374,9 +374,50 @@ impl ViewerPane {
         widget.imp().metadata_chip.connect_info_opened(move || {
             if let Some(viewer) = weak.upgrade() {
                 viewer.refresh_close_count();
+                viewer.refresh_detail();
             }
         });
         widget
+    }
+
+    /// Info's real-detail line (D48), read from the index's cache on a
+    /// worker. An image not measured yet says so; nothing is guessed.
+    pub(crate) fn refresh_detail(&self) {
+        let imp = self.imp();
+        if !imp.metadata_chip.is_info_open() {
+            return;
+        }
+        let Some(path) = imp.current_path.borrow().clone() else {
+            return;
+        };
+        let index = imp
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|state| state.borrow().library_index.clone());
+        let Some(index) = index else { return };
+        let worker_path = path.clone();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let words = (|| {
+                let metadata = std::fs::metadata(&worker_path).ok()?;
+                let (size, mtime) = crate::fingerprint::file_stamp(&metadata);
+                let fingerprint = index.fresh_fingerprint(&worker_path, size, mtime).ok()??;
+                index.detail_of(&fingerprint).ok()?
+            })()
+            .map(|stored| stored.words())
+            .unwrap_or_else(|| "Real detail: not measured yet".to_string());
+            let _ = tx.send_blocking(words);
+        });
+        let weak = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(words) = rx.recv().await else { return };
+            let Some(viewer) = weak.upgrade() else { return };
+            if viewer.imp().current_path.borrow().as_ref() != Some(&path) {
+                return;
+            }
+            viewer.imp().metadata_chip.update_detail(Some(&words));
+        });
     }
 
     /// Visual search's searcher, for Info's close-images count.

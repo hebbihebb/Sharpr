@@ -13,7 +13,7 @@ Main Menu → Library → **Open Library Root…** chooses the one library folde
 | Alt + ← / → | Previous / next image |
 | Scroll | Zoom in / out at the pointer |
 | Ctrl + 0 | Fit image to the viewer |
-| Ctrl + F | Search: describe the images you want; filter words such as 4k, png or 16:9 become chips |
+| Ctrl + F | Search: describe the images you want; filter words such as 4k, png, 16:9 or upscaled become chips |
 | Ctrl + B | Add the selected images to a bucket |
 | Ctrl + Shift + B | Add to the last successful bucket again |
 | Ctrl + Shift + C | Compare the selected images |
@@ -56,6 +56,8 @@ Tags are retired. Main Menu → Help → Library Maintenance → Turn Tags into 
 Main Menu → Library → **Find Copies…** looks among the images in view (the open folder, bucket, or search results) and finds exact copies (the same file in several places) and resized or converted copies of the same picture, such as a 1080p JPEG of a 4K PNG, or a WebP conversion. Crops, mirrored versions, and merely similar pictures should not count: every copy must have the same shape as the one kept and look the same as it in a small colour version. Look over each group before moving anything. Each group lists resolution, format, size, and folder with the highest resolution first, marked **Keep**. Nothing is ticked: tick what should go, or use **Select All Extras** (everything but each Keep) and **Select None**. A group's **Compare** button opens it in Compare, the copy marked Keep on the left; dismiss the ones you don't want, and **Done** brings you back with those ticked and the rest not. **Move to Trash…** asks before anything moves, warns when a whole group is ticked, and reports files it couldn't move. A file that changed after the search stays where it is, and so does the rest of a group whose kept copy changed or disappeared. Finding resized and converted copies needs the visual-search index; without it, only exact copies are found. On a large library, comparing similar pictures can take a little while; the window counts them as it goes, and closing it stops the search.
 
 To find low-resolution images, type `below 4k` (or `<1080p`) in search; `4k` finds images of at least 3840×2160 in either orientation.
+
+**Real detail.** Pixels aren't the whole story: an image upscaled earlier can have 4K pixels but only 1080p of detail. In the background Sharpr estimates how much detail each image really holds, shown as a resolution in Info ("Real detail ≈ 1920×1080 · looks upscaled", or "Real detail: full 3840×2160"). It scales each image down to a ladder of sizes and back up, and finds the smallest size that loses almost nothing, measuring only textured areas, because sky, gradients and minimal art hold no detail at any size. An image with too little texture says "can't tell" instead of being called low, and images under about 1120 pixels on the short side are too small to measure; the below-4K filter covers those. The same image always gives the same answer. Type `upscaled` (or choose Sort and Filter → Looks Upscaled) for images whose detail is clearly below their pixel size; `4k upscaled` finds fake 4K. Sort and Filter → Real Detail puts the lowest detail first. Images not measured yet never match the filter and sort last, and the status line says how many there are; Library Overview shows how far measuring has got. What it can't see: AI upscalers that invent new fine detail, such as SeedVR2, can come out as full detail.
 
 ## Replace Originals With Upgrades
 

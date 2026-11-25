@@ -311,6 +311,111 @@ impl LibraryIndex {
         tx.commit()
     }
 
+    /// Stores the real-detail estimate (D48) for `fingerprint`.
+    pub fn store_detail(
+        &self,
+        fingerprint: &str,
+        stored: &crate::detail::Stored,
+    ) -> rusqlite::Result<()> {
+        let (detail_width, detail_height) = stored.detail.unzip();
+        self.conn()?.execute(
+            "INSERT OR REPLACE INTO image_detail
+             (fingerprint, version, status, width, height, detail_width, detail_height, measured_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                fingerprint,
+                crate::detail::VERSION,
+                stored.status.key(),
+                stored.size.0,
+                stored.size.1,
+                detail_width,
+                detail_height,
+                now_secs()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Every real-detail estimate made by this version of the method, by
+    /// fingerprint.
+    pub fn details(&self) -> rusqlite::Result<HashMap<String, crate::detail::Stored>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT fingerprint, status, width, height, detail_width, detail_height
+             FROM image_detail WHERE version = ?1",
+        )?;
+        let rows = stmt.query_map(params![crate::detail::VERSION], |row| {
+            let detail = match (row.get::<_, Option<u32>>(4)?, row.get::<_, Option<u32>>(5)?) {
+                (Some(w), Some(h)) => Some((w, h)),
+                _ => None,
+            };
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                (row.get::<_, u32>(2)?, row.get::<_, u32>(3)?),
+                detail,
+            ))
+        })?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (fingerprint, status, size, detail) = row?;
+            if let Some(status) = crate::detail::Status::from_key(&status) {
+                out.insert(
+                    fingerprint,
+                    crate::detail::Stored {
+                        status,
+                        size,
+                        detail,
+                    },
+                );
+            }
+        }
+        Ok(out)
+    }
+
+    /// Each cached file's real-detail short side (D48), by path, where its
+    /// fingerprint is measured. Paths whose file changed since keep their old
+    /// value until the next fingerprint pass, as for every cached value.
+    pub fn detail_short_sides(&self) -> rusqlite::Result<HashMap<String, u32>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT f.path, MIN(d.detail_width, d.detail_height)
+             FROM file_fingerprints f JOIN image_detail d ON d.fingerprint = f.hash
+             WHERE d.version = ?1 AND d.detail_width IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![crate::detail::VERSION], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+        })?;
+        rows.collect()
+    }
+
+    /// The real-detail estimate for one fingerprint, if measured.
+    pub fn detail_of(&self, fingerprint: &str) -> rusqlite::Result<Option<crate::detail::Stored>> {
+        let row = self
+            .conn()?
+            .query_row(
+                "SELECT status, width, height, detail_width, detail_height
+                 FROM image_detail WHERE fingerprint = ?1 AND version = ?2",
+                params![fingerprint, crate::detail::VERSION],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        (row.get::<_, u32>(1)?, row.get::<_, u32>(2)?),
+                        row.get::<_, Option<u32>>(3)?
+                            .zip(row.get::<_, Option<u32>>(4)?),
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(row.and_then(|(status, size, detail)| {
+            Some(crate::detail::Stored {
+                status: crate::detail::Status::from_key(&status)?,
+                size,
+                detail,
+            })
+        }))
+    }
+
     /// Every image size the index has read, by path. Some older rows may be
     /// unrotated, so use them only where orientation doesn't matter.
     pub fn stored_dimensions(&self) -> rusqlite::Result<HashMap<String, (u32, u32)>> {

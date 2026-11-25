@@ -30,6 +30,8 @@ mod imp {
         pub info_location: gtk4::Label,
         pub info_file: gtk4::Label,
         pub info_camera: gtk4::Label,
+        /// Real detail (D48), in plain words.
+        pub info_detail: gtk4::Label,
         pub quality_row: gtk4::Box,
         pub quality_score_label: gtk4::Label,
         pub quality_class_label: gtk4::Label,
@@ -127,6 +129,11 @@ mod imp {
             info_location.add_css_class("caption");
             info_location.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
             let info_file = info_label(None);
+            let info_detail = info_label(None);
+            info_detail.set_visible(false);
+            info_detail.set_tooltip_text(Some(
+                "How much detail the image really holds, as a resolution. Looks upscaled: clearly less than its pixels. AI upscalers that invent fine detail aren't caught.",
+            ));
             let info_camera = info_label(Some("dim-label"));
             info_camera.set_visible(false);
             let popover_quality_label = info_label(Some("dim-label"));
@@ -154,6 +161,7 @@ mod imp {
                 info_title.upcast_ref::<gtk4::Widget>(),
                 info_location.upcast_ref(),
                 info_file.upcast_ref(),
+                info_detail.upcast_ref(),
                 info_camera.upcast_ref(),
                 quality_row.upcast_ref(),
                 popover_collections_label.upcast_ref(),
@@ -181,6 +189,7 @@ mod imp {
                 info_title,
                 info_location,
                 info_file,
+                info_detail,
                 info_camera,
                 quality_row,
                 quality_score_label,
@@ -467,6 +476,13 @@ impl MetadataChip {
         }
     }
 
+    /// The real-detail line (D48); `None` hides it.
+    pub fn update_detail(&self, words: Option<&str>) {
+        let label = &self.imp().info_detail;
+        label.set_text(words.unwrap_or_default());
+        label.set_visible(words.is_some());
+    }
+
     pub fn clear_close_count(&self) {
         self.imp().close_button.set_visible(false);
     }
@@ -496,6 +512,7 @@ impl MetadataChip {
         self.update_collections(&[]);
         self.update_duplicate_count(0);
         self.clear_close_count();
+        self.update_detail(None);
         imp.card.set_visible(false);
     }
 

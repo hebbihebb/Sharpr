@@ -71,6 +71,7 @@ fn sort_indexed(
     rows: &mut [IndexedImage],
     order: SortOrder,
     cache: &std::sync::Mutex<crate::model::browse::DimensionCache>,
+    details: &dyn Fn() -> HashMap<String, u32>,
 ) {
     if matches!(
         order.field(),
@@ -87,15 +88,33 @@ fn sort_indexed(
             row.height = dimensions.map(|d| d.1);
         }
     }
-    fn key(row: &IndexedImage) -> crate::model::library::SortRow<'_> {
-        crate::model::library::SortRow {
-            path: &row.path,
-            filename: &row.filename,
-            modified_secs: row.modified_secs,
-            dimensions: row.width.zip(row.height),
-        }
-    }
-    rows.sort_by(|a, b| crate::model::library::compare_rows(order, &key(a), &key(b)));
+    let details = if order.field() == crate::model::library::SortField::RealDetail {
+        details()
+    } else {
+        HashMap::new()
+    };
+    let key = |row: &'_ IndexedImage| -> Option<u32> {
+        details.get(row.path.to_string_lossy().as_ref()).copied()
+    };
+    rows.sort_by(|a, b| {
+        crate::model::library::compare_rows(
+            order,
+            &crate::model::library::SortRow {
+                path: &a.path,
+                filename: &a.filename,
+                modified_secs: a.modified_secs,
+                dimensions: a.width.zip(a.height),
+                detail: key(a),
+            },
+            &crate::model::library::SortRow {
+                path: &b.path,
+                filename: &b.filename,
+                modified_secs: b.modified_secs,
+                dimensions: b.width.zip(b.height),
+                detail: key(b),
+            },
+        )
+    });
 }
 
 impl LibraryIndex {
@@ -348,7 +367,9 @@ impl LibraryIndex {
             collected
         };
 
-        sort_indexed(&mut rows, sort_order, &self.dimensions);
+        sort_indexed(&mut rows, sort_order, &self.dimensions, &|| {
+            self.detail_short_sides().unwrap_or_default()
+        });
         Ok((rows, stale_count, metadata_pending))
     }
 
@@ -509,7 +530,9 @@ impl LibraryIndex {
         )?;
         let rows = stmt.query_map(params![path_to_string(folder)], indexed_image_from_row)?;
         let mut rows: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
-        sort_indexed(&mut rows, sort_order, &self.dimensions);
+        sort_indexed(&mut rows, sort_order, &self.dimensions, &|| {
+            self.detail_short_sides().unwrap_or_default()
+        });
         Ok(rows)
     }
 

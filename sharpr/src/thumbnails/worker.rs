@@ -199,6 +199,14 @@ impl ThumbnailWorker {
     }
 
     /// Sender for in-viewport (high-priority) thumbnail requests.
+    /// Whether visible thumbnails are waiting, for background work that
+    /// should give way to them (real detail, D48). Holds no sender, so it
+    /// never keeps the pool alive.
+    pub fn visible_busy_probe(&self) -> impl Fn() -> bool + Send + Sync + 'static {
+        let weak = self.visible_tx.downgrade();
+        move || weak.upgrade().is_some_and(|tx| !tx.is_empty())
+    }
+
     pub fn visible_sender(&self) -> Sender<WorkerRequest> {
         self.visible_tx.clone()
     }

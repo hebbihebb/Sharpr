@@ -6496,3 +6496,165 @@ fn replace_with_upgrade_full_flow() {
     assert_eq!(after, before, "bucket rows are back");
     window.close();
 }
+
+/// Real detail (D48): typing `upscaled` makes a "Looks upscaled" chip that
+/// keeps only images measured as upscaled; the Real Detail sort puts the
+/// lowest detail first and unmeasured images last; Info says the detail in
+/// words, and says plainly when an image isn't measured yet.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn real_detail_filter_sort_and_info() {
+    use crate::detail::{Status, Stored};
+    let root = isolated_fixture("real-detail");
+    std::fs::create_dir_all(&root).unwrap();
+    for (name, colour) in [
+        ("a-native.png", [40, 120, 200]),
+        ("b-fake.png", [200, 80, 40]),
+        ("c-unmeasured.png", [60, 160, 60]),
+    ] {
+        image::RgbImage::from_pixel(96, 54, image::Rgb(colour))
+            .save(root.join(name))
+            .unwrap();
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(root.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    // The background pass would measure these tiny fixtures as too small;
+    // holding it (as visible thumbnails do) keeps the test's measurements.
+    window
+        .imp()
+        .detail_index
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .set_busy(|| true);
+    window.set_default_size(1280, 800);
+    window.present();
+    pump_until(|| window.is_mapped() && window.app_state().borrow().library.image_count() == 3);
+    let index = window.imp().state.borrow().library_index.clone().unwrap();
+    crate::fingerprint::run_pass(
+        &index,
+        std::slice::from_ref(&root),
+        &[],
+        &[],
+        &|| false,
+        &|_| {},
+    )
+    .unwrap();
+    let fingerprint = |name: &str| {
+        index
+            .cached_fingerprints()
+            .unwrap()
+            .get(root.join(name).to_string_lossy().as_ref())
+            .unwrap()
+            .2
+            .clone()
+    };
+    // Measurements as the background pass stores them.
+    index
+        .store_detail(
+            &fingerprint("a-native.png"),
+            &Stored {
+                status: Status::Full,
+                size: (3840, 2160),
+                detail: Some((3840, 2160)),
+            },
+        )
+        .unwrap();
+    index
+        .store_detail(
+            &fingerprint("b-fake.png"),
+            &Stored {
+                status: Status::Below,
+                size: (3840, 2160),
+                detail: Some((1920, 1080)),
+            },
+        )
+        .unwrap();
+    let shown = || -> Vec<String> {
+        let state = window.app_state();
+        let st = state.borrow();
+        (0..st.library.image_count())
+            .filter_map(|i| st.library.entry_at(i))
+            .map(|e| e.filename())
+            .collect()
+    };
+
+    // The filter word becomes a chip, and only the measured fake stays.
+    window.show_inline_search();
+    let entry = window.imp().inline_search_entry.borrow().clone().unwrap();
+    entry.set_text("upscaled ");
+    pump_until(|| {
+        window
+            .imp()
+            .browse_options
+            .borrow()
+            .chips
+            .chips
+            .contains(&crate::model::search_query::Chip::Upscaled)
+            && shown() == ["b-fake.png"]
+    });
+    assert_eq!(entry.text(), "", "the word became a chip");
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(500));
+    screenshot(
+        &window,
+        &root.parent().unwrap().join("real-detail-chip.png"),
+    );
+    window.imp().browse_options.borrow_mut().chips.chips.clear();
+    window.run_browse_query(String::new(), true);
+    pump_until(|| shown().len() == 3);
+
+    // Lowest detail first, the unmeasured image last.
+    let filmstrip = window.imp().filmstrip.borrow().clone().unwrap();
+    gtk4::prelude::WidgetExt::activate_action(
+        &filmstrip,
+        "filmstrip-sort.sort-field",
+        Some(&"detail".to_variant()),
+    )
+    .unwrap();
+    pump_until(|| shown() == ["b-fake.png", "a-native.png", "c-unmeasured.png"]);
+
+    // Info says it in words; an unmeasured image says so.
+    let viewer = window.imp().viewer.borrow().clone().unwrap();
+    let info_line = || {
+        viewer
+            .imp()
+            .metadata_chip
+            .imp()
+            .info_detail
+            .text()
+            .to_string()
+    };
+    filmstrip.navigate_to(0);
+    pump_until(|| viewer.imp().current_path.borrow().as_ref() == Some(&root.join("b-fake.png")));
+    pump_until(|| viewer.imp().picture.paintable().is_some());
+    viewer.show_info();
+    pump_until(|| info_line() == "Real detail ≈ 1920×1080 · looks upscaled");
+    let settle = std::time::Instant::now();
+    pump_until(|| settle.elapsed() > std::time::Duration::from_millis(400));
+    screenshot(
+        &window,
+        &root.parent().unwrap().join("real-detail-info.png"),
+    );
+    filmstrip.navigate_to(2);
+    pump_until(|| {
+        viewer.imp().current_path.borrow().as_ref() == Some(&root.join("c-unmeasured.png"))
+    });
+    pump_until(|| viewer.imp().picture.paintable().is_some());
+    viewer.show_info();
+    pump_until(|| info_line() == "Real detail: not measured yet");
+    window.close();
+}

@@ -25,6 +25,13 @@ impl SharprWindow {
             use_gpu,
         ));
         *self.imp().visual_index.borrow_mut() = Some(visual_index.clone());
+        // Real detail (D48) is measured after each pass too, giving way to
+        // visible thumbnails.
+        let detail_index = Arc::new(crate::detail_index::Service::start(index.clone()));
+        if let Some(worker) = self.imp().thumbnail_worker.borrow().as_ref() {
+            detail_index.set_busy(worker.visible_busy_probe());
+        }
+        *self.imp().detail_index.borrow_mut() = Some(detail_index.clone());
         // A deleted or replaced vector file starts indexing again, through
         // a fingerprint pass on the GTK side, which knows the library.
         let (reindex_tx, reindex_rx) = async_channel::unbounded::<()>();
@@ -56,6 +63,10 @@ impl SharprWindow {
                         return;
                     }
                     visual_index.request(crate::visual_search::index::Job {
+                        roots: job.roots.clone(),
+                        disabled: job.disabled.clone(),
+                    });
+                    detail_index.request(crate::detail_index::Job {
                         roots: job.roots.clone(),
                         disabled: job.disabled.clone(),
                     });

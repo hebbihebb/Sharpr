@@ -68,6 +68,20 @@ pub(super) fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_file_fingerprints_hash
             ON file_fingerprints(hash);
 
+        -- Real detail (D48): each fingerprint's estimate for one version of
+        -- the method. Rebuildable, like every cache here.
+        CREATE TABLE IF NOT EXISTS image_detail (
+            fingerprint TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            detail_width INTEGER,
+            detail_height INTEGER,
+            measured_at INTEGER NOT NULL,
+            PRIMARY KEY (fingerprint, version)
+        );
+
         -- Bucket membership (ROADMAP Phase 4): user data. A member is the
         -- file at last_path or any file with the same fingerprint. Rows go
         -- with their bucket when the user deletes it.

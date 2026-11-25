@@ -5,6 +5,7 @@ mod config;
 mod copies;
 mod db_version;
 mod detail;
+mod detail_index;
 mod display_scale;
 mod export;
 mod file_jobs;

@@ -32,6 +32,8 @@ pub(super) enum VisualSummary {
     },
     /// Visual search couldn't run; file names were matched instead.
     Unavailable(String),
+    /// The real-detail chip or sort (D48) left out images not measured yet.
+    DetailPending { unmeasured: usize },
     /// Show Similar (item 28, D44). `found` is `None` when the image itself
     /// isn't indexed yet.
     Similar {
@@ -947,6 +949,27 @@ impl SharprWindow {
                             crate::model::library::SortField::Aspect
                                 | crate::model::library::SortField::WideScreen
                         );
+                    // Real detail (D48), by fresh fingerprint, for its chip
+                    // and its sort.
+                    let wants_detail = chips.needs_detail()
+                        || order.field() == crate::model::library::SortField::RealDetail;
+                    let detail_maps = match (wants_detail, index.as_ref()) {
+                        (true, Some(index)) => Some((
+                            index.cached_fingerprints().map_err(|e| e.to_string())?,
+                            index.details().map_err(|e| e.to_string())?,
+                        )),
+                        _ => None,
+                    };
+                    let detail_of = |path: &Path, stamp: (u64, i64)| {
+                        let (fingerprints, details) = detail_maps.as_ref()?;
+                        let (size, mtime, hash) =
+                            fingerprints.get(path.to_string_lossy().as_ref())?;
+                        ((*size, *mtime) == stamp).then_some(())?;
+                        details.get(hash)
+                    };
+                    let mut unmeasured = 0usize;
+                    let mut detail_sides: std::collections::HashMap<PathBuf, u32> =
+                        std::collections::HashMap::new();
                     let mut raw = Vec::with_capacity(paths.len());
                     let mut stamps = Vec::with_capacity(paths.len());
                     for path in paths {
@@ -962,8 +985,21 @@ impl SharprWindow {
                         let dimensions = needs_dimensions
                             .then(|| cache.dimensions.get(&path, &metadata))
                             .flatten();
-                        if !chips.matches(&path, dimensions) {
+                        let stamp = crate::fingerprint::file_stamp(&metadata);
+                        let detail = if wants_detail {
+                            let detail = detail_of(&path, stamp);
+                            if detail.is_none() {
+                                unmeasured += 1;
+                            }
+                            detail
+                        } else {
+                            None
+                        };
+                        if !chips.matches_with(&path, dimensions, detail) {
                             continue;
+                        }
+                        if let Some(side) = detail.and_then(|d| d.detail_short_side()) {
+                            detail_sides.insert(path.clone(), side);
                         }
                         let (width, height) = dimensions.unwrap_or((0, 0));
                         stamps.push(crate::fingerprint::file_stamp(&metadata));
@@ -1050,12 +1086,17 @@ impl SharprWindow {
                     let prepared = match visual {
                         Some(Ok(prepared)) => prepared,
                         other => {
-                            crate::model::library::sort_raw_entries(&mut raw, order);
+                            crate::model::library::sort_raw_entries_with(&mut raw, order, &|p| {
+                                detail_sides.get(p).copied()
+                            });
                             return Ok(BrowseResult {
                                 strong: Vec::new(),
                                 paths: raw.into_iter().map(|r| r.path).collect(),
                                 visual: match other {
                                     Some(Err(error)) => Some(VisualSummary::Unavailable(error)),
+                                    _ if unmeasured > 0 => {
+                                        Some(VisualSummary::DetailPending { unmeasured })
+                                    }
                                     _ => None,
                                 },
                             });
@@ -1419,6 +1460,14 @@ fn visual_summary_text(summary: &VisualSummary) -> String {
             });
             parts.join(" · ")
         }
+        VisualSummary::DetailPending { unmeasured } => format!(
+            "{unmeasured} {} not measured for real detail yet; Library Overview shows progress",
+            if *unmeasured == 1 {
+                "image is"
+            } else {
+                "images are"
+            }
+        ),
         VisualSummary::Unavailable(reason) => {
             format!("Matching file names only. {}", reason.trim_end_matches('.'))
         }

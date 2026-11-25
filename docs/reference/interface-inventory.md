@@ -36,6 +36,8 @@ removed means the control is absent, with stored user data retained.
 | Filmstrip | Negative, narrower and wider aspects | Kept/added as -16:9, <16:9 and >16:9 chips; menu shares parser | D30 |
 | Search | Typed words | Kept: filename matches and optional local visual ranking | D6, D22 |
 | Search | Format and resolution chips | Kept; filters combine before ranking | D16 |
+| Search | `upscaled` chip ("Looks upscaled"), also in Sort and Filter; status line counts images not measured yet | Added; unmeasured images never match | D48 |
+| Filmstrip | Sort by Real Detail | Added; lowest first, unmeasured last | D48 |
 | Search | Minus words / strict minus words | Kept; visible chips explain exclusions | D16, D22 |
 | Search | Chip edit/removal controls | Kept; click converts to text, × removes | D16 |
 | Search | Suggestions | Kept below the same entry | D16 |
@@ -84,6 +86,8 @@ removed means the control is absent, with stored user data retained.
 | Viewer | Metadata pill and separate Info pill | Changed to one movement readout that expands on hover or pins by click/key | D27, D31 |
 | Viewer | Resolution/format/below-4K/buckets readout | Kept; other metadata is in expanded Info | D18, D31 |
 | Viewer | Filename/location/dates/size/EXIF/resolution score | Kept in expanded Info; identical-copy counts exclude disabled/outside-root files; Escape closes it before fullscreen exits | D18, D31 |
+| Viewer | Real detail line in expanded Info | Added: "Real detail ≈ W×H · looks upscaled", "full W×H", "can't tell (…)", or "not measured yet"; the corner readout is unchanged (D18) | D48 |
+| Library Overview | Real Detail: measured count and pace | Added, refreshed each second | D48 |
 | Viewer | Canvas | Kept neutral in light, dark and high contrast | D27 |
 | Compare | Context action / Ctrl+Shift+C | Kept/added for at least two images, guarded while typing or in modes | D29 |
 | Compare | Side by Side / Split / Flip | Kept in the contextual top bar; Flip shows its Space key | D28, D45 |

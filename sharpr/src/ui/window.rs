@@ -110,6 +110,7 @@ fn sort_and_filter_menu(sort: &gio::MenuModel) -> gio::Menu {
         ("Wider than 16:9", ">16:9"),
         ("4K and Larger", "4k"),
         ("Below 4K", "<4k"),
+        ("Looks Upscaled", "upscaled"),
     ] {
         let item = gio::MenuItem::new(Some(label), None);
         item.set_action_and_target_value(Some("win.add-filter-chip"), Some(&word.to_variant()));
@@ -471,6 +472,8 @@ mod imp {
         pub fingerprints: RefCell<Option<Rc<crate::fingerprint::Service>>>,
         /// Background visual-search indexing (ROADMAP Phase 5).
         pub visual_index: RefCell<Option<Arc<crate::visual_search::index::Service>>>,
+        /// Measures real detail after each fingerprint pass (D48).
+        pub detail_index: RefCell<Option<Arc<crate::detail_index::Service>>>,
         /// Turns search words into a query vector; set with `visual_index`.
         pub visual_searcher: RefCell<Option<crate::visual_search::search::Searcher>>,
         /// How many visual-search results to show; "Show More" raises it.
@@ -545,6 +548,7 @@ mod imp {
                 refresh_sidebar_collections_cb: RefCell::new(None),
                 fingerprints: RefCell::new(None),
                 visual_index: RefCell::new(None),
+                detail_index: RefCell::new(None),
                 visual_searcher: RefCell::new(None),
                 visual_limit: Cell::new(crate::visual_search::search::PAGE),
                 search_status: RefCell::new(None),
@@ -886,6 +890,15 @@ impl SharprWindow {
             .borrow()
             .as_ref()
             .map(|service| service.status())
+    }
+
+    /// How far real-detail measuring has got (D48).
+    pub fn detail_progress(&self) -> Option<crate::detail_index::Progress> {
+        self.imp()
+            .detail_index
+            .borrow()
+            .as_ref()
+            .map(|service| service.progress())
     }
 
     /// Speed, time left, and the last finished pass of visual indexing.
