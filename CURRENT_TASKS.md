@@ -37,9 +37,18 @@ Progress:
   Triangle + sharpened 58%; 1080p sources 100%. Run 1 (camera grids with
   too little headroom) flagged 19% of natives. Report
   `.tmp/detail-gate/report.md`. Under about 1120 px short side: "too small".
-- [ ] 39b/39c implemented and verified (cache, `detail` thread, Overview,
-  Info line, `upscaled` chip, Real Detail sort, GTK workflow
-  `real_detail_filter_sort_and_info`); commit after the gate numbers.
+- [x] 39b/39c committed (`1fea477`). Sample: Wallpapers 1527 files, 0
+  undecodable, 540 look upscaled, 238 not measurable; 2.4 s per image at
+  full speed, about 4 hours for the 5910-file library at idle priority. All
+  10 labelled candidates look upscaled. Sheets: `.tmp/detail-gate/
+  contact-sheet.html`, `labelled-candidates.html`.
+
+State: **verified candidate**, all committed on this branch; not merged,
+pushed or deployed. Checks: fmt, strict clippy, machete clean; 354/358
+unit tests (4 glycin AVIF/HEIC sandbox tests fail on `main` too); deny
+fails only on RUSTSEC-2026-0459 (SQLite, pre-existing); GTK 44/45 then
+the one failure passed alone. Not done: a manual rapid-scroll check on
+the desktop while the detail pass runs (off-screen only by rule).
 
 Choices for the user at acceptance: `upscaled` word and "Looks upscaled"
 chip, Info wording, original's stem with the new extension, R/S/B keys,
