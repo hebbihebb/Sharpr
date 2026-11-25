@@ -242,12 +242,27 @@ impl SharprWindow {
         }
         let (tx, rx) = async_channel::bounded(1);
         let reading = folder.clone();
+        let detail_index = {
+            let st = self.imp().state.borrow();
+            (st.sort_order.field() == crate::model::library::SortField::RealDetail)
+                .then(|| st.library_index.clone())
+                .flatten()
+        };
         let spawned = std::thread::Builder::new()
             .name("new-file-rows".into())
             .spawn(move || {
+                let details = detail_index
+                    .as_ref()
+                    .and_then(|index| index.detail_short_sides().ok())
+                    .unwrap_or_default();
                 let rows: Vec<IndexedImage> = created
                     .into_iter()
-                    .filter_map(|path| LibraryManager::read_new_file_row(&reading, path))
+                    .filter_map(|path| {
+                        let mut row = LibraryManager::read_new_file_row(&reading, path)?;
+                        row.detail_short_side =
+                            details.get(row.path.to_string_lossy().as_ref()).copied();
+                        Some(row)
+                    })
                     .collect();
                 let _ = tx.send_blocking(rows);
             });

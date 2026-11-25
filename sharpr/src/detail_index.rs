@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::config::FolderMode;
@@ -151,8 +151,6 @@ pub struct Service {
     queue: Arc<(Mutex<Queue>, Condvar)>,
     cancel: Arc<AtomicBool>,
     progress: Arc<Mutex<Progress>>,
-    /// Counts stored results, so cached lookups know when to reload.
-    version: Arc<AtomicU64>,
     busy: Arc<Mutex<Option<Busy>>>,
 }
 
@@ -161,13 +159,11 @@ impl Service {
         let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
         let cancel = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(Mutex::new(Progress::default()));
-        let version = Arc::new(AtomicU64::new(0));
         let busy: Arc<Mutex<Option<Busy>>> = Arc::new(Mutex::new(None));
-        let (thread_queue, thread_cancel, thread_progress, thread_version, thread_busy) = (
+        let (thread_queue, thread_cancel, thread_progress, thread_busy) = (
             queue.clone(),
             cancel.clone(),
             progress.clone(),
-            version.clone(),
             busy.clone(),
         );
         let _ = std::thread::Builder::new()
@@ -198,9 +194,6 @@ impl Service {
                     };
                     let report = |p: Progress| {
                         let mut slot = thread_progress.lock().unwrap_or_else(|e| e.into_inner());
-                        if p.measured != slot.measured {
-                            thread_version.fetch_add(1, Ordering::Relaxed);
-                        }
                         *slot = p;
                     };
                     let result = run_pass(
@@ -218,7 +211,6 @@ impl Service {
                             *slot = done;
                         }
                     }
-                    thread_version.fetch_add(1, Ordering::Relaxed);
                     let (lock, _) = &*thread_queue;
                     lock.lock().unwrap_or_else(|e| e.into_inner()).running = None;
                 }
@@ -227,7 +219,6 @@ impl Service {
             queue,
             cancel,
             progress,
-            version,
             busy,
         }
     }
@@ -255,11 +246,6 @@ impl Service {
 
     pub fn progress(&self) -> Progress {
         *self.progress.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Changes whenever results are stored.
-    pub fn version(&self) -> u64 {
-        self.version.load(Ordering::Relaxed)
     }
 }
 
@@ -394,6 +380,55 @@ mod tests {
         assert_eq!(
             index.details().unwrap()["X"].status,
             crate::detail::Status::Failed
+        );
+    }
+
+    #[test]
+    fn changing_scope_cancels_the_running_pass_and_skips_the_disabled_folder() {
+        let root = temp("scope-cancel");
+        let off = root.join("off");
+        std::fs::create_dir_all(&off).unwrap();
+        let index = Arc::new(LibraryIndex::open_in_memory().unwrap());
+        let mut rows = Vec::new();
+        for (name, hash) in [("keep.png", "K"), ("off/skip.png", "S")] {
+            let path = root.join(name);
+            image::RgbImage::new(4, 4).save(&path).unwrap();
+            let (size, mtime) = crate::fingerprint::file_stamp(&std::fs::metadata(&path).unwrap());
+            rows.push((path, size, mtime, hash.to_string()));
+        }
+        index.store_fingerprints(&rows).unwrap();
+        let service = Service::start(index.clone());
+        let paused = Arc::new(AtomicBool::new(true));
+        let paused_probe = paused.clone();
+        service.set_busy(move || paused_probe.load(Ordering::Relaxed));
+        service.request(Job {
+            roots: vec![root.clone()],
+            disabled: Vec::new(),
+        });
+        let started = std::time::Instant::now();
+        while !service.progress().running && started.elapsed() < std::time::Duration::from_secs(3) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(service.progress().running);
+        // Now disable `off`: the old pass cancels and the replacement skips it.
+        service.request(Job {
+            roots: vec![root.clone()],
+            disabled: vec![off.clone()],
+        });
+        paused.store(false, Ordering::Relaxed);
+        let started = std::time::Instant::now();
+        while (service.progress().running || service.progress().images != 1)
+            && started.elapsed() < std::time::Duration::from_secs(5)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let progress = service.progress();
+        assert_eq!((progress.images, progress.measured), (1, 1));
+        let details = index.details().unwrap();
+        assert!(details.contains_key("K"));
+        assert!(
+            !details.contains_key("S"),
+            "disabled folder was not measured"
         );
     }
 }

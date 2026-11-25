@@ -319,6 +319,7 @@ impl LibraryManager {
         let entry = ImageEntry::new(row.path.clone());
         entry.set_file_size(row.file_size);
         entry.set_modified_secs(row.modified_secs);
+        entry.set_detail_short_side(row.detail_short_side);
         if let (Some(width), Some(height)) = (row.width, row.height) {
             entry.set_dimensions(width, height);
         }
@@ -373,6 +374,7 @@ impl LibraryManager {
                 "missing"
             }
             .to_string(),
+            detail_short_side: None,
         })
     }
 
@@ -1060,14 +1062,14 @@ pub fn compare_entries(order: SortOrder, a: &ImageEntry, b: &ImageEntry) -> std:
             filename: &a_name,
             modified_secs: a.modified_secs(),
             dimensions: a.dimensions(),
-            detail: None,
+            detail: a.detail_short_side(),
         },
         &SortRow {
             path: &b_path,
             filename: &b_name,
             modified_secs: b.modified_secs(),
             dimensions: b.dimensions(),
-            detail: None,
+            detail: b.detail_short_side(),
         },
     )
 }
@@ -1288,6 +1290,7 @@ mod tests {
             width: size.map(|s| s.0),
             height: size.map(|s| s.1),
             metadata_status: "ready".to_string(),
+            detail_short_side: None,
         }
     }
 
@@ -1309,7 +1312,7 @@ mod tests {
     #[test]
     fn new_files_land_where_each_sort_order_would_list_them() {
         let folder = Path::new("/photos");
-        let cases: [(SortOrder, Vec<IndexedImage>, IndexedImage, [&str; 4]); 6] = [
+        let cases: [(SortOrder, Vec<IndexedImage>, IndexedImage, [&str; 4]); 7] = [
             (
                 SortOrder::NameAsc,
                 vec![
@@ -1369,6 +1372,25 @@ mod tests {
                 ],
                 row("square.png", None, Some((100, 100))),
                 ["tall.png", "square.png", "wide.png", "unknown.png"],
+            ),
+            (
+                SortOrder::RealDetailAsc,
+                vec![
+                    IndexedImage {
+                        detail_short_side: Some(720),
+                        ..row("soft.png", None, None)
+                    },
+                    IndexedImage {
+                        detail_short_side: Some(2160),
+                        ..row("sharp.png", None, None)
+                    },
+                    row("unmeasured.png", None, None),
+                ],
+                IndexedImage {
+                    detail_short_side: Some(1080),
+                    ..row("mid.png", None, None)
+                },
+                ["soft.png", "mid.png", "sharp.png", "unmeasured.png"],
             ),
         ];
         for (order, rows, new, expected) in cases {

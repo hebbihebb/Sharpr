@@ -57,6 +57,8 @@ pub struct IndexedImage {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub metadata_status: String,
+    /// Real detail's short side (D48), filled when sorting by Real Detail.
+    pub detail_short_side: Option<u32>,
 }
 
 pub struct LibraryIndex {
@@ -93,9 +95,11 @@ fn sort_indexed(
     } else {
         HashMap::new()
     };
-    let key = |row: &'_ IndexedImage| -> Option<u32> {
-        details.get(row.path.to_string_lossy().as_ref()).copied()
-    };
+    if !details.is_empty() {
+        for row in rows.iter_mut() {
+            row.detail_short_side = details.get(row.path.to_string_lossy().as_ref()).copied();
+        }
+    }
     rows.sort_by(|a, b| {
         crate::model::library::compare_rows(
             order,
@@ -104,14 +108,14 @@ fn sort_indexed(
                 filename: &a.filename,
                 modified_secs: a.modified_secs,
                 dimensions: a.width.zip(a.height),
-                detail: key(a),
+                detail: a.detail_short_side,
             },
             &crate::model::library::SortRow {
                 path: &b.path,
                 filename: &b.filename,
                 modified_secs: b.modified_secs,
                 dimensions: b.width.zip(b.height),
-                detail: key(b),
+                detail: b.detail_short_side,
             },
         )
     });
@@ -1010,6 +1014,7 @@ fn indexed_image_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedIm
         width: row.get::<_, Option<i64>>(5)?.map(|v| v as u32),
         height: row.get::<_, Option<i64>>(6)?.map(|v| v as u32),
         metadata_status: row.get(7)?,
+        detail_short_side: None,
     })
 }
 

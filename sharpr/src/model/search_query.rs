@@ -397,6 +397,7 @@ fn parse_words(words: &[&str]) -> ParsedQuery {
                 Format::parse(r).is_none()
                     && Resolution::parse(r).is_none()
                     && Aspect::parse(r).is_none()
+                    && *r != UPSCALED_WORD
             })
         {
             Some(Chip::WithoutStrictly(rest.to_string()))
@@ -856,13 +857,17 @@ mod tests {
         assert!(!filters.matches_with(path, Some((2560, 1440)), Some(&soft_1440)));
         // Not measured yet: never matches, nothing is guessed.
         assert!(!filters.matches_with(path, Some((3840, 2160)), None));
-        // "-upscaled" holds only for images measured as not upscaled.
-        let not = ChipFilters {
-            chips: parse("-upscaled").chips,
-        };
-        assert!(not.matches_with(path, None, Some(&native)));
-        assert!(!not.matches_with(path, None, Some(&fake)));
-        assert!(!not.matches_with(path, None, None));
+        // "-upscaled" and "--upscaled" hold only for images measured as not upscaled.
+        for query in ["-upscaled", "--upscaled"] {
+            let parsed = parse(query);
+            assert_eq!(parsed.chips, vec![Chip::Not(Box::new(Chip::Upscaled))]);
+            let not = ChipFilters {
+                chips: parsed.chips,
+            };
+            assert!(not.matches_with(path, None, Some(&native)));
+            assert!(!not.matches_with(path, None, Some(&fake)));
+            assert!(!not.matches_with(path, None, None));
+        }
         let (chips, rest) = take_completed_chips("4k upscaled ");
         assert_eq!(chips.len(), 2);
         assert_eq!(rest, "");

@@ -66,6 +66,8 @@ struct RankedSnapshot {
     summary: VisualSummary,
     /// What the sort needs to know about each candidate.
     entries: std::collections::HashMap<PathBuf, crate::model::library::RawImageEntry>,
+    /// Each measured candidate's real-detail short side (D48), for that sort.
+    detail_sides: std::collections::HashMap<PathBuf, u32>,
     order: crate::model::library::SortOrder,
 }
 
@@ -116,7 +118,9 @@ impl RankedSnapshot {
         if entries.len() != paths.len() {
             return paths;
         }
-        crate::model::library::sort_raw_entries(&mut entries, self.order);
+        crate::model::library::sort_raw_entries_with(&mut entries, self.order, &|p| {
+            self.detail_sides.get(p).copied()
+        });
         entries.into_iter().map(|entry| entry.path).collect()
     }
 }
@@ -1154,6 +1158,7 @@ impl SharprWindow {
                         visual,
                         strong,
                         entries,
+                        detail_sides,
                         order,
                     };
                     let page = snapshot.page(visual_limit);
@@ -1724,6 +1729,7 @@ mod tests {
                 not_applied: None,
             },
             entries,
+            detail_sides: std::collections::HashMap::new(),
             order: SortOrder::NameAsc,
         }
     }
@@ -1825,6 +1831,18 @@ mod tests {
             ),
             "Show More is hidden when all matches are strong"
         );
+    }
+
+    #[test]
+    fn strong_matches_sort_by_real_detail_with_unmeasured_last() {
+        use crate::visual_search::search::PAGE;
+        let mut snap = snapshot(&["z", "a"]);
+        snap.order = crate::model::library::SortOrder::RealDetailAsc;
+        snap.detail_sides.insert(PathBuf::from("/l/z.jpg"), 720);
+        snap.detail_sides.insert(PathBuf::from("/l/a.jpg"), 2160);
+        // m-tower is unmeasured, so it lands after measured strong matches.
+        let first = snap.page(PAGE);
+        assert_eq!(names(&first), ["z", "a", "m-tower"]);
     }
 
     #[test]

@@ -32,6 +32,8 @@ mod imp {
         /// Raw Laplacian variance from the sharpness scorer.
         /// `f64::NAN` means not yet computed.
         pub sharpness_score: Cell<f64>,
+        /// Real detail's short side (D48), when known for sorting.
+        pub detail_short_side: Cell<Option<u32>>,
     }
 
     impl Default for ImageEntry {
@@ -46,6 +48,7 @@ mod imp {
                 file_size: Cell::new(0),
                 modified_secs: Cell::new(None),
                 sharpness_score: Cell::new(f64::NAN),
+                detail_short_side: Cell::new(None),
             }
         }
     }
@@ -144,5 +147,13 @@ impl ImageEntry {
 
     pub fn set_thumbnail_failed(&self, failed: bool) {
         self.imp().thumbnail_failed.set(failed);
+    }
+
+    pub fn detail_short_side(&self) -> Option<u32> {
+        self.imp().detail_short_side.get()
+    }
+
+    pub fn set_detail_short_side(&self, detail: Option<u32>) {
+        self.imp().detail_short_side.set(detail);
     }
 }

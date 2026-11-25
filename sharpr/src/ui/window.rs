@@ -960,10 +960,16 @@ impl SharprWindow {
                 .active_library()
                 .map(|library| (library.roots(), st.disabled_folders.clone()))
         };
-        if let (Some((roots, disabled)), Some(service)) =
-            (job, self.imp().visual_index.borrow().as_ref())
-        {
-            service.request(crate::visual_search::index::Job { roots, disabled });
+        if let Some((roots, disabled)) = job {
+            if let Some(service) = self.imp().visual_index.borrow().as_ref() {
+                service.request(crate::visual_search::index::Job {
+                    roots: roots.clone(),
+                    disabled: disabled.clone(),
+                });
+            }
+            if let Some(service) = self.imp().detail_index.borrow().as_ref() {
+                service.request(crate::detail_index::Job { roots, disabled });
+            }
         }
         // Something under the roots changed (or the roots did): a member
         // moved outside Sharpr is found by this pass, so it need not wait.
@@ -1474,6 +1480,7 @@ impl SharprWindow {
                                         width: None,
                                         height: None,
                                         metadata_status: "raw".to_string(),
+                                        detail_short_side: None,
                                     })
                                     .collect()
                             }
