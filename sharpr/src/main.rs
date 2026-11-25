@@ -23,6 +23,7 @@ mod thumbnails;
 mod ui;
 mod upgrade;
 mod visual_search;
+mod wallslaed;
 
 use app::SharprApplication;
 use gtk4::{gio, prelude::*};

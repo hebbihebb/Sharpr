@@ -381,6 +381,11 @@ impl SharprWindow {
                         name(path)
                     ));
                 }
+                if report.relinked == Some(false) {
+                    message.push_str(
+                        "; Wallslæd isn't running, so its favourites stay with the old names",
+                    );
+                }
                 let toast = libadwaita::Toast::new(&message);
                 if !report.replaced.is_empty() {
                     toast.set_button_label(Some("Undo"));
@@ -410,13 +415,18 @@ impl SharprWindow {
                     .cloned()
                     .collect();
                 win.after_replace(&[], &undone);
-                let message = match report.failed.first() {
+                let mut message = match report.failed.first() {
                     None => format!("Put back {}", plural(undone.len(), "original", "originals")),
                     Some((path, error)) => format!(
                         "Couldn't put back {}: {error}. Find it in the system trash.",
                         name(path)
                     ),
                 };
+                if report.relinked == Some(false) {
+                    message.push_str(
+                        "; Wallslæd isn't running, so its favourites stay with the new names",
+                    );
+                }
                 win.add_toast(libadwaita::Toast::new(&message));
             },
         );

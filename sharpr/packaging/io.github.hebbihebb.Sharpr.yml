@@ -16,6 +16,9 @@ finish-args:
   - --talk-name=org.freedesktop.portal.FileChooser
   # Show in file manager (Nautilus, Thunar, Dolphin, etc.)
   - --talk-name=org.freedesktop.FileManager1
+  # Replace with upgrade tells Wallslæd which paths changed, so its
+  # favourites follow (D49); local session bus only, never started by Sharpr
+  - --talk-name=io.github.hebbihebb.Wallslaed
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin

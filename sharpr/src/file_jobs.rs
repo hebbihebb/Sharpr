@@ -85,6 +85,8 @@ pub struct Report {
     pub cancelled: bool,
     /// Replace with upgrade: what each finished pair did, for its Undo.
     pub replaced: Vec<crate::upgrade::Replaced>,
+    /// Whether Wallslæd took the changed paths; `None` when none were sent.
+    pub relinked: Option<bool>,
 }
 
 pub enum Event {
@@ -102,6 +104,8 @@ pub struct Context {
     pub tags: Option<Arc<TagDatabase>>,
     pub trash: FileFn,
     pub restore: FileFn,
+    /// Tells Wallslæd about replaced paths (D49); `None` sends nothing.
+    pub relink: Option<Arc<crate::wallslaed::RelinkFn>>,
 }
 
 impl Context {
@@ -115,6 +119,7 @@ impl Context {
                     .map_err(|e| e.to_string())
             }),
             restore: Arc::new(crate::file_ops::restore_from_trash),
+            relink: Some(Arc::new(crate::wallslaed::relink)),
         }
     }
 }
@@ -248,6 +253,14 @@ pub fn run(
                 });
                 step(&mut report, &pair.new, outcome);
             }
+            let pairs: Vec<_> = report
+                .replaced
+                .iter()
+                .flat_map(|done| crate::wallslaed::pairs_for(done, false))
+                .collect();
+            if let (Some(relink), false) = (&ctx.relink, pairs.is_empty()) {
+                report.relinked = Some(relink(&pairs));
+            }
         }
         Job::UndoReplace(done) => {
             let trash = ctx.trash.clone();
@@ -257,6 +270,7 @@ pub fn run(
                 trash: &*trash,
                 restore: &*restore,
             };
+            let mut undo_pairs = Vec::new();
             // Newest first, so a later pair never blocks an earlier one.
             for replaced in done.iter().rev() {
                 if cancelled() {
@@ -267,7 +281,14 @@ pub fn run(
                     crate::upgrade::undo(&index, replaced, &fs)
                         .map(|()| Some(replaced.new_from.clone()))
                 });
+                let undone = outcome.is_ok();
                 step(&mut report, &replaced.placed, outcome);
+                if undone {
+                    undo_pairs.extend(crate::wallslaed::pairs_for(replaced, true));
+                }
+            }
+            if let (Some(relink), false) = (&ctx.relink, undo_pairs.is_empty()) {
+                report.relinked = Some(relink(&undo_pairs));
             }
         }
     }
@@ -428,6 +449,7 @@ mod tests {
                 std::fs::rename(restore_bin.join(path.file_name().unwrap()), path)
                     .map_err(|e| e.to_string())
             }),
+            relink: None,
         };
         Fixture { root, ctx, bin }
     }
@@ -672,7 +694,15 @@ mod tests {
             new_stamp: stamp(&new),
             original_stamp: stamp(&original),
         };
-        let report = run_all(Job::Replace(vec![pair]), &f.ctx);
+        let sent: Arc<std::sync::Mutex<Vec<Vec<(PathBuf, PathBuf)>>>> = Arc::default();
+        let mut ctx = f.ctx.clone();
+        let recorder = sent.clone();
+        ctx.relink = Some(Arc::new(move |pairs: &[(PathBuf, PathBuf)]| {
+            recorder.lock().unwrap().push(pairs.to_vec());
+            true
+        }));
+        let report = run_all(Job::Replace(vec![pair]), &ctx);
+        assert_eq!(report.relinked, Some(true));
         assert!(report.failed.is_empty(), "{:?}", report.failed);
         let placed = f.root.join("Wallpapers/a.png");
         assert_eq!(report.done, vec![(new.clone(), Some(placed.clone()))]);
@@ -682,7 +712,15 @@ mod tests {
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].last_path, placed);
 
-        let undo = run_all(Job::UndoReplace(report.replaced), &f.ctx);
+        let undo = run_all(Job::UndoReplace(report.replaced), &ctx);
+        // Wallslæd hears the swap and, reversed, its Undo.
+        assert_eq!(
+            *sent.lock().unwrap(),
+            vec![
+                vec![(original.clone(), placed.clone())],
+                vec![(placed.clone(), original.clone())]
+            ]
+        );
         assert!(undo.failed.is_empty(), "{:?}", undo.failed);
         assert_eq!(std::fs::read(&original).unwrap(), b"original");
         assert_eq!(std::fs::read(&new).unwrap(), b"upscaled");
