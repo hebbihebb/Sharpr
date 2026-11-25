@@ -200,6 +200,8 @@ impl ComparePage {
 
     pub fn clear(&self) {
         let imp = self.imp();
+        imp.review.borrow_mut().take();
+        imp.replace_bar.root.set_visible(false);
         imp.candidates.clear();
         imp.knockout.replace(None);
         imp.shown.replace([None, None]);

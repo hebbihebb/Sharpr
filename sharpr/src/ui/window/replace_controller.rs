@@ -381,6 +381,23 @@ impl SharprWindow {
                         name(path)
                     ));
                 }
+                let extra_failed: Vec<&(PathBuf, String)> = report
+                    .replaced
+                    .iter()
+                    .flat_map(|r| r.also_failed.iter())
+                    .collect();
+                if let Some((path, error)) = extra_failed.first() {
+                    message.push_str(&format!(
+                        "; {} extra {} not trashed ({}: {error})",
+                        extra_failed.len(),
+                        if extra_failed.len() == 1 {
+                            "copy"
+                        } else {
+                            "copies"
+                        },
+                        name(path)
+                    ));
+                }
                 if report.relinked == Some(false) {
                     message.push_str(
                         "; Wallslæd isn't running, so its favourites stay with the old names",
@@ -433,36 +450,43 @@ impl SharprWindow {
     }
 
     /// Shows the result in the folder or bucket in view: files that left
-    /// drop out, and a folder holding a new or restored file reloads.
+    /// drop out, sidebar bucket counts refresh, an open bucket reloads, and
+    /// arrived files in the open folder are inserted without reloading it.
     fn after_replace(
         &self,
         replaced: &[crate::upgrade::Replaced],
         undone: &[crate::upgrade::Replaced],
     ) {
+        if replaced.is_empty() && undone.is_empty() {
+            return;
+        }
         let mut gone: Vec<PathBuf> = Vec::new();
         let mut arrived: Vec<PathBuf> = Vec::new();
         for r in replaced {
-            gone.push(r.new_from.clone());
+            if r.placed != r.new_from {
+                gone.push(r.new_from.clone());
+                arrived.push(r.placed.clone());
+            }
             gone.push(r.original.clone());
             gone.extend(r.also_trashed.iter().cloned());
-            arrived.push(r.placed.clone());
         }
         for r in undone {
-            gone.push(r.placed.clone());
+            if r.placed != r.new_from {
+                gone.push(r.placed.clone());
+                arrived.push(r.new_from.clone());
+            }
             arrived.push(r.original.clone());
-            arrived.push(r.new_from.clone());
+            arrived.extend(r.also_trashed.iter().cloned());
         }
         self.drop_paths_from_view(&gone);
-        let folder = match &self.imp().state.borrow().scope {
-            ViewScope::Folder(folder) => Some(folder.clone()),
-            _ => None,
-        };
-        if let Some(path) = folder.and_then(|folder| {
-            arrived
-                .into_iter()
-                .find(|p| p.parent() == Some(folder.as_path()))
-        }) {
-            self.show_created_copy(path);
+        if let Some(refresh) = self.imp().refresh_sidebar_collections_cb.borrow().as_ref() {
+            refresh();
+        }
+        let scope = self.imp().state.borrow().scope.clone();
+        match scope {
+            ViewScope::Collection(id) => self.refresh_current_bucket(id),
+            ViewScope::Folder(_) => self.show_new_files(arrived, |_| {}),
+            _ => {}
         }
     }
 }

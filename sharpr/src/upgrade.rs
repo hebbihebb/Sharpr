@@ -192,6 +192,9 @@ pub struct Replaced {
     pub placed: PathBuf,
     pub original: PathBuf,
     pub also_trashed: Vec<PathBuf>,
+    /// Extra ticked copies that couldn't be trashed; left on disk with
+    /// their bucket rows untouched.
+    pub also_failed: Vec<(PathBuf, String)>,
     /// Bucket rows removed and added, for Undo.
     pub removed_rows: Vec<crate::library_index::MemberRecord>,
     pub added_rows: Vec<crate::library_index::MemberRecord>,
@@ -261,7 +264,7 @@ pub fn target_path(pair: &Pair, taken: &dyn Fn(&Path) -> bool) -> PathBuf {
         return preferred;
     }
     crate::file_ops::next_available_path(folder, stem, &extension, |p| {
-        p != pair.new && (p.exists() || taken(p))
+        p != pair.new && (p.symlink_metadata().is_ok() || taken(p))
     })
 }
 
@@ -275,7 +278,7 @@ fn temporary_path(folder: &Path, extension: Option<&std::ffi::OsStr>) -> PathBuf
             name.push_str(extension);
         }
         let path = folder.join(name);
-        if !path.exists() {
+        if path.symlink_metadata().is_err() {
             return path;
         }
     }
@@ -351,10 +354,26 @@ pub fn replace(
         }
     }
 
+    // Trash extra ticked copies before moving their bucket rows, so a copy
+    // that couldn't go to the trash keeps its file and its buckets, and the
+    // failure is reported instead of lost.
+    let mut also_trashed = Vec::new();
+    let mut also_failed = Vec::new();
+    for extra in &pair.also_trash {
+        if stamp(extra).is_none() {
+            also_failed.push((extra.clone(), "the file is no longer there".into()));
+            continue;
+        }
+        match (fs.trash)(extra) {
+            Ok(()) => also_trashed.push(extra.clone()),
+            Err(error) => also_failed.push((extra.clone(), error)),
+        }
+    }
+
     // The files are in place; now the index follows.
     let records = index.replace_identity(
         &pair.original,
-        &pair.also_trash,
+        &also_trashed,
         &pair.new,
         &placed,
         new_fingerprint.as_deref(),
@@ -362,31 +381,36 @@ pub fn replace(
     let (removed_rows, added_rows) = match records {
         Ok(rows) => rows,
         Err(error) => {
-            let back = (if placed != pair.new {
-                rename(&placed, &pair.new)
+            let mut rollback_errors = Vec::new();
+            if placed != pair.new {
+                if let Err(err) = rename(&placed, &pair.new) {
+                    rollback_errors.push(err);
+                }
+            }
+            if let Err(err) = (fs.restore)(&pair.original) {
+                rollback_errors.push(err);
+            }
+            for extra in &also_trashed {
+                if let Err(err) = (fs.restore)(extra) {
+                    rollback_errors.push(format!("{}: {err}", extra.display()));
+                }
+            }
+            return Err(if rollback_errors.is_empty() {
+                format!("couldn't move bucket membership: {error}")
             } else {
-                Ok(())
-            })
-            .and_then(|()| (fs.restore)(&pair.original));
-            return Err(match back {
-                Ok(()) => format!("couldn't move bucket membership: {error}"),
-                Err(back) => format!(
-                    "couldn't move bucket membership: {error}; putting things back failed: {back}"
-                ),
+                format!(
+                    "couldn't move bucket membership: {error}; putting things back failed: {}",
+                    rollback_errors.join("; ")
+                )
             });
         }
     };
-    let mut also_trashed = Vec::new();
-    for extra in &pair.also_trash {
-        if stamp(extra).is_some() && (fs.trash)(extra).is_ok() {
-            also_trashed.push(extra.clone());
-        }
-    }
     Ok(Replaced {
         new_from: pair.new.clone(),
         placed,
         original: pair.original.clone(),
         also_trashed,
+        also_failed,
         removed_rows,
         added_rows,
     })
@@ -394,10 +418,12 @@ pub fn replace(
 
 /// Undoes one replacement: moves the new file back, restores the original
 /// and the other trashed copies from the trash, and puts the bucket rows
-/// back. Stops at the first step that can't be done, changing nothing more.
+/// back. Stops at the first step that can't be done, putting back any file
+/// it already moved.
 pub fn undo(index: &LibraryIndex, done: &Replaced, fs: &FileSystem) -> Result<(), String> {
-    if done.placed != done.new_from {
-        if done.new_from.exists() {
+    let moved_back = done.placed != done.new_from;
+    if moved_back {
+        if done.new_from.symlink_metadata().is_ok() {
             return Err(format!(
                 "another file now has the name {}",
                 done.new_from.display()
@@ -406,7 +432,17 @@ pub fn undo(index: &LibraryIndex, done: &Replaced, fs: &FileSystem) -> Result<()
         (fs.rename)(&done.placed, &done.new_from)
             .map_err(|e| format!("couldn't move {} back: {e}", done.placed.display()))?;
     }
-    (fs.restore)(&done.original)?;
+    if let Err(error) = (fs.restore)(&done.original) {
+        if moved_back {
+            if let Err(back) = (fs.rename)(&done.new_from, &done.placed) {
+                return Err(format!(
+                    "{error}; putting {} back failed: {back}",
+                    done.placed.display()
+                ));
+            }
+        }
+        return Err(error);
+    }
     let mut failed = Vec::new();
     for extra in &done.also_trashed {
         if let Err(error) = (fs.restore)(extra) {
@@ -957,5 +993,98 @@ mod tests {
         undo(&f.index, &done, &fs).unwrap();
         assert!(new.exists() && original.exists());
         assert_eq!(f.members(), before);
+    }
+
+    #[test]
+    fn a_failed_extra_copy_keeps_its_buckets_and_reports_the_error() {
+        let f = fixture("also-fail");
+        let original = f.file("Wallpapers/a.jpg", b"original", "orig");
+        let crop = f.file("Needs Upscale/a-crop.webp", b"crop", "crop");
+        let new = f.file("upscale/a.png", b"upscaled", "new");
+        let kept = f.bucket("Kept", &[&original, &crop]);
+        let bin_trash = f.bin_trash();
+        let trash = |path: &Path| {
+            if path == crop {
+                return Err("permission denied".to_string());
+            }
+            bin_trash(path)
+        };
+        let restore = f.bin_restore();
+        let fs = FileSystem {
+            rename: &real_rename,
+            trash: &trash,
+            restore: &restore,
+        };
+        let mut pair = f.pair(&new, &original);
+        pair.also_trash = vec![crop.clone()];
+        let done = replace(&f.index, &f.tags, &pair, &fs).unwrap();
+        assert!(done.also_trashed.is_empty());
+        assert_eq!(
+            done.also_failed,
+            vec![(crop.clone(), "permission denied".to_string())]
+        );
+        assert!(crop.exists(), "failed extra copy stayed on disk");
+        assert_eq!(
+            f.members(),
+            vec![
+                (kept, crop.clone(), Some("crop".into())),
+                (kept, done.placed.clone(), Some("new".into())),
+            ],
+            "failed extra copy kept its bucket membership"
+        );
+    }
+
+    #[test]
+    fn undo_restores_placed_file_if_restoring_original_fails() {
+        let f = fixture("undo-restore-fail");
+        let original = f.file("Wallpapers/a.jpg", b"original", "orig");
+        let new = f.file("upscale/a.png", b"upscaled", "new");
+        let kept = f.bucket("Kept", &[&original]);
+        let trash = f.bin_trash();
+        let restore = f.bin_restore();
+        let fs = FileSystem {
+            rename: &real_rename,
+            trash: &trash,
+            restore: &restore,
+        };
+        let done = replace(&f.index, &f.tags, &f.pair(&new, &original), &fs).unwrap();
+        let after_replace = f.members();
+        let failing_restore = |_: &Path| Err("trash missing".to_string());
+        let failing_fs = FileSystem {
+            rename: &real_rename,
+            trash: &trash,
+            restore: &failing_restore,
+        };
+        let err = undo(&f.index, &done, &failing_fs).unwrap_err();
+        assert!(err.contains("trash missing"), "{err}");
+        assert_eq!(
+            std::fs::read(&done.placed).unwrap(),
+            b"upscaled",
+            "new file moved back to placed so disk matches the index"
+        );
+        assert!(!new.exists());
+        assert_eq!(f.members(), after_replace);
+        assert_eq!(
+            f.members(),
+            vec![(kept, done.placed.clone(), Some("new".into()))]
+        );
+    }
+
+    #[test]
+    fn a_dangling_symlink_at_target_gets_a_safe_suffix() {
+        let f = fixture("symlink");
+        let original = f.file("Wallpapers/sunset.jpg", b"original", "orig");
+        let new = f.file("upscale/x.png", b"upscaled", "new");
+        let dangling = f.root.join("Wallpapers/sunset.png");
+        std::os::unix::fs::symlink(f.root.join("Wallpapers/missing.png"), &dangling).unwrap();
+        let (trash, restore) = (f.bin_trash(), f.bin_restore());
+        let fs = FileSystem {
+            rename: &real_rename,
+            trash: &trash,
+            restore: &restore,
+        };
+        let done = replace(&f.index, &f.tags, &f.pair(&new, &original), &fs).unwrap();
+        assert_eq!(done.placed, f.root.join("Wallpapers/sunset (copy).png"));
+        assert!(dangling.symlink_metadata().is_ok());
     }
 }

@@ -6497,6 +6497,134 @@ fn replace_with_upgrade_full_flow() {
     window.close();
 }
 
+/// Replace review mode keeps keyboard control when the candidate thumbnail
+/// strip has focus (Escape finishes the review and clears review state, `[`
+/// never dismisses), and replacing while viewing a bucket refreshes the open
+/// bucket's filmstrip both on Replace and on Undo.
+#[test]
+#[ignore = "requires isolated GSettings/data directories and a graphical session"]
+fn replace_review_focus_keys_and_bucket_view_refresh() {
+    use crate::ui::compare_page::replace::ReviewItem;
+    let root = isolated_fixture("replace-review-bucket");
+    let walls = root.join("Wallpapers");
+    let upscale = root.join("upscale");
+    std::fs::create_dir_all(&walls).unwrap();
+    std::fs::create_dir_all(&upscale).unwrap();
+    let original = walls.join("sunset.jpg");
+    let alt = walls.join("sunset-alt.jpg");
+    let new = upscale.join("sunset_up.png");
+    for (path, color) in [
+        (&original, [180, 90, 40]),
+        (&alt, [160, 80, 60]),
+        (&new, [200, 100, 50]),
+    ] {
+        image::RgbImage::from_pixel(96, 54, image::Rgb(color))
+            .save(path)
+            .unwrap();
+    }
+    gtk4::init().unwrap();
+    libadwaita::init().unwrap();
+    crate::register_resources();
+    let mut settings = AppSettings::load();
+    settings.libraries.clear();
+    settings
+        .add_library("Test", root.clone(), FolderMode::TopLevel)
+        .unwrap();
+    settings.set_active_library_last_folder(Some(walls.clone()));
+    let app = libadwaita::Application::builder()
+        .application_id("io.github.hebbihebb.Sharpr.GtkTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let window = SharprWindow::new(&app);
+    window.set_default_size(1280, 800);
+    window.present();
+    pump_until(|| window.is_mapped() && !window.imp().state.borrow().bucket_migration_pending);
+    let index = window.imp().state.borrow().library_index.clone().unwrap();
+    crate::fingerprint::run_pass(
+        &index,
+        std::slice::from_ref(&root),
+        &[],
+        &[],
+        &|| false,
+        &|_| {},
+    )
+    .unwrap();
+    let fp = |p: &Path| {
+        index
+            .cached_fingerprints()
+            .unwrap()
+            .get(p.to_string_lossy().as_ref())
+            .map(|r| r.2.clone())
+    };
+    let kept = index
+        .create_collection("test", None, "Kept", &[], None, None)
+        .unwrap()
+        .id;
+    index
+        .add_bucket_members(kept, &[(original.clone(), fp(&original))])
+        .unwrap();
+
+    // Open Replace review with two candidates so the candidate strip is shown.
+    window.review_upgrades(vec![ReviewItem {
+        new: new.clone(),
+        candidates: vec![original.clone(), alt.clone()],
+        weak: false,
+    }]);
+    pump_until(|| window.imp().state.borrow().scope == ViewScope::Compare);
+    let page = window.imp().compare_page.borrow().clone().unwrap();
+    pump_until(|| page.imp().candidates.list.is_visible());
+    page.imp().candidates.list.grab_focus();
+    pump_until(|| page.imp().candidates.has_keyboard_focus());
+    // `[` must not dismiss a candidate in Replace mode.
+    let before_survivors = page.survivors();
+    page.handle_key(gdk4::Key::bracketleft, gdk4::ModifierType::empty());
+    assert_eq!(page.survivors(), before_survivors);
+    // Escape while candidate strip is focused must finish the review cleanly.
+    page.handle_key(gdk4::Key::Escape, gdk4::ModifierType::empty());
+    pump_until(|| window.imp().state.borrow().scope != ViewScope::Compare);
+    assert!(!page.reviewing(), "review state cleared on Escape");
+    assert!(!page.imp().replace_bar.root.is_visible());
+    // Reopening normal Compare must show the Keep bar, not Replace mode.
+    window.enter_compare_mode(vec![original.clone(), alt.clone()]);
+    pump_until(|| window.imp().state.borrow().scope == ViewScope::Compare);
+    assert!(!page.reviewing());
+    assert!(page.imp().keep_bar.is_visible());
+    assert!(!page.imp().replace_bar.root.is_visible());
+    page.close();
+    pump_until(|| window.imp().state.borrow().scope != ViewScope::Compare);
+
+    // Open the Kept bucket and run a replacement while viewing it.
+    window.app_state().borrow_mut().scope = ViewScope::Collection(kept);
+    window.refresh_current_bucket(kept);
+    let shown = || -> Vec<PathBuf> {
+        let st = window.app_state();
+        let st = st.borrow();
+        (0..st.library.image_count())
+            .filter_map(|i| st.library.entry_at(i))
+            .map(|e| e.path())
+            .collect()
+    };
+    pump_until(|| {
+        window.imp().state.borrow().scope == ViewScope::Collection(kept)
+            && shown() == vec![original.clone()]
+    });
+    let stamp = |p: &Path| crate::fingerprint::file_stamp(&std::fs::metadata(p).unwrap());
+    window.run_replacements(vec![crate::upgrade::Pair {
+        new: new.clone(),
+        original: original.clone(),
+        also_trash: Vec::new(),
+        new_stamp: stamp(&new),
+        original_stamp: stamp(&original),
+    }]);
+    let placed = walls.join("sunset.png");
+    pump_until(|| shown() == vec![placed.clone()]);
+    let replaced = window.imp().last_replaced.borrow().clone();
+    window.undo_replacements(replaced);
+    pump_until(|| shown() == vec![original.clone()]);
+    window.close();
+}
+
 /// Real detail (D48): typing `upscaled` makes a "Looks upscaled" chip that
 /// keeps only images measured as upscaled; the Real Detail sort puts the
 /// lowest detail first and unmeasured images last; Info says the detail in

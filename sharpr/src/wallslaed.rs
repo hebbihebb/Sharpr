@@ -54,11 +54,64 @@ pub fn relink(pairs: &[(PathBuf, PathBuf)]) -> bool {
 /// from the new file to the original.
 pub fn pairs_for(done: &crate::upgrade::Replaced, undo: bool) -> Vec<(PathBuf, PathBuf)> {
     if undo {
-        return vec![(done.placed.clone(), done.original.clone())];
+        return (done.placed != done.original)
+            .then(|| (done.placed.clone(), done.original.clone()))
+            .into_iter()
+            .collect();
     }
     std::iter::once(&done.original)
         .chain(&done.also_trashed)
         .filter(|old| **old != done.placed)
         .map(|old| (old.clone(), done.placed.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::upgrade::Replaced;
+
+    fn replaced(original: &str, placed: &str, also: &[&str]) -> Replaced {
+        Replaced {
+            new_from: PathBuf::from("/upscale/a.png"),
+            placed: PathBuf::from(placed),
+            original: PathBuf::from(original),
+            also_trashed: also.iter().map(PathBuf::from).collect(),
+            also_failed: Vec::new(),
+            removed_rows: Vec::new(),
+            added_rows: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn same_path_swap_sends_no_relink_pairs_either_way() {
+        let done = replaced("/w/sunset.png", "/w/sunset.png", &[]);
+        assert!(pairs_for(&done, false).is_empty());
+        assert!(pairs_for(&done, true).is_empty());
+    }
+
+    #[test]
+    fn cross_extension_swap_relinks_forward_and_back() {
+        let done = replaced("/w/sunset.jpg", "/w/sunset.png", &["/w/sunset-copy.webp"]);
+        assert_eq!(
+            pairs_for(&done, false),
+            vec![
+                (
+                    PathBuf::from("/w/sunset.jpg"),
+                    PathBuf::from("/w/sunset.png")
+                ),
+                (
+                    PathBuf::from("/w/sunset-copy.webp"),
+                    PathBuf::from("/w/sunset.png")
+                ),
+            ]
+        );
+        assert_eq!(
+            pairs_for(&done, true),
+            vec![(
+                PathBuf::from("/w/sunset.png"),
+                PathBuf::from("/w/sunset.jpg")
+            )]
+        );
+    }
 }

@@ -68,7 +68,11 @@ impl Job {
                 .collect(),
             Job::UndoReplace(done) => done
                 .iter()
-                .flat_map(|d| [d.placed.clone(), d.original.clone()])
+                .flat_map(|d| {
+                    [d.placed.clone(), d.original.clone(), d.new_from.clone()]
+                        .into_iter()
+                        .chain(d.also_trashed.iter().cloned())
+                })
                 .collect(),
         }
     }

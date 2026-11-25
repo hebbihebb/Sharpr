@@ -1,82 +1,50 @@
 # Current Tasks
 
-## Accepted: Real detail (D48, item 39) and Replace with upgrade (D49, item 40)
+## Active: Review fixes for Real detail (D48) and Replace with upgrade (D49)
 
-Accepted by the user November 25, 2026; merge into `main`, native
-deployment and the Wallslæd merge and install authorized. Not pushed.
+Branch `fix/review-real-detail-and-replace` (from `main` `e95e45b`), paired
+with Wallslæd branch `fix/relink-review` (from `main` `8651e09`).
 
-Branch `feature/real-detail-and-replace` (one branch for both, the user's
-choice, November 25, 2026). Goal mode: finish a verified candidate, then stop;
-no merge, push or deploy. The full plan, including the online review's seven
-changes, is summarised here; decisions are D48/D49 in `product.md`.
+Fixes:
+- Compare Replace mode: keep keyboard handling inside `review_key` when the
+  candidate thumbnail strip has focus (so `Escape` finishes the review and
+  `[`/`]` never dismiss), and clear `review` / `replace_bar` in `clear()`.
+- `library_scope_changed`: cancel and re-scope `detail_index` immediately on
+  folder disable or root change, matching `visual_index`.
+- `after_replace`: refresh sidebar bucket counts, reload an open bucket on
+  Replace and Undo, and insert arrived folder files via `show_new_files`
+  (including restored `also_trashed` copies).
+- Real Detail sort: pass `detail_sides` into `RankedSnapshot::sorted`, and
+  carry `detail_short_side` on `IndexedImage`/`ImageEntry` so `compare_entries`
+  and `insert_new_files` follow the same sort rule.
+- `upgrade.rs`: trash `also_trash` copies before `replace_identity` so a failed
+  copy keeps its bucket rows and reports the error in the toast; roll back
+  `placed` if `undo` fails to restore `original`; use `symlink_metadata` for
+  dangling-symlink collision checks.
+- Polish: `wallslaed::pairs_for` skips no-op Undo pairs on same-extension swaps;
+  `--upscaled` parses as `Not(Upscaled)`; `Job::UndoReplace` locks `new_from`
+  and `also_trashed`; drop unused `detail_index::Service::version`.
+- Wallslæd (`fix/relink-review`): `Relink` updates `current.source` and
+  `library`, drops stale `preloaded` entries, skips empty/no-op pairs without
+  rewriting state, and deduplicates non-favorite partial-scan slots in `order`.
 
-Priority order (stop only at a committed, verified boundary):
-1. Docs (this commit), then 39a: `sharpr/src/detail.rs` estimator plus
-   `tools/detail-gate.py` gate on camera originals and synthetic fakes;
-   labelled fake-4K candidates found by non-estimator evidence (lower-res
-   version elsewhere, upscaler names, Upscaled/Resized folders) for the user
-   to confirm.
-2. 40a matcher (`upgrade.rs`), 40b `Job::Replace` (preflight; move new
-   first, trash original last; temp-name dance for the same path; buckets
-   rewritten with an undo record), 40c Compare replace mode and entry points.
-3. 39b cache table `image_detail` plus background `detail` thread; 39c Info,
-   `upscaled` chip, sort, help.
-4. 40d Wallslæd `Relink` (own branch there, with 10-minute tombstones);
-   Sharpr calls it with NO_AUTO_START.
-
-Progress:
-- [x] Branch and docs (D48, D49, rows 39/40, briefs, Backlog).
-- [x] 40a/40b committed: matcher and swap with Undo (`ab39612`, `85d21d0`).
-- [x] 40c committed: Compare replace mode, entry points, GTK workflow
-  `replace_with_upgrade_full_flow` (`00f1145`).
-- [x] 40d committed: Sharpr calls Wallslæd `Relink` (`e2c46cf`); Wallslæd
-  branch `feature/relink` `ddb162c` (own repo, not merged). Tombstones were
-  dropped: Wallslæd `main` already never drops favourites or bans on a scan
-  (its DS-02 fix), and a test shows the rescan-first race is harmless.
-- [x] 39a gate **passed** (run 2, probe 1.4, near-lossless 0.25): 40 camera
-  images with ≥2900 px short side (Photo, Photo/Export, ARW) scaled to 4K;
-  natives falsely flagged 5% (2/40, limit 10%); fakes flagged 96% (692/720,
-  needed 90%); within one ladder step 95% (686/720). Weakest: 1440p
-  Triangle + sharpened 58%; 1080p sources 100%. Run 1 (camera grids with
-  too little headroom) flagged 19% of natives. Report
-  `.tmp/detail-gate/report.md`. Under about 1120 px short side: "too small".
-- [x] 39b/39c committed (`1fea477`). Sample: Wallpapers 1527 files, 0
-  undecodable, 540 look upscaled, 238 not measurable; 2.4 s per image at
-  full speed, about 4 hours for the 5910-file library at idle priority. All
-  10 labelled candidates look upscaled. Sheets: `.tmp/detail-gate/
-  contact-sheet.html`, `labelled-candidates.html`.
-
-State: **verified candidate**, all committed on this branch; not merged,
-pushed or deployed. Checks: fmt, strict clippy, machete clean; 354/358
-unit tests (4 glycin AVIF/HEIC sandbox tests fail on `main` too); deny
-fails only on RUSTSEC-2026-0459 (SQLite, pre-existing); GTK 44/45 then
-the one failure passed alone. Final build re-measured the gate directly
-(no probe arithmetic): identical, 5% / 96% / 95%. Off-screen stand-in for
-the rapid-scroll check (`filmstrip_stays_responsive_while_measuring_detail`,
-debug build): longest main-loop iteration 57 ms with the pass held, 70 ms
-while it measured 4K images, giving way to thumbnails. Bench logs
-(`.tmp/bench/`, `rapid_navigation_and_folder_switch_preserve_latest_view`,
-off-screen): main vs branch folder opens 358/65 ms vs 355/58 ms; browsing
-stalls max 0 ms on main, 117/82/53 ms over three branch runs, startup
-stalls up to 389 ms on main and 382 ms on the branch (noise; that short
-run never starts the detail pass). Labelled set (user, November 25): wallhaven-589809.jxl, wallhaven-674454.jxl
-and wallpaper-1524071.jpg are obviously upscaled, and all three measure
-"looks upscaled"; the other 7 are inconclusive to the user.
-Desktop trial (user allowed it; release build on a copy of the data in
-`.tmp/trial-detail/`, 231 s): the detail pass measured 359 images while the
-user browsed; 18 folder opens, Wallpapers (1526) in 100–183 ms; browsing
-stalls ≥50 ms: 5, of which two at window close (306, 59 ms) and one
-unexplained 192 ms in an idle moment; the user's own recent `main` sessions
-show at most 99 ms. Thumbnails p95 3 ms. The user found scrolling and
-folder switching smooth and accepted the desktop check (November 25).
-Log kept as `.tmp/bench/desktop-trial.jsonl`.
-
-Choices for the user at acceptance: `upscaled` word and "Looks upscaled"
-chip, Info wording, original's stem with the new extension, R/S/B keys,
-cache keyed by fingerprint, pairs across drives skipped, new file keeps its
-own modified time, Wallslæd never auto-started.
+State: **verified candidate**, all committed on `fix/review-real-detail-and-replace`
+(and Wallslæd `fix/relink-review`); not merged, pushed or deployed. Checks:
+Sharpr `cargo fmt --check`, strict `cargo clippy --all-targets -- -D warnings`,
+`cargo build`, `cargo machete` clean; 361/365 unit tests (+7 new; only the 4
+pre-existing glycin AVIF/HEIC sandbox tests fail, as on `main`); 6/6 targeted
+off-screen GTK tests pass (`replace_with_upgrade_full_flow`,
+`replace_review_focus_keys_and_bucket_view_refresh`,
+`real_detail_filter_sort_and_info`, and all `compare_*` tests). Wallslæd
+`cargo build --workspace` and `cargo test --workspace` clean (49/49 pass, +2 new).
 
 ## Recently accepted and merged
+
+November 25: Real detail (D48, item 39) and Replace with upgrade (D49, item 40),
+merged to `main` (`e95e45b`), pushed to `origin/main`, and deployed natively;
+Wallslæd `Relink` merged (`8651e09`), pushed, and installed. Gate: 5% native
+false positives (2/40), 96% fakes flagged (692/720), 95% within one step
+(686/720); desktop trial accepted (231 s, 359 images measured while browsing).
 
 October 20: PNG defaults for crop and export (D47, item 38, `be29be9`).
 

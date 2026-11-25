@@ -299,13 +299,17 @@ impl ComparePage {
     }
 
     /// Replace mode's keys: R, S and B choose; Ctrl+Z goes back; Escape
-    /// ends the review. The arrows don't keep a side here.
+    /// ends the review. The arrows don't keep a side here. When the
+    /// candidate strip has keyboard focus, L and R send the focused
+    /// thumbnail to that side and arrows/Space stay with the strip, while
+    /// Escape and Ctrl+Z still control the review; nothing falls through to
+    /// normal Compare's keep, dismiss or close.
     pub(super) fn review_key(
         &self,
         key: gdk4::Key,
         modifiers: gdk4::ModifierType,
     ) -> Option<glib::Propagation> {
-        if !self.reviewing() || self.imp().candidates.has_keyboard_focus() {
+        if !self.reviewing() {
             return None;
         }
         let control = modifiers.contains(gdk4::ModifierType::CONTROL_MASK);
@@ -313,12 +317,48 @@ impl ComparePage {
             gdk4::ModifierType::CONTROL_MASK
                 | gdk4::ModifierType::ALT_MASK
                 | gdk4::ModifierType::SUPER_MASK
+                | gdk4::ModifierType::META_MASK
+                | gdk4::ModifierType::SHIFT_MASK,
+        );
+        let plain_or_shift = !modifiers.intersects(
+            gdk4::ModifierType::CONTROL_MASK
+                | gdk4::ModifierType::ALT_MASK
+                | gdk4::ModifierType::SUPER_MASK
                 | gdk4::ModifierType::META_MASK,
         );
+        let candidates = &self.imp().candidates;
+        if candidates.has_keyboard_focus() {
+            let side = match key {
+                gdk4::Key::l if plain => Some(super::Side::Left),
+                gdk4::Key::r if plain => Some(super::Side::Right),
+                _ => None,
+            };
+            if let Some(side) = side {
+                if let Some(number) = candidates.focused_number() {
+                    self.choose(side, number);
+                }
+                return Some(glib::Propagation::Stop);
+            }
+            if matches!(key, gdk4::Key::Left | gdk4::Key::Right | gdk4::Key::space) {
+                return Some(glib::Propagation::Proceed);
+            }
+            return Some(match key {
+                gdk4::Key::z | gdk4::Key::Z if control => {
+                    self.review_undo();
+                    glib::Propagation::Stop
+                }
+                gdk4::Key::Escape => {
+                    self.finish_review();
+                    glib::Propagation::Stop
+                }
+                gdk4::Key::bracketleft | gdk4::Key::bracketright => glib::Propagation::Stop,
+                _ => glib::Propagation::Proceed,
+            });
+        }
         match key {
-            gdk4::Key::r | gdk4::Key::R if plain => self.review_replace(),
-            gdk4::Key::s | gdk4::Key::S if plain => self.review_decide(Decision::Skip),
-            gdk4::Key::b | gdk4::Key::B if plain => self.review_decide(Decision::KeepBoth),
+            gdk4::Key::r | gdk4::Key::R if plain_or_shift => self.review_replace(),
+            gdk4::Key::s | gdk4::Key::S if plain_or_shift => self.review_decide(Decision::Skip),
+            gdk4::Key::b | gdk4::Key::B if plain_or_shift => self.review_decide(Decision::KeepBoth),
             gdk4::Key::z | gdk4::Key::Z if control => self.review_undo(),
             gdk4::Key::Escape => self.finish_review(),
             gdk4::Key::Left
