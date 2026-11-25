@@ -265,8 +265,17 @@ def write_sheet(out, name, title, rows):
                     crop_path = crops / f"{name.split('.')[0]}-{i:03}.png"
                     crop.save(crop_path)
                     crop_html = f'<img src="crops/{crop_path.name}" width="512" height="512">'
-            except Exception as error:  # JPEG XL and others PIL can't open
-                crop_html = f"<p>(no crop: {html.escape(str(error))})</p>"
+            except Exception:
+                # JPEG XL and others PIL can't open: ImageMagick crops them
+                # (auto-orient first, as the estimator sees them upright).
+                crop_path = crops / f"{name.split('.')[0]}-{i:03}.png"
+                x, y = r["focus"]
+                done = subprocess.run(
+                    ["magick", r["path"], "-auto-orient", "-crop", f"512x512+{x}+{y}", "+repage", str(crop_path)],
+                    capture_output=True)
+                crop_html = (f'<img src="crops/{crop_path.name}" width="512" height="512">'
+                             if done.returncode == 0 else
+                             f"<p>(no crop: {html.escape(done.stderr.decode(errors='replace')[:200])})</p>")
         losses = ", ".join(f"{l}p {m:.2f}≤{a:.2f}" for l, m, a in r.get("losses", []))
         cards.append(f"""<div class="card">{crop_html}
 <p><b>{html.escape(Path(r['path']).name)}</b><br>{r['width']}×{r['height']} · {html.escape(r['words'])}
