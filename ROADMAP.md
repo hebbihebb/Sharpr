@@ -951,7 +951,6 @@ Optional. Pick something up only when a phase touches that area, or the user ask
 - Learning the user's taste from Wallslæd likes and "never show" choices (user, November 25). Wallslæd records no view or skip history today, so it would first have to.
 - An "Open in Sharpr" item in Wallslæd's menu (user, November 25). It would reopen D34 (Sharpr is library-only).
 - Replace with upgrade across drives (D49): today a pair on another filesystem is skipped; a copy-then-trash path would need its own safety design.
-- Wallslæd keeping favourites for files that are temporarily missing (its own DS-02 audit finding); D49's relink keeps a 10-minute tombstone only.
 
 ### Considered, Not Planned
 

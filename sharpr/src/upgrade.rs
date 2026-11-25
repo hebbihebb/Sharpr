@@ -326,8 +326,16 @@ pub fn replace(
             });
         }
     } else {
-        rename(&pair.new, &placed)?;
+        // Already in place (the upgrade was saved beside its original under
+        // the final name): nothing to move.
+        let moves = placed != pair.new;
+        if moves {
+            rename(&pair.new, &placed)?;
+        }
         if let Err(error) = (fs.trash)(&pair.original) {
+            if !moves {
+                return Err(format!("couldn't move the original to the trash: {error}"));
+            }
             return Err(match rename(&placed, &pair.new) {
                 Ok(()) => format!("couldn't move the original to the trash: {error}"),
                 Err(back) => format!(
@@ -349,7 +357,12 @@ pub fn replace(
     let (removed_rows, added_rows) = match records {
         Ok(rows) => rows,
         Err(error) => {
-            let back = rename(&placed, &pair.new).and_then(|()| (fs.restore)(&pair.original));
+            let back = (if placed != pair.new {
+                rename(&placed, &pair.new)
+            } else {
+                Ok(())
+            })
+            .and_then(|()| (fs.restore)(&pair.original));
             return Err(match back {
                 Ok(()) => format!("couldn't move bucket membership: {error}"),
                 Err(back) => format!(
@@ -378,14 +391,16 @@ pub fn replace(
 /// and the other trashed copies from the trash, and puts the bucket rows
 /// back. Stops at the first step that can't be done, changing nothing more.
 pub fn undo(index: &LibraryIndex, done: &Replaced, fs: &FileSystem) -> Result<(), String> {
-    if done.new_from.exists() {
-        return Err(format!(
-            "another file now has the name {}",
-            done.new_from.display()
-        ));
+    if done.placed != done.new_from {
+        if done.new_from.exists() {
+            return Err(format!(
+                "another file now has the name {}",
+                done.new_from.display()
+            ));
+        }
+        (fs.rename)(&done.placed, &done.new_from)
+            .map_err(|e| format!("couldn't move {} back: {e}", done.placed.display()))?;
     }
-    (fs.rename)(&done.placed, &done.new_from)
-        .map_err(|e| format!("couldn't move {} back: {e}", done.placed.display()))?;
     (fs.restore)(&done.original)?;
     let mut failed = Vec::new();
     for extra in &done.also_trashed {
@@ -915,5 +930,27 @@ mod tests {
             .contains("another file"));
         assert_eq!(std::fs::read(&done.placed).unwrap(), b"upscaled");
         assert!(!original.exists());
+    }
+
+    #[test]
+    fn an_upgrade_already_beside_its_original_stays_put() {
+        let f = fixture("in-place");
+        let original = f.file("Wallpapers/sunset.jpg", b"original", "orig");
+        let new = f.file("Wallpapers/sunset.png", b"upscaled", "new");
+        let kept = f.bucket("Kept", &[&original]);
+        let before = f.members();
+        let (trash, restore) = (f.bin_trash(), f.bin_restore());
+        let fs = FileSystem {
+            rename: &real_rename,
+            trash: &trash,
+            restore: &restore,
+        };
+        let done = replace(&f.index, &f.tags, &f.pair(&new, &original), &fs).unwrap();
+        assert_eq!(done.placed, new);
+        assert!(new.exists() && !original.exists());
+        assert_eq!(f.members(), vec![(kept, new.clone(), Some("new".into()))]);
+        undo(&f.index, &done, &fs).unwrap();
+        assert!(new.exists() && original.exists());
+        assert_eq!(f.members(), before);
     }
 }
