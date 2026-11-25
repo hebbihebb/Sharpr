@@ -56,10 +56,15 @@ while it measured 4K images, giving way to thumbnails. Bench logs
 off-screen): main vs branch folder opens 358/65 ms vs 355/58 ms; browsing
 stalls max 0 ms on main, 117/82/53 ms over three branch runs, startup
 stalls up to 389 ms on main and 382 ms on the branch (noise; that short
-run never starts the detail pass). Left for the user:
-the same check by hand on the desktop, and confirming the 10 labelled
-candidates in `.tmp/detail-gate/labelled-candidates.html` (all measured
-"looks upscaled").
+run never starts the detail pass). Labelled set (user, November 25): wallhaven-589809.jxl, wallhaven-674454.jxl
+and wallpaper-1524071.jpg are obviously upscaled, and all three measure
+"looks upscaled"; the other 7 are inconclusive to the user.
+Desktop trial (user allowed it; release build on a copy of the data in
+`.tmp/trial-detail/`, 231 s): the detail pass measured 359 images while the
+user browsed; 18 folder opens, Wallpapers (1526) in 100–183 ms; browsing
+stalls ≥50 ms: 5, of which two at window close (306, 59 ms) and one
+unexplained 192 ms in an idle moment; the user's own recent `main` sessions
+show at most 99 ms. Thumbnails p95 3 ms.
 
 Choices for the user at acceptance: `upscaled` word and "Looks upscaled"
 chip, Info wording, original's stem with the new extension, R/S/B keys,
