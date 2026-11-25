@@ -143,11 +143,16 @@ pub fn find_originals(
 
 /// The images `paths` with their fresh fingerprints, and every current,
 /// fingerprinted image in `library_paths`, from the index's cache.
+/// Images with their fingerprints, `None` when they have none yet.
+pub type NewImages = Vec<(PathBuf, Option<String>)>;
+/// Current images with their fingerprints.
+pub type LibraryImages = Vec<(PathBuf, String)>;
+
 pub fn fingerprints_for(
     index: &LibraryIndex,
     paths: &[PathBuf],
     library_paths: &[PathBuf],
-) -> Result<(Vec<(PathBuf, Option<String>)>, Vec<(PathBuf, String)>), String> {
+) -> Result<(NewImages, LibraryImages), String> {
     let cached = index.cached_fingerprints().map_err(|e| e.to_string())?;
     let fresh = |path: &Path| -> Option<String> {
         let metadata = std::fs::metadata(path).ok()?;
@@ -430,7 +435,7 @@ mod tests {
     use std::cell::Cell;
 
     fn unit(seed: &[f32]) -> Vec<f32> {
-        let mut v = vec![0.0f32; 8];
+        let mut v = [0.0f32; 8];
         v[..seed.len()].copy_from_slice(seed);
         let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         v.iter().map(|x| x / n).collect()
@@ -448,7 +453,7 @@ mod tests {
     /// A library where `new.png` is an upscale of `wall/orig.jpg` (same
     /// picture), `wall/other.jpg` is a different picture with a close
     /// vector, and `copy.png` is an identical copy of the new file.
-    fn library() -> (HashMap<String, Vec<f32>>, Vec<(PathBuf, String)>) {
+    fn library() -> (HashMap<String, Vec<f32>>, LibraryImages) {
         let vectors = HashMap::from([
             ("new".to_string(), unit(&[1.0, 0.0])),
             ("orig".to_string(), unit(&[1.0, 0.05])),

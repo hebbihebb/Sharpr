@@ -694,7 +694,8 @@ mod tests {
             new_stamp: stamp(&new),
             original_stamp: stamp(&original),
         };
-        let sent: Arc<std::sync::Mutex<Vec<Vec<(PathBuf, PathBuf)>>>> = Arc::default();
+        type Sent = Vec<Vec<(PathBuf, PathBuf)>>;
+        let sent: Arc<std::sync::Mutex<Sent>> = Arc::default();
         let mut ctx = f.ctx.clone();
         let recorder = sent.clone();
         ctx.relink = Some(Arc::new(move |pairs: &[(PathBuf, PathBuf)]| {
