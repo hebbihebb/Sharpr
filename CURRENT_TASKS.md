@@ -51,7 +51,12 @@ the one failure passed alone. Final build re-measured the gate directly
 (no probe arithmetic): identical, 5% / 96% / 95%. Off-screen stand-in for
 the rapid-scroll check (`filmstrip_stays_responsive_while_measuring_detail`,
 debug build): longest main-loop iteration 57 ms with the pass held, 70 ms
-while it measured 4K images, giving way to thumbnails. Left for the user:
+while it measured 4K images, giving way to thumbnails. Bench logs
+(`.tmp/bench/`, `rapid_navigation_and_folder_switch_preserve_latest_view`,
+off-screen): main vs branch folder opens 358/65 ms vs 355/58 ms; browsing
+stalls max 0 ms on main, 117/82/53 ms over three branch runs, startup
+stalls up to 389 ms on main and 382 ms on the branch (noise; that short
+run never starts the detail pass). Left for the user:
 the same check by hand on the desktop, and confirming the 10 labelled
 candidates in `.tmp/detail-gate/labelled-candidates.html` (all measured
 "looks upscaled").
