@@ -21,6 +21,7 @@ mod quality;
 mod tags;
 mod thumbnails;
 mod ui;
+mod upgrade;
 mod visual_search;
 
 use app::SharprApplication;

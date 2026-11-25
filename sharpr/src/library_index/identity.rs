@@ -27,6 +27,16 @@ pub struct MemberRow {
     pub fingerprint: Option<String>,
 }
 
+/// One stored bucket member with the time it was added, kept whole so
+/// Replace with upgrade (D49) can put it back exactly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberRecord {
+    pub collection_id: i64,
+    pub last_path: PathBuf,
+    pub fingerprint: Option<String>,
+    pub added_at: i64,
+}
+
 /// Files cached with a fingerprint: `hash → [(path, size, mtime_ns)]`.
 pub type FilesByFingerprint = HashMap<String, Vec<(PathBuf, u64, i64)>>;
 
@@ -59,6 +69,53 @@ fn insert_members(
         }
     }
     Ok(added)
+}
+
+/// Deletes the `remove` rows and inserts the `add` rows, exactly.
+fn write_member_records(
+    tx: &rusqlite::Transaction<'_>,
+    remove: &[MemberRecord],
+    add: &[MemberRecord],
+) -> rusqlite::Result<()> {
+    for row in remove {
+        tx.execute(
+            "DELETE FROM bucket_members WHERE collection_id = ?1 AND last_path = ?2",
+            params![row.collection_id, path_to_string(&row.last_path)],
+        )?;
+    }
+    for row in add {
+        tx.execute(
+            "INSERT OR REPLACE INTO bucket_members (collection_id, last_path, fingerprint, added_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                row.collection_id,
+                path_to_string(&row.last_path),
+                row.fingerprint,
+                row.added_at
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Moves a cached fingerprint from `from` to `to`, replacing any at `to`.
+fn move_fingerprint_row(
+    tx: &rusqlite::Transaction<'_>,
+    from: &Path,
+    to: &Path,
+) -> rusqlite::Result<()> {
+    if from == to {
+        return Ok(());
+    }
+    tx.execute(
+        "DELETE FROM file_fingerprints WHERE path = ?1",
+        params![path_to_string(to)],
+    )?;
+    tx.execute(
+        "UPDATE file_fingerprints SET path = ?2 WHERE path = ?1",
+        params![path_to_string(from), path_to_string(to)],
+    )?;
+    Ok(())
 }
 
 impl LibraryIndex {
@@ -136,6 +193,122 @@ impl LibraryIndex {
             });
         }
         Ok(())
+    }
+
+    /// Replace with upgrade (D49), once the files are in place: the bucket
+    /// membership of `original` (and of the other copies in `also`, and of
+    /// the new file itself at `new_from`) moves to the new file at
+    /// `placed`, as one row per bucket carrying `new_fingerprint`; members
+    /// kept only by an original's fingerprint, at a path that no longer
+    /// exists, move too. The new file's cached fingerprint follows it to
+    /// `placed`. One transaction; returns the rows removed and added, for
+    /// `undo_replace_identity`.
+    pub fn replace_identity(
+        &self,
+        original: &Path,
+        also: &[PathBuf],
+        new_from: &Path,
+        placed: &Path,
+        new_fingerprint: Option<&str>,
+    ) -> Result<(Vec<MemberRecord>, Vec<MemberRecord>), String> {
+        let text = |e: rusqlite::Error| e.to_string();
+        let mut conn = self.conn().map_err(text)?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(text)?;
+        if !membership_migrated(&tx).map_err(text)? {
+            return Err("Wait until buckets have been upgraded before replacing files".into());
+        }
+        let mut paths: Vec<String> = std::iter::once(original)
+            .chain(also.iter().map(PathBuf::as_path))
+            .chain([new_from, placed])
+            .map(path_to_string)
+            .collect();
+        paths.sort();
+        paths.dedup();
+        let mut old_prints: Vec<String> = Vec::new();
+        for path in std::iter::once(original).chain(also.iter().map(PathBuf::as_path)) {
+            if let Some(hash) = tx
+                .query_row(
+                    "SELECT hash FROM file_fingerprints WHERE path = ?1",
+                    params![path_to_string(path)],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(text)?
+            {
+                if Some(hash.as_str()) != new_fingerprint {
+                    old_prints.push(hash);
+                }
+            }
+        }
+        let mut removed: Vec<MemberRecord> = Vec::new();
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT collection_id, last_path, fingerprint, added_at FROM bucket_members
+                     ORDER BY collection_id, last_path",
+                )
+                .map_err(text)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(MemberRecord {
+                        collection_id: row.get(0)?,
+                        last_path: PathBuf::from(row.get::<_, String>(1)?),
+                        fingerprint: row.get(2)?,
+                        added_at: row.get(3)?,
+                    })
+                })
+                .map_err(text)?;
+            for row in rows {
+                let row = row.map_err(text)?;
+                let at_path = paths.contains(&path_to_string(&row.last_path));
+                let by_print = row
+                    .fingerprint
+                    .as_ref()
+                    .is_some_and(|f| old_prints.contains(f))
+                    && !row.last_path.exists();
+                if at_path || by_print {
+                    removed.push(row);
+                }
+            }
+        }
+        let mut added: Vec<MemberRecord> = Vec::new();
+        for row in &removed {
+            match added
+                .iter_mut()
+                .find(|a| a.collection_id == row.collection_id)
+            {
+                Some(existing) => existing.added_at = existing.added_at.min(row.added_at),
+                None => added.push(MemberRecord {
+                    collection_id: row.collection_id,
+                    last_path: placed.to_path_buf(),
+                    fingerprint: new_fingerprint.map(String::from),
+                    added_at: row.added_at,
+                }),
+            }
+        }
+        write_member_records(&tx, &removed, &added).map_err(text)?;
+        move_fingerprint_row(&tx, new_from, placed).map_err(text)?;
+        tx.commit().map_err(text)?;
+        Ok((removed, added))
+    }
+
+    /// Undoes `replace_identity`: the rows it added go, the rows it removed
+    /// come back as they were, and the new file's cached fingerprint
+    /// follows it back from `placed` to `new_from`.
+    pub fn undo_replace_identity(
+        &self,
+        placed: &Path,
+        new_from: &Path,
+        removed: &[MemberRecord],
+        added: &[MemberRecord],
+    ) -> rusqlite::Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        write_member_records(&tx, added, removed)?;
+        move_fingerprint_row(&tx, placed, new_from)?;
+        tx.commit()
     }
 
     /// Every image size the index has read, by path. Some older rows may be

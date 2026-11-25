@@ -37,6 +37,12 @@ pub enum Job {
     Duplicate(PathBuf),
     /// Find Copies' confirmed trash, checked against the review first.
     TrashCopies(Vec<crate::copies::TrashGroup>),
+    /// Replace with upgrade (D49): each confirmed pair is checked again,
+    /// then the upgrade takes the original's place and the original goes
+    /// to the trash.
+    Replace(Vec<crate::upgrade::Pair>),
+    /// Undo of a `Replace`.
+    UndoReplace(Vec<crate::upgrade::Replaced>),
 }
 
 impl Job {
@@ -52,6 +58,18 @@ impl Job {
                 .iter()
                 .flat_map(|group| group.extras.iter().map(|(path, _)| path.clone()))
                 .collect(),
+            Job::Replace(pairs) => pairs
+                .iter()
+                .flat_map(|pair| {
+                    [pair.new.clone(), pair.original.clone()]
+                        .into_iter()
+                        .chain(pair.also_trash.iter().cloned())
+                })
+                .collect(),
+            Job::UndoReplace(done) => done
+                .iter()
+                .flat_map(|d| [d.placed.clone(), d.original.clone()])
+                .collect(),
         }
     }
 }
@@ -65,6 +83,8 @@ pub struct Report {
     pub failed: Vec<(PathBuf, String)>,
     /// Stopped before every file was tried; the untried ones are unchanged.
     pub cancelled: bool,
+    /// Replace with upgrade: what each finished pair did, for its Undo.
+    pub replaced: Vec<crate::upgrade::Replaced>,
 }
 
 pub enum Event {
@@ -108,7 +128,11 @@ pub fn run(
     progress: &mut dyn FnMut(usize, usize),
 ) -> Report {
     let mut report = Report::default();
-    let total = job.paths().len();
+    let total = match &job {
+        Job::Replace(pairs) => pairs.len(),
+        Job::UndoReplace(done) => done.len(),
+        _ => job.paths().len(),
+    };
     let mut step = |report: &mut Report, path: &Path, outcome: Result<Option<PathBuf>, String>| {
         match outcome {
             Ok(dest) => report.done.push((path.to_path_buf(), dest)),
@@ -200,6 +224,50 @@ pub fn run(
                         }
                     }
                 }
+            }
+        }
+        Job::Replace(pairs) => {
+            let trash = ctx.trash.clone();
+            let restore = ctx.restore.clone();
+            let fs = crate::upgrade::FileSystem {
+                rename: &|from, to| crate::file_ops::rename_no_replace(from, to),
+                trash: &*trash,
+                restore: &*restore,
+            };
+            for pair in &pairs {
+                if cancelled() {
+                    report.cancelled = true;
+                    break;
+                }
+                let outcome = stores()
+                    .and_then(|(index, tags)| crate::upgrade::replace(&index, &tags, pair, &fs));
+                let outcome = outcome.map(|done| {
+                    let placed = done.placed.clone();
+                    report.replaced.push(done);
+                    Some(placed)
+                });
+                step(&mut report, &pair.new, outcome);
+            }
+        }
+        Job::UndoReplace(done) => {
+            let trash = ctx.trash.clone();
+            let restore = ctx.restore.clone();
+            let fs = crate::upgrade::FileSystem {
+                rename: &|from, to| crate::file_ops::rename_no_replace(from, to),
+                trash: &*trash,
+                restore: &*restore,
+            };
+            // Newest first, so a later pair never blocks an earlier one.
+            for replaced in done.iter().rev() {
+                if cancelled() {
+                    report.cancelled = true;
+                    break;
+                }
+                let outcome = stores().and_then(|(index, _)| {
+                    crate::upgrade::undo(&index, replaced, &fs)
+                        .map(|()| Some(replaced.new_from.clone()))
+                });
+                step(&mut report, &replaced.placed, outcome);
             }
         }
     }
@@ -568,5 +636,59 @@ mod tests {
         assert_eq!(report.failed.len(), 1);
         assert_eq!(std::fs::read(&changed).unwrap(), b"edited after the review");
         assert_eq!(std::fs::read(&keep).unwrap(), b"same");
+    }
+
+    #[test]
+    fn replace_and_its_undo_run_as_jobs() {
+        let f = fixture("replace");
+        let index = f.ctx.index.clone().unwrap();
+        let original = f.root.join("Wallpapers/a.jpg");
+        let new = f.root.join("upscale/a_seedvr2.png");
+        write(&original, b"original");
+        write(&new, b"upscaled");
+        let stamp = |p: &Path| crate::fingerprint::file_stamp(&std::fs::metadata(p).unwrap());
+        index
+            .store_fingerprints(&[
+                (
+                    original.clone(),
+                    stamp(&original).0,
+                    stamp(&original).1,
+                    "orig".into(),
+                ),
+                (new.clone(), stamp(&new).0, stamp(&new).1, "new".into()),
+            ])
+            .unwrap();
+        let bucket = index
+            .create_collection("test", None, "Kept", &[], None, None)
+            .unwrap()
+            .id;
+        index
+            .add_bucket_members(bucket, &[(original.clone(), Some("orig".into()))])
+            .unwrap();
+        let pair = crate::upgrade::Pair {
+            new: new.clone(),
+            original: original.clone(),
+            also_trash: Vec::new(),
+            new_stamp: stamp(&new),
+            original_stamp: stamp(&original),
+        };
+        let report = run_all(Job::Replace(vec![pair]), &f.ctx);
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        let placed = f.root.join("Wallpapers/a.png");
+        assert_eq!(report.done, vec![(new.clone(), Some(placed.clone()))]);
+        assert_eq!(std::fs::read(&placed).unwrap(), b"upscaled");
+        assert_eq!(std::fs::read(f.bin.join("a.jpg")).unwrap(), b"original");
+        let members = index.all_bucket_members().unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].last_path, placed);
+
+        let undo = run_all(Job::UndoReplace(report.replaced), &f.ctx);
+        assert!(undo.failed.is_empty(), "{:?}", undo.failed);
+        assert_eq!(std::fs::read(&original).unwrap(), b"original");
+        assert_eq!(std::fs::read(&new).unwrap(), b"upscaled");
+        let members = index.all_bucket_members().unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].last_path, original);
+        assert_eq!(members[0].fingerprint.as_deref(), Some("orig"));
     }
 }

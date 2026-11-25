@@ -11,7 +11,7 @@ use crate::model::library::SortOrder;
 use crate::quality::QualityClass;
 
 mod identity;
-pub use identity::MemberRow;
+pub use identity::{MemberRecord, MemberRow};
 mod schema;
 use schema::initialize_schema;
 
